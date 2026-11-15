@@ -1,0 +1,92 @@
+//! The interface driven frame by frame, with no install (every picture and font missing), no
+//! device and no server: what the player's presses and drags ask the game for.
+
+mod hud;
+mod items;
+mod screens;
+mod windows;
+
+use std::sync::Arc;
+
+use pyreal_horizon::art::Art;
+use pyreal_horizon::draw::{DrawList, Rect};
+use pyreal_horizon::options::HorizonOptions;
+use pyreal_horizon::ui::game::GameState;
+use pyreal_horizon::ui::input::InputFrame;
+use pyreal_horizon::ui::{HorizonUi, Outcome};
+
+/// The interface at 1920x1080, unless the test says another size, with no art behind it.
+#[derive(Debug)]
+pub struct Harness {
+    pub ui: HorizonUi,
+    pub list: DrawList,
+    pub input: InputFrame,
+    /// The window's size in pixels.
+    pub screen: (f32, f32),
+}
+
+impl Harness {
+    pub fn new(options: HorizonOptions) -> Self {
+        Self {
+            ui: HorizonUi::new(Arc::new(Art::empty()), options),
+            list: DrawList::default(),
+            input: InputFrame::default(),
+            screen: (1920.0, 1080.0),
+        }
+    }
+
+    /// The interface at 1920x1080 with the pieces and fonts the client carries, so its text is
+    /// drawn and has its widths.
+    pub fn with_built_in_art() -> Self {
+        let pieces = pyreal_horizon::pieces::Pieces::built_in();
+        Self {
+            ui: HorizonUi::new(
+                Arc::new(Art::new(Arc::new(pieces))),
+                HorizonOptions::default(),
+            ),
+            list: DrawList::default(),
+            input: InputFrame::default(),
+            screen: (1920.0, 1080.0),
+        }
+    }
+
+    /// One frame at 60 frames a second.
+    pub fn frame(&mut self, state: &GameState) -> Outcome {
+        let out = self.ui.frame(
+            &mut self.list,
+            self.screen,
+            1.0 / 60.0,
+            state,
+            &mut self.input,
+        );
+        self.input.next_frame();
+        out
+    }
+
+    pub fn move_to(&mut self, x: f32, y: f32) {
+        self.input.mouse = (x, y);
+    }
+
+    pub fn press(&mut self) {
+        self.input.down[0] = true;
+        self.input.pressed[0] = true;
+    }
+
+    pub fn release(&mut self) {
+        self.input.down[0] = false;
+        self.input.released[0] = true;
+    }
+
+    /// That the quad `at` of this frame, the ground of `what`, is drawn over every row of a page
+    /// whose rows are cut to `rows`: it is not cut to them, and none of them is drawn after it.
+    pub fn assert_over_rows(&self, at: usize, rows: Rect, what: &str) {
+        let quads = &self.list.quads;
+        assert_eq!(quads[at].clip, None, "{what} is cut to the page's rows");
+        let after = quads[at..].iter().filter(|q| q.clip == Some(rows)).count();
+        assert_eq!(
+            after, 0,
+            "{after} quads of the page's rows drawn after {what}"
+        );
+    }
+}
+mod ui_shots;

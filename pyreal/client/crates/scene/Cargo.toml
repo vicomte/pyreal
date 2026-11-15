@@ -1,0 +1,63 @@
+[package]
+name = "pyreal-scene"
+description = "The client's drawn world: the runtime's world handed to the engine, the presentation the frame draws through, and the preview spaces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# The crate's tests are its modules' unit tests; the client's tier binaries exercise it through the
+# desktop client.
+autotests = false
+
+# The device is what the drawing is gated on: without it the crate still builds and holds the
+# scene's plain types (`build.rs` sets `cfg(gpu)` with it).
+[features]
+default = ["wgpu"]
+wgpu = []
+test-support = []
+# Tier switch only: no code is gated on it. It un-ignores the unit tests that read the retail dats
+# under $PYREAL_TEST_DAT_DIR.
+retail-dats = []
+
+[dependencies]
+pyreal-terrain.workspace = true
+pyreal-world-data.workspace = true
+pyreal-primitives.workspace = true
+# The simulation the scene draws: the world state, the object stream, the models, the movement,
+# the landblock window's residency, and the presentation seam the scene implements.
+pyreal-client-runtime.workspace = true
+pyreal-world-render.workspace = true
+pyreal-dat.workspace = true
+pyreal-assets.workspace = true
+pyreal-physics.workspace = true
+pyreal-animation.workspace = true
+# The landscape's terrain neighbourhood, which picks the ambient sounds.
+pyreal-audio.workspace = true
+# The wire appearance a server object arrives with.
+pyreal-protocol.workspace = true
+# The target reticule's projection and the preferences the renderer applies.
+pyreal-client-contract.workspace = true
+# The character-generation state the preview spaces read.
+pyreal-chargen.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# The engine's vector and matrix types.
+glam.workspace = true
+# The capture writes a PNG, and an art pack's pictures are PNGs.
+png.workspace = true
+# Art packs, opened with no device (`art_pack`).
+pyreal-art-pack.workspace = true
+# The engine the world is drawn by, and the device it draws with.
+pyreal-engine.workspace = true
+wgpu = "30"
+pyreal-codecs.workspace = true
+# An art pack's models are glTF, whose text is JSON.
+serde_json.workspace = true
+
+[dev-dependencies]
+# `pyreal_dat::testing`: where the tests find the retail dats.
+pyreal-dat = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

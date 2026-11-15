@@ -1,0 +1,32 @@
+[package]
+name = "pyreal-art-pack"
+description = "Art packs: models for retail objects, drawn by the high-fidelity presentation and the new engine in place of the objects they replace, and the one lookup that says which look draws an object."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# The crate's tests are its modules' unit tests.
+autotests = false
+
+[dependencies]
+pyreal-primitives.workspace = true
+# The manifest's records, and the retail ground a pack's ground is laid with.
+pyreal-assets.workspace = true
+pyreal-terrain.workspace = true
+# The one file a pack is packed into is a dat.
+pyreal-dat.workspace = true
+# The block codecs a pack's pictures are compressed with.
+pyreal-codecs.workspace = true
+# The hash a report names a pack by.
+blake3.workspace = true
+# The records of a pack packed in layout 2.
+zstd.workspace = true
+# A model's transforms.
+glam.workspace = true
+# A pack's pictures are PNGs, and its models are glTF, whose text is JSON.
+png.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

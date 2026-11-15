@@ -1,0 +1,31 @@
+[package]
+name = "pyreal-client-contract"
+description = "The read-only view onto the game, the request channel back out and the action vocabulary, with no presentation and no platform in it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The only production dependency. `DataId`/`ObjectId` are the two identifier types the whole
+# contract is expressed in. The rule is that this crate names no presentation and no platform
+# crate: `cargo xtask seams` is the gate, and its `CONTRACT_DIRECT` is the allowed list.
+pyreal-primitives.workspace = true
+# `teleport.rs`'s `TeleportAnim` seeds its rotation from `CrtRand`, the double draw off the
+# client's own LCG: the same stream in the same order, or the teleport spins to a different facing
+# than the original's. `CrtRand` is `pyreal_primitives::num::rng`, pure arithmetic, so it is
+# allowed here, and the rule the gate checks -- no interface crate, no `dereth-render`, no
+# `winit`, no `windows` -- is unchanged.
+# `camera.rs`'s `ViewParams::view` is a `Mat4`. The same glam the rest of the tree uses,
+# so the matrix that crosses this seam is the one `dereth-render` builds.
+glam.workspace = true
+# `window.rs`'s `WindowHandles` is the raw display/window handle pair a device is
+# created from. `raw-window-handle` is a crate of type definitions and depends on nothing; the
+# pair is plain data, and `pyreal_client_runtime::platform::window::WindowHost` returns it, which is
+# what `pyreal-client`'s window trait needed to leave that crate. `dereth-render` re-exports the
+# type at `device::WindowHandles` and still owns every use of it.
+raw-window-handle.workspace = true
+
+[lints]
+workspace = true

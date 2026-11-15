@@ -1,0 +1,337 @@
+//! A [`pyreal_animation::AnimAssets`] over the retail dats.
+//!
+//! The decoders stay out of `pyreal-animation`: its runtime shapes are built from `pyreal-assets`
+//! records with the free functions in [`crate::anim_convert`]. Every conversion below is one call
+//! into it. Nothing here parses a byte or renames a field.
+//!
+//! The cache is the point. Setup construction and every motion-table lookup ask for the same
+//! handful of records over and over, and following a motion-table link reads another table.
+//! Without this cache, the same records would be decoded dozens of times a second.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::anim_convert as convert;
+use pyreal_animation::data::{
+    AnimAssets, AnimationData, DegradeInfo, GfxObjLookup, GfxObjSurfaces, MotionTableData,
+    ParticleEmitterInfo, PhysicsScriptData, PhysicsScriptTableData, SetupData, SurfaceFacts,
+};
+use pyreal_assets::Decode;
+use pyreal_dat::{DbType, RetailDatStore};
+use pyreal_primitives::DataId;
+
+/// One memo per record type. `None` is cached too: a missing record is asked for repeatedly (a
+/// setup with no script table, say) and re-reading the index each time is the same waste.
+type Memo<T> = Mutex<BTreeMap<u32, Option<Arc<T>>>>;
+
+/// The animation track's asset seam, backed by `client_portal.dat`.
+pub struct DatAnimAssets {
+    store: Arc<RetailDatStore>,
+    /// The numbering the files key their motion tables by, told on the first table read.
+    numbering: OnceLock<crate::command_numbering::StoreNumbering>,
+    motion_tables: Memo<MotionTableData>,
+    animations: Memo<AnimationData>,
+    setups: Memo<SetupData>,
+    scripts: Memo<PhysicsScriptData>,
+    script_tables: Memo<PhysicsScriptTableData>,
+    emitters: Memo<ParticleEmitterInfo>,
+    degrades: Memo<DegradeInfo>,
+    /// A qualified degradation-info lookup reduced to the two facts
+    /// the degradation lookup reads — present or not, and `did_degrade`.
+    ///
+    /// This memo is not the ordinary "misses are asked for repeatedly" argument the others make:
+    /// **a cache miss here costs a whole graphics-object decode**, vertex array, polygons and both BSP trees,
+    /// because `did_degrade` is the *last* field of the record (present under flags bit 3),
+    /// and there is no way to reach it without walking everything before it. The
+    /// bodies this seam is asked about are the same three dozen ids over and over —
+    /// object creation asks once per part, and a part swap
+    /// asks again — so without the memo a crowded scene re-decodes megabytes per frame.
+    gfxobjs: Mutex<BTreeMap<u32, GfxObjLookup>>,
+    /// The palette each surface record has once loaded, `None` for none: a graphics object's base
+    /// palette is read off its surfaces, and the body's surfaces are shared by many of them.
+    surface_palettes: Mutex<BTreeMap<u32, Option<DataId>>>,
+    /// Each graphics object's surfaces with their original pictures, `None` for an unreadable one.
+    gfxobj_surfaces: Mutex<BTreeMap<u32, Option<GfxObjSurfaces>>>,
+    /// Whether each picture is drawn through a palette, `None` for an unreadable one.
+    picture_indexed: Mutex<BTreeMap<u32, Option<bool>>>,
+}
+
+impl std::fmt::Debug for DatAnimAssets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DatAnimAssets")
+    }
+}
+
+impl DatAnimAssets {
+    /// The files the records are read from.
+    #[must_use]
+    pub fn store(&self) -> &Arc<RetailDatStore> {
+        &self.store
+    }
+
+    #[must_use]
+    pub fn new(store: Arc<RetailDatStore>) -> Self {
+        Self {
+            store,
+            numbering: OnceLock::new(),
+            motion_tables: Mutex::new(BTreeMap::new()),
+            animations: Mutex::new(BTreeMap::new()),
+            setups: Mutex::new(BTreeMap::new()),
+            scripts: Mutex::new(BTreeMap::new()),
+            script_tables: Mutex::new(BTreeMap::new()),
+            emitters: Mutex::new(BTreeMap::new()),
+            degrades: Mutex::new(BTreeMap::new()),
+            gfxobjs: Mutex::new(BTreeMap::new()),
+            surface_palettes: Mutex::new(BTreeMap::new()),
+            gfxobj_surfaces: Mutex::new(BTreeMap::new()),
+            picture_indexed: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// The base palette of a graphics object with these surfaces: the palette of the first
+    /// surface, in order, that has one once loaded. Pictures are read at their original level;
+    /// the two levels of every shipped picture but two name the same palette.
+    fn base_palette(&self, surfaces: &[DataId]) -> Option<DataId> {
+        let lookup = pyreal_assets::texture_lookup::TextureLookup::new(&self.store, 1);
+        surfaces.iter().find_map(|&sid| {
+            if let Ok(c) = self.surface_palettes.lock() {
+                if let Some(hit) = c.get(&sid.0) {
+                    return *hit;
+                }
+            }
+            let p = lookup.surface_palette(sid);
+            if let Ok(mut c) = self.surface_palettes.lock() {
+                c.insert(sid.0, p);
+            }
+            p
+        })
+    }
+
+    /// Read, decode and convert one record, memoising both hits and misses.
+    ///
+    /// A malformed record becomes `None` rather than a panic: `AnimAssets` has no error channel,
+    /// and the client's own cache lookup returns NULL for the same case.
+    fn load<T, R>(
+        &self,
+        cache: &Memo<R>,
+        kind: DbType,
+        id: DataId,
+        convert: impl Fn(&T) -> R,
+    ) -> Option<Arc<R>>
+    where
+        T: Decode,
+    {
+        if let Ok(c) = cache.lock() {
+            if let Some(hit) = c.get(&id.0) {
+                return hit.clone();
+            }
+        }
+        let decoded = self
+            .store
+            .read_typed(kind, id)
+            .ok()
+            .and_then(|bytes| T::decode_payload_in(self.store.era_of(id), id, &bytes).ok())
+            .map(|v| Arc::new(convert(&v)));
+        if let Ok(mut c) = cache.lock() {
+            c.insert(id.0, decoded.clone());
+        }
+        decoded
+    }
+}
+
+impl AnimAssets for DatAnimAssets {
+    /// Keyed in the final command numbering whatever the files' own is
+    /// ([`crate::command_numbering`]).
+    fn motion_table(&self, id: DataId) -> Option<Arc<MotionTableData>> {
+        let numbering = self
+            .numbering
+            .get_or_init(|| crate::command_numbering::StoreNumbering::of(&self.store))
+            .of_record(&self.store, id);
+        self.load::<pyreal_assets::MotionTable, _>(&self.motion_tables, DbType::MTable, id, |t| {
+            let mut t = t.clone();
+            crate::command_numbering::motion_table(&mut t, numbering);
+            convert::motion_table(&t)
+        })
+    }
+
+    fn animation(&self, id: DataId) -> Option<Arc<AnimationData>> {
+        self.load::<pyreal_assets::Animation, _>(
+            &self.animations,
+            DbType::Anim,
+            id,
+            convert::animation,
+        )
+    }
+
+    fn setup(&self, id: DataId) -> Option<Arc<SetupData>> {
+        self.load::<pyreal_assets::Setup, _>(&self.setups, DbType::Setup, id, convert::setup)
+    }
+
+    fn script(&self, id: DataId) -> Option<Arc<PhysicsScriptData>> {
+        self.load::<pyreal_assets::PhysicsScript, _>(
+            &self.scripts,
+            DbType::PhysicsScript,
+            id,
+            convert::physics_script,
+        )
+    }
+
+    fn script_table(&self, id: DataId) -> Option<Arc<PhysicsScriptTableData>> {
+        self.load::<pyreal_assets::PhysicsScriptTable, _>(
+            &self.script_tables,
+            DbType::PhysicsScriptTable,
+            id,
+            convert::physics_script_table,
+        )
+    }
+
+    fn emitter_info(&self, id: DataId) -> Option<Arc<ParticleEmitterInfo>> {
+        self.load::<pyreal_assets::world::ParticleEmitterInfo, _>(
+            &self.emitters,
+            DbType::ParticleEmitter,
+            id,
+            convert::emitter_info,
+        )
+    }
+
+    fn degrade_info(&self, id: DataId) -> Option<Arc<DegradeInfo>> {
+        self.load::<pyreal_assets::GfxObjDegradeInfo, _>(
+            &self.degrades,
+            DbType::DegradeInfo,
+            id,
+            convert::degrade_info,
+        )
+    }
+
+    /// The client asset source for the graphics-object lookup.
+    ///
+    /// **This source can always look, so it never answers [`GfxObjLookup::Unknown`].** That is the
+    /// whole point of the override: the defaulted `Unknown` is honest for a fixture with no dat
+    /// behind it, and a lie for a client holding `client_portal.dat`. With it in place a part swap
+    /// naming an object the dat does not hold takes the lookup's failure
+    /// arm and the previous limb is kept, and a swap that succeeds carries the **new** object's
+    /// `GfxObjDegradeInfo` into the per-frame viewer-distance update, so the swapped-in part
+    /// degrades on its own thresholds and not on the replaced part's.
+    ///
+    /// A read failure and a decode failure are both `Absent`, matching database lookup returning
+    /// NULL: the client cannot tell a record that is not in the index from one it could not parse,
+    /// and graphics-object array loading treats them alike.
+    fn gfxobj(&self, id: DataId) -> GfxObjLookup {
+        if let Ok(c) = self.gfxobjs.lock() {
+            if let Some(hit) = c.get(&id.0) {
+                return *hit;
+            }
+        }
+        let answer = match self
+            .store
+            .read_typed(DbType::GfxObj, id)
+            .ok()
+            .and_then(|bytes| {
+                pyreal_assets::GfxObj::decode_payload_in(self.store.era_of(id), id, &bytes).ok()
+            }) {
+            Some(o) => GfxObjLookup::Present {
+                did_degrade: o.did_degrade,
+                base_palette: self.base_palette(&o.surfaces),
+            },
+            None => GfxObjLookup::Absent,
+        };
+        if let Ok(mut c) = self.gfxobjs.lock() {
+            c.insert(id.0, answer);
+        }
+        answer
+    }
+
+    fn gfxobj_surfaces(&self, id: DataId) -> Option<GfxObjSurfaces> {
+        if let Ok(c) = self.gfxobj_surfaces.lock() {
+            if let Some(hit) = c.get(&id.0) {
+                return hit.clone();
+            }
+        }
+        let read = |kind: DbType, id: DataId| self.store.read_typed(kind, id).ok();
+        let answer = read(DbType::GfxObj, id)
+            .and_then(|b| {
+                pyreal_assets::GfxObj::decode_payload_in(self.store.era_of(id), id, &b).ok()
+            })
+            .map(|o| {
+                o.surfaces
+                    .iter()
+                    .map(|&s| {
+                        let r = read(DbType::Surface, s).and_then(|b| {
+                            pyreal_assets::Surface::decode_payload_in(self.store.era_of(s), s, &b)
+                                .ok()
+                        });
+                        SurfaceFacts {
+                            surface: s,
+                            picture: r.and_then(|r| r.orig_texture_id),
+                            kind: r.map_or(0, |r| r.surface_type),
+                        }
+                    })
+                    .collect::<Arc<[_]>>()
+            });
+        if let Ok(mut c) = self.gfxobj_surfaces.lock() {
+            c.insert(id.0, answer.clone());
+        }
+        answer
+    }
+
+    fn picture_indexed(&self, id: DataId) -> Option<bool> {
+        if let Ok(c) = self.picture_indexed.lock() {
+            if let Some(hit) = c.get(&id.0) {
+                return *hit;
+            }
+        }
+        // The original level, as the base palette is read.
+        let answer = pyreal_assets::texture_lookup::TextureLookup::new(&self.store, 1)
+            .resolve(id)
+            .ok()
+            .map(|(_, r, _)| r.default_palette_id.is_some());
+        if let Ok(mut c) = self.picture_indexed.lock() {
+            c.insert(id.0, answer);
+        }
+        answer
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Oracle: the retail dat files. The Aluvian male's five records named by the chargen table
+    // must all resolve --
+    // a missing one is how a character ends up invisible or motionless.
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_aluvian_males_setup_and_motion_table_load_through_the_seam() {
+        // Absent dats fail rather than skip: a checkout with no retail dats would otherwise
+        // report `... ok` having loaded nothing.
+        let store = pyreal_dat::testing::open_store().unwrap_or_else(|| {
+            panic!(
+                "the retail dats are this test's oracle and they are not under {} -- \
+                 set PYREAL_TEST_DAT_DIR",
+                pyreal_dat::testing::dat_dir().display()
+            )
+        });
+        let a = DatAnimAssets::new(Arc::new(store));
+        let setup = a.setup(DataId(0x0200_0001)).expect("setup 0x02000001");
+        assert_eq!(setup.parts.len(), 34, "the male body is 34 parts");
+        assert_eq!(
+            setup.spheres.len(),
+            2,
+            "two collision spheres, feet and chest"
+        );
+        let mt = a
+            .motion_table(DataId(0x0900_0001))
+            .expect("motion table 0x09000001");
+        assert!(!mt.cycles.is_empty() && !mt.links.is_empty());
+        // The memo returns the same allocation, which is what keeps a per-frame lookup cheap.
+        assert!(Arc::ptr_eq(
+            &setup,
+            &a.setup(DataId(0x0200_0001)).expect("cached")
+        ));
+        // A record that does not exist caches as a miss rather than erroring.
+        assert!(a.setup(DataId(0x02FF_FFFF)).is_none());
+    }
+}

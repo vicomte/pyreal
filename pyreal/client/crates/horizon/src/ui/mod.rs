@@ -1,0 +1,913 @@
+//! The interface: the pre-game screens (title, data centre and world select, lobby) and the
+//! in-game HUD and windows, drawn from the interface's own art.
+//!
+//! It is an immediate-mode interface: every frame the current screen is drawn from the game's
+//! state ([`game::GameState`], taken by the shell from the runtime) and this frame's input
+//! ([`input::InputFrame`]), and what the player did comes back as requests the shell hands to the
+//! runtime ([`Outcome`]).
+
+pub mod chat;
+pub mod colours;
+pub mod creation;
+pub mod edit;
+pub mod explore;
+pub mod game;
+pub mod hud;
+pub mod input;
+pub mod kit;
+pub mod layout;
+pub mod nav;
+pub mod paint;
+pub mod panels;
+pub mod plugins;
+pub mod pregame;
+pub mod worlds;
+
+use crate::art::AcArt as _;
+use std::sync::Arc;
+
+use pyreal_client_contract::pregame::CharacterAction;
+use pyreal_client_contract::UiRequest;
+
+use crate::art::Art;
+use crate::draw::DrawList;
+use crate::options::{HorizonOptions, StartScreen};
+
+pub use pyreal_ui_kit::{narrow, wave};
+
+/// The action that toggles between peace and the combat mode the wielded weapon calls for.
+pub const ACTION_TOGGLE_COMBAT: u32 = 0x1000_005A;
+
+/// An item or shortcut in hand: picked up by a press, a drag once the pointer moves.
+#[derive(Debug, Clone)]
+pub struct Drag {
+    pub item: pyreal_primitives::ObjectId,
+    /// The shortcut slot it was picked up from, if it is a shortcut.
+    pub from_shortcut: Option<u32>,
+    /// Its icon, drawn under the pointer when there is no better picture.
+    pub icon: Option<u32>,
+    /// What it is, for the picture that follows the pointer: the item, or the spell.
+    pub look: Option<crate::ui::game::Item>,
+    /// A spell's icon power and bitfield, for its composed icon.
+    pub spell_look: Option<(u32, u32)>,
+    /// Where the press was.
+    pub origin: (f32, f32),
+    /// The pointer has moved far enough for this to be a drag and not a click.
+    pub active: bool,
+    /// What a click (a release without a drag) asks for.
+    pub on_click: Option<UiRequest>,
+    /// A spell rather than an item: its id, and the spell bar slot it was picked up from.
+    pub spell: Option<u32>,
+    pub from_spell_slot: Option<(usize, usize)>,
+    /// A spell component, its icon drawn as the component lists draw it.
+    pub component: bool,
+    /// One of the fighting stance's controls, picked up from the spellbook's Combat page: only a
+    /// cross hotbar slot takes it.
+    pub stance: Option<hud::cross::PowerAct>,
+    /// A plugin's command, picked up from the spellbook's Plugins page: only a cross hotbar slot
+    /// takes it.
+    pub command: Option<hud::cross::PluginCommand>,
+}
+
+/// A spell bar slot: its tab and its slot.
+pub type SpellSlot = (usize, usize);
+
+/// How far the pointer must move, in pixels, before a press becomes a drag.
+const DRAG_THRESHOLD: f32 = 5.0;
+
+/// Which screen is up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Screen {
+    /// The player's worlds, signing in and the data files: the first screen, while the host
+    /// offers them ([`crate::front_door`]).
+    Worlds,
+    /// Character select, the first screen without them.
+    Lobby,
+    /// A log-on has gone out; the world is loading.
+    Entering,
+    /// A new character is being made.
+    Creation,
+    Game,
+    /// Explore mode: the world with no server, and its overlay.
+    Explore,
+}
+
+/// What the player asked for this frame, for the shell to carry out.
+#[derive(Debug, Default)]
+pub struct Outcome {
+    pub requests: Vec<UiRequest>,
+    pub character_actions: Vec<CharacterAction>,
+    /// What character creation asked for.
+    pub chargen_actions: Vec<pyreal_client_contract::pregame::CharGenAction>,
+    /// What the key bindings page asked of the input manager.
+    pub key_requests: Vec<crate::ui::game::KeyRequest>,
+    /// Chat lines typed, to go through the runtime's command interpreter.
+    pub chat: Vec<String>,
+    /// The client should close.
+    pub quit: bool,
+    /// Log the character off.
+    pub log_off: bool,
+    /// End the session, back to the world list.
+    pub log_out_session: bool,
+    /// Actions to fire, as a key bound to them would (the action map's ids).
+    pub actions: Vec<u32>,
+    /// A setting changed: `(name, value)` in the preferences file's terms.
+    pub settings: Vec<(String, String)>,
+    /// The game's boxes answered: `(id, yes)`, OK counting as yes.
+    pub answers: Vec<(u64, bool)>,
+    /// The player's answer to the plugin host's question ([`game::GameState::host_question`]),
+    /// with its id.
+    pub host_reply: Option<pyreal_client_runtime::dialogs::HostReply>,
+    /// Objects to select by name, from a script: the nearest on the radar with that name.
+    pub select: Vec<String>,
+    /// The spell whose details the spellbook shows.
+    pub examine_spell: Option<u32>,
+    /// The spell whose details the spell information window shows.
+    pub identify_spell: Option<u32>,
+    /// Open the chat line with this already typed (a tell to a friend).
+    pub chat_prefill: Option<String>,
+    /// Actions to fire as a key tapped: pressed and let go.
+    pub action_taps: Vec<u32>,
+    /// Something to bind to a cross hotbar slot: the bind-to-hotbar notice comes up with it.
+    pub bind_to_hotbar: Option<hud::cross::CrossBind>,
+    /// A drop on a cross hotbar slot: the slot, and what it binds there.
+    pub cross_bind: Option<(usize, hud::cross::CrossBind)>,
+    /// A spell dropped by a drag: the spell, the spell bar slot it was picked up from, and the
+    /// one it was dropped on.
+    pub spell_place: Option<(u32, Option<SpellSlot>, Option<SpellSlot>)>,
+    /// Plugins' commands the player ran from a cross hotbar slot, `(plugin, verb)`.
+    pub plugin_commands: Vec<(String, String)>,
+    /// The book window was closed.
+    pub book_closed: bool,
+    /// What explore mode's overlay asked.
+    pub explore: Vec<pyreal_client_runtime::explore::Ask>,
+    /// An allegiance action to ask about: the action, the other player, the question's string
+    /// token, and the name that fills it.
+    pub allegiance_question: Option<(
+        pyreal_client_contract::view::AllegianceAction,
+        pyreal_primitives::ObjectId,
+        &'static str,
+        String,
+    )>,
+}
+
+/// The interface's whole state.
+#[derive(Debug)]
+pub struct HorizonUi {
+    pub art: Arc<Art>,
+    pub options: HorizonOptions,
+    pub screen: Screen,
+    pub colours: colours::Colours,
+    pub pregame: pregame::Pregame,
+    pub hud: hud::Hud,
+    pub windows: panels::Windows,
+    /// Seconds since the interface came up.
+    pub time: f64,
+    /// Whether the interface has something Escape would close.
+    pub wants_escape: bool,
+    /// Where a drag could land last frame, and what a drop there asked for.
+    pub drops: Vec<(crate::draw::Rect, Option<kit::Drop>)>,
+    /// Whether the pointer is over something of the interface this frame.
+    pub pointer_over_ui: bool,
+    /// Whether a text box has the keyboard.
+    pub text_focus: bool,
+    preview_shown: bool,
+    /// When the world came up, and how many of the scripted lines have been sent.
+    in_world_since: Option<f64>,
+    said: usize,
+    /// What the player has in hand.
+    pub drag: Option<Drag>,
+    /// Where the plugin host's question's buttons were drawn last frame, first to last; none
+    /// while it asks nothing.
+    pub host_buttons: Vec<crate::draw::Rect>,
+    /// The spell keys the game raised since the last frame, which the next frame's widgets see.
+    pub magic_notices: Vec<pyreal_client_contract::view::MagicNotice>,
+    /// Whether the player is off the ground, which refuses a log-off.
+    pub airborne: bool,
+    /// The screens before any world, while the host offers them.
+    pub front_door: Option<crate::front_door::FrontDoorView>,
+    /// What the player asked of them, for the host.
+    pub front_door_requests: Vec<crate::front_door::FrontDoorRequest>,
+    /// The world list's own state.
+    pub worlds: worlds::Worlds,
+}
+
+impl HorizonUi {
+    #[must_use]
+    pub fn new(art: Arc<Art>, options: HorizonOptions) -> Self {
+        let colours = colours::Colours::default();
+        let screen = match options.screen {
+            StartScreen::Lobby => Screen::Lobby,
+            StartScreen::Game => Screen::Game,
+        };
+        let mut windows = panels::Windows::default();
+        for w in &options.open {
+            windows.open_by_name(w);
+        }
+        Self {
+            art,
+            options,
+            screen,
+            colours,
+            pregame: pregame::Pregame::default(),
+            hud: hud::Hud::default(),
+            windows,
+            time: 0.0,
+            wants_escape: false,
+            drops: Vec::new(),
+            pointer_over_ui: false,
+            text_focus: false,
+            preview_shown: false,
+            in_world_since: None,
+            said: 0,
+            drag: None,
+            host_buttons: Vec::new(),
+            magic_notices: Vec::new(),
+            airborne: false,
+            front_door: None,
+            front_door_requests: Vec::new(),
+            worlds: worlds::Worlds::default(),
+        }
+    }
+
+    /// The sample player, with its chat only on the first frame.
+    fn preview_state(&mut self) -> game::GameState {
+        let mut s = game::GameState::preview();
+        if self.preview_shown {
+            s.new_chat.clear();
+        }
+        self.preview_shown = true;
+        s
+    }
+
+    /// The layout scale for a screen of `screen` pixels: the interface scale in effect on it
+    /// ([`crate::scale::in_effect`]: the player's while the screen offers it, else the largest it
+    /// offers up to 200%), a layout unit to a pixel at 100% on any screen of 1080 lines or more (a
+    /// taller screen shows more, not larger); a shorter screen, which the layouts do not fit,
+    /// shrinks them to fit its height.
+    #[must_use]
+    pub fn layout_scale(&self, screen: (f32, f32)) -> f32 {
+        let fit = (screen.1 / 1080.0).clamp(0.5, 1.0);
+        fit * crate::scale::in_effect(self.options.scale, screen)
+    }
+
+    /// Draw one frame of the interface into `list` and say what the player did.
+    pub fn frame(
+        &mut self,
+        list: &mut DrawList,
+        screen: (f32, f32),
+        dt: f64,
+        state: &game::GameState,
+        input: &mut input::InputFrame,
+    ) -> Outcome {
+        self.time += dt;
+        list.clear();
+        // With no server to reach, a start on the game screen shows the HUD over a sample player.
+        let preview;
+        let state = if self.options.screen == StartScreen::Game && state.host.is_empty() {
+            preview = {
+                // The sample player speaks where the game would let them.
+                let mut s = self.preview_state();
+                s.chat_focus = state.chat_focus.clone();
+                s.host_question.clone_from(&state.host_question);
+                s
+            };
+            &preview
+        } else {
+            state
+        };
+
+        let scale = self.layout_scale(screen);
+        let art = Arc::clone(&self.art);
+        let mut p = paint::Painter {
+            list,
+            art: &art,
+            scale,
+            screen,
+            fade: 1.0,
+        };
+        let mut out = Outcome::default();
+        // The scripted steps: the first three seconds into the world, then one every two.
+        if state.in_world && state.connected {
+            let since = *self.in_world_since.get_or_insert(self.time);
+            let due = self.said < self.options.script.len()
+                && self.time - since
+                    >= 3.0 + 2.0 * f64::from(u32::try_from(self.said).unwrap_or(0));
+            if due {
+                match &self.options.script[self.said] {
+                    crate::options::ScriptStep::Say(line) => {
+                        tracing::info!("saying {line:?}");
+                        out.chat.push(line.clone());
+                    }
+                    crate::options::ScriptStep::Action(id) => out.actions.push(*id),
+                    crate::options::ScriptStep::Select(name) => out.select.push(name.clone()),
+                }
+                self.said += 1;
+            }
+        } else {
+            self.in_world_since = None;
+        }
+        let mut ctx = kit::Ctx {
+            kit: pyreal_ui_kit::widgets::Ctx {
+                time: self.time,
+                dt,
+                input,
+                colours: &self.colours,
+                hot: false,
+            },
+            drag: &mut self.drag,
+            drops: Vec::new(),
+            magic: std::mem::take(&mut self.magic_notices),
+            airborne: self.airborne,
+        };
+        // The plugin host's own windows (the plugin panel) and its dialog for a file take the
+        // presses on them: nothing under them takes one first. While the dialog is up, Escape is
+        // its own: it refuses it.
+        let (mx, my) = ctx.input.mouse;
+        let seat = &self.windows.plugins;
+        let asked = state.host_question.is_some() && seat.host.asking.id().is_some();
+        let on_host = seat
+            .host
+            .rects(&seat.frame.views)
+            .iter()
+            .chain(asked.then_some(&seat.host.asking.drawn.frame))
+            .any(|r| r.contains(mx, my));
+        let held_for_host_window = on_host.then(|| std::mem::take(&mut ctx.input.pressed));
+        let held_escape =
+            state.host_question.is_some() && ctx.input.take_key(pyreal_ui_kit::input::vk::ESCAPE);
+        // What the HUD learned of the last character is not the next one's.
+        if !state.in_world {
+            self.hud.forget_character();
+            self.windows.forget_character();
+        }
+        // Explore mode has a screen of its own, and its end goes back to the screens before it.
+        if state.explore.is_some() {
+            self.screen = Screen::Explore;
+        } else if self.screen == Screen::Explore {
+            self.screen = Screen::Worlds;
+        }
+        // The screen follows the game: the world is up once the player is in it.
+        if state.in_world && self.screen != Screen::Game {
+            self.screen = Screen::Game;
+        }
+        if !state.in_world && self.screen == Screen::Game && state.connected {
+            self.screen = Screen::Lobby;
+        }
+        // With the screens before any world: the world list while no session is up, character
+        // select once one is.
+        if self.front_door.is_some() && !state.in_world && state.explore.is_none() {
+            if !state.connected && !state.disconnected {
+                self.screen = Screen::Worlds;
+            } else if self.screen == Screen::Worlds {
+                self.screen = Screen::Lobby;
+            }
+        }
+        match self.screen {
+            Screen::Worlds => {
+                let view = self.front_door.clone().unwrap_or_default();
+                // The screen is under the Settings window: the pointer over it is not over them.
+                let occluders = std::mem::replace(
+                    &mut ctx.input.occluders,
+                    self.windows
+                        .rects(scale)
+                        .into_iter()
+                        .map(|(_, r)| r)
+                        .collect(),
+                );
+                let asked = self.worlds.frame(
+                    &mut p,
+                    &mut ctx,
+                    &view,
+                    &mut self.front_door_requests,
+                    &mut out,
+                );
+                ctx.input.occluders = occluders;
+                if asked.settings {
+                    self.windows.open(panels::WindowId::Options, self.time);
+                }
+                if self.windows.is_open(panels::WindowId::Options) {
+                    self.windows.options_page.scale = self.options.scale;
+                    self.windows.options_page.window = screen;
+                    self.windows.frame(&mut p, &mut ctx, state, &mut out);
+                    self.windows
+                        .options_questions(&mut p, &mut ctx, state, &mut out);
+                }
+            }
+            Screen::Explore => {
+                if let Some(view) = &state.explore {
+                    let back = if self.front_door.is_some() {
+                        "Back to the Worlds"
+                    } else {
+                        "Quit"
+                    };
+                    explore::frame(&mut p, &mut ctx, view, back, &mut out.explore);
+                }
+                if self.windows.is_open(panels::WindowId::Options) {
+                    self.windows.frame(&mut p, &mut ctx, state, &mut out);
+                }
+            }
+            Screen::Lobby | Screen::Entering | Screen::Creation => {
+                // The plugin windows over the screen stand over its controls; their HUDs do not.
+                let occluders = std::mem::replace(
+                    &mut ctx.input.occluders,
+                    self.windows.plugins.pregame_over().to_vec(),
+                );
+                let from = ctx.input.nav.targets.len();
+                self.pregame.front_door = self.front_door.is_some();
+                self.pregame.frame(
+                    &mut self.screen,
+                    &mut p,
+                    &mut ctx,
+                    state,
+                    &self.options,
+                    &mut out,
+                );
+                ctx.input.occluders = occluders;
+                let game: Vec<crate::draw::Rect> = ctx.input.nav.targets
+                    [from.min(ctx.input.nav.targets.len())..]
+                    .iter()
+                    .map(|t| t.rect)
+                    .collect();
+                self.windows.plugins.pregame(&mut p, &mut ctx, &game);
+            }
+            Screen::Game => {
+                // A modal box takes this frame's presses, keys and typing before anything under
+                // it: they are held back from the HUD and the windows until the box's turn.
+                // While the key bindings page waits for a key, every key is the game's: the input
+                // manager hands it to the page.
+                if state
+                    .key_bindings
+                    .as_ref()
+                    .and_then(|k| k.capture.as_ref())
+                    .is_some_and(|c| c.question.is_none())
+                {
+                    ctx.input.keys.clear();
+                    ctx.input.chars.clear();
+                }
+                let modal = self.hud.log_out_open()
+                    || state.prompts.iter().any(|p| p.modal)
+                    || self.windows.options_modal(state)
+                    || self.windows.questions_open();
+                let held = modal.then(|| {
+                    (
+                        std::mem::take(&mut ctx.input.pressed),
+                        std::mem::take(&mut ctx.input.keys),
+                        std::mem::take(&mut ctx.input.chars),
+                    )
+                });
+                // The game's boxes are drawn last, over everything: a press on one is the box's,
+                // and nothing drawn under it may take it first.
+                let (mx, my) = ctx.input.mouse;
+                let on_a_box = !modal
+                    && state.prompts.iter().enumerate().any(|(i, prompt)| {
+                        pregame::dialog_rect(&p, &prompt.text, i).contains(mx, my)
+                    });
+                let held_press = on_a_box.then(|| std::mem::take(&mut ctx.input.pressed));
+                self.hud.other_text_focus = self.windows.has_text_focus();
+                // The plugins' windows open, closed and sized as the plugins have them; a press
+                // off an open plugin choice's list closes it before anything under it sees it.
+                self.windows.follow_plugins(&p, &ctx);
+                self.windows.plugins.ui.begin(&p, &mut ctx.kit);
+                // The HUD is under every window: the pointer over a window is not over it.
+                ctx.input.occluders = self
+                    .windows
+                    .rects(scale)
+                    .into_iter()
+                    .map(|(_, r)| r)
+                    .chain(self.windows.pad_box)
+                    .chain(self.hud.pad_menu_rect)
+                    .collect();
+                // The log window's popped-out tabs are over the HUD too.
+                ctx.input.occluders.extend(self.hud.log.popped_rects());
+                ctx.input.occluders.extend(self.hud.log.menu_rect());
+                // An open plugin choice's list is over it too. A plugin's HUD is not: the HUD's
+                // own elements and controls take the pointer under one.
+                ctx.input
+                    .occluders
+                    .extend(self.windows.plugins.ui.choice_rect(&p));
+                // The plugins' labels in the world, under the whole HUD.
+                self.windows.plugins.labels(&mut p);
+                self.hud.plugin_radar = self.windows.plugins.frame.marks.radar.clone();
+                self.hud.screen_middle = p.screen.0 / 2.0;
+                let hud_from = ctx.input.nav.targets.len();
+                self.hud
+                    .pad_world(&mut ctx, state, &mut self.windows, &mut out);
+                self.hud
+                    .game_keys(&mut ctx, state, &mut self.windows, &mut out);
+                self.hud
+                    .frame(&mut p, &mut ctx, state, &mut self.windows, &mut out);
+                self.hud.alt_ring(&mut p, &ctx, state);
+                // The plugins' HUDs, bar and arrow: over the HUD's own elements and under every
+                // window.
+                let hud_occluders = std::mem::take(&mut ctx.input.occluders);
+                ctx.input.occluders = self
+                    .windows
+                    .rects(scale)
+                    .into_iter()
+                    .map(|(_, r)| r)
+                    .chain(self.windows.pad_box)
+                    .chain(self.hud.pad_menu_rect)
+                    .chain(self.windows.plugins.ui.choice_rect(&p))
+                    .collect();
+                let editing = self.windows.is_open(panels::WindowId::Layout);
+                // The HUD's own elements as drawn this frame, and its controls.
+                let game: Vec<crate::draw::Rect> = self
+                    .hud
+                    .layout
+                    .outlines
+                    .iter()
+                    .filter(|(name, _)| !crate::ui::layout::is_plugin_hud(name))
+                    .map(|(_, r)| *r)
+                    .chain(
+                        ctx.input.nav.targets[hud_from.min(ctx.input.nav.targets.len())..]
+                            .iter()
+                            .map(|t| t.rect),
+                    )
+                    .collect();
+                self.windows
+                    .plugins
+                    .huds(&mut p, &mut ctx, &mut self.hud.layout, editing, &game);
+                ctx.input.occluders = hud_occluders;
+                self.windows.spell_tab = self.hud.spell_tab();
+                self.windows.options_page.scale = self.options.scale;
+                self.windows.options_page.window = screen;
+                self.windows.options_page.orbit = self.options.orbit;
+                self.windows.options_page.pad = self.options.pad;
+                self.windows.options_page.minimap_rotates = self.options.minimap_rotates;
+                self.hud.minimap_rotates = self.options.minimap_rotates;
+                self.hud.spell_rows = self.options.spell_rows;
+                self.hud.status_style = self.options.status_style;
+                self.windows.options_page.status_style = self.options.status_style;
+                self.windows
+                    .options_page
+                    .chat_tabs
+                    .clone_from(&self.options.chat_tabs);
+                self.hud.log.tab_names.clone_from(&self.options.chat_tabs);
+                self.windows.options_page.chat_opacity = self.options.chat_opacity;
+                self.hud.log.opacity = self.options.chat_opacity;
+                self.hud.log.popped_saved = self.options.chat_popped;
+                self.hud.log.sizes_saved = self.options.chat_sizes;
+                self.hud.log.editing = self.windows.is_open(panels::WindowId::Layout);
+                // The log window's popped-out tabs and its menus are over the HUD and under every
+                // window: the pointer over a window is not over them.
+                ctx.input.occluders = self
+                    .windows
+                    .rects(scale)
+                    .into_iter()
+                    .map(|(_, r)| r)
+                    .chain(self.windows.pad_box)
+                    .chain(self.hud.pad_menu_rect)
+                    .collect();
+                // The HUD Layout window and the outlines it moves are over them too.
+                let layout = self.hud.layout_rects(&self.windows, scale, p.screen);
+                let windows_only = ctx.input.occluders.len();
+                ctx.input.occluders.extend(layout);
+                self.hud.log.overlays(&mut p, &mut ctx, state, &mut out);
+                ctx.input.occluders.truncate(windows_only);
+                self.hud.layout_overlay(&mut p, &mut ctx, &mut self.windows);
+                if let Some(n) = self.hud.rows_saved.take() {
+                    out.settings.push(("spell-rows".into(), n.to_string()));
+                }
+                self.windows.party_bars = !self.hud.retail_hidden.contains("party");
+                self.windows.frame(&mut p, &mut ctx, state, &mut out);
+                // An open plugin choice's list and a plugin control's tooltip, over every window.
+                ctx.input.occluders.clear();
+                self.windows.plugins.ui.top(&mut p, &mut ctx.kit);
+                self.hud.pad_menu(&mut p, &mut ctx, &mut self.windows);
+                if let Some(text) = out.chat_prefill.take() {
+                    self.hud.open_chat(text);
+                }
+                self.hud.frame_overlays(&mut p, &mut ctx, state, &mut out);
+                if let Some((pressed, keys, chars)) = held {
+                    ctx.input.pressed = pressed;
+                    ctx.input.keys = keys;
+                    ctx.input.chars = chars;
+                }
+                if let Some(pressed) = held_press {
+                    ctx.input.pressed = pressed;
+                }
+                prompts(&mut p, &mut ctx, state, &mut out);
+                self.hud.log_out_question(&mut p, &mut ctx, &mut out);
+                self.windows
+                    .options_questions(&mut p, &mut ctx, state, &mut out);
+                self.windows.questions(&mut p, &mut ctx, state, &mut out);
+                let part = self.windows.part_of_stack();
+                drag_step(&mut p, &mut ctx, &self.hud.drop_slots, part, &mut out);
+                if let Some((slot, bind)) = out.cross_bind.take() {
+                    self.hud.cross.assign(slot, Some(bind));
+                }
+                if let Some((spell, from, to)) = out.spell_place.take() {
+                    let placed = self.hud.place_spell(state, spell, from, to);
+                    out.requests.extend(placed);
+                }
+                if let Some(bind) = out.bind_to_hotbar.take() {
+                    self.hud.cross.binding = Some(bind);
+                }
+                // A slot's plugin command goes to the plugin as the player's own.
+                for (plugin, verb) in std::mem::take(&mut out.plugin_commands) {
+                    self.windows
+                        .plugins
+                        .push_input(pyreal_plugin_ui::Input::Command { plugin, verb });
+                }
+            }
+        }
+        if state.disconnected {
+            let text = state
+                .failure
+                .clone()
+                .unwrap_or_else(|| "The connection to the server was lost.".to_owned());
+            // With the screens before any world, back to the world list; else the run ends.
+            let way = if self.front_door.is_some() {
+                "OK"
+            } else {
+                "Exit"
+            };
+            if pregame::message_box(&mut p, &mut ctx, "Unable to Continue", &text, &[way]).is_some()
+            {
+                if self.front_door.is_some() {
+                    self.front_door_requests
+                        .push(crate::front_door::FrontDoorRequest::LogOut);
+                } else {
+                    out.quit = true;
+                }
+            }
+        }
+        // The plugin host's own tier over everything: its windows, then its question.
+        ctx.input.occluders.clear();
+        if let Some(pressed) = held_for_host_window {
+            ctx.input.pressed = pressed;
+        }
+        if held_escape {
+            ctx.input.keys.push(pyreal_ui_kit::input::vk::ESCAPE);
+        }
+        let seat = &mut self.windows.plugins;
+        seat.host.windows(&mut p, &mut ctx.kit, &seat.frame.views);
+        seat.host
+            .ask(&mut p, &mut ctx.kit, state.host_question.as_ref());
+        self.host_buttons = if state.host_question.is_some() {
+            seat.host.asking.drawn.buttons.clone()
+        } else {
+            Vec::new()
+        };
+        if let Some(reply) = seat.host.take_reply() {
+            out.host_reply = Some(reply);
+        }
+        hud::pad::overlays(&mut p, &mut ctx);
+        self.drops = std::mem::take(&mut ctx.drops);
+        self.pointer_over_ui = ctx.hot || ctx.input.captured;
+        self.text_focus = ctx.input.text_focus;
+        // Escape is the interface's while it has something to close or let go of; otherwise it is
+        // the game's (cancel a use, let a power bar go).
+        self.wants_escape = self.screen != Screen::Game
+            || self.text_focus
+            || self.drag.is_some()
+            || state.prompts.iter().any(|p| p.modal)
+            || state.host_question.is_some()
+            || self.hud.wants_escape()
+            || self.windows.any_open()
+            || (self.screen == Screen::Game
+                && (hud::escape_deselects(state, false) || hud::escape_logs_out(state, false)));
+        out
+    }
+}
+
+/// The game's boxes: its messages, one OK each, and its question on screen, Yes or No, with how
+/// many more wait behind it.
+fn prompts(
+    p: &mut paint::Painter<'_>,
+    ctx: &mut kit::Ctx<'_>,
+    state: &game::GameState,
+    out: &mut Outcome,
+) {
+    // The pad's A says yes to the question on top.
+    if std::mem::take(&mut ctx.input.pad.confirm) {
+        if let Some(prompt) = state.prompts.last() {
+            out.answers.push((prompt.id, true));
+        }
+    }
+    for (i, prompt) in state.prompts.iter().enumerate() {
+        let (title, buttons): (&str, &[&str]) = if prompt.question {
+            ("Confirm", &["Yes", "No"])
+        } else {
+            ("Notice", &["OK"])
+        };
+        let title = if prompt.waiting > 0 {
+            format!("{title} ({} more waiting)", prompt.waiting)
+        } else {
+            title.to_owned()
+        };
+        if let Some(b) = pregame::dialog_box(p, ctx, &title, &prompt.text, buttons, prompt.modal, i)
+        {
+            out.answers.push((prompt.id, b == 0));
+        }
+    }
+}
+
+/// The game's actions the interface answers itself, rather than the game: the shortcut keys and
+/// the make-shortcut key, the windows' keys, and logging out and quitting.
+#[must_use]
+pub fn takes_action(action: u32) -> bool {
+    pyreal_ui_logic::shortcuts::shortcut_action(action).is_some()
+        || hud::spell_row_slot(action).is_some()
+        || hud::window_for_action(action).is_some()
+        || chat::is_chat_action(action)
+        || action == hud::ACTION_LOG_OUT
+        || action == hud::ACTION_QUIT
+        || action == hud::ACTION_USE
+        || action == hud::ACTION_NEXT_MONSTER
+        || action == hud::ACTION_PREVIOUS_MONSTER
+}
+
+/// The requests that put `spell_id` at `index` on a tab holding `rows`. A spell the tab already
+/// holds moves there instead of appearing twice; a slot after its old place is one earlier once
+/// it has left.
+pub(crate) fn place_spell(rows: &[u32], spell_id: u32, index: usize, tab: usize) -> Vec<UiRequest> {
+    let index = i32::try_from(index).unwrap_or(i32::MAX);
+    pyreal_client_contract::spellbook::FavoritePlan::new(rows, rows, spell_id, index, true)
+        .map_or_else(Vec::new, |plan| plan.requests(spell_id, tab))
+}
+
+/// A thing carried, drawn at `(x, y)`: its own picture alone, with no slot under it, lifted a
+/// little off where it is held.
+pub(crate) fn draw_lifted(
+    p: &mut paint::Painter<'_>,
+    icon: &crate::art::Sprite,
+    (x, y): (f32, f32),
+) {
+    let k = p.scale;
+    let s = 40.0 * k;
+    let r = crate::draw::Rect::new(x - s / 2.0 - 4.0 * k, y - s / 2.0 - 6.0 * k, s, s);
+    p.sprite(icon, r, crate::draw::WHITE);
+}
+
+/// The drag's frame: it becomes a drag once the pointer moves; while it is one its icon follows
+/// the pointer; and the release either clicks what was pressed or drops what is in hand.
+fn drag_step(
+    p: &mut paint::Painter<'_>,
+    ctx: &mut kit::Ctx<'_>,
+    drop_slots: &[(crate::draw::Rect, u32)],
+    part: Option<(pyreal_primitives::ObjectId, u32, u32)>,
+    out: &mut Outcome,
+) {
+    let Some(drag) = ctx.drag.as_mut() else {
+        return;
+    };
+    // The kit's share of the context, beside what is in hand.
+    let (mx, my) = ctx.kit.input.mouse;
+    if !drag.active
+        && ctx.kit.input.down[0]
+        && ((mx - drag.origin.0).abs() > DRAG_THRESHOLD
+            || (my - drag.origin.1).abs() > DRAG_THRESHOLD)
+    {
+        drag.active = true;
+        // A shortcut picked up leaves its slot at once, as the game's own bar does; a drop that
+        // lands nowhere leaves it removed.
+        if drag.from_shortcut.is_some() {
+            out.requests.push(UiRequest::RemoveShortcut(drag.item));
+        }
+    }
+    if drag.active {
+        ctx.kit.input.captured = true;
+        if let Some(icon) = drag_picture(p, drag) {
+            draw_lifted(p, &icon, (mx, my));
+        }
+    }
+    if ctx.input.down[0] {
+        return;
+    }
+    let Some(drag) = ctx.drag.take() else {
+        return;
+    };
+    if !drag.active {
+        out.requests.extend(drag.on_click);
+        return;
+    }
+    let slot = drop_slots
+        .iter()
+        .find(|(r, _)| r.contains(mx, my))
+        .map(|(_, s)| *s);
+    // A drop on a cross hotbar slot binds what was dropped there.
+    if let Some((_, Some(kit::Drop::CrossSlot(index)))) =
+        ctx.drops.iter().rev().find(|(r, _)| r.contains(mx, my))
+    {
+        let bind = match (drag.command, drag.stance, drag.spell) {
+            (Some(c), _, _) => hud::cross::CrossBind::Command(c),
+            (None, Some(act), _) => hud::cross::CrossBind::Power(act),
+            (None, None, Some(id)) => hud::cross::CrossBind::Spell(id),
+            (None, None, None) => hud::cross::CrossBind::Item(drag.item),
+        };
+        out.cross_bind = Some((*index, bind));
+        return;
+    }
+    // A stance control or a plugin's command lands nowhere but on a cross hotbar slot.
+    if drag.stance.is_some() || drag.command.is_some() {
+        return;
+    }
+    // A spell lands in the spell bar slot it is dropped on; one picked up from the bar and
+    // dropped anywhere else leaves it. The HUD keeps where each stands.
+    if let Some(spell_id) = drag.spell {
+        let to = match ctx.drops.iter().rev().find(|(r, _)| r.contains(mx, my)) {
+            Some((_, Some(kit::Drop::SpellSlot { tab, index }))) => Some((*tab, *index)),
+            _ => None,
+        };
+        if to.is_some() || drag.from_spell_slot.is_some() {
+            out.spell_place = Some((spell_id, drag.from_spell_slot, to));
+        }
+        return;
+    }
+    // A drop on a window: its slot, its container, or nothing.
+    let zone = ctx
+        .drops
+        .iter()
+        .rev()
+        .find(|(r, _)| r.contains(mx, my))
+        .map(|(_, t)| *t);
+    if slot.is_none() {
+        if let Some(target) = zone {
+            if let (Some(target), None) = (target, drag.from_shortcut) {
+                let part = part
+                    .filter(|&(id, split, max)| id == drag.item && split < max)
+                    .map(|(_, split, max)| (split, max));
+                out.requests.extend(target.request(drag.item, part));
+                // What was dropped is selected, wherever it went.
+                out.requests.push(UiRequest::Select(drag.item));
+            }
+            return;
+        }
+    }
+    match (slot, drag.from_shortcut) {
+        (Some(slot), Some(from)) => out.requests.push(UiRequest::DragDrop {
+            item: drag.item,
+            target: pyreal_client_contract::view::DropTarget::ShortcutAlias {
+                slot,
+                from: i32::try_from(from).unwrap_or(-1),
+            },
+        }),
+        (Some(slot), None) => out.requests.push(UiRequest::DragDrop {
+            item: drag.item,
+            target: pyreal_client_contract::view::DropTarget::ShortcutSlot(slot),
+        }),
+        (None, None) if !ctx.hot => {
+            out.requests.push(UiRequest::DragDrop {
+                item: drag.item,
+                target: pyreal_client_contract::view::DropTarget::World,
+            });
+            out.requests.push(UiRequest::Select(drag.item));
+        }
+        _ => {}
+    }
+}
+
+/// What follows the pointer while `drag` is in hand: an item's drag picture, a spell's composed
+/// icon, or the bare icon.
+fn drag_picture(p: &paint::Painter<'_>, drag: &Drag) -> Option<crate::art::Sprite> {
+    if let Some(item) = &drag.look {
+        if let Some(s) = p.art.ac_item_drag(item) {
+            return Some(s);
+        }
+    }
+    if let (Some(icon), Some((power, bitfield))) = (drag.icon, drag.spell_look) {
+        if let Some(s) = p.art.ac_spell(icon, power, bitfield) {
+            return Some(s);
+        }
+    }
+    if drag.component {
+        return drag.icon.and_then(|d| p.art.ac_component(d));
+    }
+    drag.icon.and_then(|d| p.art.ac_icon(d))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What is carried is drawn as its picture alone: no slot, frame or shadow under it, even
+    /// with the interface's own slot art there to draw one.
+    #[test]
+    fn a_carried_thing_is_its_picture_alone_with_no_slot_under_it() {
+        let pieces = crate::pieces::Pieces::built_in();
+        let art = crate::art::Art::new(std::sync::Arc::new(pieces));
+        assert!(
+            art.has_piece("slot.empty"),
+            "a slot to draw, were one drawn"
+        );
+        let mut list = crate::draw::DrawList::default();
+        let mut p = paint::Painter {
+            list: &mut list,
+            art: &art,
+            scale: 1.0,
+            screen: (800.0, 600.0),
+            fade: 1.0,
+        };
+        let icon = crate::art::Sprite {
+            tex: 7_777,
+            src: crate::draw::Rect::new(0.0, 0.0, 32.0, 32.0),
+            w: 32.0,
+            h: 32.0,
+            scale: 1.0,
+        };
+        draw_lifted(&mut p, &icon, (400.0, 300.0));
+        let drawn: Vec<_> = list.quads.iter().map(|q| q.tex).collect();
+        assert_eq!(drawn, [Some(7_777)], "the picture and nothing else");
+    }
+}

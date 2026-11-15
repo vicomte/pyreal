@@ -1,0 +1,81 @@
+[package]
+name = "pyreal-client-runtime"
+description = "The client with no UI, no device and no window: the application state machine, its frame loop and everything the frame needs that is not drawing or an OS call."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The headless half of the client.
+#
+# The rule this crate exists to make checkable is a dependency rule: `cargo tree -e normal -p
+# pyreal-client-runtime` lists no crate under `pyreal/client/crates/` (the renderers, the interface,
+# the world drawing, the clipboard and the console) and none of `winit`, `windows`, `cpal` or `ash`.
+# Nothing here draws, holds a device, owns a window or makes an OS call; `pyreal-client` keeps all
+# four.
+[features]
+# Opt-in fixture controls and observations.
+test-support = ["pyreal-client-model/test-support", "pyreal-client-net/test-support"]
+# Tier switch only: no code is gated on it. The lib tests that read the retail dats under
+# $PYREAL_TEST_DAT_DIR are ignored without it, so a checkout with no dats tests green.
+retail-dats = []
+
+[dependencies]
+pyreal-presentation.workspace = true
+pyreal-rules.workspace = true
+# `host-nls`: platform/text.rs -- the host's ANSI code page. See below.
+pyreal-primitives = { workspace = true, features = ["host-nls"] }
+# The shared object model and chat composition used by runtime receivers.
+pyreal-client-model.workspace = true
+# net.rs -- the UDP transport and the session above it. `ClientNetwork` hands the client session
+# (`pyreal_client_net::client_session`) a socket and reads nothing else.
+pyreal-client-net = { workspace = true, default-features = true }
+pyreal-transport.workspace = true
+pyreal-protocol.workspace = true
+pyreal-animation.workspace = true
+# The dat -> physics / animation adapters (`anim_assets`, `land_source`,
+# `env_cells`, `landblock`, the setup geometry, the physics-setup facts).
+# Re-exported at their old paths here.
+pyreal-world-data.workspace = true
+pyreal-assets.workspace = true
+pyreal-dat.workspace = true
+# The landscape's block window, which the world streamer keeps resident around the viewer. The
+# drawing side builds each slot's mesh and reads the same window.
+pyreal-landscape.workspace = true
+# The landscape's geometry and static contents: the world builder places the same scenery and
+# statics over the same landblock meshes the drawing uses.
+pyreal-terrain.workspace = true
+# platform/text.rs -- the host's ANSI code page -- is `pyreal-primitives`' `text` module
+# with its `host-nls` feature, enabled above: the audited kernel32 NLS boundary, which names no
+# other crate. It is the same kind of host call `net.rs`'s socket and `assets.rs`'s dat reads
+# already make here, and this crate is the application side that is allowed to switch it on.
+# `character.rs` drives the collision and movement engine and the motion tables; it names no
+# device: `pyreal-physics` is `pyreal-primitives` alone.
+pyreal-physics.workspace = true
+# nav_proof.rs -- `--nav-proof`'s route planner.
+pyreal-navigation.workspace = true
+# `camera.rs`'s `apply_preference_requests` filters `UiRequest::SetPreference`, which is
+# `pyreal-client-contract`'s type; `dereth_ui_screens::{PrefValue, UiRequest}` are re-exports of
+# these.
+pyreal-client-contract.workspace = true
+# `teleport.rs` names the two portal sound ids. `pyreal-audio` is the mixer and the
+# decoders; the device is `cpal`, which is `pyreal-desktop`'s dependency and not this crate's.
+pyreal-audio.workspace = true
+# published.rs -- the world's status document names what its server publishes.
+serde_json.workspace = true
+thiserror.workspace = true
+# The runtime's progress lines, problems and frame-loop spans. A facade only: whoever runs the
+# runtime (the client, the headless binary) installs the subscriber that receives them.
+tracing.workspace = true
+# object_identity.rs -- the cache of which ids two eras' files share as the same object is keyed
+# by both files' hashes.
+blake3.workspace = true
+
+[dev-dependencies]
+pyreal-client-runtime = { path = ".", default-features = false, features = ["test-support"] }
+pyreal-client-net = { workspace = true, default-features = true, features = ["test-support"] }
+pyreal-dat = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

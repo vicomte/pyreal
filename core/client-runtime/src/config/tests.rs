@@ -1,0 +1,1013 @@
+use super::*;
+
+#[test]
+fn connected_clients_work_out_the_object_identity_in_the_background_unless_told_not_to() {
+    let mut cfg = Config::default();
+    assert_eq!(cfg.scene_config().object_identity_budget, None);
+    assert!(cfg.scene_config().object_identity_cache);
+    cfg.account = "account".into();
+    cfg.host = "127.0.0.1".into();
+    assert_eq!(
+        cfg.scene_config().object_identity_budget,
+        Some(crate::app::IDENTITY_BACKGROUND_BUDGET)
+    );
+    cfg.object_identity_ms = Some(0);
+    assert_eq!(cfg.scene_config().object_identity_budget, None);
+    cfg.object_identity_ms = Some(5);
+    cfg.connect = false;
+    assert_eq!(
+        cfg.scene_config().object_identity_budget,
+        Some(std::time::Duration::from_millis(5))
+    );
+    let mut parsed = Config::default();
+    parsed
+        .parse_args(&["--object-identity-ms".to_string(), "2".to_string()])
+        .expect("the switch parses");
+    assert_eq!(parsed.object_identity_ms, Some(2));
+}
+
+#[test]
+fn connected_scenes_stream_unless_the_budget_is_explicitly_disabled() {
+    let mut cfg = Config::default();
+    assert_eq!(cfg.scene_config().stream_budget, None);
+    cfg.account = "account".into();
+    cfg.host = "127.0.0.1".into();
+    assert_eq!(
+        cfg.scene_config().stream_budget,
+        Some(std::time::Duration::from_millis(4))
+    );
+    cfg.stream_budget_ms = Some(0);
+    assert_eq!(cfg.scene_config().stream_budget, None);
+    cfg.stream_budget_ms = Some(9);
+    assert_eq!(
+        cfg.scene_config().stream_budget,
+        Some(std::time::Duration::from_millis(9))
+    );
+    cfg.connect = false;
+    assert_eq!(
+        cfg.scene_config().stream_budget,
+        Some(std::time::Duration::from_millis(9))
+    );
+    cfg.stream_budget_ms = None;
+    assert_eq!(cfg.scene_config().stream_budget, None);
+}
+
+#[test]
+fn scene_startup_keeps_profile_values_and_each_terrain_mode() {
+    let mut cfg = Config {
+        landblock: 0xA9B4,
+        start_cell: Some(0xA9B4_0100),
+        land_radius: 3,
+        scenery_radius: 2,
+        time_of_day: Some(0.25),
+        ..Config::default()
+    };
+    cfg.render.field_of_view = 75.0;
+    for (mode, merge, splat) in [
+        (crate::render_prefs::TerrainBlending::Cpu, false, false),
+        (crate::render_prefs::TerrainBlending::Gpu, true, false),
+        (crate::render_prefs::TerrainBlending::Splat, true, true),
+    ] {
+        cfg.terrain_blending = mode;
+        let scene = cfg.scene_config();
+        assert_eq!(scene.landblock, 0xA9B4);
+        assert_eq!(
+            scene.start_cell,
+            Some(pyreal_primitives::CellId(0xA9B4_0100))
+        );
+        assert_eq!((scene.land_radius, scene.scenery_radius), (3, 2));
+        assert_eq!(scene.time_of_day, Some(0.25));
+        assert_eq!(scene.render, cfg.render);
+        assert_eq!(scene.camera, cfg.camera);
+        assert_eq!(scene.mouse_look, cfg.mouse_look);
+        assert_eq!(
+            (scene.gpu_terrain_merge, scene.terrain_splat),
+            (merge, splat)
+        );
+    }
+}
+
+fn parse(args: &[&str]) -> Result<Config, ConfigError> {
+    let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+    Config::from_args_and_prefs_with(&argv, &Preferences::default())
+}
+
+/// The farther landscape draw distances reach the presentation's far terrain, while the runtime's
+/// own landscape window stays at Extreme's at most.
+#[test]
+fn a_draw_distance_past_extreme_keeps_the_runtimes_window_at_extremes() {
+    let read = |name: &str| {
+        let text = format!("[Render]\nLandscapeDrawDistance={name}\n");
+        let c = Config::from_args_and_prefs_with(&[], &Preferences::parse(&text)).expect("parses");
+        (c.land_radius, c.render.landscape_draw_distance)
+    };
+    assert_eq!(read("High"), (11, 11));
+    assert_eq!(read("Extreme"), (25, 25));
+    assert_eq!(read("Horizon"), (MOST_LAND_RADIUS, 127));
+}
+
+/// The world's objects draw with the world's own look: an older profile's `[Render] Ground`, `Sky`
+/// and `Objects` are read as nothing, and only `--object-visuals` (a developer's) chooses another
+/// era's; either older style is the one older look.
+#[test]
+fn the_object_visuals_come_from_the_switch_alone() {
+    use crate::render_prefs::RegionStyle;
+    let objects = |args: &[&str], text: &str| {
+        let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        let c = Config::from_args_and_prefs_with(&argv, &Preferences::parse(text)).expect("parses");
+        (c.scene_config().render.objects, c.object_visuals)
+    };
+    assert_eq!(objects(&[], ""), (None, None));
+    assert_eq!(
+        objects(
+            &[],
+            "[Render]\nObjects=Legacy\nGround=PaletteShift\nSky=Legacy\n"
+        ),
+        (None, None)
+    );
+    assert_eq!(
+        objects(
+            &["--object-visuals", "modern"],
+            "[Render]\nObjects=Legacy\n"
+        ),
+        (Some(RegionStyle::Late), Some(Some(RegionStyle::Late)))
+    );
+    assert_eq!(
+        objects(&["--object-visuals", "legacy"], ""),
+        (
+            Some(RegionStyle::LegacyHardware),
+            Some(Some(RegionStyle::LegacyHardware))
+        )
+    );
+    let argv = vec!["--object-visuals".to_string(), "sideways".to_string()];
+    assert!(Config::from_args_and_prefs_with(&argv, &Preferences::parse("")).is_err());
+}
+
+#[test]
+fn the_classic_dat_dir_switch_names_where_the_older_files_are_and_is_optional() {
+    let c = parse(&["--dat-dir", "eor", "--classic-dat-dir", "feb2005"]).expect("parses");
+    assert_eq!(c.dat_dir, PathBuf::from("eor"));
+    assert_eq!(c.classic_dat_dir, Some(PathBuf::from("feb2005")));
+    assert_eq!(parse(&[]).expect("parses").classic_dat_dir, None);
+    let c = parse(&["--overlay-dat-dir", "worlds/one"]).expect("parses");
+    assert_eq!(c.overlay_dat_dir, Some(PathBuf::from("worlds/one")));
+    let c = parse(&["--world-base", "Modern"]).expect("parses");
+    assert_eq!(c.world_base, Some(pyreal_primitives::ContainerEra::Modern));
+    let c = parse(&["--world-base", "classic"]).expect("parses");
+    assert_eq!(c.world_base, Some(pyreal_primitives::ContainerEra::Classic));
+    assert!(parse(&["--world-base", "eor"]).is_err());
+    for retired in ["--world-dat-dir", "--legacy-dat-dir"] {
+        assert!(parse(&[retired, "x"]).is_err(), "{retired}");
+    }
+}
+
+#[test]
+fn the_logon_version_switch_replaces_1802_and_refuses_what_cannot_be_sent() {
+    assert_eq!(parse(&[]).expect("parses").logon_version, "1802");
+    assert_eq!(
+        parse(&["--logon-version", "c118"])
+            .expect("parses")
+            .logon_version,
+        "c118"
+    );
+    for bad in ["", " ", "c 118", "c118\u{e9}"] {
+        assert!(parse(&["--logon-version", bad]).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn the_world_profile_switch_takes_a_compiled_profile_and_refuses_any_other() {
+    let none = parse(&[]).expect("parses");
+    assert!(none.world_rules.is_end_of_retail());
+    let c = parse(&["--world-profile", "classicace-customdm"]).expect("parses");
+    assert_eq!(c.world_rules.burden_strength_bonus, 40);
+    assert_eq!(c.world_rules.run_scale, 1.5);
+    assert_eq!(
+        c.world_rules.profile.as_deref(),
+        Some("classicace-customdm")
+    );
+    let i = parse(&["--world-profile", "classicace-infiltration"]).expect("parses");
+    assert_eq!(i.world_rules.burden_strength_bonus, 0);
+    assert!(!i.world_rules.recklessness_marker);
+    let e = parse(&["--world-profile", "nowhere"]).unwrap_err().detail;
+    assert!(
+        e.contains("classicace-customdm"),
+        "names the known ones: {e}"
+    );
+}
+
+/// `--set-at` and `--capture-at` collect a frame and what to do there, in order.
+#[test]
+fn a_run_can_set_a_preference_and_take_a_picture_part_way_through() {
+    let c = parse(&[
+        "--capture-at",
+        "4:before.png",
+        "--set-at",
+        "5:Render.Ground=PaletteShift",
+        "--capture-at",
+        "9:after.png",
+    ])
+    .expect("parses");
+    assert_eq!(c.set_at, [(5, "Render.Ground=PaletteShift".to_string())]);
+    assert_eq!(
+        c.capture_at,
+        [
+            (4, PathBuf::from("before.png")),
+            (9, PathBuf::from("after.png"))
+        ]
+    );
+    assert!(parse(&["--set-at", "five:Render.Ground=PaletteShift"]).is_err());
+    assert!(parse(&["--set-at", "5:Render.Ground"]).is_err());
+    assert!(parse(&["--capture-at", "5:"]).is_err());
+}
+
+/// `--action-at` collects a frame and an action named as a key map names it; a name no action
+/// has is refused.
+#[test]
+fn a_run_can_press_an_action_part_way_through() {
+    let c = parse(&["--action-at", "7:ToggleAllegiancePanel"]).expect("parses");
+    assert_eq!(c.action_at, [(7, 0x1000_000E)]);
+    assert!(parse(&["--action-at", "7:NoSuchAction"]).is_err());
+    assert!(parse(&["--action-at", "seven:ToggleAllegiancePanel"]).is_err());
+}
+
+/// `--era` names the era the server's world plays; an unknown name is refused.
+#[test]
+fn the_era_switch_names_the_servers_era() {
+    let c = parse(&["--era", "Infiltration"]).expect("parses");
+    assert_eq!(c.era, Some(pyreal_primitives::EraId::Infiltration));
+    assert_eq!(parse(&[]).expect("parses").era, None);
+    assert!(parse(&["--era", "tod"]).is_err());
+}
+
+/// `--era-features` names the systems the server's world has; a system this client does not
+/// know is skipped, and a malformed list is refused.
+#[test]
+fn the_era_features_switch_names_the_servers_systems() {
+    let c = parse(&[
+        "--era-features",
+        "trade=false,aetheria=true,spell_credits=true",
+    ])
+    .expect("parses");
+    assert_eq!(c.era_features.get("trade"), Some(false));
+    assert_eq!(c.era_features.get("aetheria"), Some(true));
+    assert_eq!(c.era_features.get("chess"), None);
+    assert!(parse(&[]).expect("parses").era_features.is_empty());
+    assert!(parse(&["--era-features", "trade"]).is_err());
+}
+
+/// `--era-features` also takes the shared bitfield, as the launcher passes it: every system of
+/// its table is set, a first-table bitfield leaves the second table's systems to the era, and a
+/// newer table's systems past this client's are skipped.
+#[test]
+fn the_era_features_switch_takes_the_bitfield() {
+    use pyreal_primitives::{EraFeatures, EraId};
+    let c = parse(&["--era-features", "5:0002deffffffff00"]).expect("parses");
+    let f = c.era_features.apply(EraFeatures::NONE);
+    assert!(f.aetheria && !f.trade && f.housing && f.chess && !f.ratings);
+    assert!(f.pk_lite && f.lifestone_recall && f.item_enchantment_redirection);
+    assert!(f.spell_tabs && f.corpse_permissions && f.allegiance_name);
+    assert_eq!(c.era_features.iter().count(), EraFeatures::COUNT);
+    let second = parse(&["--era-features", "2:0002deff7f"]).expect("parses");
+    assert_eq!(
+        second.era_features.iter().count(),
+        EraFeatures::count_at_version(2)
+    );
+    assert_eq!(
+        second.era_features.get("spell_tabs"),
+        None,
+        "left to the era"
+    );
+    let old = parse(&["--era-features", "1:0002de"]).expect("parses");
+    assert_eq!(
+        old.era_features.iter().count(),
+        EraFeatures::count_at_version(1)
+    );
+    assert_eq!(old.era_features.get("pk_lite"), None, "left to the era");
+    let newer = parse(&["--era-features", "99:ffff5fffffffff32"]).expect("parses");
+    assert_eq!(
+        newer.era_features.apply(EraFeatures::NONE),
+        EraId::Eor.features()
+    );
+    assert!(parse(&["--era-features", "1:zz"]).is_err());
+    assert!(parse(&["--era-features", "0:ffff5f"]).is_err());
+}
+
+/// `--cast` names the spell a scripted world entry casts; it takes a spell id.
+#[test]
+fn the_cast_switch_names_the_spell_a_scripted_entry_casts() {
+    assert_eq!(parse(&["--cast", "35"]).expect("parses").cast, Some(35));
+    assert_eq!(parse(&[]).expect("parses").cast, None);
+    assert!(parse(&["--cast", "blood"]).is_err());
+}
+
+/// `--say` lines and `--use` targets are kept in the order given.
+#[test]
+fn the_say_switch_keeps_each_line_in_order() {
+    let c = parse(&["--say", "@level 2", "--say", "hello there"]).expect("parses");
+    assert_eq!(c.say, ["@level 2", "hello there"]);
+    assert!(parse(&[]).expect("parses").say.is_empty());
+    let argv: Vec<String> = ["--headless", "--say", "@level 2"]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let at = Config::from_args_and_prefs_at(&argv, Path::new(""))
+        .expect("parses")
+        .say;
+    assert_eq!(
+        at,
+        ["@level 2"],
+        "the command line is read twice, the line kept once"
+    );
+    let c = parse(&["--use", "0x7A9B0000", "--use", "closest", "--use", "logout"]).expect("parses");
+    assert_eq!(c.use_targets, ["0x7A9B0000", "closest", "logout"]);
+    assert!(parse(&["--use", "door"]).is_err());
+}
+
+// Oracle: the complete supported switch table and its per-switch behavior.
+#[test]
+fn the_documented_switches_parse_to_the_documented_values() {
+    let c = parse(&[
+        "-a",
+        "Ac01",
+        "-h",
+        "127.0.0.1",
+        "-p",
+        "19000",
+        "-q",
+        "9000",
+        "-language",
+        "English",
+        "-usemem",
+        "-u",
+        "Aren",
+        "-r",
+        "Aldis",
+        "-z",
+        "tkt",
+        "-vgpassword",
+        "pw",
+    ])
+    .expect("parses");
+    // "-a / -account -- the value is ... lower-cased in place with _strlwr."
+    assert_eq!(c.account, "ac01");
+    assert_eq!(c.host, "127.0.0.1");
+    assert_eq!(c.port, 19000);
+    assert_eq!(c.client_port, 9000);
+    assert_eq!(c.retail.language, "English");
+    assert!(c.retail.use_memory_manager);
+    assert_eq!(c.start_char, "Aren");
+    assert_eq!(c.create_char, "Aldis");
+    assert_eq!(c.retail.zone_ticket, "tkt");
+    assert_eq!(c.vg_password, "pw");
+}
+
+#[test]
+fn the_defaults_are_the_constructed_ones() {
+    let c = parse(&[]).expect("an empty command line is legal at this layer");
+    assert_eq!(c.port, 7304, "the client default port is 0x1C88");
+    assert_eq!(c.client_port, 0);
+    assert!(c.retail.read_only_dat_files, "read-only dats default on");
+    assert!(c.windowed, "windowed defaults on");
+    assert_eq!(
+        (c.width, c.height),
+        (800, 600),
+        "device initialization defaults to 800 by 600"
+    );
+    assert_eq!(
+        c.display.resolution, 0x0400_0300,
+        "the compiled-in default is 1024x768"
+    );
+    assert!(!c.display.full_screen, "the client starts in a window");
+    // The login path owns the account/host requirement; the parser only records values.
+    assert!(c.require_account_and_host().is_err());
+}
+
+// "-rodat -- the handler is read_only_dat_files = (value is the empty string). Bare -rodat
+// turns read-only dats **on**; -rodat <anything> (the launcher passes `off`) turns them
+// **off**. The text of the value is never examined, so `-rodat on` also *disables* read-only
+// mode."
+#[test]
+fn rodat_is_backwards_and_stays_backwards() {
+    assert!(parse(&["-rodat"]).unwrap().retail.read_only_dat_files);
+    assert!(
+        !parse(&["-rodat", "off"])
+            .unwrap()
+            .retail
+            .read_only_dat_files
+    );
+    assert!(!parse(&["-rodat", "on"]).unwrap().retail.read_only_dat_files);
+    // Value optional: a following switch is re-processed rather than consumed.
+    let c = parse(&["-rodat", "-usemem"]).unwrap();
+    assert!(c.retail.read_only_dat_files);
+    assert!(c.retail.use_memory_manager);
+}
+
+/// The log's three switches and its two preferences, with the command line winning.
+#[test]
+fn the_log_is_configured_by_switch_and_by_preference() {
+    let c = parse(&[]).unwrap();
+    assert_eq!(
+        (c.log_filter.as_deref(), c.log_file, c.log_spans),
+        (None, false, false)
+    );
+
+    let c = parse(&[
+        "--log",
+        "info,pyreal_client_runtime::frame=trace",
+        "--log-file",
+        "--log-spans",
+    ])
+    .unwrap();
+    assert_eq!(
+        c.log_filter.as_deref(),
+        Some("info,pyreal_client_runtime::frame=trace")
+    );
+    assert!(c.log_file && c.log_spans);
+    // `--log` takes a value; with none it is a parse error like any other required value.
+    assert!(parse(&["--log"]).is_err());
+
+    let p = Preferences::parse("[Log]\nLevel=debug\nFile=True\n");
+    let c = Config::from_args_and_prefs_with(&[], &p).unwrap();
+    assert_eq!((c.log_filter.as_deref(), c.log_file), (Some("debug"), true));
+    let argv = vec!["--log".to_string(), "warn".to_string()];
+    let c = Config::from_args_and_prefs_with(&argv, &p).unwrap();
+    assert_eq!(c.log_filter.as_deref(), Some("warn"));
+    // An empty preference is no preference.
+    let p = Preferences::parse("[Log]\nLevel=\n");
+    let c = Config::from_args_and_prefs_with(&[], &p).unwrap();
+    assert_eq!(c.log_filter, None);
+}
+
+#[test]
+fn a_logged_command_line_hides_the_account_password_and_tickets() {
+    let argv = [
+        "pyreal-client",
+        "-a",
+        "acct",
+        "-v",
+        "secret",
+        "-h",
+        "host:9000",
+        "--vgpassword",
+        "again",
+        "/z",
+        "ticket",
+        "-glsticketdirect",
+        "gls",
+        "-ACCOUNT",
+        "loud",
+        "-A",
+        "upper",
+        "-glsticket",
+        "--headless",
+        "-u",
+        "-v",
+    ];
+    assert_eq!(
+        argv_for_log(&argv),
+        [
+            "pyreal-client",
+            "-a",
+            "***",
+            "-v",
+            "***",
+            "-h",
+            "host:9000",
+            "--vgpassword",
+            "***",
+            "/z",
+            "***",
+            "-glsticketdirect",
+            "***",
+            "-ACCOUNT",
+            "***",
+            "-A",
+            "***",
+            "-glsticket",
+            "--headless",
+            "-u",
+            "-v",
+        ]
+    );
+}
+
+// Client initialization sets the command characters to "-/", so both prefixes are accepted.
+#[test]
+fn both_command_characters_are_accepted() {
+    assert_eq!(parse(&["/host", "example"]).unwrap().host, "example");
+    assert_eq!(parse(&["-host", "example"]).unwrap().host, "example");
+}
+
+// "Exactly one leading command character is stripped, so --rodat is looked up as the long name
+// -rodat and fails."
+#[test]
+fn exactly_one_command_character_is_stripped() {
+    let e = parse(&["--rodat"]).expect_err("--rodat is not a name");
+    assert!(
+        e.detail.contains("Unrecognized command line argument"),
+        "{}",
+        e.detail
+    );
+    // ... and every command-line error surfaces as corestrings 205.
+    assert_eq!(
+        e.to_string(),
+        "You can only run the game from the launcher program."
+    );
+}
+
+// "otherwise long-name lookup (case **insensitive**)"; short names are case sensitive.
+#[test]
+fn long_names_are_case_insensitive_and_short_names_are_not() {
+    assert_eq!(parse(&["-HOST", "h"]).unwrap().host, "h");
+    assert_eq!(parse(&["-a", "X"]).unwrap().account, "x");
+    // 'A' is not a registered short name, and "A" is not a long name either.
+    assert!(parse(&["-A", "X"]).is_err());
+}
+
+// "2 | **requires** a value; the next token is consumed as the value even if it starts with a
+// command character. An empty token errors with `%S requires a value`"
+#[test]
+fn a_required_value_swallows_the_next_token_whatever_it_is() {
+    let c = parse(&["-h", "-usemem"]).unwrap();
+    assert_eq!(c.host, "-usemem");
+    assert!(
+        !c.retail.use_memory_manager,
+        "the switch was eaten as -host's value"
+    );
+    let e = parse(&["-h"]).expect_err("no value at all");
+    assert!(e.detail.contains("requires a value"), "{}", e.detail);
+}
+
+// "-outport -- after assignment the handler range-checks 1 <= client_port <= 65535 ...
+// -port is **not** range-checked despite its description."
+#[test]
+fn outport_is_range_checked_and_port_is_not() {
+    assert!(parse(&["-q", "70000"]).is_err());
+    assert!(parse(&["-q", "0"]).is_err());
+    assert_eq!(parse(&["-p", "70000"]).unwrap().port, 70000);
+}
+
+// "-debug -- strtoul(value, 0, 0) (so 0x... hex and leading-zero octal are accepted)"
+#[test]
+fn debug_takes_a_strtoul_base_zero_mask() {
+    assert_eq!(parse(&["-debug", "0x1F"]).unwrap().retail.debug_flags, 0x1F);
+    assert_eq!(parse(&["-debug", "31"]).unwrap().retail.debug_flags, 31);
+    assert_eq!(parse(&["-debug", "037"]).unwrap().retail.debug_flags, 0o37);
+}
+
+// Port and number switches read like C `strtol`: leading digits count and trailing text is ignored.
+#[test]
+fn number_switches_keep_their_leading_digits() {
+    assert_eq!(parse(&["-p", "9000junk"]).unwrap().port, 9000);
+    assert_eq!(parse(&["-p", "0x2328"]).unwrap().port, 9000);
+    assert_eq!(parse(&["-q", "9000x"]).unwrap().client_port, 9000);
+    assert_eq!(parse(&["-q", " 9000 "]).unwrap().client_port, 9000);
+    assert_eq!(
+        parse(&["-debug", "0x1Fjunk"]).unwrap().retail.debug_flags,
+        0x1F
+    );
+    assert_eq!(parse(&["-debug", "0x"]).unwrap().retail.debug_flags, 0);
+    assert_eq!(parse(&["-debug", "089"]).unwrap().retail.debug_flags, 0);
+    assert!(parse(&["-debug", "junk"]).is_err());
+    assert!(parse(&["-q", "junk"]).is_err());
+    assert_eq!(parse(&["-p", "junk"]).unwrap().port, 0);
+}
+
+// A server port outside 1..=65535 is refused when the client connects, never sent as port 0.
+#[test]
+fn a_server_port_out_of_range_is_refused_at_connect() {
+    let ports = |args: &[&str]| parse(args).unwrap().connect_ports();
+    assert_eq!(ports(&[]).unwrap(), (7304, 0));
+    assert_eq!(ports(&["-p", "9000", "-q", "9001"]).unwrap(), (9000, 9001));
+    for bad in ["70000", "0", "junk", "-1"] {
+        let e = ports(&["-p", bad]).expect_err(bad);
+        assert!(e.detail.contains("between 1 and 65535"), "{}", e.detail);
+    }
+}
+
+// The command line reaches as far as the preference does: Extreme's 25 blocks.
+#[test]
+fn land_radius_switch_caps_at_the_most_land_radius() {
+    assert_eq!(parse(&["--land-radius", "25"]).unwrap().land_radius, 25);
+    assert_eq!(
+        parse(&["--land-radius", "40"]).unwrap().land_radius,
+        MOST_LAND_RADIUS
+    );
+    assert_eq!(parse(&["--land-radius", "3"]).unwrap().land_radius, 3);
+}
+
+// The pre-parse checks walk the command line as the parser does, so another switch's value is
+// never read as a switch.
+#[test]
+fn a_pre_parse_check_never_reads_another_switchs_value() {
+    assert!(!crash_test_in_argv(&["--say", "--crash-test"]));
+    assert!(!no_console_in_argv(&["-a", "--no-console"]));
+    assert!(!no_console_in_argv(&["--cast", "--no-console"]));
+    assert!(no_console_in_argv(&["-a", "acct", "--no-console"]));
+    assert!(no_console_in_argv(&["-rodat", "--no-console"]));
+    assert!(headless_in_argv(&["--HEADLESS"]));
+    assert!(headless_in_argv(&["/-headless"]));
+    assert!(!headless_in_argv(&["--say", "--headless"]));
+    assert!(!headless_in_argv(&["-headless"]));
+}
+
+// A linger that is not a number keeps the default rather than never logging off.
+#[test]
+fn a_linger_that_is_not_a_number_keeps_the_default() {
+    let d = Config::default().linger;
+    for v in ["nan", "NaN", "inf", "-inf"] {
+        assert_eq!(parse(&["--linger", v]).unwrap().linger, d, "{v}");
+    }
+    assert_eq!(parse(&["--linger", "5"]).unwrap().linger, 5.0);
+}
+
+// Switches that contradict each other are refused in either order rather than one winning.
+#[test]
+fn contradicting_switches_are_refused_in_either_order() {
+    for pair in [
+        ["--enter-world", "--no-connect"],
+        ["--no-connect", "--enter-world"],
+        ["--real-time", "--simulated-time"],
+        ["--simulated-time", "--real-time"],
+    ] {
+        assert!(parse(&pair).is_err(), "{pair:?}");
+    }
+    assert!(parse(&["--start-cell", "0x01D90108", "--landblock", "0xA9B4"]).is_err());
+    assert!(parse(&["--landblock", "0xA9B4", "--start-cell", "0x01D90108"]).is_err());
+    let c = parse(&["--landblock", "0x01D9", "--start-cell", "0x01D90108"]).unwrap();
+    assert_eq!((c.landblock, c.start_cell), (0x01D9, Some(0x01D9_0108)));
+}
+
+// A block or a cell takes one 0x prefix in either case, and never two.
+#[test]
+fn block_and_cell_ids_take_one_hex_prefix() {
+    assert_eq!(parse(&["--landblock", "0X12"]).unwrap().landblock, 0x12);
+    assert_eq!(parse(&["--landblock", "12"]).unwrap().landblock, 0x12);
+    assert!(parse(&["--landblock", "0x0x12"]).is_err());
+    assert_eq!(
+        parse(&["--start-cell", "0X01D90108"]).unwrap().start_cell,
+        Some(0x01D9_0108)
+    );
+    assert!(parse(&["--start-cell", "0x0x01D90108"]).is_err());
+}
+
+#[test]
+fn a_stray_bare_token_is_an_error_but_an_empty_one_is_skipped() {
+    assert!(parse(&["stray"]).is_err());
+    assert!(parse(&[""]).is_ok());
+}
+
+// The rebuild-only spelling, which the retail parser could never have resolved.
+#[test]
+fn the_rebuild_switches_use_two_command_characters() {
+    let c = parse(&["--headless", "--frames", "3", "--capture", "out.png"]).unwrap();
+    assert!(c.headless);
+    assert_eq!(c.frames, Some(3));
+    assert_eq!(c.capture, Some(PathBuf::from("out.png")));
+    // The single-dash spelling is not a retail name, so it is rejected like any unknown switch.
+    assert!(parse(&["-headless"]).is_err());
+}
+
+/// The title the owner asked for, and the one case that is not `Dereth | <account>`.
+///
+/// Client divergence CD-006.
+#[test]
+fn the_window_title_carries_the_account_as_typed() {
+    // `-a` is lower-cased for the wire and kept as typed for the title. Both, from one token.
+    let c = parse(&["-a", "Tester"]).unwrap();
+    assert_eq!(c.account, "tester", "the wire spelling is still _strlwr's");
+    assert_eq!(c.window_title(), "Dereth | Tester");
+    // No account: the offline slices, which run with no login at all.
+    assert_eq!(parse(&[]).unwrap().window_title(), "Dereth");
+    // An account of blanks is not an account. `-a` takes the next token whatever it is.
+    assert_eq!(parse(&["-a", "   "]).unwrap().window_title(), "Dereth");
+}
+
+/// `--no-console` parses like any other arity-`None` rebuild switch, and records itself.
+#[test]
+fn no_console_is_a_rebuild_switch() {
+    assert!(parse(&[]).unwrap().console, "a console by default");
+    assert!(!parse(&["--no-console"]).unwrap().console);
+    // It takes no value, so the token after it is still a switch in its own right.
+    let c = parse(&["--no-console", "--frames", "2"]).unwrap();
+    assert!(!c.console);
+    assert_eq!(c.frames, Some(2));
+    // One command character makes it the long name `-no-console`, which no table has.
+    assert!(parse(&["-no-console"]).is_err());
+}
+
+/// The pre-parse peek and the parser agree, which is the property that matters: `main` acts on
+/// the first and everything downstream reads the second.
+#[test]
+fn the_console_peek_matches_the_parser() {
+    for argv in [
+        vec!["--no-console"],
+        vec!["--NO-CONSOLE"],
+        vec!["//no-console"],
+        vec!["-/no-console"],
+        vec!["--frames", "2", "--no-console", "--headless"],
+    ] {
+        let owned: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+        assert!(no_console_in_argv(&owned), "peek missed {argv:?}");
+        assert!(!parse(&argv).unwrap().console, "parser missed {argv:?}");
+    }
+    for argv in [
+        vec![],
+        vec!["--headless"],
+        // A *value* that happens to spell the switch belongs to `--capture`, and the peek does
+        // not consume values -- but it also never sees this token as a switch, because a
+        // capture path is not one. The parser is the check that the two agree.
+        vec!["--capture", "no-console"],
+    ] {
+        let owned: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+        assert!(
+            !no_console_in_argv(&owned),
+            "peek false-positive on {argv:?}"
+        );
+        assert!(
+            parse(&argv).unwrap().console,
+            "parser disagrees on {argv:?}"
+        );
+    }
+}
+
+// Oracle: the preference parser's multi-separator rule:
+// "more than 2 parts -> the value is the remaining parts concatenated **without** the `=`
+// separators, so a value containing `=` is corrupted on load."
+#[test]
+fn a_value_containing_an_equals_sign_is_corrupted_on_load() {
+    let p = Preferences::parse("[Net]\nBindInterface=a=b=c\nComputeUniquePort=True\nBare\n");
+    assert_eq!(p.get("Net.BindInterface"), Some("abc"));
+    assert_eq!(p.bool("Net.ComputeUniquePort"), Some(true));
+    // "1 part -> value \"\""
+    assert_eq!(p.get("Net.Bare"), Some(""));
+    // Names are stored lower-cased, so lookups are case-insensitive.
+    assert_eq!(p.get("net.bindinterface"), Some("abc"));
+}
+
+#[test]
+fn a_missing_preference_file_still_starts() {
+    let p = Preferences::load(Path::new("no-such-file-anywhere.ini"));
+    assert!(!p.loaded_ok);
+    let c = Config::from_args_and_prefs_with(&[], &p).expect("starts anyway");
+    assert_eq!(
+        c.display.resolution, 0x0400_0300,
+        "the compiled-in default survives"
+    );
+}
+
+// Oracle: display-preference initialization and loading.
+// Resolution's stored value is the display-mode word (w<<16)|h.
+#[test]
+fn the_display_preferences_reach_the_presentation() {
+    let p = Preferences::parse(
+        "[Display]\nResolution=83887104\nFullScreen=False\nSyncToRefresh=True\nRefreshRate=60\n",
+    );
+    let c = Config::from_args_and_prefs_with(&[], &p).unwrap();
+    assert_eq!(c.display.resolution, 1280 << 16 | 1024);
+    assert!(!c.display.full_screen);
+    assert!(c.display.sync_to_refresh);
+    assert_eq!(c.display.refresh_rate, 60);
+
+    let pres = c
+        .load_display_preferences(None, true)
+        .expect("1280x1024 is >= 800x600");
+    assert_eq!((pres.width, pres.height), (1280, 1024));
+    assert!(!pres.full_screen);
+    assert!(pres.compatibility.fs_sync_to_display_refresh);
+    assert_eq!(
+        pres.compatibility.fs_bits_per_pixel, 32,
+        "the default-constructed presentation's value"
+    );
+
+    // "if (w < 800 || h < 600) return false // caller then fails"
+    let mut small = c.clone();
+    small.display.resolution = 640 << 16 | 480;
+    assert!(small.load_display_preferences(None, true).is_none());
+
+    // A forced resolution overrides the width and height, and a disallowed full-screen mode
+    // forces windowed.
+    let mut fs = c.clone();
+    fs.display.full_screen = true;
+    let pres = fs
+        .load_display_preferences(Some((800, 600)), false)
+        .unwrap();
+    assert_eq!((pres.width, pres.height), (800, 600));
+    assert!(!pres.full_screen);
+}
+
+#[test]
+fn the_prefs_switch_replaces_the_path() {
+    let c = parse(&["-prefs", "x/y.ini"]).unwrap();
+    assert_eq!(c.preferences_file, PathBuf::from("x/y.ini"));
+    assert!(c.preferences_named);
+}
+
+///
+/// The doubled spelling names the same file as the retail one, and neither is needed for a
+/// windowed run to use the default.
+#[test]
+fn either_spelling_of_the_prefs_switch_names_the_settings_file() {
+    let c = parse(&["--prefs", "x/y.ini"]).unwrap();
+    assert_eq!(c.preferences_file, PathBuf::from("x/y.ini"));
+    assert!(c.preferences_named);
+    assert!(!parse(&[]).unwrap().preferences_named);
+    assert!(
+        parse(&["--prefs"]).is_err(),
+        "the doubled spelling wants a value too"
+    );
+}
+
+///
+/// A headless run that names no file is given no settings file at all -- nothing is read from
+/// the default, and the empty path is what every writer takes as "no file" -- while a
+/// windowed run keeps the default, and a headless run that names one keeps and reads it.
+#[test]
+fn a_headless_run_that_names_no_settings_file_reads_and_keeps_none() {
+    let dir = std::env::temp_dir().join(format!(
+        "pyreal-headless-prefs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let default = dir.join("UserPreferences.ini");
+    std::fs::write(&default, "[Render]\r\nFieldOfView=75.00\r\n").unwrap();
+    let args = |a: &[&str]| a.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+
+    let headless = Config::from_args_and_prefs_at(&args(&["--headless"]), &default).unwrap();
+    assert_eq!(headless.preferences_file, PathBuf::new());
+    assert_eq!(
+        headless.render.field_of_view,
+        pyreal_client_contract::camera::DEFAULT_FOV_DEGREES,
+        "the default file was not read"
+    );
+
+    let windowed = Config::from_args_and_prefs_at(&[], &default).unwrap();
+    assert_eq!(windowed.preferences_file, default);
+    assert_eq!(windowed.render.field_of_view, 75.0);
+
+    let named = dir.join("named.ini");
+    std::fs::write(&named, "[Render]\r\nFieldOfView=60.00\r\n").unwrap();
+    let path = named.to_str().unwrap();
+    let asked =
+        Config::from_args_and_prefs_at(&args(&["--headless", "--prefs", path]), &default).unwrap();
+    assert_eq!(asked.preferences_file, named);
+    assert_eq!(asked.render.field_of_view, 60.0);
+    // A settings folder named outright (in the environment) is asked for too: the headless
+    // run reads its file and keeps it to write back.
+    let folder =
+        Config::from_args_and_prefs_named_at(&args(&["--headless"]), &default, true).unwrap();
+    assert_eq!(folder.preferences_file, default);
+    assert_eq!(folder.render.field_of_view, 75.0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The files that hang off the settings directory all take it from the *parent of the
+/// preferences file*, which is the settings directory. (The keymap file is the front end's;
+/// its own test asserts the same join.)
+/// This asserts the join, so that moving the default moves all of them together and `-prefs`
+/// still moves all of them together.
+#[test]
+fn everything_the_client_saves_hangs_off_the_preferences_files_directory() {
+    let prefs = PathBuf::from("root/dir").join(PREFERENCES_FILE_NAME);
+    let dir = prefs.parent().expect("a parent");
+    assert_eq!(dir, std::path::Path::new("root/dir"));
+
+    // The journal, with no prefix on it.
+    let journal = pyreal_client_contract::journal::JournalIdentity {
+        directory: dir.to_path_buf(),
+        world: "Frostfell".into(),
+        character: "Tester".into(),
+    };
+    assert_eq!(journal.client_path().parent(), Some(dir));
+    assert_eq!(
+        journal.client_path().file_name().and_then(|n| n.to_str()),
+        Some("Journal-Frostfell-Tester.txt")
+    );
+
+    // The gameplay screen-layout path.
+    let layout =
+        pyreal_client_contract::persist::ScreenLayout::default_path(&dir.to_string_lossy());
+    assert!(layout.starts_with("root/dir"), "{layout}");
+}
+
+#[test]
+fn a_headless_session_with_a_server_keeps_real_time_unless_told_to_simulate() {
+    // No server: simulated unless asked.
+    assert!(!parse(&["--headless"]).unwrap().keeps_real_time());
+    assert!(parse(&["--headless", "--real-time"])
+        .unwrap()
+        .keeps_real_time());
+    // A server: real time unless told to simulate.
+    let server = ["--headless", "-a", "acct", "-h", "127.0.0.1:9000"];
+    assert!(parse(&server).unwrap().keeps_real_time());
+    let mut simulated = server.to_vec();
+    simulated.push("--simulated-time");
+    assert!(!parse(&simulated).unwrap().keeps_real_time());
+}
+
+#[test]
+fn each_plugin_folder_named_is_listed_once() {
+    let argv: Vec<String> = [
+        "--plugins",
+        "a",
+        "--plugins",
+        "b",
+        "--offer-plugins",
+        "c",
+        "--offer-plugins",
+        "c",
+        "--headless",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect();
+    let c = Config::from_args_and_prefs_at(&argv, Path::new("")).unwrap();
+    assert_eq!(c.plugin_dirs, [PathBuf::from("a"), PathBuf::from("b")]);
+    assert_eq!(c.offered_plugin_dirs, [PathBuf::from("c")]);
+}
+
+#[test]
+fn travel_switches_take_their_values_even_lines_that_begin_with_a_slash() {
+    let c = parse(&[
+        "--nav-prep",
+        "/journey Drudge Hideout; @heal ",
+        "--nav-store",
+        "store",
+        "--nav-published",
+        "http://127.0.0.1:19341/portals",
+    ])
+    .expect("parses");
+    assert_eq!(c.nav_prep, ["/journey Drudge Hideout", "@heal"]);
+    assert_eq!(c.nav_store, Some(PathBuf::from("store")));
+    assert_eq!(
+        c.nav_published.as_deref(),
+        Some("http://127.0.0.1:19341/portals")
+    );
+}
+
+#[test]
+fn where_the_window_closed_and_whether_it_was_full_screen_are_read_back() {
+    let read = |text: &str| {
+        let d = Config::from_args_and_prefs_with(&[], &Preferences::parse(text))
+            .unwrap()
+            .display;
+        (d.window_position, d.window_full_screen)
+    };
+    assert_eq!(
+        read("[Display]\nWindowPosition=-1440,25\nWindowFullScreen=True\n"),
+        (Some((-1440, 25)), true)
+    );
+    assert_eq!(read("[Display]\nWindowPosition=here\n"), (None, false));
+    assert_eq!(read("[Display]\n"), (None, false));
+    // Written as the client closes and read back as it starts.
+    let mut ini = pyreal_client_contract::persist::preferences::UserPreferences::default();
+    crate::config::write_window_place(&mut ini, false, Some((212, -30)));
+    assert_eq!(read(&ini.to_text()), (Some((212, -30)), false));
+    // Full screen by the window system's button keeps the place it stood at before.
+    crate::config::write_window_place(&mut ini, true, None);
+    assert_eq!(read(&ini.to_text()), (Some((212, -30)), true));
+}
+
+#[test]
+fn the_window_size_it_closed_at_is_read_and_one_below_the_login_size_is_not() {
+    let read = |text: &str| {
+        Config::from_args_and_prefs_with(&[], &Preferences::parse(text))
+            .unwrap()
+            .display
+            .window_size
+    };
+    assert_eq!(
+        read("[Display]\nResolution=1024x768\nWindowSize=1437x902\n"),
+        Some((1437, 902))
+    );
+    assert_eq!(read("[Display]\nWindowSize=640x480\n"), None);
+    assert_eq!(read("[Display]\nWindowSize=wide\n"), None);
+    assert_eq!(read("[Display]\nResolution=1024x768\n"), None);
+    // Nor one no window could be.
+    assert_eq!(
+        read("[Display]\nWindowSize=16384x16384\n"),
+        Some((16384, 16384))
+    );
+    assert_eq!(read("[Display]\nWindowSize=16385x900\n"), None);
+    assert_eq!(read("[Display]\nWindowSize=1200x99999\n"), None);
+}
+
+#[test]
+fn a_saved_size_is_cut_to_the_monitor_it_opens_on_and_never_under_the_login_size() {
+    let fit = crate::config::fit_window_size;
+    assert_eq!(fit((1437, 902), Some((1512, 950))), (1437, 902));
+    assert_eq!(fit((3000, 2000), Some((1512, 950))), (1512, 950));
+    assert_eq!(fit((3000, 800), Some((1512, 950))), (1512, 800));
+    assert_eq!(fit((1437, 902), None), (1437, 902));
+    assert_eq!(fit((1437, 902), Some((640, 480))), (800, 600));
+}
+
+#[test]
+fn a_profile_key_is_trimmed_and_a_byte_order_mark_is_not_a_section() {
+    let p = Preferences::parse("\u{feff}[Display]\nFullScreen = True\n");
+    assert_eq!(p.get("Display.FullScreen"), Some(" True"));
+}

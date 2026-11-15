@@ -1,0 +1,202 @@
+//! Pyreal's release targets, and which host can build which.
+
+/// An operating system, of a target or of the host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    Linux,
+    Mac,
+}
+
+impl Os {
+    /// The host this runs on.
+    pub fn host() -> Option<Self> {
+        match std::env::consts::OS {
+            "windows" => Some(Self::Windows),
+            "linux" => Some(Self::Linux),
+            "macos" => Some(Self::Mac),
+            _ => None,
+        }
+    }
+}
+
+/// A processor architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    X86_64,
+    Aarch64,
+}
+
+/// One release target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Target {
+    pub triple: &'static str,
+    pub os: Os,
+    pub arch: Arch,
+}
+
+/// The oldest macOS a macOS release claims (`MACOSX_DEPLOYMENT_TARGET`); the header check holds
+/// the binaries' minimum to it.
+pub const MACOS_FLOOR: (u32, u32) = (11, 0);
+
+/// Every release target.
+pub const TARGETS: &[Target] = &[
+    Target {
+        triple: "x86_64-pc-windows-msvc",
+        os: Os::Windows,
+        arch: Arch::X86_64,
+    },
+    Target {
+        triple: "x86_64-unknown-linux-gnu",
+        os: Os::Linux,
+        arch: Arch::X86_64,
+    },
+    Target {
+        triple: "aarch64-apple-darwin",
+        os: Os::Mac,
+        arch: Arch::Aarch64,
+    },
+];
+
+/// The targets Pyreal is released for. Each builds natively on its own operating system: the
+/// client links the system's graphics and windowing libraries, so no cross-linker builds it.
+pub const PYREAL_TRIPLES: &[&str] = &[
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+];
+
+/// The oldest glibc a Pyreal Linux release runs on: the release is built on Ubuntu 22.04, whose
+/// glibc it is linked against, and the header check holds the binaries to it.
+pub const PYREAL_GLIBC_FLOOR: (u32, u32) = (2, 35);
+
+/// The Pyreal release target named `triple`.
+pub fn find_pyreal(triple: &str) -> Result<Target, String> {
+    if !PYREAL_TRIPLES.contains(&triple) {
+        return Err(format!(
+            "`{triple}` is not a Pyreal release target; the targets are {}",
+            PYREAL_TRIPLES.join(", ")
+        ));
+    }
+    find(triple)
+}
+
+/// How this host builds Pyreal for `target`, or why it cannot: natively, on the target's own
+/// operating system.
+pub fn plan_pyreal(target: Target, host: &Host) -> Result<(), String> {
+    plan_native(
+        target,
+        host,
+        "the client links against that system's graphics and windowing libraries",
+        PYREAL_GLIBC_FLOOR,
+    )
+}
+
+/// How this host builds `target` natively, or why it cannot: on the target's own operating
+/// system (`why` says what needs it), with the target's standard library installed, and on Linux
+/// with a glibc no newer than the release's `floor`, since a native build links against the
+/// host's own and the release would not run on the systems the floor promises.
+fn plan_native(target: Target, host: &Host, why: &str, floor: (u32, u32)) -> Result<(), String> {
+    if host.os != Some(target.os) {
+        let os = match target.os {
+            Os::Windows => "Windows",
+            Os::Linux => "Linux",
+            Os::Mac => "macOS",
+        };
+        return Err(format!(
+            "{} builds on a {os} host only: {why}",
+            target.triple
+        ));
+    }
+    if let Some(glibc) = host.glibc.filter(|g| target.os == Os::Linux && *g > floor) {
+        return Err(format!(
+            "{} would link against this host's glibc {}.{}, above the release's {}.{} floor: \
+             build on Ubuntu 22.04, e.g. an `ubuntu:22.04` distrobox",
+            target.triple, glibc.0, glibc.1, floor.0, floor.1
+        ));
+    }
+    if let Some(installed) = &host.installed {
+        if !installed.iter().any(|t| t == target.triple) {
+            return Err(format!(
+                "the Rust standard library for {0} is not installed: `rustup target add {0}`",
+                target.triple
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl Target {
+    /// The target's platform as `release.json` names it: `windows-x86_64`, `darwin-aarch64`,
+    /// `linux-x86_64`.
+    pub fn updater_platform(self) -> String {
+        let os = match self.os {
+            Os::Windows => "windows",
+            Os::Linux => "linux",
+            Os::Mac => "darwin",
+        };
+        format!("{os}-{}", self.arch_name())
+    }
+
+    /// The platform as a release file names it: `windows-x86_64`, `macos-aarch64`,
+    /// `linux-x86_64`.
+    pub fn platform_name(self) -> String {
+        let os = match self.os {
+            Os::Windows => "windows",
+            Os::Linux => "linux",
+            Os::Mac => "macos",
+        };
+        format!("{os}-{}", self.arch_name())
+    }
+
+    fn arch_name(self) -> &'static str {
+        match self.arch {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+}
+
+/// The release target named `triple`.
+pub fn find(triple: &str) -> Result<Target, String> {
+    TARGETS
+        .iter()
+        .copied()
+        .find(|t| t.triple == triple)
+        .ok_or_else(|| {
+            let known: Vec<&str> = TARGETS.iter().map(|t| t.triple).collect();
+            format!(
+                "`{triple}` is not a release target; the targets are {}",
+                known.join(", ")
+            )
+        })
+}
+
+impl Target {
+    /// The executable suffix of the target.
+    pub fn exe_suffix(self) -> &'static str {
+        if self.os == Os::Windows {
+            ".exe"
+        } else {
+            ""
+        }
+    }
+}
+
+/// What the host offers a build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Host {
+    pub os: Option<Os>,
+    /// The installed Rust targets, when rustup could say.
+    pub installed: Option<Vec<String>>,
+    /// The glibc a native Linux build links against: the host's own, on Linux, when `getconf`
+    /// could say ([`glibc_of`]).
+    pub glibc: Option<(u32, u32)>,
+}
+
+/// The glibc `getconf GNU_LIBC_VERSION` names (`glibc 2.35`), as its major and minor numbers.
+pub fn glibc_of(getconf: &str) -> Option<(u32, u32)> {
+    let version = getconf.trim().strip_prefix("glibc ")?.trim();
+    let (major, minor, _) = super::headers::parse_glibc(&format!("GLIBC_{version}"))?;
+    Some((major, minor))
+}

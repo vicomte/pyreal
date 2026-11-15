@@ -1,0 +1,21 @@
+[package]
+name = "pyreal-ui-kit"
+description = "The client's widget kit: an immediate-mode interface toolkit, drawn in a skin through the shared overlay every interface ends in."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pyreal-primitives.workspace = true
+# The overlay the draw lists are lowered to.
+pyreal-client-contract.workspace = true
+tracing.workspace = true
+# A skin's pieces: their manifest, their atlases and their font table.
+png.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

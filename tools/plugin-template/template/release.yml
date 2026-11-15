@@ -1,0 +1,62 @@
+# A pushed release tag (`v<version>`, or `<id>-v<version>` in a repository of several plugins):
+# the plugin is packed and released on GitHub with its zip, and the Pages workflow is started to
+# list it in this repository's plugins.json for launchers to read.
+name: Release
+
+on:
+  push:
+    tags: ['v*', '*-v*']
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  # The Dereth release whose author's tool this repository uses: its rules are that release's.
+  PYREAL: '{{pyreal}}'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # The tool of the Dereth release named above, downloaded from that release and checked
+      # against its SHA256SUMS.
+      - name: Install the author's tool
+        run: |
+          cd "$RUNNER_TEMP"
+          file="pyreal-plugin-$PYREAL-linux-x86_64.tar.gz"
+          release="{{pyreal_repo}}/releases/download/v$PYREAL"
+          curl -fsSLO "$release/$file"
+          curl -fsSLO "$release/SHA256SUMS"
+          grep "  $file\$" SHA256SUMS | sha256sum -c -
+          tar -xzf "$file"
+          echo "$RUNNER_TEMP/pyreal-plugin-$PYREAL" >> "$GITHUB_PATH"
+      - name: Pack the plugin the tag names
+        run: |
+          read -r folder id version name < <(pyreal-plugin find . "$GITHUB_REF_NAME")
+          pyreal-plugin check "$folder"
+          mkdir -p dist
+          zip="$id-$version.zip"
+          pyreal-plugin pack "$folder" "dist/$zip"
+          pyreal-plugin notes "$folder" "$version" > dist/notes.md
+          {
+            echo "PLUGIN_VERSION=$version"
+            echo "PLUGIN_NAME=$name"
+            echo "PLUGIN_ZIP=$zip"
+          } >> "$GITHUB_ENV"
+      - name: Release it on GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/$PLUGIN_ZIP" "dist/$PLUGIN_ZIP.sha256" \
+            --verify-tag --title "$PLUGIN_NAME $PLUGIN_VERSION" --notes-file dist/notes.md
+      # The Pages workflow makes the source again from the releases, on the default branch. A
+      # release made with this workflow's token starts no workflow by itself, so it is asked to.
+      - name: List it on Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"

@@ -1,0 +1,24 @@
+says = "A cast with no target lands on the selection, so its domain is the selection's: a world that allows buffs and denies combat refuses a debuff cast with no target while a monster is selected."
+[scenario]
+world = "scripted"
+seconds = 4
+[[object]]
+id = 0x80000071
+name = "Drudge Skulker"
+type = "creature"
+place = { ns = 42.2, ew = 33.801 }
+[[object]]
+id = 0x80000072
+name = "Wand"
+type = "caster"
+container = "player"
+locations = 0x01000000
+[host]
+policy_document = """policy_version = 1
+[automation]
+buff = "allow"
+combat = "deny"
+"""
+[expect]
+status = "running"
+console = ["the magic stance for a buff	true	nil", "the monster selected	true	nil", "a debuff with no target	false	denied_by_world"]

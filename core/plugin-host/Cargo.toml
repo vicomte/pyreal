@@ -1,0 +1,46 @@
+[package]
+name = "pyreal-plugin-host"
+description = "The plugin host: loads plugin packages into VMs, holds each to the world's policy, turns each frame into events, runs timers, keeps each plugin's store and declared windows, and answers the server's plugin audit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[dependencies]
+# The interface: the manifest, permissions, events, the UI tree, values and the engine boundary.
+pyreal-plugin-api.workspace = true
+# The game, as the headless client reaches it: the frame hook the host installs itself as
+# (`pyreal-client-runtime`), the object model it reads (`pyreal-client-model`) and the view and
+# chat types (`pyreal-client-contract`). No crate under `pyreal/client/` (`cargo xtask seams`,
+# `seam: plugin-host names no client crate`).
+pyreal-client-runtime.workspace = true
+pyreal-client-model.workspace = true
+pyreal-client-contract.workspace = true
+# The portal store's types, read for `nav.known_portals` and journeys' targets.
+pyreal-navigation.workspace = true
+pyreal-primitives.workspace = true
+# The appraisal profile's types, read for the loot matcher.
+pyreal-protocol.workspace = true
+# The game rules the reads and the loot matcher classify objects by.
+pyreal-rules.workspace = true
+# The game's data files' records, decoded for plugins that draw maps (`gamedata`).
+pyreal-assets.workspace = true
+# The world's policy document.
+toml.workspace = true
+# Escaping a loot pattern that does not compile, to match it as plain text.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode-perl", "unicode-case"] }
+# The patterns (loot profiles, `text.match`): Perl classes and case folding, without the large
+# Unicode property tables (a pattern that names one does not compile). The engine `regex` wraps,
+# used directly so each pattern's compiled size can be counted.
+regex-automata = { version = "0.4", default-features = false, features = ["std", "meta", "syntax", "perf", "unicode-perl", "unicode-case"] }
+tracing.workspace = true
+# Packages: their files, manifest and zip form.
+pyreal-plugin-package.workspace = true
+
+[dev-dependencies]
+pyreal-plugin-lua.workspace = true
+
+[lints]
+workspace = true

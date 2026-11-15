@@ -1,0 +1,23 @@
+[package]
+name = "pyreal-codecs"
+description = "The game's picture codecs with no device: DXT and BC blocks, JPEG, palettes, mip chains, surface decodes, the bitmap fonts' atlas and the cursor's pictures."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# The crate's tests are its modules' unit tests.
+autotests = false
+
+[dependencies]
+pyreal-primitives.workspace = true
+# The sampler's address modes and the window's cursor size are the contract's.
+pyreal-client-contract.workspace = true
+thiserror.workspace = true
+# `jpeg.rs` only. The decoder for the dat's JPEG surfaces.
+zune-jpeg = "0.5"
+
+# The workspace lints, which `forbid(unsafe_code)`: a codec has no `unsafe` and must never acquire
+# any.
+[lints]
+workspace = true

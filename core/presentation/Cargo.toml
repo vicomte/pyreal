@@ -1,0 +1,21 @@
+[package]
+name = "pyreal-presentation"
+description = "The game's presentation rules: how an appraisal, the character sheet, the journal and the calendar are worded, numbered and placed, for any interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# A stray tests/*.rs cannot become a test target silently.
+autotests = false
+
+[dependencies]
+pyreal-primitives.workspace = true
+# The read-only view the rules are functions of (`AppraisalView`, `CharacterInfo`)
+# and their neutral property identifiers.
+pyreal-client-contract.workspace = true
+# The item level arithmetic, the burden load mod and the elemental modifier. Off the wire crate.
+pyreal-rules.workspace = true
+
+[lints]
+workspace = true

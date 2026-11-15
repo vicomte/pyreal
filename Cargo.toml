@@ -1,0 +1,194 @@
+[workspace]
+resolver = "2"
+members = [
+    # core/: the shared crates (MIT), among them the client's: `client-net`, `client-model`,
+    # `client-runtime`, `client-contract` and `audio`.
+    "core/primitives",
+    "core/dat",
+    "core/assets",
+    "core/text",
+    "core/world-data",
+    "core/landscape",
+    "core/terrain",
+    "core/physics",
+    "core/animation",
+    "core/transport",
+    "core/protocol",
+    "core/rules",
+    "core/chargen",
+    "core/client-net",
+    "core/client-model",
+    "core/client-contract",
+    "core/presentation",
+    "core/client-runtime",
+    "core/audio",
+    "core/navigation",
+    # The plugin host: the interface as types, the host and the Lua engine.
+    "core/plugin-api",
+    "core/plugin-package",
+    "core/plugin-wasm",
+    "core/plugin-host",
+    "core/plugin-lua",
+    # pyreal/: the client (MIT), with its own crates under pyreal/client/crates/
+    # and the test kit.
+    "pyreal/client",
+    "pyreal/desktop",
+    # The game's picture codecs, with no device.
+    "pyreal/client/crates/codecs",
+    "pyreal/client/crates/world-render",
+    # The renderer: the engine.
+    "pyreal/client/crates/engine",
+    # Art packs opened with no device, which the drawn world and the engine both draw.
+    "pyreal/client/crates/art-pack",
+    "pyreal/client/crates/scene",
+    "pyreal/client/crates/shell",
+    "pyreal/client/crates/input",
+    "pyreal/client/crates/audio-out",
+    "pyreal/client/crates/clipboard",
+    "pyreal/client/crates/console",
+    "pyreal/client/crates/horizon",
+    "pyreal/client/crates/ui-logic",
+    "pyreal/client/crates/plugin-ui",
+    "pyreal/client/crates/ui-kit",
+    # What the client knows before it connects: worlds, accounts, data sets and the launch plan.
+    "pyreal/client/crates/launch",
+    # Test support only: the behaviour scenarios. Nothing in any crate's `src/` or in `tools/`
+    # depends on it, and it is a member so that `cargo check --workspace --all-targets` covers it.
+    "pyreal/testkit",
+    # tools/: research and build tools (MIT).
+    "tools/plugin",
+    "tools/plugin-template",
+    "tools/art",
+    "tools/xtask",
+    # What the GPU layer can do on this machine, measured.
+    "tools/gpu-probe",
+    # The engine's viewer: a place drawn by the new engine, to a PNG or in a window.
+    "tools/engine-view",
+]
+
+[workspace.package]
+# Pyreal's release version, which every crate carries (RELEASING.md).
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# Workspace members share versions and explicit per-consumer feature choices.
+pyreal-animation = { path = "core/animation" }
+pyreal-assets = { path = "core/assets" }
+pyreal-audio = { path = "core/audio" }
+pyreal-chargen = { path = "core/chargen" }
+pyreal-client = { path = "pyreal/client", default-features = false }
+pyreal-client-contract = { path = "core/client-contract" }
+pyreal-client-model = { path = "core/client-model" }
+pyreal-client-net = { path = "core/client-net", default-features = false }
+pyreal-client-runtime = { path = "core/client-runtime" }
+pyreal-client-shell = { path = "pyreal/client/crates/shell", default-features = false }
+pyreal-audio-out = { path = "pyreal/client/crates/audio-out" }
+pyreal-clipboard = { path = "pyreal/client/crates/clipboard" }
+pyreal-console = { path = "pyreal/client/crates/console" }
+pyreal-dat = { path = "core/dat" }
+pyreal-engine = { path = "pyreal/client/crates/engine" }
+pyreal-art-pack = { path = "pyreal/client/crates/art-pack" }
+pyreal-desktop = { path = "pyreal/desktop" }
+pyreal-input = { path = "pyreal/client/crates/input" }
+pyreal-landscape = { path = "core/landscape" }
+pyreal-launch = { path = "pyreal/client/crates/launch" }
+pyreal-navigation = { path = "core/navigation" }
+pyreal-physics = { path = "core/physics" }
+pyreal-plugin = { path = "tools/plugin" }
+pyreal-plugin-api = { path = "core/plugin-api" }
+pyreal-plugin-host = { path = "core/plugin-host" }
+pyreal-plugin-lua = { path = "core/plugin-lua" }
+pyreal-plugin-package = { path = "core/plugin-package" }
+pyreal-plugin-template = { path = "tools/plugin-template" }
+pyreal-plugin-ui = { path = "pyreal/client/crates/plugin-ui" }
+pyreal-plugin-wasm = { path = "core/plugin-wasm", default-features = false }
+pyreal-presentation = { path = "core/presentation" }
+pyreal-primitives = { path = "core/primitives" }
+pyreal-protocol = { path = "core/protocol" }
+pyreal-codecs = { path = "pyreal/client/crates/codecs" }
+pyreal-rules = { path = "core/rules", default-features = false }
+pyreal-scene = { path = "pyreal/client/crates/scene", default-features = false }
+pyreal-terrain = { path = "core/terrain" }
+pyreal-testkit = { path = "pyreal/testkit" }
+pyreal-text = { path = "core/text" }
+pyreal-transport = { path = "core/transport" }
+pyreal-ui-kit = { path = "pyreal/client/crates/ui-kit" }
+pyreal-ui-logic = { path = "pyreal/client/crates/ui-logic" }
+pyreal-horizon = { path = "pyreal/client/crates/horizon" }
+pyreal-world-data = { path = "core/world-data" }
+pyreal-world-render = { path = "pyreal/client/crates/world-render" }
+xtask = { path = "tools/xtask" }
+
+thiserror = "2"
+# Logging. The shared crates and the client emit `tracing` events and spans (a facade: no output
+# of its own); each binary installs the one subscriber that receives them. `tracing-subscriber`
+# is a binary's dependency only -- no library crate may name it.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "registry", "smallvec", "tracing-log"] }
+
+# Shared versions; platform, optional and feature choices remain on each consumer.
+serde = { version = "1", features = ["derive"] }
+blake3 = { version = "1", default-features = false }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+cpal = { version = "0.17.3", default-features = false }
+ctrlc = "3.5"
+# The desktop host's pads; no other crate depends on it.
+gilrs = { version = "0.11", default-features = false }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+glam = "0.30"
+png = "0.17"
+pollster = "0.4"
+raw-window-handle = "0.6"
+serde_json = "1"
+# Legacy SHA512 account password hashes.
+sha2 = "0.10"
+# A packed art pack's records in layout 2.
+zstd = { version = "0.13", default-features = false }
+# Configuration consumers retain ordered table keys through their preserve_order feature.
+toml = "1"
+winit = { version = "0.30", default-features = false }
+
+# Lints applied to every crate via `[lints] workspace = true`. `clippy.toml` is shared by all, and
+# every crate formats with rustfmt's defaults.
+# The float-to-int rule is the important one: the original truncates toward zero and produces the
+# x86 integer-indefinite value for NaN and for anything outside `i32`, where Rust's `as` saturates
+# to the nearest bound instead. The two therefore disagree by the full width of the type at both
+# ends, so every float-to-int conversion goes through `pyreal_primitives::num::to_i32` and its siblings; `cargo
+# xtask lint` is the backstop that survives an `#[allow]`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+cast_possible_truncation = "warn"   # catches raw `as i32` on floats; use pyreal_primitives::num::to_i32
+undocumented_unsafe_blocks = "warn"
+
+# The profile every test tier runs in: `--profile test-release`, the default of `cargo xtask` (its
+# test and CI tiers, and its sweep). Optimised like
+# `--release`, so a tier runs at release speed, but with debug assertions and overflow checks on,
+# so a `debug_assert!`, a `#[cfg(debug_assertions)]` test and an arithmetic overflow still fail a
+# run. Each of those tools takes `--debug` for the unoptimised dev profile, for investigating one
+# failure under a debugger or with full backtraces.
+[profile.test-release]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true
+
+# `cargo xtask` runs in the dev profile (the alias is a plain `cargo run`), and its rules read every
+# source file in the workspace: optimised, with the regular expressions they are written in, they
+# take seconds rather than most of a minute.
+[profile.dev.package.xtask]
+opt-level = 3
+
+[profile.dev.package.regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3

@@ -1,0 +1,14 @@
+says = "A movement replaced by one that does not run (a turn) lets go of the run lock it set: the walk fails as replaced and the character stops running."
+[scenario]
+world = "scripted"
+seconds = 4
+[[step]]
+after = 0.5
+say = "/go"
+[[step]]
+after = 2
+say = "/turn"
+[expect]
+status = "running"
+console = ["move\tfalse\treplaced", "face\ttrue"]
+moves = ["face 90", "autorun on", "autorun off", "face 0"]

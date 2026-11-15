@@ -1,0 +1,42 @@
+//! The salvage panel's three object-carrying notices.
+//!
+//! The panel stayed in the retired retail UI's `panels::salvage`; this enum is the transit
+//! `pyreal_client_runtime::{hud, interaction}` fill (`Hud::pending_salvage`) and the panel drains, which
+//! makes it the contract rather than the drawing. Three `ObjectId`s.
+
+use pyreal_primitives::ObjectId;
+
+/// The three notices registers that carry an object, in registration order.
+///
+/// The list's begin-drag hook is the fourth and is **not** here: it is the list's own pick-up
+/// hook (it clears the row's trade state as the row leaves), and
+/// in this build a drag out of the window is the screen's drag machinery rather than a notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SalvageNotice {
+    /// A used salvage tool opens the salvage panel.
+    Open(ObjectId),
+    /// An item is added to the open salvage panel; the client open-codes its
+    /// add-item path here rather than calling it.
+    Add(ObjectId),
+    /// An item is removed from the open salvage panel.
+    Remove(ObjectId),
+}
+
+/// Read-only contents of the active salvage session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SalvageListView {
+    pub tool: Option<ObjectId>,
+    pub items: Vec<ObjectId>,
+    pub material: u32,
+    pub visible: bool,
+}
+
+/// Gestures on the shared salvage session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SalvageAction {
+    Add(ObjectId),
+    Remove(ObjectId),
+    Clear,
+    Close,
+    Submit,
+}

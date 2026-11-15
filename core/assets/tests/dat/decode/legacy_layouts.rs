@@ -1,0 +1,276 @@
+//! The tables whose layouts changed over the life of the game read, in each of the three dat sets,
+//! into the values its own client read: the October 1999 character generation and spell tables,
+//! the spell records' two endings, the end-of-retail character generation, spell sets and sky
+//! objects, the quest table, and the ids only the older files type.
+//! Fixture: `PYREAL_TEST_LAUNCH_DAT_DIR`, `PYREAL_TEST_PRETOD_DAT_DIR` and `PYREAL_TEST_DAT_DIR`.
+
+use pyreal_assets::region::SkyObject;
+use pyreal_assets::{
+    CharGen, Decode, QualityFilter, QuestTable, Region, SpellComponentTable, SpellTable,
+};
+use pyreal_dat::DatFile;
+use pyreal_primitives::DataId;
+
+/// One file of one of the three sets: `1999-10-09`, `2005-02` or `end of retail`.
+fn capture(set: &str, name: &str) -> DatFile {
+    use pyreal_dat::testing::{classic_dat_dir, dat_dir, launch_dat_dir};
+    let dir = match set {
+        "1999-10-09" => launch_dat_dir().expect("PYREAL_TEST_LAUNCH_DAT_DIR is set"),
+        "2005-02" => classic_dat_dir().expect("PYREAL_TEST_PRETOD_DAT_DIR is set"),
+        _ => dat_dir(),
+    };
+    let path = dir.join(name);
+    DatFile::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Record `id` of `f`, in the layouts of `f`'s container.
+fn read<T: Decode>(f: &DatFile, id: u32) -> T {
+    let bytes = f.read(DataId(id)).expect("present");
+    T::decode_payload_in(f.era(), DataId(id), &bytes)
+        .unwrap_or_else(|e| panic!("{}: {id:#010X}: {e}", f.path().display()))
+}
+
+/// Every component a spell names is one the component table of the same capture has: the
+/// names and descriptions de-obfuscate to the bytes the component key is made from.
+fn assert_components_resolve(f: &DatFile, t: &SpellTable) {
+    let comps: SpellComponentTable = read(f, 0x0E00_000F);
+    for (id, spell) in &t.spells {
+        for c in &spell.comps {
+            assert!(
+                comps.components.contains_key(c),
+                "spell {id} names component {c}"
+            );
+        }
+    }
+}
+
+/// The October 1999 spell table names no formula versions, so every spell reads as the first.
+#[test]
+fn the_october_1999_spell_table_reads_every_formula_as_the_first_version() {
+    let f = capture("1999-10-09", "portal.dat");
+    let t: SpellTable = read(&f, 0x0E00_000E);
+    assert!(t.spells.values().all(|s| s.formula_version == 1));
+}
+
+/// The October 1999 retail CD: eighteen starter areas (six per heritage), three heritages of a
+/// female and a male each with 330 attribute and 50 skill credits, and eight templates, the last
+/// the Warrior the later tables do not have.
+#[test]
+fn the_october_1999_chargen_has_eighteen_starter_areas_and_eight_templates() {
+    let cg: CharGen = read(&capture("1999-10-09", "portal.dat"), 0x0E00_0002);
+    assert_eq!(cg.starter_areas.len(), 18);
+    assert_eq!(cg.starter_areas[0].name, "Holtburg South");
+    assert_eq!(cg.starter_areas[0].locations[0].cell.0, 0xA9B0_0014);
+    assert_eq!(cg.starter_areas[17].name, "Al-Arqas North");
+    let names: Vec<&str> = cg
+        .heritage_groups
+        .values()
+        .map(|h| h.name.as_str())
+        .collect();
+    assert_eq!(names, ["Aluvian", "Gharu'ndim", "Sho"]);
+    for h in cg.heritage_groups.values() {
+        assert_eq!(
+            (h.attribute_credits, h.skill_credits),
+            (330, 50),
+            "{}",
+            h.name
+        );
+        let templates: Vec<&str> = h.templates.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            templates,
+            [
+                "Adventurer",
+                "Archer",
+                "Blademaster",
+                "Enchanter",
+                "Life Mage",
+                "Sorcerer",
+                "Vagabond",
+                "Warrior"
+            ],
+            "{}",
+            h.name
+        );
+        assert_eq!(h.sexes[&1].name, "Male");
+        assert_eq!(h.sexes[&2].name, "Female");
+    }
+    assert_eq!(
+        cg.heritage_groups[&1].primary_start_areas,
+        [0, 1, 2, 3, 4, 5]
+    );
+}
+
+/// On the October 1999 CD the Aluvian female and male Vagabond list the same five specialised
+/// skills in different orders (the male has the last two the other way round); the two sexes
+/// still share one template, in the order of the first sex, the female.
+#[test]
+fn the_1999_vagabond_lists_its_specialised_skills_in_a_different_order_for_each_sex() {
+    let cg: CharGen = read(&capture("1999-10-09", "portal.dat"), 0x0E00_0002);
+    let aluvian = &cg.heritage_groups[&1];
+    assert_eq!(aluvian.sex_order, [2, 1]);
+    let vagabond = &aluvian.templates[6];
+    assert_eq!(vagabond.name, "Vagabond");
+    assert_eq!(vagabond.primary_skills, [20, 18, 23, 4, 30]);
+    assert_eq!(vagabond.normal_skills, [7, 12, 39, 36]);
+}
+
+/// Order is all the two Vagabonds may differ in: a male Vagabond specialising a different skill
+/// is a sex-specific rule, which the shared template cannot hold, and the table is refused.
+#[test]
+fn a_vagabond_specialising_a_different_skill_for_one_sex_is_refused() {
+    let f = capture("1999-10-09", "portal.dat");
+    let mut bytes = f.read(DataId(0x0E00_0002)).expect("present");
+    let male: Vec<u8> = [5u32, 20, 18, 23, 30, 4]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    let at = bytes
+        .windows(male.len())
+        .position(|w| w == male)
+        .expect("the Aluvian male's list");
+    // The last skill of the list, 4, becomes 15.
+    bytes[at + 20..at + 24].copy_from_slice(&15u32.to_le_bytes());
+    assert!(matches!(
+        CharGen::decode_payload_in(f.era(), DataId(0x0E00_0002), &bytes),
+        Err(pyreal_assets::AssetError::Unsupported {
+            what: "sex-specific character-generation rules",
+            value: 1
+        })
+    ));
+}
+
+/// The October 1999 spells end after their recovery fields: no display order, target type or
+/// per-target mana. Their names carry a terminating NUL in their length, which is not part of the
+/// name.
+#[test]
+fn the_october_1999_spell_table_has_1635_spells_ending_after_the_recovery_fields() {
+    let f = capture("1999-10-09", "portal.dat");
+    let t: SpellTable = read(&f, 0x0E00_000E);
+    assert_eq!(t.spells.len(), 1635);
+    assert!(t.spellsets.is_empty());
+    let s = &t.spells[&1];
+    assert_eq!(s.name, "Strength Other I");
+    assert_eq!(
+        (s.base_mana, s.meta_spell_type, s.meta_spell_id),
+        (10, 1, 1)
+    );
+    assert_eq!(s.duration, Some((150.0, 0.0, -666.0)));
+    assert!(t
+        .spells
+        .values()
+        .all(|s| (s.display_order, s.non_component_target_type, s.mana_mod) == (0, 0, 0)));
+    assert_components_resolve(&f, &t);
+}
+
+/// The February 2005 spells end with their display order, target type and per-target mana, the
+/// ending the later files keep.
+#[test]
+fn the_february_2005_spells_end_with_the_display_order_and_target_type() {
+    let f = capture("2005-02", "portal.dat");
+    let t: SpellTable = read(&f, 0x0E00_000E);
+    assert_eq!(t.spells.len(), 3737);
+    assert!(t.spellsets.is_empty());
+    let s = &t.spells[&1];
+    assert_eq!(s.name, "Strength Other I");
+    assert_ne!(s.display_order, 0);
+    assert_eq!(s.non_component_target_type, 0x10);
+    assert_components_resolve(&f, &t);
+}
+
+/// The end-of-retail spell table has its spell sets, and its character generation table every
+/// field of the current layout: thirteen heritages, twenty-six sexes with their scale and tables,
+/// and 869 hair styles, some with an alternate setup.
+#[test]
+fn the_end_of_retail_tables_read_in_the_current_layout() {
+    let f = capture("end of retail", "client_portal.dat");
+    let t: SpellTable = read(&f, 0x0E00_000E);
+    assert!(!t.spellsets.is_empty());
+    let cg: CharGen = read(&f, 0x0E00_0002);
+    let all_sexes: Vec<_> = cg
+        .heritage_groups
+        .values()
+        .flat_map(|h| h.sexes.values())
+        .collect();
+    let styles: Vec<_> = all_sexes.iter().flat_map(|s| &s.hair_styles).collect();
+    assert_eq!(
+        (cg.heritage_groups.len(), all_sexes.len(), styles.len()),
+        (13, 26, 869)
+    );
+    assert!(all_sexes.iter().all(|s| s.motion_table.0 != 0));
+    assert!(styles.iter().any(|h| h.alternate_setup.0 != 0));
+    assert_eq!(cg.heritage_groups[&1].name, "Aluvian");
+}
+
+/// The end-of-retail region's sky objects carry a particle-script id: every rainy day has a sky
+/// object that names one.
+#[test]
+fn the_end_of_retail_rainy_days_name_a_particle_script() {
+    let r: Region = read(&capture("end of retail", "client_portal.dat"), 0x1300_0000);
+    let groups: Vec<(String, Vec<SkyObject>)> = r
+        .sky_info
+        .as_ref()
+        .expect("a sky")
+        .day_groups
+        .iter()
+        .map(|g| (g.day_name.clone(), g.sky_objects.clone()))
+        .collect();
+    assert_eq!(groups.len(), 20);
+    let rainy: Vec<_> = groups.iter().filter(|(name, _)| name == "Rainy").collect();
+    assert!(!rainy.is_empty());
+    assert!(rainy
+        .iter()
+        .all(|(_, objects)| objects.iter().any(|o| o.default_pes_object.0 != 0)));
+}
+
+/// The quest table, present until Throne of Destiny: 190 quests in February 2005, the first the
+/// fletching bestower's, solvable once, named "Fletcher".
+#[test]
+fn the_february_2005_quest_table_has_190_quests() {
+    let t: QuestTable = read(&capture("2005-02", "portal.dat"), 0x0E00_001B);
+    assert_eq!(t.quests.len(), 190);
+    let q = &t.quests[0];
+    assert_eq!(
+        (
+            q.key.as_str(),
+            q.min_delta,
+            q.max_solves,
+            q.full_name.as_str()
+        ),
+        ("BestowerFletching1", 0, 1, "Fletcher")
+    );
+}
+
+/// The older files' two quality filters are the later files' two, less the 64-bit integer list
+/// those files added: the smaller lists the same properties and secondary attributes.
+#[test]
+fn the_older_quality_filters_are_the_later_ones_without_the_int64_list() {
+    let old: QualityFilter = read(&capture("2005-02", "portal.dat"), 0x0E00_0017);
+    let later_store = pyreal_dat::RetailDatStore::open_dir(&pyreal_dat::testing::dat_dir())
+        .expect("the end-of-retail dats");
+    let bytes = later_store
+        .read_portal(DataId(0x0E01_0002))
+        .expect("present");
+    let later = QualityFilter::decode_payload(DataId(0x0E01_0002), &bytes).expect("decodes");
+    assert_eq!(old.property_lists, later.property_lists);
+    assert_eq!(old.attribute_lists, later.attribute_lists);
+    assert!(old.property_lists[1].is_empty());
+    let big: QualityFilter = read(&capture("1999-10-09", "portal.dat"), 0x0E00_0010);
+    assert!(!big.property_lists[0].is_empty());
+}
+
+/// The second region of the older files, which the client loads in place of the first under one
+/// of its display settings, is a whole region of the same world.
+#[test]
+fn the_older_files_second_region_is_a_region_of_the_same_world() {
+    for folder in ["1999-10-09", "2005-02"] {
+        let f = capture(folder, "portal.dat");
+        let first: Region = read(&f, 0x1300_0000);
+        let second: Region = read(&f, 0x130F_0000);
+        assert_eq!(second.region_name, "Lands of Dereth", "{folder}");
+        assert_eq!(second.region_name, first.region_name, "{folder}");
+        assert_eq!(
+            second.land_defs.land_height_table, first.land_defs.land_height_table,
+            "{folder}"
+        );
+    }
+}

@@ -1,0 +1,521 @@
+//! `Palette`, `PaletteSet`, `Surface`, `SurfaceTexture`, `RenderSurface`,
+//! `RenderTexture`.
+//!
+//! Record layouts are described in `docs/formats/13-palette-and-surfaces.md` and
+//! `docs/formats/14-textures.md`.
+//!
+//! No pixel decoding happens here. `RenderSurface` exposes its payload as a byte slice for the
+//! renderer.
+
+use pyreal_dat::{packobj::read_n, Cursor, DbType};
+use pyreal_primitives::DataId;
+
+use crate::error::AssetError;
+use crate::Decode;
+
+// ---------------------------------------------------------------------------------------------
+// 0x04 Palette
+// ---------------------------------------------------------------------------------------------
+
+/// A shipped palette holds **2,048** entries: a 256-colour table replicated eight times.
+///
+/// All 4,521 retail palettes have `num_colors == 2048` and are therefore exactly
+/// `4 + 4 + 2048 * 4 = 8200` bytes. Sizing a palette at 256 entries silently truncates every
+/// texture that uses `PFID_INDEX16`.
+pub const RETAIL_PALETTE_ENTRIES: u32 = 2048;
+
+/// A palette file is `4 (id) + 4 (count) + 2048 * 4`.
+pub const RETAIL_PALETTE_BYTES: usize = 4 + 4 + 2048 * 4;
+
+/// A decoded `0x04` Palette: 2,048 ARGB entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Palette {
+    pub id: DataId,
+    pub colors_argb: Vec<u32>,
+}
+
+impl Decode for Palette {
+    const TYPE: DbType = DbType::Palette;
+
+    fn declared_id(&self) -> Option<DataId> {
+        Some(self.id)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let n = c.u32()? as usize;
+        let colors_argb = read_n(c, n, Cursor::u32)?;
+        Ok(Self { id, colors_argb })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x0F PaletteSet
+// ---------------------------------------------------------------------------------------------
+
+/// A decoded `0x0F` PaletteSet: the palette ids one base may be recoloured with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaletteSet {
+    pub id: DataId,
+    pub palette_ids: Vec<DataId>,
+}
+
+impl Decode for PaletteSet {
+    const TYPE: DbType = DbType::PalSet;
+
+    fn declared_id(&self) -> Option<DataId> {
+        Some(self.id)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let n = c.u32()? as usize;
+        let palette_ids = read_n(c, n, Cursor::data_id)?;
+        Ok(Self { id, palette_ids })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x08 Surface
+// ---------------------------------------------------------------------------------------------
+
+/// A decoded `0x08` Surface.
+///
+/// A `0x08` file carries **no id prefix at all**. A surface record is one of the very few
+/// dat types whose payload does not start with its own DataID, which is why [`Surface::declared_id`]
+/// returns `None` and the echo check is skipped for it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Surface {
+    /// `SurfaceType` bit field. Bits 1 and 2 (`& 6`) select the textured form.
+    pub surface_type: u32,
+    pub orig_texture_id: Option<DataId>,
+    pub orig_palette_id: Option<DataId>,
+    pub color_value: Option<u32>,
+    pub translucency: f32,
+    pub luminosity: f32,
+    pub diffuse: f32,
+}
+
+impl Decode for Surface {
+    const TYPE: DbType = DbType::Surface;
+
+    /// No id prefix, so there is nothing to echo-check.
+    fn declared_id(&self) -> Option<DataId> {
+        None
+    }
+
+    /// Before Throne of Destiny the record starts with its own id; the rest is unchanged.
+    fn decode_classic(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let _id = c.data_id()?;
+        Self::decode(c)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let surface_type = c.u32()?;
+        let (orig_texture_id, orig_palette_id, color_value) = if surface_type & 6 != 0 {
+            (Some(c.data_id()?), Some(c.data_id()?), None)
+        } else {
+            (None, None, Some(c.u32()?))
+        };
+        Ok(Self {
+            surface_type,
+            orig_texture_id,
+            orig_palette_id,
+            color_value,
+            translucency: c.f32()?,
+            luminosity: c.f32()?,
+            diffuse: c.f32()?,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x05 image texture (`SurfaceTexture`)
+// ---------------------------------------------------------------------------------------------
+
+/// A decoded `0x05` SurfaceTexture. A categorized type: the DataID is followed by the data
+/// category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceTexture {
+    pub id: DataId,
+    pub data_category: u32,
+    /// The serializer writes the constant byte `2` here and reads it into
+    /// nothing. Every `0x05` file has it; `RenderTexture` writes a real `TextureType` in the same
+    /// slot, where 2 is `TEXTURETYPE_2D`. Decoded and kept rather than skipped blind.
+    pub unknown_byte: u8,
+    pub source_levels: Vec<DataId>,
+}
+
+impl Decode for SurfaceTexture {
+    const TYPE: DbType = DbType::SurfaceTexture;
+
+    fn declared_id(&self) -> Option<DataId> {
+        Some(self.id)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let data_category = c.u32()?;
+        let unknown_byte = c.u8()?;
+        let n = c.u32()? as usize;
+        let source_levels = read_n(c, n, Cursor::data_id)?;
+        Ok(Self {
+            id,
+            data_category,
+            unknown_byte,
+            source_levels,
+        })
+    }
+
+    /// Before Throne of Destiny a `0x05` record is itself the image ([`pre_tod_image`]), so it
+    /// reads as a texture whose one level is itself; [`RenderSurface::from_classic_texture`]
+    /// reads its pixels.
+    fn decode_classic(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let (id, _) = pre_tod_image(c)?;
+        Ok(Self {
+            id,
+            data_category: 0,
+            unknown_byte: 0,
+            source_levels: vec![id],
+        })
+    }
+}
+
+/// The pixel formats of the image textures before Throne of Destiny, by their own type number,
+/// as `(bytes per pixel, the later pixel-format id that reads the same bytes)`:
+/// 2 8-bit palette indices with a trailing palette id (`PFID_P8`), 3 `A1R5G5B5`, 4 `A4R4G4B4`,
+/// 7 `R5G6B5`, 10 three bytes per pixel as the landscape textures are
+/// (`PFID_CUSTOM_LSCAPE_R8G8B8`), 11 one alpha byte per pixel (`PFID_CUSTOM_LSCAPE_ALPHA`).
+#[must_use]
+pub fn pre_tod_image_format(image_type: u32) -> Option<(u32, u32)> {
+    Some(match image_type {
+        2 => (1, PFID_P8),
+        3 => (2, 25),
+        4 => (2, 26),
+        7 => (2, 23),
+        10 => (3, 243),
+        11 => (1, 244),
+        _ => return None,
+    })
+}
+
+/// Read a `0x05` image texture from before Throne of Destiny: id, image type, width, height, the
+/// pixels, the default palette (type 2 only), then alignment to four bytes. Returns the id and
+/// the image as the later header describes it.
+fn pre_tod_image(c: &mut Cursor<'_>) -> Result<(DataId, RenderSurface), AssetError> {
+    let id = c.data_id()?;
+    let image_type = c.u32()?;
+    let width = c.u32()?;
+    let height = c.u32()?;
+    let (bytes_per_pixel, format) =
+        pre_tod_image_format(image_type).ok_or(AssetError::Unsupported {
+            what: "image texture type",
+            value: image_type,
+        })?;
+    let image_size = width
+        .checked_mul(height)
+        .and_then(|n| n.checked_mul(bytes_per_pixel))
+        .ok_or(AssetError::Unsupported {
+            what: "image texture size",
+            value: width,
+        })?;
+    let data_offset = c.position();
+    c.skip(image_size as usize)?;
+    let default_palette_id = if format == PFID_P8 {
+        Some(c.data_id()?)
+    } else {
+        None
+    };
+    c.align_ptr();
+    Ok((
+        id,
+        RenderSurface {
+            id,
+            data_category: 0,
+            width,
+            height,
+            format,
+            image_size,
+            data_offset,
+            default_palette_id,
+        },
+    ))
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x15 RenderTexture
+// ---------------------------------------------------------------------------------------------
+
+/// A decoded `0x15` RenderTexture. Same shape as an image texture, except that the
+/// byte in the same slot is a real `TextureType` (2 = `TEXTURETYPE_2D`).
+///
+/// Two placeholder files ship; the type belongs to the unused engine-2 renderer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderTexture {
+    pub id: DataId,
+    pub data_category: u32,
+    pub texture_type: u8,
+    pub source_levels: Vec<DataId>,
+}
+
+impl Decode for RenderTexture {
+    const TYPE: DbType = DbType::RenderTexture;
+
+    fn declared_id(&self) -> Option<DataId> {
+        Some(self.id)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let data_category = c.u32()?;
+        let texture_type = c.u8()?;
+        let n = c.u32()? as usize;
+        let source_levels = read_n(c, n, Cursor::data_id)?;
+        Ok(Self {
+            id,
+            data_category,
+            texture_type,
+            source_levels,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x06 RenderSurface
+// ---------------------------------------------------------------------------------------------
+
+/// `PFID_P8`, the 8-bit paletted format; it carries a default palette id after the payload.
+pub const PFID_P8: u32 = 41;
+/// `PFID_INDEX16`, the 16-bit paletted format, the other one with a trailing palette id. (The two
+/// names are easy to swap, and nothing but the symmetric test below would notice.)
+pub const PFID_INDEX16: u32 = 101;
+/// `PFID_CUSTOM_RAW_JPEG` — 79 records in the portal dat, six of them progressive.
+pub const PFID_CUSTOM_RAW_JPEG: u32 = 0x1F4;
+
+/// The six `PFID_CUSTOM_RAW_JPEG` records that are **progressive** (SOF2) rather than baseline
+/// (SOF0). A baseline-only decoder passes 73 images and silently fails these.
+/// A baseline-only decoder therefore passes most records but silently fails these six.
+pub const PROGRESSIVE_JPEG_IDS: [u32; 6] = [
+    0x0600_66AB,
+    0x0600_66CE,
+    0x0600_6701,
+    0x0600_67CD,
+    0x0600_67F2,
+    0x0600_681C,
+];
+
+/// A decoded `0x06` RenderSurface: the header, plus the payload as a byte range.
+///
+/// No pixel decoding: DXT, JPEG and palette expansion are the renderer's. The payload starts at
+/// `data_offset` (`+0x18` from the start of the record) and is `image_size` bytes long.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderSurface {
+    pub id: DataId,
+    /// Takes 0–10; only 6 and 10 are interpreted by the client, and
+    /// the high-res dat uses 1,2,4,5,7,8,9 where the portal dat uses 6. Passed through untouched.
+    pub data_category: u32,
+    pub width: u32,
+    pub height: u32,
+    /// A pixel-format id; see `docs/formats/14-textures.md`.
+    pub format: u32,
+    pub image_size: u32,
+    /// Offset of the pixel payload within the record.
+    pub data_offset: usize,
+    /// `format == 41 || format == 101`.
+    pub default_palette_id: Option<DataId>,
+}
+
+impl RenderSurface {
+    /// The pixel payload, as a slice of the record this header was decoded from.
+    #[must_use]
+    pub fn payload<'a>(&self, record: &'a [u8]) -> Option<&'a [u8]> {
+        record.get(self.data_offset..self.data_offset + self.image_size as usize)
+    }
+
+    /// A `0x05` image texture from before Throne of Destiny, read as the image header it is:
+    /// its pixel-format id is the later one that reads the same bytes ([`pre_tod_image_format`]),
+    /// and [`RenderSurface::payload`] slices its pixels out of `bytes`.
+    ///
+    /// # Errors
+    /// The record is not a whole image texture of a known type, or names another id.
+    pub fn from_classic_texture(id: DataId, bytes: &[u8]) -> Result<Self, AssetError> {
+        let mut c = Cursor::new(bytes);
+        let (found, rs) = pre_tod_image(&mut c)?;
+        c.expect_end()?;
+        crate::check_id_echo(id, found)?;
+        Ok(rs)
+    }
+}
+
+/// `PFID_CUSTOM_B8G8R8`: three bytes per pixel in red, green, blue order, the order the `0x06`
+/// images before Throne of Destiny are stored in.
+pub const PFID_CUSTOM_B8G8R8: u32 = 242;
+
+impl Decode for RenderSurface {
+    const TYPE: DbType = DbType::RenderSurface;
+
+    fn declared_id(&self) -> Option<DataId> {
+        Some(self.id)
+    }
+
+    fn decode(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let data_category = c.u32()?;
+        let width = c.u32()?;
+        let height = c.u32()?;
+        let format = c.u32()?;
+        let image_size = c.u32()?;
+        // The byte count is the format's bits a pixel over the size; a raw JPEG's is its file's.
+        if pyreal_primitives::pixel::image_bytes(format, width, height)
+            .is_some_and(|n| n != u64::from(image_size))
+        {
+            return Err(AssetError::Unsupported {
+                what: "image byte count",
+                value: image_size,
+            });
+        }
+        let data_offset = c.position();
+        debug_assert_eq!(data_offset, 0x18, "the payload starts at +0x18");
+        c.skip(image_size as usize)?;
+        let default_palette_id = if format == PFID_INDEX16 || format == PFID_P8 {
+            Some(c.data_id()?)
+        } else {
+            None
+        };
+        Ok(Self {
+            id,
+            data_category,
+            width,
+            height,
+            format,
+            image_size,
+            data_offset,
+            default_palette_id,
+        })
+    }
+
+    /// Before Throne of Destiny a `0x06` record is an id, a width, a height and three bytes per
+    /// pixel in red, green, blue order ([`PFID_CUSTOM_B8G8R8`]), with no category, format, length,
+    /// palette or padding.
+    fn decode_classic(c: &mut Cursor<'_>) -> Result<Self, AssetError> {
+        let id = c.data_id()?;
+        let width = c.u32()?;
+        let height = c.u32()?;
+        let image_size = width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(3))
+            .ok_or(AssetError::Unsupported {
+                what: "image size",
+                value: width,
+            })?;
+        let data_offset = c.position();
+        c.skip(image_size as usize)?;
+        let (data_category, format, default_palette_id) = (0, PFID_CUSTOM_B8G8R8, None);
+        Ok(Self {
+            id,
+            data_category,
+            width,
+            height,
+            format,
+            image_size,
+            data_offset,
+            default_palette_id,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `0x06` image of `format`, `w` by `h`, whose header says `size` bytes and holds them.
+    fn image(format: u32, w: u32, h: u32, size: u32) -> Vec<u8> {
+        let mut b = Vec::new();
+        for v in [0x0600_0001, 1, w, h, format, size] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.resize(b.len() + size as usize, 0);
+        b
+    }
+
+    /// An image's byte count is its format's bits a pixel over its size: DXT in whole blocks of four
+    /// by four, a raw JPEG whatever its file is, and any other count refused.
+    #[test]
+    fn an_image_whose_byte_count_disagrees_with_its_size_is_refused() {
+        let read = |b: &[u8]| RenderSurface::decode_payload(DataId(0x0600_0001), b);
+        assert!(read(&image(21, 4, 4, 64)).is_ok(), "A8R8G8B8 4x4");
+        assert!(read(&image(21, 4, 4, 60)).is_err(), "four bytes short");
+        assert!(read(&image(23, 3, 2, 12)).is_ok(), "R5G6B5 3x2");
+        assert!(read(&image(0x3154_5844, 8, 8, 32)).is_ok(), "DXT1 8x8");
+        assert!(
+            read(&image(0x3554_5844, 8, 8, 32)).is_err(),
+            "DXT5 is 16 a block"
+        );
+        assert!(
+            read(&image(PFID_CUSTOM_RAW_JPEG, 64, 64, 17)).is_ok(),
+            "a JPEG"
+        );
+    }
+
+    /// A retail palette is exactly 8200 bytes.
+    #[test]
+    fn a_retail_palette_is_exactly_8200_bytes() {
+        assert_eq!(RETAIL_PALETTE_BYTES, 8200);
+        assert_eq!(RETAIL_PALETTE_ENTRIES, 2048);
+        assert_eq!(RETAIL_PALETTE_ENTRIES, 256 * 8);
+    }
+
+    /// A `0x08` file has no id prefix, so the first dword is the surface type.
+    #[test]
+    fn a_surface_starts_with_its_type_not_an_id() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0u32.to_le_bytes()); // type 0 -> colour form
+        buf.extend_from_slice(&0xFF00_00FFu32.to_le_bytes());
+        buf.extend_from_slice(&0.0f32.to_le_bytes());
+        buf.extend_from_slice(&0.0f32.to_le_bytes());
+        buf.extend_from_slice(&1.0f32.to_le_bytes());
+        let s = Surface::decode_payload(DataId(0x0800_0000), &buf).unwrap();
+        assert_eq!(s.surface_type, 0);
+        assert_eq!(s.color_value, Some(0xFF00_00FF));
+        assert_eq!(s.orig_texture_id, None);
+        assert_eq!(s.declared_id(), None);
+    }
+
+    /// The progressive jpeg ids are the documented six.
+    #[test]
+    fn the_progressive_jpeg_ids_are_the_documented_six() {
+        assert_eq!(PROGRESSIVE_JPEG_IDS.len(), 6);
+        assert!(PROGRESSIVE_JPEG_IDS.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(PROGRESSIVE_JPEG_IDS[0], 0x0600_66AB);
+        assert_eq!(PROGRESSIVE_JPEG_IDS[5], 0x0600_681C);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 0x16 / 0x17 / 0x18 — the unused engine-2 material system
+// ---------------------------------------------------------------------------------------------
+
+/// `RenderMaterial` (`0x16`), `MaterialModifier` (`0x17`) and `MaterialInstance` (`0x18`): one
+/// placeholder file each, read by nothing in the shipped renderer.
+///
+/// The wire layouts are not worth a day's work for three unused files, so this keeps the DataID
+/// (which all three do carry) and the rest of the payload verbatim. That
+/// is enough for the exhaustive gate to account for every byte without inventing a layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialBlob {
+    pub id: DataId,
+    pub body: Vec<u8>,
+}
+
+impl MaterialBlob {
+    /// Decode a blob of a given type. There is no `Decode` impl because the three types share one
+    /// body and `Decode::TYPE` can only name one.
+    pub fn decode_payload(id: DataId, bytes: &[u8]) -> Result<Self, AssetError> {
+        let mut c = Cursor::new(bytes);
+        let found = c.data_id()?;
+        crate::dbobj::check_id_echo(id, found)?;
+        let body = c.bytes(c.remaining())?.to_vec();
+        c.expect_end()?;
+        Ok(Self { id: found, body })
+    }
+}

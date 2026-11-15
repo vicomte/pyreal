@@ -1,0 +1,12 @@
+-- A long walk, replaced halfway by a turn: the run lock the walk set is let go.
+commands.add("go", "walk east", function()
+	task.spawn(function()
+		print("move", pawait(nav.move_to({ ns = 42.2, ew = 34.2 }, 1)))
+	end)
+end)
+commands.add("turn", "face north", function()
+	task.spawn(function()
+		local ok = pawait(nav.face(0))
+		print("face", ok)
+	end)
+end)

@@ -1,0 +1,317 @@
+//! The vendor seam: `pyreal_client_model`'s open shop priced into the retired retail UI [`ShopView`].
+//!
+//! The same shape as [`crate::allegiance_view`], and for the same reason:
+//! `dereth-ui-screens` may not depend on `pyreal-client-model`, so the pricing has to happen on
+//! this side of the seam, in the crate that can see both.
+//!
+//! **This file gives four vendor operations their production callers:** sell pricing, buy pricing,
+//! acceptability, and the refusal-message table.
+//!
+//! Which price a row gets is the client's own split and is not cosmetic:
+//!
+//! * a **stock** row is what the vendor will sell you, so it is `vendor_sell_price(pwd, count)`;
+//! * a **sell-basket** row is what the vendor will pay you, so it is `vendor_buy_price(pwd)` — and
+//!   that function returns **0** for an item the shop refuses, because its first act is to
+//!   return 0 whenever `inq_acceptability(pwd)` is non-zero.
+
+use pyreal_client_contract::view::{ShopRow, ShopView};
+
+/// The vendor panel's three lists and two totals, for one world.
+///
+/// A world with no shop open produces [`ShopView::default`] — `open: false` — which the panel
+/// draws as a hidden window rather than as an empty one.
+#[must_use]
+pub fn shop(w: &pyreal_client_model::World) -> ShopView {
+    let s = &w.shop;
+    if !s.is_open() {
+        return ShopView::default();
+    }
+    let stock = s
+        .stock
+        .iter()
+        .map(|p| ShopRow {
+            item: p.iid,
+            name: p.pwd.name.clone(),
+            icon: (p.pwd.icon_id != 0).then_some(pyreal_primitives::DataId(p.pwd.icon_id)),
+            amount: p.amount,
+            obj_type: inq_type(w, p.iid, p.pwd.obj_type),
+            max_stack_size: max_stack_size(w, p.iid, &p.pwd),
+            stack_size: i32::from(p.pwd.stack_size.unwrap_or(0)),
+            contained_items: num_contained_items(w, p.iid),
+            contained_containers: num_contained_containers(w, p.iid),
+            // The vendor item list prices a stock row at one unit; the count changes only when the
+            // player moves the stack slider, and that is the single-item buy's reading, not the
+            // list's. The client divides the stack value out before pricing the displayed row.
+            price: w.shop_sell_price(&p.pwd, 1),
+            unit_value: pyreal_client_model::vendor::unit_value(&p.pwd),
+            plural_name: pyreal_client_model::weenie::plural_name(&p.pwd),
+            refusal: None,
+        })
+        .collect();
+    let buy_list = s
+        .buy_list
+        .iter()
+        .filter_map(|(id, n)| {
+            let pwd = s
+                .stock_item(*id)
+                .map(|p| &p.pwd)
+                .or_else(|| s.basket_descriptions.get(id))?;
+            Some(ShopRow {
+                item: *id,
+                name: pwd.name.clone(),
+                icon: (pwd.icon_id != 0).then_some(pyreal_primitives::DataId(pwd.icon_id)),
+                amount: *n,
+                obj_type: inq_type(w, *id, pwd.obj_type),
+                max_stack_size: max_stack_size(w, *id, pwd),
+                stack_size: i32::from(pwd.stack_size.unwrap_or(0)),
+                contained_items: num_contained_items(w, *id),
+                contained_containers: num_contained_containers(w, *id),
+                price: w.shop_sell_price(pwd, *n),
+                unit_value: pyreal_client_model::vendor::unit_value(pwd),
+                plural_name: pyreal_client_model::weenie::plural_name(pwd),
+                refusal: None,
+            })
+        })
+        .collect();
+    let sell_list = s
+        .sell_list
+        .iter()
+        .filter_map(|(id, _)| {
+            let pwd = w.vendor_basket_description(*id)?;
+            Some(ShopRow {
+                item: *id,
+                name: pwd.name.clone(),
+                icon: (pwd.icon_id != 0).then_some(pyreal_primitives::DataId(pwd.icon_id)),
+                // The single-item sell writes the literal 1 into every sell row.
+                amount: 1,
+                obj_type: pwd.obj_type,
+                max_stack_size: u32::from(pwd.max_stack_size.unwrap_or(0)),
+                stack_size: i32::from(pwd.stack_size.unwrap_or(0)),
+                contained_items: num_contained_items(w, *id),
+                contained_containers: num_contained_containers(w, *id),
+                price: w.shop_buy_price(pwd),
+                unit_value: pyreal_client_model::vendor::unit_value(pwd),
+                plural_name: pyreal_client_model::weenie::plural_name(pwd),
+                // The row a player can see a refusal on. `refusal_message` is the four-string
+                // table; the containment test runs first and may supply its own refusal.
+                refusal: w.drag_item_acceptable(*id),
+            })
+        })
+        .collect();
+    ShopView {
+        open: true,
+        filter: w.vendor_filter,
+        vendor: s.vendor_id,
+        sell_mode: s.mode == pyreal_client_model::vendor::ShopMode::Sell,
+        stock,
+        buy_list,
+        sell_list,
+        // **Three numbers, four writers.** `buy_transaction` and `sell_transaction`
+        // are the two sub-UIs' transaction totals and are different numbers computed by
+        // different functions from different lists; `total_value` is the *parent's* purse, which
+        // both total-value displays render and neither computes. See [`ShopView`]'s own table.
+        buy_transaction: w.transaction_value(),
+        sell_transaction: w.sell_value(),
+        // Count the same live-or-retained descriptions used by the rendered rows.
+        buy_items: basket_items(s.buy_list.iter().filter_map(|(id, n)| {
+            s.stock_item(*id)
+                .map(|p| &p.pwd)
+                .or_else(|| s.basket_descriptions.get(id))
+                .map(|_| *n)
+        })),
+        sell_items: basket_items(s.sell_list.iter().filter_map(|(id, _)| {
+            Some(i32::from(
+                w.vendor_basket_description(*id)?
+                    .stack_size
+                    .unwrap_or(1)
+                    .max(1),
+            ))
+        })),
+        total_value: s.total_value,
+        type_filters: type_filters(w),
+        sell_rate_bits: s.profile.sell_price.to_bits(),
+        notes_cash_anywhere: w.era_features.trade_notes_cash_anywhere,
+    }
+}
+
+/// Count selected units for buying and live stack quantities for selling.
+/// Missing objects have already been excluded by the caller.
+fn basket_items(rows: impl Iterator<Item = i32>) -> i32 {
+    rows.sum()
+}
+
+/// Construct the vendor-item tabs: walk the eighteen
+/// [`TYPE_FILTERS`](pyreal_client_model::vendor::TYPE_FILTERS) in order and keep the ones
+/// stock-type predicate answers true for.
+///
+/// **It is built from the stock, and the count is not fixed.** Exactly eighteen type
+/// tests are made, each immediately gating its matching filter row, so a shop that sells only food
+/// gets one row and a shop with no stock gets none.
+///
+/// **Retail *manufactures* the object it then asks.**
+///
+/// The type-filter pass asks the live object for its type and skips a stock row whose object the
+/// client has not created. Item-list updating uses the same lookup and skip. The apparent difference
+/// from reading the `PublicWeenieDesc` carried by `0x0062` is resolved by [`inq_type`] below.
+///
+/// **This is why the walk lives here rather than on `pyreal_client_model::vendor::Shop`.**
+/// `Shop::list_contains_type` asks the same question of a `Shop` alone, but a `Shop` cannot see the
+/// live object or player ownership — the two things the fork needs. It therefore
+/// has **no production caller**; it is kept as the `Shop`-local form the vendor
+/// tests use to select the recorded grocer by its contents, and its doc says so.
+fn type_filters(w: &pyreal_client_model::World) -> Vec<(&'static str, u32)> {
+    // Run the stock-type predicate once per mask, with the type resolved the way
+    // retail resolves it. The `any` is the client's own early `return true`.
+    let types: Vec<u32> = w
+        .shop
+        .stock
+        .iter()
+        .map(|p| inq_type(w, p.iid, p.pwd.obj_type))
+        .collect();
+    pyreal_client_model::vendor::TYPE_FILTERS
+        .iter()
+        .filter(|(_, m)| types.iter().any(|t| t & *m != 0))
+        .copied()
+        .collect()
+}
+
+/// Resolve the type on the live object named by a stock row.
+///
+/// The live-object type comes from its public description. That description normally starts as a
+/// copy of the vendor profile: a missing object is created from the profile, and an existing
+/// unowned object is overwritten from it. Only an existing object owned by the player keeps its
+/// own description.
+///
+/// So on every row but one, retail's "live weenie" carries the **same bytes** this build reads
+/// straight off the profile — the two readings are equal by construction, not by coincidence. The
+/// exception is an object the client already held **and the player owns**, which keeps
+/// its own `_type`. That is the one row on which a live type query and the profile field can
+/// disagree. This function is that fork, transcribed, so this build has no deviation left to
+/// declare — it reads the object when the client would use its untouched public description,
+/// and the profile whenever retail would have overwritten it with exactly that profile.
+///
+/// **The corpus reaches the existing-object arm and stops short of the owned half**, measured
+/// rather than assumed. Across every recorded `0x0062`, **one** stock row names an object the
+/// corpus also creates — and it is an object the player **sold to that vendor**, which is how a
+/// shop comes to advertise something the client already holds. The existing-object and profile-copy
+/// path is therefore live; whether `is_owned_by_player` was true for it
+/// at that instant needs container state a whole-session replay would carry, so the owned arm is a
+/// **constructed** test. The vendor filter tests hold both, with the count derived from the
+/// corpus rather than pinned, and the create scan calibrated on the create set itself.
+fn inq_type(
+    w: &pyreal_client_model::World,
+    iid: pyreal_primitives::ObjectId,
+    profile_type: u32,
+) -> u32 {
+    match w.weenie(iid) {
+        Some(o) if w.is_owned_by_player(iid) => o.pwd.obj_type,
+        _ => profile_type,
+    }
+}
+
+/// Read maximum stack size from the object a stock row names, using
+/// [`inq_type`]'s fork applied to the neighbouring field.
+///
+/// Item-list updating reads the type and the maximum stack size out of the **same** live object.
+/// Two fields of one description cannot be resolved by different rules, so
+/// this is deliberately the same three-arm fork and not a plain profile read: an object the client
+/// holds and the player owns keeps its own `pwd`, and that is as true of its maximum stack size as
+/// it is of its type.
+fn max_stack_size(
+    w: &pyreal_client_model::World,
+    iid: pyreal_primitives::ObjectId,
+    profile: &pyreal_protocol::types::PublicWeenieDesc,
+) -> u32 {
+    let pwd = match w.weenie(iid) {
+        Some(o) if w.is_owned_by_player(iid) => &o.pwd,
+        _ => profile,
+    };
+    u32::from(pwd.max_stack_size.unwrap_or(0))
+}
+
+/// Count the live object's contained items, or return zero when it has no inventory.
+///
+/// **There is no profile arm and there cannot be one.** Inventory state is not part of a
+/// `PublicWeenieDesc`; it is built from the inventory stream, so a stock row's containment is
+/// knowable only from the world. An object the client does not hold answers 0 here for the same
+/// reason a null object inventory does -- which is why the gate cannot fire for a stock row
+/// the create stream never sent, and why no recorded vendor can witness it.
+fn num_contained_items(w: &pyreal_client_model::World, iid: pyreal_primitives::ObjectId) -> u32 {
+    w.inventory(iid)
+        .map_or(0, |i| u32::try_from(i.items.len()).unwrap_or(u32::MAX))
+}
+
+/// Count contained containers with the same null-inventory rule.
+fn num_contained_containers(
+    w: &pyreal_client_model::World,
+    iid: pyreal_primitives::ObjectId,
+) -> u32 {
+    w.inventory(iid)
+        .map_or(0, |i| u32::try_from(i.containers.len()).unwrap_or(u32::MAX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyreal_client_model::{vendor::ItemProfile, World};
+    use pyreal_primitives::ObjectId;
+    use pyreal_protocol::types::PublicWeenieDesc;
+
+    #[test]
+    fn buying_selected_units_counts_each_quantity_once() {
+        let mut world = World::new();
+        world.shop.vendor_id = Some(ObjectId(1));
+        let stock = ObjectId(2);
+        world.shop.stock.push(ItemProfile {
+            iid: stock,
+            amount: -1,
+            pwd: PublicWeenieDesc {
+                stack_size: Some(12),
+                max_stack_size: Some(100),
+                ..Default::default()
+            },
+        });
+        assert!(world.add_to_buy_list(stock, 12));
+        assert_eq!(shop(&world).buy_items, 12);
+        assert!(world.add_to_buy_list(stock, 3));
+        assert_eq!(shop(&world).buy_items, 15);
+        world.shop.buy_list.push((ObjectId(3), 50));
+        assert_eq!(shop(&world).buy_items, 15);
+    }
+    #[test]
+    fn a_split_replacement_reseeds_selection_and_notifies_its_listeners() {
+        use pyreal_client_model::{
+            vendor::PendingSellSplit, weenie::Weenie, Notice, RecordingSink,
+        };
+        let mut world = World::new();
+        let original = ObjectId(10);
+        let replacement = ObjectId(11);
+        let mut old = Weenie::new(original);
+        old.pwd.stack_size = Some(10);
+        old.pwd.max_stack_size = Some(100);
+        world.tables.weenies.insert(original, old);
+        let mut new = Weenie::new(replacement);
+        new.pwd.wcid = 7;
+        new.pwd.stack_size = Some(3);
+        new.pwd.max_stack_size = Some(100);
+        world.tables.weenies.insert(replacement, new);
+        world.set_selected_object(Some(original), false, &mut RecordingSink::default());
+        world.shop.sell_list.push((original, 1));
+        world.shop.pending_sell_split = Some(PendingSellSplit {
+            placeholder: original,
+            wcid: 7,
+            stack_size: 3,
+        });
+        let mut notices = RecordingSink::default();
+        assert!(world.vendor_split_item_attributes_changed(replacement, 1, &mut notices));
+        assert_eq!(world.shop.sell_list, [(replacement, 1)]);
+        assert_eq!(world.selected, Some(replacement));
+        assert_eq!((world.split.split_size, world.split.max_split_size), (3, 3));
+        assert!(!world.weenie(original).unwrap().selected);
+        assert!(world.weenie(replacement).unwrap().selected);
+        assert!(notices.0.contains(&Notice::SelectionChanged {
+            previous: Some(original),
+            current: Some(replacement)
+        }));
+    }
+}

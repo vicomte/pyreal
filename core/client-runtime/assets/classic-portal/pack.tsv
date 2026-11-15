@@ -1,0 +1,30 @@
+# Dereth's own records over the portal from before Throne of Destiny: the classic interface's
+# pictures for what later worlds added, each under the later files' id for the same picture.
+#
+# After changing a picture or a line, regenerate the container and commit both:
+#   cargo run -p lyceum-cli -- layer core/client-runtime/assets/classic-portal/pack.tsv
+# `cargo test -p lyceum-foundry` fails while the container is not what this manifest makes.
+
+over        portal.dat
+out         layer.dat
+# The paper doll's slot ground, under any transparent pixel.
+background  0D1115
+
+# The paper doll's later slots, 32 x 32.
+0x0600708F  rgb  cloak.png
+0x06006A6C  rgb  trinket.png
+0x06006BEF  rgb  sigil-blue.png
+0x06006BF0  rgb  sigil-yellow.png
+0x06006BF1  rgb  sigil-red.png
+
+# The paper doll's accessories button, 32 x 32, plain and lit (a slot behind it holds an item),
+# under the client's own ids (0x06F00020 and 0x06F00021, in a range no portal uses). Until these
+# are here the interface composes them from the shield slot's frame with three dots, the lit
+# one on the generic item tile.
+# 0x06F00020  rgb  accessories.png
+# 0x06F00021  rgb  accessories-lit.png
+
+# The journal's toolbar button, 34 x 27 like the map's, normal and lit (its page shown; the
+# pressed button shows the lit picture). Until these are here the interface composes them.
+0x060069AE  rgb  journal.png
+0x060069AF  rgb  journal-lit.png

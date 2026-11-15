@@ -1,0 +1,818 @@
+//! What a front end is given at each step of the frame it takes part in.
+//!
+//! A front end never holds the application. Each [`Shell`](crate::shell::Shell) hook that does
+//! more than draw is handed a [`UiContext`](crate::ui_context::UiContext): the game as a front end
+//! may see it (the model read-only, the pre-game state, the scene as a view), the front end's own
+//! HUD slot, the presentation, and a named call for each thing a front end may ask the game to do.
+//! Every front end gets the same context, the modern UI included, so nothing a UI does goes past
+//! it.
+
+use std::sync::Arc;
+
+use pyreal_client_contract::UiRequest;
+use pyreal_client_model::chat::{ChatState, TalkFocus, TalkFocusNotice};
+use pyreal_client_model::World;
+use pyreal_primitives::{LocalTime, ObjectId, ServerTime};
+
+use crate::config::Config;
+use crate::interaction::{TargetMode, UiMouseEvent};
+use crate::objects::ObjectStream;
+use crate::present::{Presentation, Scene};
+use crate::shell::Shell;
+use {
+    crate::app::App, crate::app::EnterWorldScript,
+    pyreal_client_contract::pregame::PregameView as HostState,
+};
+
+/// One step's view of the game for front end `S`. See the module documentation.
+pub struct UiContext<'a, S: Shell> {
+    app: &'a mut App<S>,
+}
+
+impl<S: Shell> std::fmt::Debug for UiContext<'_, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UiContext").finish_non_exhaustive()
+    }
+}
+
+impl<'a, S: Shell> UiContext<'a, S> {
+    pub(crate) fn new(app: &'a mut App<S>) -> Self {
+        Self { app }
+    }
+
+    // ---- what the front end reads
+
+    /// The run's configuration.
+    #[must_use]
+    pub fn config(&self) -> &Config {
+        &self.app.cfg
+    }
+
+    /// The world's weenie list, its fetch begun the first time it is asked for.
+    pub fn weenie_list(&mut self) -> crate::weenie_list::WeenieListState {
+        let cfg = &self.app.cfg;
+        let url = crate::weenie_list::list_url(cfg.world_status.as_deref(), &cfg.host, cfg.port);
+        self.app.weenie_lists.want(url)
+    }
+
+    /// The portal dats.
+    #[must_use]
+    pub fn store(&self) -> &Arc<pyreal_dat::RetailDatStore> {
+        &self.app.store
+    }
+
+    /// How many times the data files have been reopened since start-up: a front end keeping
+    /// anything it read from [`Self::store`] reads it again when this moves.
+    #[must_use]
+    pub fn store_generation(&self) -> u64 {
+        self.app.store_generation()
+    }
+
+    /// The animation assets the preview spaces build their objects from.
+    #[must_use]
+    pub fn anim_assets(&self) -> &Arc<pyreal_world_data::anim_assets::DatAnimAssets> {
+        &self.app.anim_assets
+    }
+
+    /// This frame's time, in seconds.
+    #[must_use]
+    pub fn now(&self) -> f64 {
+        self.app.timer.cur_time
+    }
+
+    /// Whether the screen-size choice is still waiting for the host or the player.
+    pub fn resolution_pending(&self) -> bool {
+        self.app.resolution.pending()
+    }
+    /// The size to preserve when another settings apply occurs during a test.
+    pub fn resolution_previous(&self) -> Option<(u32, u32)> {
+        self.app.resolution.previous()
+    }
+    /// The completed choice, for page draft readback without resetting a fresh selection.
+    pub fn resolution_completion(&self) -> Option<crate::resolution::ResolutionCompletion> {
+        self.app.resolution.completion()
+    }
+
+    /// The pre-game state: the connection, the character list, the world's name.
+    #[must_use]
+    pub fn pregame(&self) -> &HostState {
+        &self.app.host_state
+    }
+
+    /// The running program's version: what follows its name in the identity `@version` prints
+    /// (`0.2.0` of `pyreal-client 0.2.0`).
+    #[must_use]
+    pub fn client_version(&self) -> &'static str {
+        let id = self.app.interaction.client_build_id;
+        id.rsplit(' ').next().unwrap_or(id)
+    }
+
+    /// The scripted entry (`--enter-world`) the pre-game screens are driving.
+    #[must_use]
+    pub fn entry_script(&self) -> EnterWorldScript {
+        self.app.script
+    }
+
+    /// How busy the game is: nonzero while anything the player asked for is still waiting. See
+    /// [`App::busy_count`].
+    #[must_use]
+    pub fn busy_count(&self) -> u32 {
+        self.app.busy_count()
+    }
+
+    /// The vivid-target indicator's global switch.
+    #[must_use]
+    pub fn vivid_target_indicator(&self) -> bool {
+        self.app.teleport.anim.vivid_target_indicator
+    }
+
+    /// The game model, read-only.
+    #[must_use]
+    pub fn model(&self) -> &World {
+        &self.app.objects.world
+    }
+
+    /// Set the notebook identity before either interface reads its shared pages.
+    pub fn prepare_journal(
+        &mut self,
+        identity: Option<pyreal_client_contract::journal::JournalIdentity>,
+    ) {
+        self.app.objects.world.journal.set_identity(identity);
+    }
+
+    pub fn take_journal_io(&mut self) -> Vec<pyreal_client_contract::journal::JournalIo> {
+        self.app.objects.world.journal.take_io()
+    }
+
+    pub fn record_journal_io(
+        &mut self,
+        identity: &pyreal_client_contract::journal::JournalIdentity,
+        generation: u64,
+        read: bool,
+        success: bool,
+    ) {
+        self.app
+            .objects
+            .world
+            .journal
+            .record_io(identity, generation, read, success);
+    }
+
+    pub fn complete_journal_load(
+        &mut self,
+        identity: pyreal_client_contract::journal::JournalIdentity,
+        generation: u64,
+        revision: u64,
+        pages: Result<Vec<pyreal_client_contract::journal::JournalPage>, ()>,
+    ) -> bool {
+        self.app
+            .objects
+            .world
+            .journal
+            .complete_load(identity, generation, revision, pages)
+    }
+
+    /// The object tables, read-only.
+    #[must_use]
+    pub fn objects(&self) -> &ObjectStream {
+        &self.app.objects
+    }
+
+    /// Where `id` stands against the player: whether it is outdoors (on the landscape rather than
+    /// in a building or a dungeon) and how far it is, in metres. `None` while either has no place
+    /// in the world.
+    #[must_use]
+    pub fn object_place(&self, id: ObjectId) -> Option<(bool, f32)> {
+        let objects = &self.app.objects;
+        let me = objects.presence(objects.player()?)?.position.as_ref()?;
+        let it = objects.presence(id)?.position.as_ref()?;
+        let offset = pyreal_physics::math::localtolocal(me, it, pyreal_primitives::Vec3::ZERO);
+        Some((
+            pyreal_physics::landdefs::is_outdoors(it.cell),
+            offset.magnitude(),
+        ))
+    }
+
+    /// The drawn world as one read-only view, `None` before there is one.
+    #[must_use]
+    pub fn scene(&self) -> Option<Box<dyn Scene + '_>> {
+        self.app.present.scene(self.app.world.as_ref())
+    }
+
+    /// The way the camera looks, in degrees clockwise from north, as the player heading is
+    /// given: the orbit camera's as shown while an interface uses it, else the game camera's.
+    /// `None` without a player in the world.
+    #[must_use]
+    pub fn camera_heading(&self) -> Option<f32> {
+        let c = self.app.world.as_ref()?.character.as_ref()?;
+        Some(if c.camera.orbit_active {
+            c.camera.orbit.facing_degrees()
+        } else {
+            pyreal_physics::math::get_heading(&c.camera.viewer.frame)
+        })
+    }
+
+    /// The interaction layer's target mode.
+    #[must_use]
+    pub fn target_mode(&self) -> TargetMode {
+        self.app.interaction.target_mode()
+    }
+
+    /// The object under the pointer, as last found.
+    #[must_use]
+    pub fn found_object(&self) -> ObjectId {
+        self.app.interaction.pick.click_object().0
+    }
+
+    /// Whether the interaction layer is looking for an object under the pointer (a pick the UI
+    /// asked for is still under way).
+    #[must_use]
+    pub fn looking_for_object(&self) -> bool {
+        self.app.interaction.pick.looking_for_object()
+    }
+
+    /// Where the pointer last was over the window, in window pixels.
+    #[must_use]
+    pub fn last_cursor(&self) -> Option<(f64, f64)> {
+        self.app.last_cursor
+    }
+
+    /// Whether the mouse is looking around (the pointer turns the camera and stays put).
+    #[must_use]
+    pub fn mouse_look(&self) -> bool {
+        self.app.mouse_look
+    }
+
+    /// Whether the game is full screen now.
+    #[must_use]
+    pub fn full_screen(&self) -> bool {
+        self.app.applied_full_screen
+    }
+
+    /// Whether the host can make the window full screen, so an interface may offer the switch.
+    #[must_use]
+    pub fn full_screen_offered(&self) -> bool {
+        self.app.window.offers_full_screen()
+    }
+
+    /// Draw the portal lights behind the screens before the world while `on`. Asked every frame.
+    pub fn show_backdrop(&mut self, on: bool) {
+        self.app.show_backdrop(on);
+    }
+
+    /// Whether the player is travelling through portal space.
+    #[must_use]
+    pub fn teleporting(&self) -> bool {
+        self.app.teleport.anim.state != pyreal_client_contract::teleport::TeleportAnimState::Off
+    }
+
+    /// The screen sizes the display offers.
+    #[must_use]
+    pub fn display_modes(&self) -> Vec<(u32, u32)> {
+        use pyreal_client_contract::options::store;
+        store::display_choices(store::DISPLAY_RESOLUTION)
+            .iter()
+            .map(|mode| store::mode_size(mode.value))
+            .collect()
+    }
+
+    // ---- the front end's own
+
+    /// The front end's HUD slot: the HUD model and whatever the front end keeps beside it.
+    #[must_use]
+    pub fn hud(&self) -> &S::Hud {
+        &self.app.hud
+    }
+
+    /// …writable.
+    pub fn hud_mut(&mut self) -> &mut S::Hud {
+        &mut self.app.hud
+    }
+
+    /// The HUD slot and the object tables it is drawn from, together.
+    pub fn hud_and_objects(&mut self) -> (&mut S::Hud, &ObjectStream) {
+        (&mut self.app.hud, &self.app.objects)
+    }
+
+    /// The step a product installed into the frame (see [`crate::frame_hook`]), for a front end
+    /// that draws what it shows.
+    #[must_use]
+    pub fn frame_hook(&self) -> Option<&dyn crate::frame_hook::FrameHook> {
+        self.app.frame_hook()
+    }
+
+    /// Where a place in the world falls on the screen this frame, in back-buffer pixels. See
+    /// [`App::screen_point`].
+    #[must_use]
+    pub fn screen_point(&self, pos: &pyreal_primitives::Position) -> Option<(f32, f32)> {
+        self.app.screen_point(pos)
+    }
+
+    /// [`Self::screen_point`] with the place's depth as the world's drawing stores it. See
+    /// [`App::screen_point_depth`].
+    #[must_use]
+    pub fn screen_point_depth(
+        &self,
+        pos: &pyreal_primitives::Position,
+        toward: f32,
+    ) -> Option<(f32, f32, f32)> {
+        self.app.screen_point_depth(pos, toward)
+    }
+
+    /// Where a place in the world falls in the world's own drawing space this frame. See
+    /// [`App::render_point`].
+    #[must_use]
+    pub fn render_point(&self, pos: &pyreal_primitives::Position) -> Option<[f32; 3]> {
+        self.app.render_point(pos)
+    }
+
+    /// …writable.
+    pub fn frame_hook_mut(&mut self) -> Option<&mut (dyn crate::frame_hook::FrameHook + 'static)> {
+        self.app.frame_hook_mut()
+    }
+
+    /// The presentation.
+    #[must_use]
+    pub fn present(&self) -> &S::Present {
+        &self.app.present
+    }
+
+    /// …writable.
+    pub fn present_mut(&mut self) -> &mut S::Present {
+        &mut self.app.present
+    }
+
+    /// The presentation, with the drawn world's state for the calls that need it.
+    pub fn present_with_world(
+        &mut self,
+    ) -> (&mut S::Present, Option<&crate::world_state::WorldState>) {
+        (&mut self.app.present, self.app.world.as_ref())
+    }
+
+    /// The sound mixer, when there is one.
+    pub fn audio_mut(&mut self) -> Option<&mut crate::audio::Audio> {
+        self.app.audio.as_mut()
+    }
+
+    /// Switch one talk focus on or off. The switch raises a notice, which
+    /// [`Self::deliver_talk_focus_notices`] offers back.
+    pub fn set_talk_focus_enabled(&mut self, focus: TalkFocus, enabled: bool) {
+        self.app
+            .objects
+            .world
+            .chat
+            .set_talk_focus_enabled(focus, enabled);
+    }
+
+    /// The talk-focus notices raised since the last delivery, offered now. See
+    /// [`offer_talk_focus_notices`].
+    pub fn deliver_talk_focus_notices(&mut self, answer: &mut TalkFocusAnswer<'_>) {
+        let chat = &mut self.app.objects.world.chat;
+        let notices = chat.take_talk_focus_notices();
+        offer_talk_focus_notices(chat, notices, answer);
+    }
+
+    // ---- what the front end asks the game to do
+
+    /// What the runtime owes one request a UI raised, done at once. See [`App::run_request`]. The
+    /// talk-focus notices the request raises are offered to `talk_focus` as they are raised.
+    pub fn run_request(
+        &mut self,
+        request: UiRequest,
+        now: LocalTime,
+        talk_focus: &mut TalkFocusAnswer<'_>,
+    ) -> Vec<UiRequest> {
+        self.app.run_request(request, now, &mut |chat| {
+            let notices = chat.take_talk_focus_notices();
+            offer_talk_focus_notices(chat, notices, talk_focus);
+        })
+    }
+
+    /// See [`App::deliver_selection_notices`].
+    pub fn deliver_selection_notices(&mut self, now: LocalTime) {
+        self.app.deliver_selection_notices(now);
+    }
+
+    /// The actions `--action-at` presses this frame, taken: the front end presses each as its
+    /// key would be, through its own input.
+    pub fn take_scripted_actions(&mut self) -> Vec<pyreal_client_contract::actions::ActionId> {
+        std::mem::take(&mut self.app.scripted_actions)
+    }
+
+    /// Queue an action for the next frame, as a device would produce it: a scripted run presses
+    /// the game's keys through this. See [`App::inject_action`].
+    pub fn inject_action(&mut self, action: crate::actions::Action) {
+        self.app.inject_action(action);
+    }
+
+    /// Accept actions immediately, including releases from an outgoing input scope.
+    pub fn accept_actions(&mut self, actions: impl IntoIterator<Item = crate::actions::Action>) {
+        self.app.actions.submit(actions);
+    }
+
+    /// One pass of the dialog service with `presenter` showing the questions, or none to drop
+    /// them.
+    pub fn service_dialogs(
+        &mut self,
+        presenter: Option<&mut dyn crate::dialogs::DialogPresenter>,
+        now: LocalTime,
+    ) {
+        self.app.service_dialogs_with(presenter, now);
+    }
+
+    /// The UI's sound requests, played at once; anything that is not a sound comes back.
+    pub fn play_sounds(&mut self, requests: Vec<UiRequest>) -> Vec<UiRequest> {
+        crate::audio::apply_sound_requests(self.app.audio.as_mut(), &self.app.store, requests)
+    }
+
+    /// Hand the pointer events and the requests no step took this frame to the interaction step.
+    pub fn queue(&mut self, mouse: Vec<UiMouseEvent>, requests: Vec<UiRequest>) {
+        self.app.interaction.queue(mouse, requests);
+    }
+
+    /// The HUD's own placement owners, applied to `requests` at once; what they took is removed.
+    pub fn consume_placement_requests(&mut self, requests: &mut Vec<UiRequest>, now: ServerTime) {
+        self.app
+            .hud
+            .consume_placement_requests(&mut self.app.objects.world, requests, now);
+    }
+
+    /// The pointer's place for the next world pick, in window pixels: where an item an
+    /// interface dragged was let go over the world.
+    pub fn note_pointer(&mut self, x: i32, y: i32) {
+        self.app.interaction.note_cursor((x, y));
+    }
+
+    /// A pointer event over the world.
+    pub fn pointer(&mut self, event: UiMouseEvent) {
+        let viewport = self.app.present.size();
+        self.app.interaction.dispatch_ui_mouse(event, viewport);
+    }
+
+    /// The right button came up, ending a drag when `dragged`: the release that reaches the world
+    /// examines nothing then, wherever it lands.
+    pub fn note_right_release(&mut self, dragged: bool) {
+        self.app.interaction.note_right_release(dragged);
+    }
+
+    /// The pointer resting at `position` over the world, over item `item` if a slot is under it.
+    pub fn hover(
+        &mut self,
+        position: (i32, i32),
+        item: Option<ObjectId>,
+        over_view: bool,
+        now: LocalTime,
+    ) {
+        let viewport = self.app.present.size();
+        let inter = &mut self.app.interaction;
+        inter.note_pointer_over_game_view(over_view);
+        inter.dispatch_ui_hover(
+            position,
+            item,
+            viewport,
+            &mut self.app.objects.world,
+            ServerTime(now.0),
+        );
+    }
+
+    /// The selection blink's once-a-loop step.
+    pub fn selection_blink(&mut self, now: LocalTime) {
+        self.app.interaction.global_loop_lighting(now.0);
+    }
+
+    /// The selection lighting raised since the last call, applied to the drawn world.
+    pub fn apply_selection_lighting(&mut self) {
+        for (id, mode) in self.app.interaction.take_pending_lighting() {
+            if let Some(mut scene) = self.app.present.scene_mut(self.app.world.as_mut()) {
+                scene.world_mut().apply_object_lighting(id, mode);
+            }
+        }
+    }
+
+    /// The selection lighting raised since the last call, handed to a front end that lights the
+    /// world its own way.
+    pub fn take_selection_lighting(
+        &mut self,
+    ) -> Vec<(ObjectId, pyreal_animation::parts::LightingMode)> {
+        self.app.interaction.take_pending_lighting()
+    }
+
+    /// Light object `id` in the drawn world as `mode` says.
+    pub fn light_object(&mut self, id: ObjectId, mode: pyreal_animation::parts::LightingMode) {
+        if let Some(mut scene) = self.app.present.scene_mut(self.app.world.as_mut()) {
+            scene.world_mut().apply_object_lighting(id, mode);
+        }
+    }
+
+    /// Ordered text changes raised by shared entry operations.
+    pub fn take_chat_entry_updates(
+        &mut self,
+    ) -> Vec<pyreal_client_contract::chat::entry::EntryUpdate> {
+        self.app.interaction.take_chat_entry_updates()
+    }
+
+    /// The retained drafts, without focus effects or replayed commands.
+    pub fn chat_entry_drafts(&self) -> Vec<pyreal_client_contract::chat::entry::EntryUpdate> {
+        self.model()
+            .chat
+            .entries
+            .iter()
+            .map(
+                |(&window, entry)| pyreal_client_contract::chat::entry::EntryUpdate {
+                    window,
+                    text: entry.text.clone(),
+                    cursor: entry.text.chars().count(),
+                    focus: false,
+                },
+            )
+            .collect()
+    }
+
+    /// Chat-window titles set by command since the last call.
+    pub fn take_chat_window_titles(&mut self) -> Vec<(u32, String)> {
+        self.app.interaction.take_chat_window_title_notices()
+    }
+
+    /// Frame-rate display switches set by command since the last call.
+    pub fn take_framerate_display_switches(&mut self) -> Vec<bool> {
+        self.app.interaction.take_framerate_display_notices()
+    }
+
+    /// A local line in the text scroll.
+    pub fn add_scroll_line(&mut self, text: &str, kind: u32) {
+        self.app
+            .objects
+            .world
+            .scroll
+            .add_text_to_scroll(text, kind, true, 0);
+    }
+
+    /// Insert a line whose producer supplies viewport meaning.
+    pub fn add_feedback_line(
+        &mut self,
+        text: &str,
+        kind: u32,
+        feedback: pyreal_client_contract::feedback::Feedback,
+    ) {
+        self.app
+            .objects
+            .world
+            .scroll
+            .add_feedback_to_scroll(text, kind, true, 0, feedback);
+    }
+
+    /// The external-container panel's range watches end (the panel that held them is gone).
+    pub fn end_external_container_watches(&mut self) {
+        self.app
+            .objects
+            .world
+            .object_range_checks
+            .unregister_all(pyreal_client_model::range::RangeHandler::ExternalContainer);
+    }
+
+    /// Bring the preferences up into the UI's option store. See [`App::start_preferences`].
+    pub fn start_preferences(&mut self) {
+        self.app.start_preferences();
+    }
+
+    /// The HUD model's once-a-frame sync. See [`App::sync_hud`].
+    pub fn sync_hud(&mut self) {
+        self.app.sync_hud();
+    }
+
+    /// Whether the saved screen layout is waiting to be loaded.
+    #[must_use]
+    pub fn screen_layout_pending(&self) -> bool {
+        self.app.pending_auto_layout
+    }
+
+    /// The saved screen layout was loaded, or will not be.
+    pub fn screen_layout_done(&mut self) {
+        self.app.pending_auto_layout = false;
+    }
+
+    /// The character screen's asks: log on, delete, restore.
+    pub fn run_character_actions(
+        &mut self,
+        actions: Vec<pyreal_client_contract::pregame::CharacterAction>,
+    ) {
+        self.app.run_character_actions(actions);
+    }
+
+    /// The creation wizard's asks.
+    pub fn run_chargen_actions(
+        &mut self,
+        actions: Vec<pyreal_client_contract::pregame::CharGenAction>,
+    ) {
+        self.app.run_chargen_actions(actions);
+    }
+
+    /// Log the character off.
+    pub fn log_off_character(&mut self) {
+        self.app.log_off_character();
+    }
+
+    /// Quit: the device is done.
+    pub fn quit(&mut self) {
+        self.app.done();
+    }
+
+    /// Leave the game from a front end's own Exit: from the world the character logs off first,
+    /// its player module saved ahead of the departure. See [`App::quit_game`].
+    pub fn quit_game(&mut self) {
+        self.app.quit_game();
+    }
+
+    /// The teleport overlay's step. See [`App::teleport_use_time`].
+    pub fn teleport_use_time(&mut self, shell: &S) {
+        self.app.teleport_use_time(shell);
+    }
+
+    /// The portal space's step. See [`App::portal_space_use_time`].
+    pub fn portal_space_use_time(&mut self, shell: &mut S) {
+        self.app.portal_space_use_time(shell);
+    }
+
+    /// The gameplay screen came or went: follow its forced resolution and full-screen state.
+    pub fn follow_screen_change(&mut self, shell: &mut S) {
+        self.app.follow_screen_forced_resolution(shell);
+        self.app.follow_gameplay_full_screen(shell);
+    }
+
+    // ---- the window
+
+    /// A window lifecycle event (resize, focus, close). See [`App::handle_window_event`].
+    pub fn window_event(
+        &mut self,
+        shell: &mut S,
+        event: &crate::platform::window::HostEvent,
+        time_ms: u32,
+    ) {
+        self.app.handle_window_event(shell, event, time_ms);
+    }
+
+    /// A device message, through the window procedure.
+    pub fn window_message(&mut self, message: crate::pump::WindowMessage, time_ms: u32) {
+        self.app.pump.dispatch(message, time_ms);
+    }
+
+    /// The mouse-look button.
+    pub fn mouse_look_button(&mut self, down: bool) {
+        self.app.mouse_look_button(down);
+    }
+
+    /// Use the orbit camera in place of the game's own, with `settings`; `None` goes back to the
+    /// game's camera, which is where it was left. The orbit camera keeps its own place meanwhile.
+    pub fn set_orbit_camera(&mut self, settings: Option<crate::orbit::OrbitSettings>) {
+        if settings.is_none() {
+            self.app.orbit_keys = crate::orbit::MovementKeys::default();
+            self.app.orbit_pending.clear();
+            self.app.orbit_look = (0.0, 0.0);
+        }
+        self.app.orbit = settings;
+    }
+
+    /// Where the experimental rendering effects stand on the device the client draws with, for
+    /// the options page.
+    #[must_use]
+    pub fn hifi_availability(&self) -> pyreal_client_contract::options::fidelity::Availability {
+        self.app.present.hifi_availability()
+    }
+
+    /// A pad's two sticks under the orbit camera, as they are pushed this frame: `movement` moves
+    /// the player (right and ahead, each from -1 to 1, `None` when it is let go; see
+    /// [`crate::orbit::MovementKeys::stick`]), and `look` turns the camera (right and up, each from
+    /// -1 to 1; see [`crate::orbit::OrbitCamera::turn_stick`]). Nothing without the orbit camera.
+    pub fn orbit_sticks(&mut self, movement: Option<(f32, f32)>, look: (f32, f32)) {
+        let Some(settings) = self.app.orbit else {
+            return;
+        };
+        let asks = self.app.orbit_keys.stick(movement, settings);
+        self.app.orbit_pending.extend(asks);
+        // While a spell is cast the look stick turns the player across, the camera following;
+        // it still tilts the camera.
+        if self.app.orbit_keys.locked() && !self.app.orbit_keys.mouse_turns_player() {
+            let turn = self.app.orbit_keys.cast_turn(look.0);
+            self.app.orbit_pending.extend(turn);
+            self.app.orbit_look = (0.0, look.1);
+        } else {
+            if !self.app.orbit_keys.mouse_turns_player() {
+                let stop = self.app.orbit_keys.cast_turn(0.0);
+                self.app.orbit_pending.extend(stop);
+            }
+            self.app.orbit_look = look;
+        }
+    }
+
+    /// Bring the orbit camera `notches` of the wheel closer (further, for a negative count), as a
+    /// pad's stick zooms it a little each frame. Nothing without the orbit camera or a body.
+    pub fn orbit_zoom(&mut self, notches: f32) {
+        if self.app.orbit.is_none() {
+            return;
+        }
+        if let Some(c) = self.app.world.as_mut().and_then(|w| w.character.as_mut()) {
+            c.camera.orbit.zoom(notches);
+        }
+    }
+
+    /// The player's movement controls as they stand: moving ahead, back, turning, the run lock.
+    #[must_use]
+    pub fn movement_controls(&self) -> crate::character::CharacterInput {
+        self.app.char_input
+    }
+
+    /// One of the orbit camera's mouse buttons, the right one for `right`, going down or up over
+    /// the world. Either held turns the camera with the pointer; both together run the player
+    /// forward where it looks. Under character-based movement the right one steers the player,
+    /// and the turning keys step sideways while it is held.
+    pub fn orbit_button(&mut self, right: bool, pressed: bool) {
+        let keys = &mut self.app.orbit_keys;
+        if right {
+            keys.buttons.1 = pressed;
+        } else {
+            keys.buttons.0 = pressed;
+        }
+        let (left, right) = keys.buttons;
+        self.app.mouse_look_button(left || right);
+        if let Some(settings) = self.app.orbit {
+            let run = self.app.orbit_keys.mouse_run(left && right, settings);
+            self.app.orbit_pending.extend(run);
+            let steps = self.app.orbit_keys.steering_changed(settings);
+            self.app.orbit_pending.extend(steps);
+        }
+    }
+
+    /// Make a press of an attack key or an attack height button the whole attack (`on`): the
+    /// attack starts at that height and goes by itself when the power bar reaches the power aimed
+    /// at, however long the key or button is held; the attack repeats until it is interrupted, and
+    /// the advanced combat interface is not used, whatever the player's options say (the options
+    /// themselves are left as the player set them). Off, the keys and buttons work as the game's
+    /// do: held, they charge, and let go, the attack goes, repeating as the player's option says.
+    pub fn set_press_attacks(&mut self, on: bool) {
+        self.app.press_attacks = on;
+    }
+
+    /// The orbit camera as the body's camera has it, when there is a body.
+    #[must_use]
+    pub fn orbit_camera(&self) -> Option<crate::orbit::OrbitCamera> {
+        self.app
+            .world
+            .as_ref()
+            .and_then(|w| w.character.as_ref())
+            .map(|c| c.camera.orbit)
+    }
+
+    /// The pointer moved, in window pixels.
+    pub fn cursor_moved(&mut self, x: f64, y: f64) {
+        self.app.cursor_moved(x, y);
+    }
+
+    /// The free camera's rise and sink keys.
+    pub fn flycam_rise(&mut self, held: bool) {
+        self.app.flycam_rise(held);
+    }
+
+    /// …
+    pub fn flycam_sink(&mut self, held: bool) {
+        self.app.flycam_sink(held);
+    }
+
+    /// Whether explore mode is up.
+    #[must_use]
+    pub fn exploring(&self) -> bool {
+        self.app.exploring()
+    }
+
+    /// One of explore mode's keys, held or let go.
+    pub fn explore_key(&mut self, key: crate::explore::Key, down: bool) {
+        self.app.explore_key(key, down);
+    }
+
+    /// What explore mode's overlay asked.
+    pub fn explore_ask(&mut self, ask: crate::explore::Ask) {
+        self.app.explore_ask(ask);
+    }
+
+    /// What explore mode's overlay shows, while it is up.
+    #[must_use]
+    pub fn explore_view(&self) -> Option<crate::explore::ExploreView> {
+        self.app.explore_view()
+    }
+}
+
+/// A UI's answer to one talk-focus notice: handed the current talk focus and the notice, it says
+/// whether the talk focus falls back to All (the chat entry's row for the current focus was just
+/// switched off under it).
+pub type TalkFocusAnswer<'a> = dyn FnMut(TalkFocus, TalkFocusNotice) -> bool + 'a;
+
+/// Talk-focus `notices` offered to a UI one at a time, in the order they were raised. A fall-back
+/// the UI answers takes effect before the next notice is offered, which reads it.
+pub fn offer_talk_focus_notices(
+    chat: &mut ChatState,
+    notices: Vec<TalkFocusNotice>,
+    answer: &mut TalkFocusAnswer<'_>,
+) {
+    for notice in notices {
+        let _ = answer(chat.talk_focus, notice);
+    }
+}

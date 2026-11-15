@@ -1,0 +1,106 @@
+[package]
+name = "pyreal-testkit"
+description = "Test support for the client: the harness a behaviour scenario is written in."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# One test target per tier, and `autotests = false` so a stray `tests/*.rs` cannot become a second
+# link step silently -- the same arrangement `pyreal-client`, `pyreal-client-net` and `dereth-headless` use.
+autotests = false
+
+# **The harness crate.** It is test support: nothing in `tools/`,
+# `core/*/src` or `pyreal/*/src` may depend on it, and it holds no oracle of its own. What it holds is the
+# *vocabulary* a scenario is written in -- a headless client, a behaviour registry, and a golden
+# event log -- so that a station is its claim and not four hundred lines of setup.
+[features]
+default = []
+# Tier switch only: no code is gated on it. It selects the `dat` test binary, whose scenarios open
+# the retail dats under $PYREAL_TEST_DAT_DIR and replay recorded sessions through a real `App`.
+retail-dats = []
+
+[dependencies]
+pyreal-rules.workspace = true
+pyreal-desktop.workspace = true
+# `wgpu`: the shell does not build without it (its `cfg(gpu)` imports), and nothing here unifies it in.
+pyreal-client-shell = { workspace = true, features = ["wgpu"] }
+# The client. `App::with_platform(cfg, NullPresentation, Platform::headless(w, h))` is what the
+# retail-assets backend is; `default-features = false` because the default is a graphics backend and
+# a scenario never has a device.
+pyreal-client = { workspace = true, features = ["test-support"] }
+# The headless half: `ObjectStream`, `ClientNetwork` and the frame steps the no-assets backend runs
+# without an `App`.
+pyreal-client-runtime = { workspace = true, features = ["test-support"] }
+# `GameSnapshot` (what `snapshot()` answers with) and `UiRequest`.
+pyreal-client-contract.workspace = true
+# `World`, `Request`, `Notice` -- the model a scenario asserts over, and the requests it watches go
+# out.
+pyreal-client-model = { workspace = true, features = ["test-support"] }
+# `InputEvent` and the named movement actions a `Player` step injects.
+pyreal-input.workspace = true
+# The typed messages `Inbound::message` takes and the opcodes `outbound_opcodes` reports.
+pyreal-protocol.workspace = true
+# `Corpus` (the decoded corpus), `capture` (the raw one),
+# `MockTransport` and `Session`, which is how an outbound request is turned back into an opcode:
+# all `pyreal_client_net::client_session`, from the `pyreal-client-net` dependency below.
+# `pyreal_dat::testing` -- the one lookup of the retail dats every test uses.
+pyreal-dat = { workspace = true, features = ["test-support"] }
+pyreal-primitives.workspace = true
+# One seeded behaviour is about where a body may enter the world, which is the collision walk's
+# question and not the frame's.
+pyreal-physics.workspace = true
+# A normal dependency, not a dev one: `src/replay.rs` and `src/wire.rs` build a `ConnectRequest`
+# datagram and parse the ones a scenario sends, so the crate that frames and parses a datagram is
+# library code here. Path-only, and nothing in `tools/`,
+# `core/*/src` or `pyreal/*/src` gains an edge, because nothing there may depend on this crate at all.
+pyreal-client-net = { workspace = true, default-features = true, features = ["test-support"] }
+pyreal-transport.workspace = true
+# The plugin conformance driver (`src/plugins.rs`, `src/conformance.rs`): the host, the interface,
+# the Luau engine, and `toml` for each case's `expect.toml`.
+pyreal-plugin-api.workspace = true
+pyreal-plugin-host.workspace = true
+# The journey search, for the scripted world's travel.
+pyreal-navigation.workspace = true
+pyreal-plugin-lua.workspace = true
+pyreal-plugin-wasm = { workspace = true, default-features = true }
+toml.workspace = true
+# The scripted world's spell table (`plugins::scripted_spell_table`), so a plugin's casting runs
+# with no game data.
+pyreal-assets = { path = "../../core/assets" }
+
+[dev-dependencies]
+# The worlds, accounts and vault the screens before the world keep, for the sessions in process.
+pyreal-launch.workspace = true
+pyreal-horizon.workspace = true
+# The pure helpers and presentation the interface draws with, for the scenarios that check them.
+pyreal-ui-logic.workspace = true
+pyreal-presentation.workspace = true
+pyreal-terrain.workspace = true
+pyreal-scene.workspace = true
+pyreal-world-data.workspace = true
+pyreal-chargen.workspace = true
+# `pyreal_primitives::num::math`: the scenarios build headings with the same portable trigonometry as the client.
+pyreal-primitives.workspace = true
+# The scenario modules whose drives build animation and asset records. Path-only and dev-only.
+pyreal-animation.workspace = true
+pyreal-assets.workspace = true
+# The mouse messages one seeded scenario delivers. It is `pyreal-client`'s own window dependency,
+# taken here at the same version and with the same features so that a `Win32Message` this crate
+# builds is the one the client's pump reads.
+winit = { workspace = true, features = ["rwh_06"] }
+
+[lints]
+workspace = true
+
+# The two tiers. `cpu` runs with no feature flags and reaches no dat; `dat` opens
+# the retail dats and replays recorded sessions through a real `App`, and **must run serially** --
+# two headless `App`s in one process share process-wide state.
+[[test]]
+name = "cpu"
+path = "tests/cpu/main.rs"
+
+[[test]]
+name = "dat"
+path = "tests/dat/main.rs"
+required-features = ["retail-dats"]

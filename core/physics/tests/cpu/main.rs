@@ -1,0 +1,13 @@
+//! Contracts over the inputs selected by this test tier.
+
+mod attack;
+mod cells;
+mod collision;
+mod common;
+mod divergences;
+mod doors;
+mod geometry;
+mod host;
+mod instruments;
+mod motion;
+mod transition;

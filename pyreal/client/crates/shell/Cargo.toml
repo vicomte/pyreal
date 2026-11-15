@@ -1,0 +1,69 @@
+[package]
+name = "pyreal-client-shell"
+description = "The client's front end over the runtime: the Horizon interface, the cursor, the clipboard bridge, the device input and the renderer it draws through, generic over the platform under it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# Unit tests cover the shell modules; the isolated host test owns process-wide hooks.
+autotests = false
+
+# As the scene's: the renderer is gated on the device (`build.rs` sets `cfg(gpu)` with it).
+[features]
+# Opt-in fixture controls and observations.
+test-support = ["pyreal-client-runtime/test-support", "pyreal-scene/test-support"]
+default = ["wgpu"]
+wgpu = ["pyreal-scene/wgpu"]
+# Tier switch only: no code is gated on it. It un-ignores the unit tests that read the retail dats
+# under $PYREAL_TEST_DAT_DIR.
+retail-dats = []
+
+[dependencies]
+pyreal-rules.workspace = true
+pyreal-world-data.workspace = true
+pyreal-chargen.workspace = true
+pyreal-primitives.workspace = true
+pyreal-client-contract.workspace = true
+# The application state machine, its frame loop and the platform seams the host fills.
+pyreal-client-runtime.workspace = true
+# The plugin host, reached through the runtime's frame hook, and the crate that builds its
+# windows in this interface.
+pyreal-plugin-host.workspace = true
+pyreal-plugin-ui.workspace = true
+# The widget kit the plugin windows are drawn with.
+pyreal-ui-kit.workspace = true
+pyreal-plugin-api.workspace = true
+pyreal-client-model.workspace = true
+pyreal-client-net = { workspace = true, default-features = true }
+pyreal-protocol.workspace = true
+pyreal-dat.workspace = true
+pyreal-assets.workspace = true
+pyreal-physics.workspace = true
+# The journal's file format.
+pyreal-presentation.workspace = true
+pyreal-animation.workspace = true
+pyreal-audio.workspace = true
+# The drawn world and the device it is on.
+pyreal-scene.workspace = true
+pyreal-codecs.workspace = true
+pyreal-world-render.workspace = true
+# The device input.
+pyreal-input.workspace = true
+# The interface, and the game's words and tables it reads.
+pyreal-horizon.workspace = true
+pyreal-ui-logic.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pyreal-client-shell = { path = ".", default-features = false, features = ["test-support"] }
+# `pyreal_dat::testing`: where the tests find the retail dats.
+pyreal-dat = { workspace = true, features = ["test-support"] }
+# The device's counters.
+# The engine of the plugins the tests load into a plugin host.
+pyreal-plugin-lua.workspace = true
+
+[lints]
+workspace = true
+

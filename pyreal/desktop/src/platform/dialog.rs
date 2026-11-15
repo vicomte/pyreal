@@ -1,0 +1,22 @@
+//! The modal error box, shown by the operating system.
+//!
+//! The seam (`ErrorDialogHost`) and the headless host (`NoDialog`) are
+//! `pyreal_client_runtime::platform::dialog`'s and are re-exported here. `SystemDialog` is the
+//! windowed build's host: the OS message box, through `pyreal_console::error_box`, because this
+//! crate forbids `unsafe` and the call needs it.
+
+pub use pyreal_client_runtime::platform::dialog::{ErrorDialogHost, NoDialog};
+
+use pyreal_client_runtime::connect_failure::ErrorPopup;
+
+/// The operating system's own message box, with the popup's caption, text and style.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemDialog;
+
+impl ErrorDialogHost for SystemDialog {
+    fn show_modal(&mut self, popup: &ErrorPopup) {
+        // The box needs the pointer: one held for a camera drag is let go of first.
+        crate::platform::window::let_go_of_pointer();
+        pyreal_console::error_box(&popup.caption, &popup.text, popup.style);
+    }
+}

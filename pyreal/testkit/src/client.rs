@@ -1,0 +1,1089 @@
+//! [`HeadlessClient`] -- a whole client a scenario can drive, and the read-only views it answers
+//! with.
+//!
+//! # Two backends, one vocabulary
+//!
+//! A scenario says `given`, `when`, `tick`, and then asks the client what happened. What is
+//! underneath depends on one field of [`ClientSpec`]:
+//!
+//! | [`Assets`] | what it builds | what it can assert |
+//! |---|---|---|
+//! | [`Assets::None`] | the object stream, the HUD and the interaction layer, with an optional \
+//!   replay endpoint under them -- no `App`, no dats, no interface | the model: objects, chat, \
+//!   requests, the snapshot |
+//! | [`Assets::Retail`] | `App::with_platform(cfg, NullPresentation, Platform::headless(w, h))` \
+//!   -- the whole client, on a fixed-step clock, with no device and no window | all of the above \
+//!   plus the frame log and, with the shell up, the Horizon interface |
+//!
+//! The `cpu` tier opens no retail data file, and an `App` cannot be built without one, so a
+//! scenario whose claim is about the model must be able to make the model without the client's
+//! shell.
+//!
+//! **The recorded captures are not dats.** They are committed to the repository, so an
+//! [`Assets::None`] scenario may still replay one, and many do.
+//!
+//! # Setup failures are panics
+//!
+//! `given`, `when` and `tick` panic rather than return a `Result`. A scenario that cannot set
+//! itself up has not proved anything: a test that skips its setup can appear to pass without
+//! exercising the behavior it claims to cover. The panic message names the step and the recording.
+
+use std::sync::Arc;
+
+use pyreal_client_contract::chat::interface::ChatMessage;
+use pyreal_client_contract::{GameSnapshot, UiRequest};
+use pyreal_client_model::{Notice, RecordingSink, Request, World};
+use pyreal_client_net::client_session::SessionEvent;
+use pyreal_client_runtime::config::Config;
+use pyreal_client_runtime::frame_events::FrameEvents;
+use pyreal_client_runtime::interaction::Interaction;
+use pyreal_client_runtime::net::ClientNetwork;
+use pyreal_client_runtime::objects::ObjectStream;
+use pyreal_client_runtime::present::NullPresentation;
+use pyreal_client_shell::hud::Hud;
+use pyreal_dat::RetailDatStore;
+use pyreal_primitives::{LocalTime, ObjectId};
+use {
+    pyreal_client::app::App, pyreal_client_runtime::app::Platform,
+    pyreal_client_runtime::platform::clock::HEADLESS_STEP,
+};
+
+use crate::login;
+use crate::view::ScenarioView;
+
+/// What a scenario's client is built out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Assets {
+    /// No retail data file at all. The model only: no `App`, no interface.
+    None,
+    /// The retail dats under `$PYREAL_TEST_DAT_DIR`, and a whole `App` over them.
+    Retail,
+}
+
+/// How to build the client.
+#[derive(Debug, Clone)]
+pub struct ClientSpec {
+    /// Which backend. See [`Assets`].
+    pub assets: Assets,
+    /// The null presentation's extent, which is what the interface lays out against.
+    pub width: u32,
+    pub height: u32,
+    /// Bring the interface up (`Assets::Retail` only). A scenario whose claim is about the
+    /// interface or the input manager needs it; one whose claim is about the frame does not.
+    pub shell: bool,
+    /// Frames to run once the client is built.
+    pub settle_frames: u64,
+    /// Load the default static scene (`Assets::Retail` only).
+    pub static_scene: bool,
+    /// Build the world and the player's body, with nothing drawn, when the player enters it
+    /// (`Assets::Retail` only).
+    pub simulated_world: bool,
+    /// Where the client writes its preferences and everything beside them. See
+    /// [`Self::with_settings_dir`]; `None` is a temporary path that is never created, which is
+    /// what a scenario that writes nothing wants.
+    pub settings_dir: Option<std::path::PathBuf>,
+}
+
+impl ClientSpec {
+    /// The model only: no dats, no shell.
+    #[must_use]
+    pub fn model() -> Self {
+        Self {
+            assets: Assets::None,
+            width: 800,
+            height: 600,
+            shell: false,
+            settle_frames: 0,
+            static_scene: false,
+            simulated_world: false,
+            settings_dir: None,
+        }
+    }
+
+    /// A whole `App` over the retail dats, with no shell.
+    #[must_use]
+    pub fn retail() -> Self {
+        Self {
+            assets: Assets::Retail,
+            ..Self::model()
+        }
+    }
+
+    /// [`Self::retail`] whose world and body are built when the player enters it, so what the
+    /// body does reaches the wire.
+    #[must_use]
+    pub fn simulated() -> Self {
+        Self {
+            simulated_world: true,
+            ..Self::retail()
+        }
+    }
+
+    /// A whole `App` with its interface up, settled for `frames` frames. Offline, Horizon stays
+    /// on its lobby: a scenario that needs the game screen's input maps logs a character in.
+    #[must_use]
+    pub fn gameplay(frames: u64) -> Self {
+        Self {
+            shell: true,
+            settle_frames: frames,
+            ..Self::retail()
+        }
+    }
+
+    /// [`Self::gameplay`] with the default static scene under it.
+    #[must_use]
+    pub fn gameplay_in_world(frames: u64) -> Self {
+        Self {
+            static_scene: true,
+            ..Self::gameplay(frames)
+        }
+    }
+
+    /// Put the client's preferences file, and everything the client writes beside it, under `dir`.
+    ///
+    /// The journal is a file beside the preferences file, so a scenario about it needs a
+    /// preferences directory of its own rather than the user's real settings folder. The directory is created when the client is
+    /// built and **removed when the client is dropped** -- see [`HeadlessClient::scratch_settings`]
+    /// -- so a scenario gets a fresh one every time and leaves nothing behind.
+    ///
+    /// `Self::scratch_settings` is the one that names a unique directory for you.
+    #[must_use]
+    pub fn with_settings_dir(self, dir: std::path::PathBuf) -> Self {
+        Self {
+            settings_dir: Some(dir),
+            ..self
+        }
+    }
+
+    /// [`Self::with_settings_dir`] with a unique directory under the system temporary directory,
+    /// named after `tag`, the process and a counter -- so two scenarios in one binary, and two
+    /// binaries at once, never share one.
+    #[must_use]
+    pub fn with_scratch_settings(self, tag: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("dere-scenario-{tag}-{}-{n}", std::process::id()));
+        self.with_settings_dir(dir)
+    }
+}
+
+/// How a scenario begins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Given {
+    /// Replay a recorded session's login.
+    ///
+    /// Without a character the replay stops when the shard's character set has arrived; with one
+    /// it selects that character by name and keeps replaying until the player is in the world.
+    /// **No socket is opened**: the endpoint is the replay one, and only the recording's
+    /// server-to-client datagrams are fed.
+    EnteredWorld {
+        session: &'static str,
+        character: Option<&'static str>,
+    },
+    /// A player character in an otherwise empty world, and nothing else. `Assets::None` only:
+    /// the `App` builds its own world.
+    APlayer(ObjectId),
+}
+
+/// One thing a scenario does to the client. Implemented by [`crate::Inbound`] and
+/// [`crate::Player`].
+pub trait Step {
+    /// Apply this step. Panics on a step the client cannot take; see the module docs.
+    fn apply(self, client: &mut HeadlessClient);
+}
+
+/// The client under a scenario.
+pub struct HeadlessClient {
+    backend: Backend,
+    /// Everything the scenario has seen the client do, accumulated across steps.
+    pub(crate) log: Log,
+    /// What the client really framed into a datagram. See [`crate::wire`].
+    wire: crate::wire::Wire,
+    spec: ClientSpec,
+    /// The disposable preferences directory, when the spec named one. Dropping it removes the
+    /// directory. See [`ClientSpec::with_settings_dir`].
+    settings: Option<ScratchSettings>,
+}
+
+/// A directory the client was told to write its preferences into, removed when the scenario ends.
+///
+/// It is a guard rather than a `cleanup()` a scenario has to remember, because the scenario that
+/// most wants one is the scenario that panics: a failed assertion must not leave a settings
+/// directory behind.
+#[derive(Debug)]
+pub struct ScratchSettings {
+    dir: std::path::PathBuf,
+}
+
+impl ScratchSettings {
+    /// The directory itself, for a scenario that wants to read what the client wrote.
+    #[must_use]
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+}
+
+impl Drop for ScratchSettings {
+    fn drop(&mut self) {
+        // A scenario's own directory under the system temporary directory, created by this
+        // process. A failure to remove it is not a failure of the scenario -- a file the client
+        // still holds open on Windows is the usual reason -- and panicking in a `Drop` during an
+        // unwind would replace the assertion message with this one.
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+impl std::fmt::Debug for HeadlessClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeadlessClient")
+            .field("assets", &self.spec.assets)
+            .field("frames", &self.log.frames)
+            .field("asserted", &self.log.asserted)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) enum Backend {
+    Model(Box<Model>),
+    App(Box<App>),
+}
+
+/// The `Assets::None` client: `App::frame`'s model half, with the renderer, the interface and the
+/// platform left out.
+pub(crate) struct Model {
+    pub(crate) objects: ObjectStream,
+    pub(crate) hud: Hud,
+    pub(crate) interaction: Interaction,
+    pub(crate) net: Option<ClientNetwork>,
+    /// Empty, and it stays empty: the frame log is `App`'s and this backend runs no frame steps.
+    /// It exists so that `frame_events()` answers the same type on both backends rather than an
+    /// `Option` every caller would unwrap.
+    pub(crate) events: FrameEvents,
+    /// The clock this backend feeds and stamps at. The recorded `t` drives it during a login
+    /// replay.
+    pub(crate) now: f64,
+}
+
+/// What the scenario has watched the client do.
+#[derive(Debug, Default)]
+pub(crate) struct Log {
+    pub(crate) frames: u64,
+    pub(crate) chat: Vec<ChatMessage>,
+    pub(crate) notices: Vec<Notice>,
+    pub(crate) ui_requests: Vec<UiRequest>,
+    pub(crate) requests: Vec<Request>,
+    pub(crate) asserted: Vec<&'static str>,
+    /// The `App`'s frame counter when this scenario started, so that `events_text` is this
+    /// scenario's frames and not the ring's.
+    pub(crate) first_frame: u64,
+    /// The client's own frame index at the last drain of its outbox, so that two steps between
+    /// two frames do not count one frame's outbox twice. See `drain`.
+    pub(crate) last_drained_frame: Option<u64>,
+    /// The millisecond clock a pointer gesture is stamped at. It starts well away from zero
+    /// because the input manager's double-click window is measured against it.
+    pub(crate) pointer_time: u32,
+    /// Where the last pointer gesture put the pointer.
+    pub(crate) pointer: (i32, i32),
+    /// The account the replayed login's character set named.
+    pub(crate) account: String,
+    /// The characters it offered, in the recorded order.
+    pub(crate) characters: Vec<String>,
+}
+
+impl HeadlessClient {
+    /// Build one.
+    ///
+    /// # Panics
+    /// Panics when an `Assets::Retail` client cannot be built -- which means the retail dats under
+    /// `$PYREAL_TEST_DAT_DIR` are absent, and a scenario that carried on would be asserting over an
+    /// empty client.
+    #[must_use]
+    pub fn new(spec: ClientSpec) -> Self {
+        // The desktop's platform answers, the local time zone among them, before any surface
+        // formats a date: a client built with no application installs them nowhere else.
+        pyreal_client::hud::install_platform();
+        let settings = spec.settings_dir.as_ref().map(|dir| {
+            std::fs::create_dir_all(dir).unwrap_or_else(|e| {
+                panic!(
+                    "this scenario asked for a disposable settings directory at {}, and it could \
+                     not be made: {e}",
+                    dir.display()
+                )
+            });
+            ScratchSettings { dir: dir.clone() }
+        });
+        let model = || Model {
+            objects: ObjectStream::new(),
+            hud: Hud::new(),
+            interaction: Interaction::default(),
+            net: None,
+            events: FrameEvents::new(),
+            now: 0.0,
+        };
+        let backend = match spec.assets {
+            Assets::None => Backend::Model(Box::new(model())),
+            Assets::Retail => Backend::App(Box::new(build_app(&spec))),
+        };
+        let first_frame = match &backend {
+            Backend::App(app) => app.frame_events().frame_index(),
+            Backend::Model(m) => m.events.frame_index(),
+        };
+        Self {
+            backend,
+            log: Log {
+                first_frame,
+                pointer_time: 100_000,
+                ..Log::default()
+            },
+            wire: crate::wire::Wire::new(),
+            spec,
+            settings,
+        }
+    }
+
+    /// The disposable settings directory this client was built with, when its spec named one.
+    ///
+    /// A scenario about what the client *wrote* -- the journal, the options file --
+    /// reads it back from here. See [`ClientSpec::with_settings_dir`].
+    #[must_use]
+    pub fn scratch_settings(&self) -> Option<&ScratchSettings> {
+        self.settings.as_ref()
+    }
+
+    /// The model-only client, for the `cpu` tier.
+    #[must_use]
+    pub fn model() -> Self {
+        Self::new(ClientSpec::model())
+    }
+
+    /// Set the scenario up.
+    ///
+    /// # Panics
+    /// Panics when the recording is absent or the login does not reach its goal.
+    pub fn given(&mut self, g: Given) -> &mut Self {
+        match g {
+            Given::EnteredWorld { session, character } => {
+                let set = match &mut self.backend {
+                    Backend::Model(m) => login::model_login(m, session, character),
+                    Backend::App(app) => login::app_login(app, session, character),
+                };
+                self.log.account = set.account;
+                self.log.characters = set.characters;
+            }
+            Given::APlayer(id) => {
+                let Backend::Model(m) = &mut self.backend else {
+                    panic!(
+                        "Given::APlayer is an Assets::None step: an App builds its own world, so \
+                         seeding one behind its back would be asserting over a world the client \
+                         does not use"
+                    )
+                };
+                seed_player(&mut m.objects.world, id);
+            }
+        }
+        self.drain();
+        self
+    }
+
+    /// Do something to the client.
+    pub fn when<S: Step>(&mut self, step: S) -> &mut Self {
+        step.apply(self);
+        self.drain();
+        self
+    }
+
+    /// Run `n` whole frames.
+    ///
+    /// On the `App` backend that is `n` calls to the client's own frame; on the model backend it
+    /// is `n` passes of the pump, the HUD and the interaction layer, which is what a frame's model
+    /// half does.
+    ///
+    /// # Panics
+    /// Panics when the client shuts itself down, which a scenario cannot continue past.
+    pub fn tick(&mut self, n: u64) -> &mut Self {
+        for _ in 0..n {
+            match &mut self.backend {
+                Backend::App(app) => {
+                    assert!(
+                        app.frame(),
+                        "the client shut itself down at frame {}",
+                        self.log.frames
+                    );
+                }
+                Backend::Model(m) => {
+                    let (chat, notices, requests) = model_frame(m);
+                    self.log.chat.extend(chat);
+                    self.log.notices.extend(notices);
+                    self.log.requests.extend(requests);
+                }
+            }
+            self.log.frames += 1;
+            self.drain();
+        }
+        self
+    }
+
+    // -------------------------------------------------------------------------------------
+    // The views
+    // -------------------------------------------------------------------------------------
+
+    /// A read-only handle on everything below.
+    #[must_use]
+    pub fn view(&self) -> ScenarioView<'_> {
+        ScenarioView::new(self)
+    }
+
+    /// The frame as an owned value, through the client's own projection.
+    #[must_use]
+    pub fn snapshot(&self) -> GameSnapshot {
+        match &self.backend {
+            Backend::App(app) => app.hud().snapshot(app.objects()),
+            Backend::Model(m) => m.hud.snapshot(&m.objects),
+        }
+    }
+
+    /// The opcode of every message the client has sent during this scenario, in order.
+    ///
+    /// It is derived by handing each request the client produced to the production sender over a
+    /// mock transport and reading the opcode dword back off the blob -- so a request whose sender
+    /// is missing contributes nothing, and no second table of opcodes exists here to drift from
+    /// the sender's own.
+    ///
+    /// An ordered envelope reports **its sub-type** rather than the envelope opcode every ordered
+    /// game action shares; see [`crate::outbound::opcodes`].
+    #[must_use]
+    pub fn outbound_opcodes(&self) -> Vec<u32> {
+        crate::outbound::opcodes(&self.log.requests)
+    }
+
+    /// The ordered sub-type of every message the client really **framed into a datagram**, in
+    /// order, from the first frame of this scenario.
+    ///
+    /// **It is not a duplicate of [`Self::outbound`]**: see [`crate::wire`] for the
+    /// one message the frame's own outbox cannot see. It needs an attached endpoint and answers an
+    /// empty slice without one, because a client with no link has written nothing anywhere.
+    pub fn outbound_wire(&mut self) -> &[u32] {
+        self.observe_wire();
+        self.wire.sub_types()
+    }
+
+    /// How many of `sub_type` the client has framed into a datagram since the last take.
+    ///
+    /// The question a scenario about one message asks, and a take rather than a count so that
+    /// "one swing, fifty frames ago" and "one swing just now" are different observations.
+    pub fn take_wire_count(&mut self, sub_type: u32) -> usize {
+        self.observe_wire();
+        self.wire.take_count(sub_type)
+    }
+
+    /// The clock the wire reader reassembles at: this scenario's own frame count, in the client's
+    /// fixed step. Reassembly needs a monotonic clock and nothing more.
+    #[must_use]
+    pub fn wire_clock(&self) -> LocalTime {
+        #[allow(clippy::cast_precision_loss)]
+        LocalTime(self.log.frames as f64 * HEADLESS_STEP)
+    }
+
+    /// Take what the endpoint has written and fold it into this client's wire reader. A client
+    /// with no endpoint has written nothing, which is not a failure.
+    fn observe_wire(&mut self) {
+        let now = self.wire_clock();
+        let datagrams = match &mut self.backend {
+            Backend::App(app) => app.replay_network_mut().map(ClientNetwork::take_outgoing),
+            Backend::Model(m) => m.net.as_mut().map(ClientNetwork::take_outgoing),
+        };
+        if let Some(datagrams) = datagrams {
+            self.wire.ingest(&datagrams, now);
+        }
+    }
+
+    /// Every request the client produced, in order, before it became bytes.
+    ///
+    /// **This is the frame's outbox, not the wire**, and the two differ in both directions:
+    ///
+    /// * a message the client puts straight on the flow queue never reaches the outbox at all --
+    ///   the cancel that breaks an automatic attack is one, which is why [`Self::outbound_wire`]
+    ///   exists beside this;
+    /// * on the **model backend** nothing is ever framed into a datagram, because that backend
+    ///   runs no sender, so this is the only reader there is and [`Self::outbound_wire`] is
+    ///   honestly empty. (The layer's own `last_sent` is filled by the frame's send pass, and the
+    ///   model backend takes its pending queue instead.)
+    ///
+    /// # Read this, and not `interaction().last_sent`
+    ///
+    /// On the `App` backend `Interaction::last_sent` is a **one-frame
+    /// window**: the frame's send pass *replaces* it every time, so a scenario that does a gesture,
+    /// runs the four frames the gesture needs, and then reads `last_sent` finds whatever the last
+    /// of those frames put there -- which is usually nothing, so the scenario looks green while
+    /// asserting over nothing.
+    ///
+    /// This reader accumulates instead, across every step and every frame of the scenario, and it
+    /// drains the `App`'s outbox once per *client* frame rather than once per scenario step, so a
+    /// `when` followed by a `tick` does not count one outbox twice (see `drain`).
+    #[must_use]
+    pub fn outbound(&self) -> &[Request] {
+        &self.log.requests
+    }
+
+    /// Every notice the scenario's own drives raised.
+    ///
+    /// **This is empty on the `App` backend**, an adapter gap: the `App` owns its notice sink and
+    /// exposes no accessor. A scenario over an `App` reads the same lines through
+    /// [`Self::chat_lines`].
+    #[must_use]
+    pub fn notices(&self) -> &[Notice] {
+        &self.log.notices
+    }
+
+    /// Every UI request the scenario put into the client.
+    ///
+    /// The requests the interface raises for itself are not here: `Interaction` keeps them in a
+    /// private queue with no accessor. Another adapter gap.
+    #[must_use]
+    pub fn ui_requests(&self) -> &[UiRequest] {
+        &self.log.ui_requests
+    }
+
+    /// The frame log. Empty on the model backend, which runs no frame steps.
+    #[must_use]
+    pub fn frame_events(&self) -> &FrameEvents {
+        match &self.backend {
+            Backend::App(app) => app.frame_events(),
+            Backend::Model(m) => &m.events,
+        }
+    }
+
+    /// Every chat line the client composed from an event this scenario delivered.
+    #[must_use]
+    pub fn chat_lines(&self) -> &[ChatMessage] {
+        &self.log.chat
+    }
+
+    /// The frame log of this scenario's frames, one event per line, in the frame log's own text
+    /// form. This is what a golden file holds; see [`crate::golden`].
+    ///
+    /// # Panics
+    /// Panics when the scenario has run more frames than the log's ring retains. The ring is
+    /// bounded on purpose -- a station that runs ten thousand frames must not grow a buffer per
+    /// frame -- and a golden written from a truncated log would be a golden of the tail with
+    /// nothing saying so.
+    #[must_use]
+    pub fn events_text(&self) -> String {
+        let log = self.frame_events();
+        assert!(
+            log.first_retained_frame() <= self.log.first_frame,
+            "this scenario has run {} frames and the frame log retains from frame {} onwards, so \
+             its first {} frames are already gone; a golden of the rest would be a golden of the \
+             tail",
+            self.log.frames,
+            log.first_retained_frame(),
+            log.first_retained_frame() - self.log.first_frame,
+        );
+        let events = log.since(self.log.first_frame);
+        FrameEvents::text(&events)
+    }
+
+    /// Assert a behaviour, and record its id as asserted.
+    ///
+    /// The recording is the scenario's, not the process's: `crate::claims::run_scenario`
+    /// opens one around the scenario and fails it unless the ids noted here are exactly the ones
+    /// its `ALL` entry declares. Asserting an id a scenario does not declare is a red.
+    ///
+    /// # Panics
+    /// Panics when `f` answers false.
+    pub fn assert_behaviour(
+        &mut self,
+        id: &'static str,
+        f: impl FnOnce(&ScenarioView<'_>) -> bool,
+    ) -> &mut Self {
+        let held = f(&self.view());
+        assert!(held, "behaviour {id} does not hold");
+        crate::claims::note_asserted(id);
+        self.log.asserted.push(id);
+        self
+    }
+
+    /// The ids this scenario asserted, in order.
+    #[must_use]
+    pub fn asserted(&self) -> &[&'static str] {
+        &self.log.asserted
+    }
+
+    /// How many frames this scenario has run.
+    #[must_use]
+    pub const fn frames(&self) -> u64 {
+        self.log.frames
+    }
+
+    /// Shut the client down. Optional: dropping the scenario is enough for the model backend, and
+    /// an `App` that is dropped still releases what it holds.
+    pub fn shutdown(self) {
+        if let Backend::App(app) = self.backend {
+            app.shutdown();
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // What the steps reach
+    // -------------------------------------------------------------------------------------
+
+    pub(crate) const fn backend(&self) -> &Backend {
+        &self.backend
+    }
+
+    pub(crate) fn backend_mut(&mut self) -> &mut Backend {
+        &mut self.backend
+    }
+
+    /// The account the replayed login's character set named, empty when no login ran.
+    #[must_use]
+    pub fn account(&self) -> &str {
+        &self.log.account
+    }
+
+    /// The characters the replayed login was offered, in the recorded order.
+    #[must_use]
+    pub fn characters(&self) -> &[String] {
+        &self.log.characters
+    }
+
+    /// The game model, to set a scenario up with.
+    ///
+    /// A `given` and a `when` are the readable way to reach the client; this is for the state a
+    /// scenario must stand up that no step expresses -- the objects a claim is about, and the
+    /// options it depends on. It is deliberately on the client and not on the view, so that a
+    /// mutation is visible in the scenario body rather than inside an assertion.
+    pub fn world_mut(&mut self) -> &mut World {
+        match &mut self.backend {
+            Backend::App(app) => &mut app.probe_mut().objects_mut().world,
+            Backend::Model(m) => &mut m.objects.world,
+        }
+    }
+
+    /// The object stream, to set a scenario up with. See [`Self::world_mut`].
+    pub fn objects_mut(&mut self) -> &mut ObjectStream {
+        match &mut self.backend {
+            Backend::App(app) => app.probe_mut().objects_mut(),
+            Backend::Model(m) => &mut m.objects,
+        }
+    }
+
+    /// The HUD, to set a scenario up with. See [`Self::world_mut`].
+    pub fn hud_mut(&mut self) -> &mut Hud {
+        match &mut self.backend {
+            Backend::App(app) => app.probe_mut().hud_mut(),
+            Backend::Model(m) => &mut m.hud,
+        }
+    }
+
+    /// The interaction layer, to set a scenario up with. See [`Self::world_mut`].
+    ///
+    /// The layer owns the command table (`@a` and its siblings are registered into it at login,
+    /// and a scenario about a chat command has to register them the way the client does), and it
+    /// owns the refusal line and the per-subsystem counters. The [`HeadlessClient::ui_requests`]
+    /// gap is the same seam from the other side.
+    pub fn interaction_mut(&mut self) -> &mut Interaction {
+        match &mut self.backend {
+            Backend::App(app) => app.probe_mut().interaction_mut(),
+            Backend::Model(m) => &mut m.interaction,
+        }
+    }
+
+    /// The interaction layer and the game model **at the same time**, whichever backend this is.
+    ///
+    /// Several of the production entry points a scenario
+    /// drives take both at once -- `Interaction::on_world_object_found(found, &mut
+    /// world, now)` is one -- and [`Self::interaction_mut`] and
+    /// [`Self::world_mut`] are two separate borrows of the client, so a scenario with only those
+    /// two ends up standing a model host of its own up beside the one it is testing.
+    pub fn interaction_and_world_mut(&mut self) -> (&mut Interaction, &mut World) {
+        match &mut self.backend {
+            Backend::App(app) => app.probe_mut().interaction_and_world_mut(),
+            Backend::Model(m) => (&mut m.interaction, &mut m.objects.world),
+        }
+    }
+
+    /// The whole client, when the scenario was built with one.
+    ///
+    /// # Panics
+    /// Panics on the model backend.
+    pub fn app_mut(&mut self) -> &mut App {
+        match &mut self.backend {
+            Backend::App(app) => app,
+            Backend::Model(_) => panic!(
+                "this scenario drives the client's shell, so it must be built with \
+                 ClientSpec::retail() or ClientSpec::gameplay(..)"
+            ),
+        }
+    }
+
+    /// Tell the HUD where the player is looking from, which is what the frame's own sync does.
+    ///
+    /// A claim about earshot or about what is on the radar needs a viewer; one about the chat
+    /// model does not, and a HUD that has never synced deliberately has no body -- which is itself
+    /// a behaviour two of the seeded scenarios assert.
+    pub fn sync_viewer(
+        &mut self,
+        viewer: Option<pyreal_client_runtime::hud::ViewerFrame>,
+    ) -> &mut Self {
+        match &mut self.backend {
+            Backend::Model(m) => m.hud.sync(&m.objects, viewer),
+            Backend::App(_) => panic!(
+                "an App syncs its own HUD every frame; a scenario that pushed a viewer in would \
+                 be asserting over a frame the client did not build"
+            ),
+        }
+        self
+    }
+
+    /// Attach a socket-free endpoint, whichever backend this is.
+    ///
+    /// The two backends keep their link in two different places -- an `App` owns its own and the
+    /// model backend holds one beside the object stream -- so the match is written here once.
+    /// [`crate::replay`] builds the endpoint; this is where
+    /// it goes.
+    ///
+    /// # Panics
+    /// Panics when the client already has a link. A scenario gets one shard, and a second endpoint
+    /// would leave the first one's queued datagrams unread.
+    pub fn attach_replay(&mut self, net: pyreal_client_runtime::net::ClientNetwork) {
+        match &mut self.backend {
+            Backend::App(app) => app.attach_replay_network(net).unwrap_or_else(|_| {
+                panic!("this client already has a link; a scenario logs in once")
+            }),
+            Backend::Model(m) => {
+                assert!(
+                    m.net.is_none(),
+                    "this client already has a link; a scenario logs in once"
+                );
+                m.net = Some(net);
+            }
+        }
+    }
+
+    /// The attached endpoint. Mutable and not also immutable, because `App` publishes only the
+    /// mutable accessor; everything the harness asks
+    /// an endpoint for -- feeding a datagram in, taking the written ones out -- needs it anyway.
+    ///
+    /// See [`Self::attach_replay`].
+    pub fn replay_net_mut(&mut self) -> Option<&mut pyreal_client_runtime::net::ClientNetwork> {
+        match &mut self.backend {
+            Backend::App(app) => app.replay_network_mut(),
+            Backend::Model(m) => m.net.as_mut(),
+        }
+    }
+
+    /// The dat store the client was built over: an `App`'s, and `None` on the model backend.
+    #[must_use]
+    pub fn dat_store(&self) -> Option<&Arc<RetailDatStore>> {
+        match &self.backend {
+            Backend::App(app) => Some(app.probe().dat_store()),
+            Backend::Model(_) => None,
+        }
+    }
+
+    /// Deliver `events` the way the frame does -- the objects, then the HUD, then the interaction
+    /// layer **with the frame's own panels callback** -- and record everything that came back.
+    ///
+    /// **The panels callback must be the real one**, so this goes through
+    /// `App::apply_interaction_events_to_panels`, which is `App::frame`'s own two lines. On the
+    /// model backend the callback stays a no-op: that backend has no interface to notify.
+    pub(crate) fn deliver(&mut self, events: &[SessionEvent], now: LocalTime) {
+        match &mut self.backend {
+            Backend::App(app) => {
+                for e in events {
+                    app.probe_mut().objects_mut().apply_event(e, now);
+                }
+                let chat = app.apply_hud_events(events);
+                app.apply_interaction_events_to_panels(events);
+                self.log.chat.extend(chat);
+            }
+            Backend::Model(m) => {
+                for e in events {
+                    m.objects.apply_event(e, now);
+                }
+                let chat = m.hud.apply_events_with_combat_mode_handler(
+                    events,
+                    &mut m.objects.world,
+                    None,
+                    &mut |_, _| {},
+                );
+                pyreal_client_runtime::interaction::apply_events(
+                    &mut m.interaction,
+                    events,
+                    &mut m.objects.world,
+                );
+                self.log.chat.extend(chat);
+            }
+        }
+        self.drain();
+    }
+
+    /// Feed one recorded datagram through the client's **real transport** and run the frame that
+    /// consumes it, at the clock this backend must use (see [`crate::replay`]), entering the world
+    /// when the shard's character set arrives and `entered` is still false.
+    ///
+    /// It is `pub(crate)` because a scenario reaches it through
+    /// [`crate::Inbound::from_raw_capture`], which is the step; this is the pass that step is
+    /// written in terms of.
+    pub(crate) fn replay_datagram(
+        &mut self,
+        raw: Option<(&[u8], std::net::SocketAddr)>,
+        recorded_t: f64,
+        entered: &mut bool,
+    ) {
+        match &mut self.backend {
+            Backend::App(app) => {
+                // A datagram the recorded *client* sent is not delivered to this one; it is only
+                // a point on the recording's clock, and this backend runs on its own.
+                let Some((raw, from)) = raw else { return };
+                // The recorded timestamps are not this client's clock; see `crate::replay`.
+                let now = LocalTime(app.clock().local_time);
+                app.replay_network_mut()
+                    .expect(
+                        "a raw-capture replay needs an endpoint; give the scenario a recorded \
+                         login or attach one before the step",
+                    )
+                    .feed(raw, from, now);
+                assert!(app.frame(), "the client shut itself down during the replay");
+                let net = app.replay_network_mut().expect("the endpoint is attached");
+                if !*entered
+                    && net.session_state()
+                        == pyreal_client_net::client_session::SessionState::CharacterSelect
+                {
+                    let set = net.characters().clone();
+                    if let Some(c) = set.characters.first() {
+                        net.enter_world(c.gid, &set.account);
+                        *entered = true;
+                    }
+                }
+            }
+            Backend::Model(m) => {
+                let now = LocalTime(recorded_t);
+                m.now = recorded_t;
+                let net = m.net.as_mut().expect(
+                    "a raw-capture replay needs an endpoint; give the scenario a recorded login \
+                     or attach one before the step",
+                );
+                // **A client-to-server datagram is still a point on the clock.** It is not fed --
+                // this client is not the one that sent it -- but the sweep that gives up on a
+                // silent shard measures against the time a *pass* happens at, so a loop that
+                // skipped these entirely would never reach the moment the shard's silence is long
+                // enough. That is the whole subject of the error-condition recordings.
+                if let Some((raw, from)) = raw {
+                    net.feed(raw, from, now);
+                }
+                net.tick(now);
+                let events = m.objects.pump(net, now);
+                if !*entered {
+                    for e in &events {
+                        if let SessionEvent::CharacterSet(set) = e {
+                            if let Some(c) = set.characters.first() {
+                                let account = set.account.clone();
+                                let gid = c.gid;
+                                m.net
+                                    .as_mut()
+                                    .expect("the endpoint is attached")
+                                    .enter_world(gid, &account);
+                                *entered = true;
+                            }
+                        }
+                    }
+                }
+                let chat = m.hud.apply_events_with_combat_mode_handler(
+                    &events,
+                    &mut m.objects.world,
+                    None,
+                    &mut |_, _| {},
+                );
+                pyreal_client_runtime::interaction::apply_events(
+                    &mut m.interaction,
+                    &events,
+                    &mut m.objects.world,
+                );
+                self.log.chat.extend(chat);
+            }
+        }
+        self.log.frames += 1;
+        self.drain();
+    }
+
+    /// The millisecond stamp the next pointer gesture is delivered at, two seconds on from the
+    /// last -- well clear of the double-click window, so one press is never read as a double click
+    /// of itself. See [`crate::player`].
+    pub(crate) fn next_pointer_time(&mut self) -> u32 {
+        self.log.pointer_time += 2_000;
+        self.log.pointer_time
+    }
+
+    /// Where the last pointer gesture put the pointer.
+    pub(crate) const fn pointer(&self) -> (i32, i32) {
+        self.log.pointer
+    }
+
+    pub(crate) const fn note_pointer(&mut self, at: (i32, i32)) {
+        self.log.pointer = at;
+    }
+
+    /// The scenario's own notice sink, for a step that drives the game model directly.
+    pub(crate) fn absorb_sink(&mut self, sink: RecordingSink) {
+        self.log.notices.extend(sink.0);
+    }
+
+    pub(crate) fn note_ui_requests(&mut self, r: &[UiRequest]) {
+        self.log.ui_requests.extend(r.iter().cloned());
+    }
+
+    pub(crate) fn note_requests(&mut self, r: Vec<Request>) {
+        self.log.requests.extend(r);
+    }
+
+    /// Take everything the client has queued up since the last look.
+    fn drain(&mut self) {
+        let taken = match &mut self.backend {
+            // **The App's outbox is not a queue: the frame replaces it every pass.** So it is
+            // read once per frame and not once per `drain` -- a `when` followed by a `tick`
+            // drains twice between two frames, and reading per drain would append the same
+            // outbox twice. The frame index is the client's own, so this counts
+            // frames the client ran rather than steps a scenario wrote.
+            Backend::App(app) => {
+                let at = app.frame_events().frame_index();
+                if self.log.last_drained_frame == Some(at) {
+                    Vec::new()
+                } else {
+                    self.log.last_drained_frame = Some(at);
+                    app.interaction().last_sent.clone()
+                }
+            }
+            // The model backend's is a queue and taking it empties it, so a second look in the
+            // same frame honestly answers nothing.
+            Backend::Model(m) => m.interaction.take_pending_requests(),
+        };
+        self.log.requests.extend(taken);
+    }
+}
+
+/// One pass of the model half of a frame.
+///
+/// With an endpoint attached this is the pump, the HUD and the interaction layer, which is what the
+/// frame's model half is. **With no endpoint it also runs the game model's own maintenance tick**,
+/// because that is what the pump would have run: the twenty-second sweep over dangling references
+/// lives inside it, and a model scenario with no network would otherwise have no way to reach it.
+fn model_frame(m: &mut Model) -> (Vec<ChatMessage>, Vec<Notice>, Vec<Request>) {
+    m.now += HEADLESS_STEP;
+    let now = LocalTime(m.now);
+    let mut notices = RecordingSink::default();
+    let mut requests = pyreal_client_model::RecordingRequests::default();
+    let events = if let Some(net) = m.net.as_mut() {
+        net.tick(now);
+        // **The written datagrams are not dropped here**: `HeadlessClient::outbound_wire` reads
+        // that queue, and emptying it would make the reader blind on this backend. Nothing sends them: the endpoint has no socket, so they
+        // stay queued until the wire reader takes them.
+        m.objects.pump(net, now)
+    } else {
+        m.objects.world.use_time(
+            pyreal_primitives::ServerTime(m.now),
+            &mut notices,
+            &mut requests,
+        );
+        Vec::new()
+    };
+    let chat = m.hud.apply_events_with_combat_mode_handler(
+        &events,
+        &mut m.objects.world,
+        None,
+        &mut |_, _| {},
+    );
+    pyreal_client_runtime::interaction::apply_events(
+        &mut m.interaction,
+        &events,
+        &mut m.objects.world,
+    );
+    (chat, notices.0, requests.0)
+}
+
+/// A player character with a pack, and nothing else -- the world every synthesised model scenario
+/// starts from.
+fn seed_player(w: &mut World, id: ObjectId) {
+    use pyreal_protocol::types::PublicWeenieDesc;
+    use {pyreal_rules::weenie::bitfield, pyreal_rules::weenie::item_type};
+
+    let mut it = pyreal_client_model::Weenie::new(id);
+    it.pwd = PublicWeenieDesc {
+        bitfield: bitfield::PLAYER,
+        obj_type: item_type::CREATURE,
+        items_capacity: Some(102),
+        containers_capacity: Some(7),
+        ..PublicWeenieDesc::default()
+    };
+    it.valid = true;
+    w.tables.weenies.insert(id, it);
+    w.player = Some(id);
+    w.tables
+        .inventories
+        .insert(id, pyreal_client_model::objects::ObjectInventory::new(id));
+}
+
+/// `App::with_platform(cfg, NullPresentation, Platform::headless(w, h))`, plus whatever of the
+/// shell the spec asked for.
+fn build_app(spec: &ClientSpec) -> App {
+    let cfg = Config {
+        headless: true,
+        frames: None,
+        // No socket is ever opened: the only endpoint a scenario has is the socket-free one
+        // `App::attach_replay_network` installs.
+        connect: false,
+        sound: false,
+        ui: spec.shell,
+        width: spec.width,
+        height: spec.height,
+        dat_dir: pyreal_dat::testing::dat_dir(),
+        // **A scenario may name a disposable directory.** The default is a temporary path that
+        // is never created -- a client that writes nothing must not touch the user's settings
+        // folder -- and `ClientSpec::with_settings_dir` is how a scenario whose
+        // claim *is* what the client wrote gets a directory it may have.
+        preferences_file: spec
+            .settings_dir
+            .clone()
+            .unwrap_or_else(|| std::env::temp_dir().join("dere-scenario-not-created"))
+            .join("prefs.ini"),
+        ..Config::default()
+    };
+    let present: Box<dyn pyreal_client_shell::present::ClientPresentation> = if spec.simulated_world
+    {
+        Box::new(pyreal_client_runtime::sim_present::SimPresentation::new(
+            spec.width,
+            spec.height,
+        ))
+    } else {
+        Box::new(NullPresentation::new(spec.width, spec.height))
+    };
+    let mut app = App::with_platform(cfg, present, Platform::headless(spec.width, spec.height))
+    .unwrap_or_else(|e| {
+        panic!("a headless client needs the retail dats under $PYREAL_TEST_DAT_DIR and nothing else: {e}")
+    });
+    if spec.shell {
+        app.start_shell().expect("the UI shell comes up");
+    }
+    if spec.simulated_world {
+        app.defer_static_scene(pyreal_client_runtime::scene::SceneConfig {
+            character: true,
+            ..pyreal_client_runtime::scene::SceneConfig::default()
+        });
+    }
+    if spec.static_scene {
+        let s = pyreal_client_runtime::scene::SceneConfig {
+            landblock: app.config().landblock,
+            land_radius: app.config().land_radius,
+            scenery_radius: app.config().scenery_radius,
+            ..pyreal_client_runtime::scene::SceneConfig::default()
+        };
+        app.load_static_scene(s).expect("the static scene loads");
+    }
+    for _ in 0..spec.settle_frames {
+        assert!(app.frame(), "the client shut itself down while settling");
+    }
+    app
+}

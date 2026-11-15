@@ -1,0 +1,33 @@
+[package]
+name = "pyreal-world-data"
+description = "The retail data files turned into the shapes physics and animation consume."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The dat -> physics / animation adapters, shared by the client and the server;
+# consumed directly by `pyreal-client-runtime`. Nothing here may depend on a render, UI,
+# input, audio, network or game-model
+# crate: the adapters take dat records in and hand physics and animation structures out.
+[features]
+# Tier switch only: no code is gated on it. The lib tests that read the retail dats under
+# $PYREAL_TEST_DAT_DIR are ignored without it, so a checkout with no dats tests green.
+retail-dats = []
+
+[dependencies]
+pyreal-primitives.workspace = true
+pyreal-dat.workspace = true
+pyreal-assets.workspace = true
+pyreal-physics.workspace = true
+pyreal-animation.workspace = true
+thiserror.workspace = true
+# Diagnostics (a facade: this crate installs no subscriber and writes no output of its own).
+tracing.workspace = true
+
+[dev-dependencies]
+pyreal-dat = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+# Settings for build.py: copy to build.ini, which git leaves out, and fill in.
+# Relative paths are relative to this file's folder.
+
+[signing]
+# The Apple certificate to sign with, by its SHA-1 hash. Two certificates in the keychain are named
+# "Apple Development: Jacob Johnston (T24CPK4YBN)", so the name alone is ambiguous to codesign.
+# List them with: security find-identity -v -p codesigning
+identity = 
+
+[build]
+# Where Pyreal.app and the plugin tool are written, unpacked, one folder per commit.
+out_dir = dist
+# Put before PATH, so cargo and rustup are found without a shell profile.
+path_prepend = /opt/homebrew/opt/rustup/bin, ~/.cargo/bin
+# A PNG or SVG whose shape is struck into the icon's coin in place of its own crest (its opaque
+# parts are raised; its colours are not used). Kept outside the repository. Empty: the crest.
+icon_emblem =
+
+[install]
+# After a build, replace Pyreal.app in this folder with the new one (for example /Applications).
+# Empty: leave the package in out_dir only.
+applications_dir =

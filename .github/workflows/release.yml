@@ -1,0 +1,337 @@
+name: Release
+
+on:
+  # A version tag (v0.1.0, v0.2.0-rc.1) checks the tagged commit, builds the packages and publishes
+  # them as that tag's GitHub Release.
+  push:
+    tags: ['v*']
+  # A manual run checks and packages the chosen branch or tag. The packages are kept as the run's
+  # artifacts, and a Release is published only when the run is on a version tag.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One release run per tag at a time; a second run waits rather than cancelling the first.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The base art pack's source, which base-pack.toml pins by commit.
+  PACK_REPOSITORY: https://github.com/jacobjohnston/dereth-enhanced-environment.git
+
+jobs:
+  # The tag must name the version in Cargo.toml, so a release's files carry the number it is
+  # published under.
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: pwsh
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read the version and check the tag
+        id: read
+        run: |
+          $found = Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"'
+          if (@($found).Count -ne 1) { Write-Error "Cargo.toml must hold exactly one top-level version line"; exit 1 }
+          $version = $found.Matches[0].Groups[1].Value
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$version") {
+            Write-Error "the tag $env:GITHUB_REF_NAME does not match Cargo.toml's version $version (expected v$version)"
+            exit 1
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$(if ($version.Contains('-')) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          Write-Output "::notice title=version::Pyreal $version"
+
+  # The tests and clippy on Linux, clippy and a smoke set on Windows, and the rules and docs once. The Mac's
+  # are run before the push (`cargo xtask ci prepush`); its package job builds and signs.
+  checks:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  # The base art pack the app carries, made once from the pinned commit of the pack repository and
+  # handed to each system's package.
+  base-pack:
+    name: base pack
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Keyed on the pin, so an unchanged pack is not fetched again. Saved only by runs on main.
+      - name: The pack from an earlier run
+        id: cached
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/base-pack/base-pack.dat
+          key: base-pack-${{ hashFiles('base-pack.toml') }}
+      - name: Install the workspace Rust version
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: |
+          $found = Select-String -Path Cargo.toml -Pattern '^rust-version\s*=\s*"([^"]+)"'
+          if (@($found).Count -ne 1) { Write-Error "Cargo.toml must hold exactly one rust-version line"; exit 1 }
+          $toolchain = $found.Matches[0].Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set $toolchain
+      # base-pack.toml names the repository as ../dereth-enhanced-environment, beside the checkout.
+      # Only the pinned commit and its LFS files (about 500 MB) are fetched.
+      - name: Fetch the pinned pack source
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: |
+          $pin = Get-Content base-pack.toml -Raw
+          $commit = [regex]::Match($pin, '(?m)^commit\s*=\s*"([0-9a-f]{40})"').Groups[1].Value
+          if (-not $commit) { Write-Error "base-pack.toml names no commit"; exit 1 }
+          $repo = Join-Path (Split-Path $env:GITHUB_WORKSPACE) 'dereth-enhanced-environment'
+          git init --quiet $repo
+          git -C $repo remote add origin $env:PACK_REPOSITORY
+          git -C $repo fetch --quiet --depth 1 origin $commit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C $repo lfs install --local
+          git -C $repo lfs fetch origin $commit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build the base pack
+        if: steps.cached.outputs.cache-hit != 'true'
+        run: cargo xtask base-pack build
+      - name: Keep the pack for later runs
+        if: steps.cached.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/base-pack/base-pack.dat
+          key: base-pack-${{ hashFiles('base-pack.toml') }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: base-pack
+          path: target/base-pack/base-pack.dat
+          retention-days: 3
+          if-no-files-found: error
+
+  # Each system's release files, built natively, after the checks pass.
+  package:
+    name: package (${{ matrix.os }})
+    needs: [version, checks, base-pack]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+          - os: windows-latest
+          # The Linux release is held to Ubuntu 22.04's glibc (targets::PYREAL_GLIBC_FLOOR).
+          - os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: '0'
+      # The public repository: the plugin template's workflows download the plugin tool from it.
+      PYREAL_BUILD_SOURCE_URL: https://github.com/jacobjohnston/pyreal
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install the Linux build inputs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
+      - name: Install the workspace Rust version
+        run: |
+          $found = Select-String -Path Cargo.toml -Pattern '^rust-version\s*=\s*"([^"]+)"'
+          if (@($found).Count -ne 1) { Write-Error "Cargo.toml must hold exactly one rust-version line"; exit 1 }
+          $toolchain = $found.Matches[0].Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set $toolchain
+      - name: Authenticate the DXC download
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # As in ci.yml: mach-dxcompiler's build script calls GitHub's API with curl.
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'curl-home'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $line = "header = `"Authorization: Bearer $env:GH_TOKEN`""
+          foreach ($name in '.curlrc', '_curlrc') { Set-Content -Path (Join-Path $dir $name) -Value $line -Encoding ascii }
+          "CURL_HOME=$dir" >> $env:GITHUB_ENV
+      # The release build's dependencies, restored from main's runs and saved only by them.
+      - name: The dependencies' builds from earlier runs
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: package-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install cargo-about
+        # It writes THIRD-PARTY-LICENSES.html into each package.
+        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: base-pack
+          path: ${{ runner.temp }}/base-pack
+      # The Developer ID and the notarizing key, from the repository's secrets. A version tag
+      # needs them; a manual run without them packages an ad hoc signed, unnotarized app.
+      - name: Load the Mac signing identity and notarizing key
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+          API_KEY_P8: ${{ secrets.APPSTORE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPSTORE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPSTORE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$P12" ] || [ -z "$API_KEY_P8" ]; then
+            if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+              echo "::error::A release needs the Mac signing and notarizing secrets (see RELEASING.md)."
+              exit 1
+            fi
+            echo "::warning::No Mac signing secrets: the app is signed ad hoc and not notarized."
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/pyreal-signing.keychain-db"
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/signing.p12"
+          security find-identity -v -p codesigning "$keychain" | grep -F "$IDENTITY" > /dev/null \
+            || { echo "::error::The keychain holds no identity named in MACOS_SIGNING_IDENTITY."; exit 1; }
+          printf '%s' "$API_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          # Apple checks the key now, so a wrong secret fails before the build, not after it.
+          [[ "$API_ISSUER" =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]] \
+            || { echo "::error::APPSTORE_API_ISSUER_ID is not an issuer id (a UUID)."; exit 1; }
+          xcrun notarytool history --key "$RUNNER_TEMP/notary.p8" --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER" > /dev/null \
+            || { echo "::error::Apple refused the notarizing key (APPSTORE_API_* secrets)."; exit 1; }
+          {
+            echo "APPLE_SIGNING_IDENTITY=$IDENTITY"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/notary.p8"
+            echo "APPLE_API_KEY=$API_KEY_ID"
+            echo "APPLE_API_ISSUER=$API_ISSUER"
+            echo "PYREAL_SIGNING_KEYCHAIN=$keychain"
+          } >> "$GITHUB_ENV"
+      - name: Package
+        run: |
+          $pack = Join-Path $env:RUNNER_TEMP 'base-pack/base-pack.dat'
+          cargo xtask package pyreal --base-pack $pack --out out/release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The index is written once over every system's files, by the release job.
+          Remove-Item -ErrorAction SilentlyContinue out/release/SHA256SUMS, out/release/release.json, out/release/MANIFEST.txt
+          Get-ChildItem out/release | Format-Table Name, Length
+      # The programs just packaged start on this system: every library they link is found, and each
+      # says its version. Start-Process waits for the Windows client, which has no console.
+      - name: The packaged programs start
+        run: |
+          $triple = ((rustc -vV) -match '^host: ' | Select-Object -First 1).Substring(6).Trim()
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          foreach ($name in 'pyreal', 'pyreal-plugin') {
+            $exe = Join-Path "target/$triple/release" "$name$suffix"
+            $out = Join-Path $env:RUNNER_TEMP "$name-version.txt"
+            $run = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out
+            Get-Content $out -ErrorAction SilentlyContinue
+            if ($run.ExitCode -ne 0) { Write-Error "$name --version exited with $($run.ExitCode)"; exit 1 }
+          }
+      - name: Remove the Mac signing keychain and key
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          if [ -n "${PYREAL_SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$PYREAL_SIGNING_KEYCHAIN" || true; fi
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/signing.p12"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pyreal-${{ needs.version.outputs.version }}-${{ matrix.os }}
+          path: out/release/*
+          if-no-files-found: error
+          # The Release keeps the published copies; these only carry them to the publish job.
+          retention-days: 7
+
+  # The GitHub Release for a version tag: every system's files, the index over them, and the
+  # version's section of CHANGELOG.md as its notes.
+  release:
+    name: publish
+    needs: [version, package]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_INCREMENTAL: '0'
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install the workspace Rust version
+        run: |
+          $found = Select-String -Path Cargo.toml -Pattern '^rust-version\s*=\s*"([^"]+)"'
+          $toolchain = $found.Matches[0].Groups[1].Value
+          rustup toolchain install $toolchain --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          rustup override set $toolchain
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pyreal-${{ needs.version.outputs.version }}-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Write the index
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'release'
+          cargo xtask package pyreal --gather $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: The release notes
+        run: |
+          # The lines under "## [<version>]" in CHANGELOG.md, up to the next version's heading.
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -SimpleMatch "## [$env:VERSION]" | Select-Object -First 1).LineNumber
+          if (-not $start) { Write-Error "CHANGELOG.md has no ## [$env:VERSION] section"; exit 1 }
+          $rest = $lines[$start..($lines.Count - 1)]
+          $end = ($rest | Select-String -Pattern '^## \[' | Select-Object -First 1).LineNumber
+          $body = if ($end) { $rest[0..($end - 2)] } else { $rest }
+          $body | Set-Content $notes
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'release'
+          $notes = Join-Path $env:RUNNER_TEMP 'notes.md'
+          $files = Get-ChildItem $dir -File | Where-Object { $_.Name -notlike '*.manifest' } | ForEach-Object { $_.FullName }
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # A rerun on the same tag replaces the files and keeps the notes as edited.
+            gh release upload $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --clobber @files
+          } else {
+            $flags = @('--title', "Pyreal $env:VERSION", '--notes-file', $notes, '--verify-tag')
+            if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
+            gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY @flags @files
+          }
+          exit $LASTEXITCODE

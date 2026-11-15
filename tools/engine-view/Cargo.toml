@@ -1,0 +1,30 @@
+[package]
+name = "pyreal-engine-view"
+description = "Draws a place with the engine, headless to a PNG or in a window with a free camera, and reports each pass's GPU time and what was drawn."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "engine-view"
+path = "src/main.rs"
+
+[dependencies]
+pyreal-engine.workspace = true
+pyreal-dat.workspace = true
+pyreal-primitives.workspace = true
+pyreal-world-data.workspace = true
+# Motion commands for the bodies it places.
+pyreal-animation.workspace = true
+# A character dressed as creation dresses one: the creation tables and their palette sets.
+pyreal-chargen.workspace = true
+pyreal-assets.workspace = true
+wgpu = "30"
+glam.workspace = true
+png.workspace = true
+winit = { workspace = true, features = ["rwh_06"] }
+
+[lints]
+workspace = true

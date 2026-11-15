@@ -1,0 +1,50 @@
+# Build output, the root's and any nested workspace's.
+/target*/
+/dist*/
+target/
+
+# Game data and art packs: never committed. The one tracked .dat is the classic portal's layer.
+*.dat
+!core/client-runtime/assets/classic-portal/layer.dat
+
+# A portable install run from the checkout writes its settings here.
+/UserPreferences.ini
+/worlds.json
+/art-packs.txt
+/launcher-state.json
+/crash-logs/
+/settings/
+/screenshots/
+
+# Notes, plans and reviews, kept on this machine only.
+/notes/
+
+# Local build settings: the signing identity and this machine's paths.
+/build.ini
+
+# Keys and certificates.
+.env
+*.pem
+*.p12
+*.key
+*.cer
+*.mobileprovision
+
+# Local tool state.
+.claude/
+
+# macOS and Windows.
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# Editors.
+.idea/
+.vscode/
+*.swp
+*~
+
+# Merge leftovers.
+*.orig
+*.rej

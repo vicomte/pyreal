@@ -1,0 +1,49 @@
+[package]
+name = "pyreal-launch"
+description = "What Pyreal knows about worlds, accounts and data files before it connects, with no window, no renderer and no operating system in it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The world record, reading a dat's iterations, identifying a client install, the check before
+# connecting, the launch plan and the state file. The client's screens before the world are the
+# front end over it.
+[dependencies]
+# The state file and the world records are JSON documents. Deriving their readers is less code,
+# and less wrong, than walking `serde_json::Value` by hand for each.
+serde.workspace = true
+serde_json.workspace = true
+# Identifying a client install is hashing its files.
+sha2.workspace = true
+# A dat's identity and iteration count, read through the data-file crate's own container reader,
+# which knows both layouts: the files from before Throne of Destiny and the later ones.
+pyreal-dat.workspace = true
+# Plugin packages: their zips and manifests, read as the client reads them, and the lists plugin
+# sources publish.
+pyreal-plugin-package.workspace = true
+# The client's plugin API version, which a plugin's release must not exceed, and plugins' versions
+# in SemVer's order.
+pyreal-plugin-api.workspace = true
+# Plugins in folders on this computer, found in a folder as the author's tool finds a repository's.
+pyreal-plugin-template.workspace = true
+# The eras a world can play and the systems each has: the client's own table.
+pyreal-primitives.workspace = true
+# A plugin source's list may be TOML.
+toml.workspace = true
+
+[dev-dependencies]
+# Where the tests find the retail dats, when a run has them: one test reads their iterations.
+pyreal-dat = { workspace = true, features = ["test-support"] }
+# The era view the client builds from a plan: one test follows a world's announced era that far.
+pyreal-client-contract.workspace = true
+# The known worlds' profiles must be ones the client compiles.
+pyreal-rules.workspace = true
+
+[features]
+# Builders for synthetic dats and installs, for other crates' tests. Never in a release build.
+testing = []
+
+[lints]
+workspace = true

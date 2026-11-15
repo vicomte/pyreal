@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Pyreal's icon: a struck pyreal coin on the interface's navy tile, its emblem raised in relief.
+       The background group is the flat icon's tile; the layered icon draws only the coin.
+       render-icon.py swaps the emblem-art group for a supplied image's shape. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f3456"/>
+      <stop offset="1" stop-color="#0a1222"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5fd4e4" stop-opacity="0.35"/>
+      <stop offset="0.6" stop-color="#2a8ea6" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#2a8ea6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0.15" y1="0.1" x2="0.85" y2="0.9">
+      <stop offset="0" stop-color="#fff0c0"/>
+      <stop offset="0.45" stop-color="#d9a54a"/>
+      <stop offset="1" stop-color="#6b4416"/>
+    </linearGradient>
+    <linearGradient id="step" x1="0.15" y1="0.1" x2="0.85" y2="0.9">
+      <stop offset="0" stop-color="#7a5019"/>
+      <stop offset="0.5" stop-color="#b98432"/>
+      <stop offset="1" stop-color="#f4d58a"/>
+    </linearGradient>
+    <radialGradient id="face" cx="0.38" cy="0.32" r="0.8">
+      <stop offset="0" stop-color="#f2cf7c"/>
+      <stop offset="0.55" stop-color="#cf9c45"/>
+      <stop offset="1" stop-color="#9a6a26"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <!-- Struck metal: the emblem's shape, raised and lit from the upper left. -->
+    <filter id="relief" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="5" result="height"/>
+      <feDiffuseLighting in="height" surfaceScale="7" diffuseConstant="1.15" lighting-color="#ffffff" result="diffuse">
+        <feDistantLight azimuth="225" elevation="42"/>
+      </feDiffuseLighting>
+      <feSpecularLighting in="height" surfaceScale="7" specularConstant="0.85" specularExponent="22" lighting-color="#fff3cc" result="specular">
+        <feDistantLight azimuth="225" elevation="42"/>
+      </feSpecularLighting>
+      <feFlood flood-color="#e0ad52" result="gold"/>
+      <feBlend in="gold" in2="diffuse" mode="multiply" result="lit"/>
+      <feComposite in="lit" in2="SourceAlpha" operator="in" result="metal"/>
+      <feComposite in="specular" in2="SourceAlpha" operator="in" result="shine"/>
+      <feOffset in="SourceAlpha" dx="5" dy="7" result="dropped"/>
+      <feGaussianBlur in="dropped" stdDeviation="4" result="soft"/>
+      <feFlood flood-color="#3a2408" flood-opacity="0.75"/>
+      <feComposite in2="soft" operator="in" result="cast"/>
+      <feMerge>
+        <feMergeNode in="cast"/>
+        <feMergeNode in="metal"/>
+        <feMergeNode in="shine"/>
+      </feMerge>
+    </filter>
+    <clipPath id="field">
+      <circle id="field-edge" cx="512" cy="512" r="232"/>
+    </clipPath>
+  </defs>
+
+  <g id="background">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+    <rect x="116" y="116" width="792" height="792" rx="170" fill="none" stroke="#c9a45c" stroke-opacity="0.45" stroke-width="6"/>
+  </g>
+
+  <g id="coin">
+    <circle cx="512" cy="512" r="380" fill="url(#glow)"/>
+    <circle cx="526" cy="532" r="300" fill="#05080f" fill-opacity="0.6" filter="url(#shadow)"/>
+    <!-- The rim, its reeded edge, the step down to the field, and the field. -->
+    <circle cx="512" cy="512" r="300" fill="url(#rim)"/>
+    <circle cx="512" cy="512" r="294" fill="none" stroke="#5a3a12" stroke-opacity="0.35" stroke-width="8" stroke-dasharray="4 7"/>
+    <circle cx="512" cy="512" r="262" fill="url(#step)"/>
+    <circle cx="512" cy="512" r="250" fill="url(#face)"/>
+    <circle id="beads" cx="512" cy="512" r="236" fill="none" stroke="#7d541c" stroke-opacity="0.55" stroke-width="7" stroke-linecap="round" stroke-dasharray="0.1 17"/>
+    <!-- The emblem, raised from the field. -->
+    <g clip-path="url(#field)">
+      <g filter="url(#relief)">
+        <g id="emblem-art">
+          <path fill-rule="evenodd" d="M512 362 A150 150 0 1 1 511.9 362 Z M512 386 A126 126 0 1 0 512.1 386 Z"/>
+          <path d="M512 318 L541 482 L652 512 L541 542 L512 706 L483 542 L372 512 L483 482 Z"/>
+          <path d="M388 406 L406 388 L424 406 L406 424 Z M600 406 L618 388 L636 406 L618 424 Z M388 618 L406 600 L424 618 L406 636 Z M600 618 L618 600 L636 618 L618 636 Z"/>
+          <circle cx="512" cy="512" r="30"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

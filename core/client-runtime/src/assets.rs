@@ -1,0 +1,812 @@
+//! Asset store bring-up.
+//!
+//! This module opens the data files and hands back a
+//! [`pyreal_primitives::AssetSource`]. **Nothing here decodes
+//! anything**: `pyreal_dat::RetailDatStore` lives in `pyreal-dat`, implements the seam trait
+//! already, and is the role corresponding to the client's data cache.
+//!
+//! Two differences from the client's own bring-up, both deliberate and both recorded here rather
+//! than in code that pretends otherwise:
+//!
+//! * The client opens `client_portal.dat` at startup and the **cell** and **high-res** dats later,
+//!   when the server's region and product id are known. `RetailDatStore::open_dir` opens all four
+//!   at once. Nothing tells this layer the server's region before the dats are needed, and the
+//!   alternative is to reimplement the deferral against nothing.
+//! * `read_only_dat_files` selects the open flags (`2 | (read_only ? 4 : 0) | ...`). The
+//!   `pyreal-dat` reader is read-only unconditionally, so the flag is carried in
+//!   [`crate::config::Config`] and is not yet acted on. Dat *writing* and the DDD patch protocol
+//!   are out of scope here.
+
+use std::path::{Path, PathBuf};
+
+use pyreal_dat::RetailDatStore;
+use pyreal_primitives::DataId;
+
+use crate::corestrings::{display_string, ID_CANT_OPEN_DATA_FILES};
+
+/// The retail surface the first-pixel check draws: a 256x256 DXT1 landscape texture from
+/// `client_portal.dat` (`DB_TYPE_RENDERSURFACE`, `0x06` id space).
+///
+/// Chosen because it needs no palette — pixel format `DXT1` is copied to the GPU verbatim by
+/// source-surface creation and by `decode_surface` — so the path from dat
+/// bytes to a lit pixel crosses only the dat container, its `RenderSurface` decoder and the
+/// renderer's block-compressed arm, with nothing of this crate's own in between.
+pub const FIRST_PIXEL_SURFACE: u32 = 0x0600_378B;
+
+/// A fatal startup failure, carrying the text the retail client would have shown.
+///
+/// The original startup path does not report *why* the open failed: it displays string 201 with
+/// the data-store error and returns false. The `cause` is this
+/// rebuild's addition, kept out of [`std::fmt::Display`] so the message stays verbatim.
+#[derive(Debug, thiserror::Error)]
+#[error("{}", display_string(ID_CANT_OPEN_DATA_FILES, &[]))]
+pub struct DataFilesError {
+    /// What actually went wrong, for a log line rather than for the dialog.
+    pub cause: String,
+}
+
+/// Dereth's own records over the portal from before Throne of Destiny: the classic interface's
+/// pictures for what later worlds added, under the later files' ids for them. Made from the
+/// pictures beside it by Lyceum's `lyceum layer` (`assets/classic-portal/pack.tsv` says how).
+const CLASSIC_PORTAL_LAYER: &[u8] = include_bytes!("../assets/classic-portal/layer.dat");
+
+/// The client layers built into the client ([`pyreal_dat::client_layer`]), opened once. A layer
+/// that will not open is reported and left out, and what it held is missing as it is without it.
+#[must_use]
+pub fn client_layers() -> &'static [pyreal_dat::client_layer::ClientLayer] {
+    static LAYERS: std::sync::OnceLock<Vec<pyreal_dat::client_layer::ClientLayer>> =
+        std::sync::OnceLock::new();
+    LAYERS.get_or_init(|| {
+        [("classic-portal", CLASSIC_PORTAL_LAYER)]
+            .into_iter()
+            .filter_map(|(name, bytes)| {
+                pyreal_dat::client_layer::ClientLayer::from_static(name, bytes)
+                    .map_err(|e| tracing::warn!("the client's {name} layer will not open: {e}"))
+                    .ok()
+            })
+            .collect()
+    })
+}
+
+/// `store` with the client's own records ([`client_layers`]) beneath the world's overlay, on
+/// every portal file of each layer's layout it holds. They are in no iteration it reports and in
+/// none of the base files the data-patch path writes against.
+#[must_use]
+pub fn with_client_layers(store: RetailDatStore) -> RetailDatStore {
+    client_layers()
+        .iter()
+        .fold(store, |s, layer| s.with_client_layer(layer))
+}
+
+/// The dat half of client database initialisation, for a world whose era the data files decide
+/// and whose older set, if any, is beside the later one ([`open_world_files`] with neither).
+///
+/// # Errors
+/// [`DataFilesError`] -- carrying corestrings 201 verbatim -- when any of the three required files is
+/// missing or unreadable. `client_highres.dat` is optional: opened when it is there, and skipped
+/// when it is absent.
+pub fn open_data_files(dat_dir: &Path) -> Result<RetailDatStore, DataFilesError> {
+    open_world_files(dat_dir, None, None)
+}
+
+/// Where the set from before Throne of Destiny (`portal.dat`, with `cell.dat` beside it) is read
+/// from: `classic_dat_dir` when it holds one, else `dat_dir` when it does, else nowhere. Naming a
+/// folder only says where to look; what the client does follows from what is found.
+#[must_use]
+pub fn classic_set_dir(dat_dir: &Path, classic_dat_dir: Option<&Path>) -> Option<PathBuf> {
+    let holds = |dir: &Path| pyreal_dat::ClassicDat::Portal.in_dir(dir).is_file();
+    let beside = holds(dat_dir);
+    match classic_dat_dir {
+        Some(classic) if holds(classic) => {
+            if beside && classic != dat_dir {
+                tracing::info!(
+                    "the files from before Throne of Destiny are read from {} (--classic-dat-dir), \
+                     not the ones in {}",
+                    classic.display(),
+                    dat_dir.display()
+                );
+            }
+            Some(classic.to_path_buf())
+        }
+        Some(classic) => {
+            tracing::warn!(
+                "--classic-dat-dir {} holds no portal.dat from before Throne of Destiny{}",
+                classic.display(),
+                if beside {
+                    format!("; the one in {} is read instead", dat_dir.display())
+                } else {
+                    String::new()
+                }
+            );
+            beside.then(|| dat_dir.to_path_buf())
+        }
+        None => beside.then(|| dat_dir.to_path_buf()),
+    }
+}
+
+/// The world's files, chosen by the dat set the world is drawn from (`world_set`) from what the
+/// folders hold.
+///
+/// `dat_dir` holds the later set (`client_portal.dat`, `client_cell_1.dat`,
+/// `client_local_English.dat`, and `client_highres.dat` when there) and may hold the set from before
+/// Throne of Destiny (`portal.dat`, `cell.dat`) too: the names never collide. `classic_dat_dir`, when
+/// given, is where to look for the older set instead ([`classic_set_dir`]).
+///
+/// - A world drawn from the files before Throne of Destiny draws from the older set, with the later files
+///   beside it answering the later interface and every record the older ones lack
+///   ([`RetailDatStore::open_classic_with_modern`]). With no later files, the older set alone.
+/// - A world drawn from the later files, and one with no set named, draws the later world, with the older `portal.dat` beside
+///   it for the classic interface and the older grounds, skies and object looks when one is found
+///   ([`RetailDatStore::with_classic_portal`]). An older portal that will not open is reported and
+///   left out: the world still opens, and what needs it is refused as it is with none.
+/// - With no set named, a `dat_dir` holding only the older set opens that set.
+///
+/// The client's own records lie over what opens ([`with_client_layers`]).
+///
+/// # Errors
+/// [`DataFilesError`] as [`open_data_files`].
+pub fn open_world_files(
+    dat_dir: &Path,
+    classic_dat_dir: Option<&Path>,
+    world_set: Option<pyreal_dat::ContainerEra>,
+) -> Result<RetailDatStore, DataFilesError> {
+    open_retail_files(dat_dir, classic_dat_dir, world_set).map(with_client_layers)
+}
+
+/// The era whose set the files in `dir` are ([`pyreal_primitives::EraId::of_dats`]); else why not,
+/// for the log.
+fn played_set(dir: &Path, container: pyreal_dat::ContainerEra) -> Result<(), String> {
+    let it = |name: &str| pyreal_dat::DatFile::read_iterations(&dir.join(name)).ok();
+    let (portal, cell, local) = match container {
+        pyreal_dat::ContainerEra::Classic => (it("portal.dat"), it("cell.dat"), None),
+        pyreal_dat::ContainerEra::Modern => (
+            it("client_portal.dat"),
+            it("client_cell_1.dat"),
+            it("client_local_English.dat").map(|f| f.count),
+        ),
+    };
+    let (portal, cell) = (portal.map(|f| f.count), cell.map(|f| f.count));
+    if pyreal_primitives::EraId::of_dats(container, portal, cell, local).is_some() {
+        return Ok(());
+    }
+    Err(format!(
+        "the data files in {} are none of the sets Pyreal plays (portal {portal:?}, cell \
+         {cell:?}, local {local:?}): the end of retail files, the February 2005 files and the \
+         1999 launch files",
+        dir.display()
+    ))
+}
+
+/// [`open_world_files`] without the client's own records.
+fn open_retail_files(
+    dat_dir: &Path,
+    classic_dat_dir: Option<&Path>,
+    world_set: Option<pyreal_dat::ContainerEra>,
+) -> Result<RetailDatStore, DataFilesError> {
+    let later = pyreal_dat::holds_modern_dats(dat_dir);
+    let classic = classic_set_dir(dat_dir, classic_dat_dir);
+    let pre_tod_world = match world_set {
+        Some(set) => set == pyreal_dat::ContainerEra::Classic,
+        None => !later && classic.is_some(),
+    };
+    if pre_tod_world {
+        let Some(older) = classic.as_deref() else {
+            return Err(DataFilesError {
+                cause: format!(
+                    "the world's era is before Throne of Destiny and no portal.dat and cell.dat \
+                     were found in {}{}",
+                    dat_dir.display(),
+                    classic_dat_dir.map_or_else(String::new, |c| format!(" or {}", c.display()))
+                ),
+            });
+        };
+        let store = if later {
+            RetailDatStore::open_classic_with_modern(older, dat_dir)
+        } else {
+            RetailDatStore::open_classic_dir(older)
+        }
+        .map_err(|e| DataFilesError {
+            cause: format!("{}: {e}", older.display()),
+        })?;
+        played_set(older, pyreal_dat::ContainerEra::Classic)
+            .and_then(|()| {
+                if later {
+                    played_set(dat_dir, pyreal_dat::ContainerEra::Modern)
+                } else {
+                    Ok(())
+                }
+            })
+            .map_err(|cause| DataFilesError { cause })?;
+        return Ok(store);
+    }
+    let store = RetailDatStore::open_dir(dat_dir).map_err(|e| DataFilesError {
+        cause: format!("{}: {e}", dat_dir.display()),
+    })?;
+    played_set(dat_dir, pyreal_dat::ContainerEra::Modern)
+        .map_err(|cause| DataFilesError { cause })?;
+    // Opened whenever it is installed, for High-Res Textures; the data check still names it only
+    // when the server asks for it.
+    if let Err(e) = store.grant_highres() {
+        tracing::warn!(
+            "client_highres.dat in {} will not open: {e}",
+            dat_dir.display()
+        );
+    }
+    let Some(classic) = classic else {
+        return Ok(store);
+    };
+    if let Err(why) = played_set(&classic, pyreal_dat::ContainerEra::Classic) {
+        tracing::warn!("{why}; the classic interface and the older looks are left out");
+        return Ok(store);
+    }
+    match store.clone().with_classic_portal(&classic) {
+        Ok(with) => Ok(with),
+        Err(e) => {
+            tracing::warn!(
+                "the older portal.dat in {} will not open ({e}); the classic interface and the \
+                 older grounds, skies and object looks are unavailable",
+                classic.display()
+            );
+            Ok(store)
+        }
+    }
+}
+
+/// The store a run reads: the world's files from its folders ([`open_world_files`]) with the
+/// world's overlay over them when there is one ([`crate::world_overlay::lay_over`]).
+///
+/// # Errors
+/// [`DataFilesError`] as [`open_data_files`].
+pub fn open_store(cfg: &crate::config::Config) -> Result<RetailDatStore, DataFilesError> {
+    open_store_noting(cfg).map(|(store, _)| store)
+}
+
+/// [`open_store`], with the reason when the world's overlay is refused.
+///
+/// # Errors
+/// [`DataFilesError`] as [`open_data_files`].
+pub fn open_store_noting(
+    cfg: &crate::config::Config,
+) -> Result<(RetailDatStore, Option<crate::world_overlay::Refusal>), DataFilesError> {
+    Ok(crate::world_overlay::lay_over_noting(
+        open_locked_store(cfg)?,
+        cfg,
+    ))
+}
+
+/// The world's files from its folders ([`open_world_files`]), without the world's overlay.
+///
+/// # Errors
+/// [`DataFilesError`] as [`open_data_files`].
+pub fn open_locked_store(cfg: &crate::config::Config) -> Result<RetailDatStore, DataFilesError> {
+    // No folder yet: a client that asks the player for one first.
+    if cfg.dat_dir.as_os_str().is_empty() {
+        return RetailDatStore::empty().map_err(|e| DataFilesError {
+            cause: e.to_string(),
+        });
+    }
+    open_world_files(&cfg.dat_dir, cfg.classic_dat_dir.as_deref(), world_set(cfg))
+}
+
+/// The dat set the world is drawn from: the one its overlay was made against when the overlay
+/// folder holds one, else `--world-base`, else the era's ([`pyreal_primitives::EraId::container_era`]);
+/// `None` when nothing names one. The era is only the default: a world made outside Dereth may
+/// play an early era over the later files.
+#[must_use]
+pub fn world_set(cfg: &crate::config::Config) -> Option<pyreal_dat::ContainerEra> {
+    let from_overlay = crate::world_overlay::folder(cfg).and_then(|d| d.base_era());
+    if let (Some(o), Some(b)) = (from_overlay, cfg.world_base) {
+        if o != b {
+            tracing::warn!(
+                "the world's overlay was made against the {} files, not the {} ones --world-base \
+                 names; the overlay's are read",
+                set_name(o),
+                set_name(b)
+            );
+        }
+    }
+    from_overlay
+        .or(cfg.world_base)
+        .or_else(|| cfg.era.map(pyreal_primitives::EraId::container_era))
+}
+
+/// A dat set's name as `--world-base` spells it.
+fn set_name(set: pyreal_dat::ContainerEra) -> &'static str {
+    match set {
+        pyreal_dat::ContainerEra::Modern => "modern",
+        pyreal_dat::ContainerEra::Classic => "classic",
+    }
+}
+
+/// Resolve the two-level enum-id map lookup for any group.
+///
+/// An enum lookup resolves `(enumValue, group, dbType)` in two hops: the master
+/// `DidMapper` at (`0x25000000`) maps the **group** to a second mapper,
+/// and that mapper maps the **enum value** to the object's `DataID`. The retired UI frameworks
+/// `DidMapperResolver` does exactly this for group 5 (`UILAYOUT`) and hard-codes the group;
+/// everything else that needs it — the `ActionMap` (group 8), the two key maps (group 10), the UI
+/// sound table (group 7) — needs the general form, and nobody owns it.
+///
+/// **Never hard-code a `DataID` at a call site.** A DDD patch can move any of these objects, and
+/// hard-coding works against this dat build and no other.
+///
+/// | group | name | used by |
+/// |------:|------|---------|
+/// | 5 | `UILAYOUT` | every screen, through the retired UI framework's `framework::DidMapperResolver` |
+/// | 7 | `UIASSET` | the UI sound table, enum `0x10000003` |
+/// | 8 | `ACTIONMAP` | input-manager startup, enum 1 |
+/// | 10 | `KEYMAP` | the two key-map loads, enums 1 and `0x10000001` |
+///
+/// Returns `None` when either hop is missing, which the caller must treat as a failure rather than
+/// as an empty result: the client's own `require` on the returned pointer is fatal.
+///
+/// **The body lives in `pyreal_assets::did_by_enum`** and this is a forward: the
+/// icon backgrounds an item slot paints need the same two hops from `dereth-ui-screens`, which
+/// sits below this crate. Nothing about the lookup changed; the call sites here are unchanged.
+#[must_use]
+pub fn enum_did(
+    assets: &dyn pyreal_primitives::AssetSource,
+    group: u32,
+    value: u32,
+) -> Option<DataId> {
+    pyreal_assets::did_by_enum(assets, group, value)
+}
+
+/// The master `DidMapper` where every enum lookup starts.
+pub const MASTER_DID_MAPPER: DataId = pyreal_assets::MASTER_DID_MAPPER;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyreal_primitives::AssetSource;
+
+    // Oracle: entry 201 of the corestrings.dll string table, used for the portal dat's fatal failure.
+    #[test]
+    fn starting_without_dats_fails_with_the_documented_text_rather_than_a_panic() {
+        let err = open_data_files(Path::new("no-such-directory-anywhere"))
+            .expect_err("there are no dats there");
+        assert_eq!(
+            err.to_string(),
+            "Can't open the data files. Check that they exist and that you have permission to \
+             write to them. The program will now exit."
+        );
+        assert!(
+            err.cause.contains("no-such-directory-anywhere"),
+            "{}",
+            err.cause
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_four_retail_files_open_and_expose_the_seam() {
+        let dir = pyreal_dat::testing::dat_dir();
+        assert!(
+            pyreal_dat::testing::have_dats(),
+            "the retail dats are this test's oracle and there are none at {} -- \
+             set PYREAL_TEST_DAT_DIR",
+            dir.display()
+        );
+        let store = open_data_files(&dir).expect("the retail dats open");
+        assert!(
+            store.headers_match_retail(),
+            "the four headers are the documented ones"
+        );
+        assert!(store.exists(DataId(FIRST_PIXEL_SURFACE)));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_high_res_file_is_drawn_from_whenever_it_is_beside_the_later_files() {
+        let dir = pyreal_dat::testing::dat_dir();
+        let here = pyreal_dat::ModernDat::HighRes.in_dir(&dir).is_file();
+        let store = open_data_files(&dir).expect("the retail dats open");
+        assert_eq!(
+            store.highres_granted(),
+            here,
+            "client_highres.dat beside them: {here}"
+        );
+    }
+
+    /// What one opened store makes available, as the client decides it from the files found.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Available {
+        /// The world's set.
+        world: pyreal_dat::ContainerEra,
+        /// The classic interface's portal (the older set, as the world or beside it).
+        classic: bool,
+        /// The later interface's files (the later set, as the world or beside it).
+        modern: bool,
+        /// The other era's object look.
+        other_objects: bool,
+    }
+
+    fn available(store: &RetailDatStore) -> Available {
+        let world = store.era();
+        let other = match world {
+            pyreal_dat::ContainerEra::Classic => pyreal_dat::ContainerEra::Modern,
+            pyreal_dat::ContainerEra::Modern => pyreal_dat::ContainerEra::Classic,
+        };
+        Available {
+            world,
+            classic: world == pyreal_dat::ContainerEra::Classic || store.classic_files().is_some(),
+            modern: store.modern_files().is_some(),
+            other_objects: store.object_files(other).is_some(),
+        }
+    }
+
+    const EOR: Option<pyreal_dat::ContainerEra> = Some(pyreal_dat::ContainerEra::Modern);
+    const INFILTRATION: Option<pyreal_dat::ContainerEra> = Some(pyreal_dat::ContainerEra::Classic);
+
+    fn both(world: pyreal_dat::ContainerEra) -> Available {
+        Available {
+            world,
+            classic: true,
+            modern: true,
+            other_objects: true,
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail and February 2005 dats: --features retail-dats"
+    )]
+    fn both_sets_in_one_folder_make_both_interfaces_and_looks_available_and_the_era_picks_the_world(
+    ) {
+        let dir = pyreal_dat::testing::both_sets_dir();
+        for era in [None, EOR] {
+            let store = open_world_files(&dir, None, era).expect("both sets open");
+            assert_eq!(
+                available(&store),
+                both(pyreal_dat::ContainerEra::Modern),
+                "{era:?}"
+            );
+        }
+        let store = open_world_files(&dir, None, INFILTRATION).expect("both sets open");
+        assert_eq!(available(&store), both(pyreal_dat::ContainerEra::Classic));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail and February 2005 dats: --features retail-dats"
+    )]
+    fn the_sets_in_two_folders_make_the_same_things_available_as_one_folder() {
+        let later = pyreal_dat::testing::dat_dir();
+        let older = pyreal_dat::testing::classic_dat_dir().unwrap_or_else(|| {
+            panic!(
+                "{}",
+                pyreal_dat::testing::classic_shortfall().unwrap_or_default()
+            )
+        });
+        assert_eq!(classic_set_dir(&later, Some(&older)), Some(older.clone()));
+        for era in [None, EOR] {
+            let store = open_world_files(&later, Some(&older), era).expect("both sets open");
+            assert_eq!(
+                available(&store),
+                both(pyreal_dat::ContainerEra::Modern),
+                "{era:?}"
+            );
+        }
+        let store = open_world_files(&later, Some(&older), INFILTRATION).expect("both sets open");
+        assert_eq!(available(&store), both(pyreal_dat::ContainerEra::Classic));
+        // The named folder wins over a set beside the later one.
+        let one = pyreal_dat::testing::both_sets_dir();
+        assert_eq!(classic_set_dir(&one, Some(&older)), Some(older.clone()));
+        assert_eq!(classic_set_dir(&one, None), Some(one.clone()));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_later_set_alone_draws_the_later_world_with_no_classic_interface_or_older_looks() {
+        let later = pyreal_dat::testing::dat_dir();
+        assert_eq!(classic_set_dir(&later, None), None);
+        let alone = Available {
+            world: pyreal_dat::ContainerEra::Modern,
+            classic: false,
+            modern: true,
+            other_objects: false,
+        };
+        for era in [None, EOR] {
+            let store = open_world_files(&later, None, era).expect("the later set opens");
+            assert_eq!(available(&store), alone, "{era:?}");
+        }
+        // An older world needs the older set, and says where it looked.
+        let err = open_world_files(&later, None, INFILTRATION).expect_err("no older set");
+        assert!(err.cause.contains("portal.dat"), "{}", err.cause);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn a_classic_folder_holding_no_older_set_changes_nothing_the_later_folder_makes_available() {
+        let empty = pyreal_dat::testing::ScratchDir::new("classic-dat-dir-empty").expect("scratch");
+        let later = pyreal_dat::testing::dat_dir();
+        assert_eq!(classic_set_dir(&later, Some(empty.path())), None);
+        let store = open_world_files(&later, Some(empty.path()), None).expect("the later set");
+        assert_eq!(
+            available(&store),
+            available(&open_world_files(&later, None, None).expect("the later set"))
+        );
+        // Beside a later folder that holds the older set, that set is still found.
+        let one = pyreal_dat::testing::both_sets_dir();
+        assert_eq!(classic_set_dir(&one, Some(empty.path())), Some(one.clone()));
+        let store = open_world_files(&one, Some(empty.path()), None).expect("both sets");
+        assert_eq!(available(&store), both(pyreal_dat::ContainerEra::Modern));
+    }
+
+    #[test]
+    fn the_overlays_base_names_the_worlds_set_over_the_switch_and_the_era() {
+        use pyreal_dat::overlay::{OverlayDir, OverlayWriter};
+        let scratch = pyreal_dat::testing::ScratchDir::new("world-set").expect("scratch");
+        let mut cfg = crate::config::Config {
+            connect: false,
+            era: Some(pyreal_primitives::EraId::Infiltration),
+            ..crate::config::Config::default()
+        };
+        assert_eq!(
+            world_set(&cfg),
+            Some(pyreal_dat::ContainerEra::Classic),
+            "the era's"
+        );
+        cfg.world_base = Some(pyreal_dat::ContainerEra::Modern);
+        assert_eq!(
+            world_set(&cfg),
+            Some(pyreal_dat::ContainerEra::Modern),
+            "the switch's"
+        );
+        // An overlay made against `portal.dat` names the older set, whatever the switch says.
+        let base_path = scratch.path().join("portal.dat");
+        {
+            let mut w = pyreal_dat::write::DatWriter::create(&base_path, 0x400, 1, 0, 0x400 * 17)
+                .expect("a base");
+            w.save(DataId(0x0600_0001), b"x", 1, 1, 1)
+                .expect("a record");
+        }
+        let base = pyreal_dat::DatFile::open(&base_path).expect("the base");
+        let dir = OverlayDir::new(&scratch.path().join("overlay")).expect("an overlay folder");
+        let mut w = OverlayWriter::open_or_create(
+            &dir.container(pyreal_dat::ModernDat::Portal),
+            &base,
+            "portal.dat",
+            "a world",
+            1,
+        )
+        .expect("the overlay");
+        w.flush(1).expect("flushed");
+        drop(w);
+        cfg.overlay_dat_dir = Some(dir.path().to_path_buf());
+        assert_eq!(
+            world_set(&cfg),
+            Some(pyreal_dat::ContainerEra::Classic),
+            "the overlay's"
+        );
+    }
+
+    /// The client's classic-portal pictures: the paper doll's later slots, then the journal's
+    /// toolbar button, normal and lit.
+    const PICTURES: [u32; 7] = [
+        0x0600_708F,
+        0x0600_6A6C,
+        0x0600_6BEF,
+        0x0600_6BF0,
+        0x0600_6BF1,
+        0x0600_69AE,
+        0x0600_69AF,
+    ];
+
+    /// The older portal the classic interface reads from `store`: the world's own on an older
+    /// world, else the one beside it.
+    fn classic_portal(store: &RetailDatStore) -> pyreal_dat::DatFile {
+        if store.era() == pyreal_dat::ContainerEra::Classic {
+            store.portal().clone()
+        } else {
+            store
+                .classic_files()
+                .expect("the older portal beside the world")
+                .portal()
+                .clone()
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail and February 2005 dats: --features retail-dats"
+    )]
+    fn the_later_slots_read_the_clients_pictures_from_the_older_portal_on_both_kinds_of_world() {
+        let layer = &client_layers()[0];
+        assert_eq!(layer.era(), pyreal_dat::ContainerEra::Classic);
+        assert_eq!(
+            layer.ids(),
+            {
+                let mut s = PICTURES.map(DataId);
+                s.sort_unstable();
+                s.to_vec()
+            },
+            "the slots and the journal button, and nothing else"
+        );
+        let dir = pyreal_dat::testing::both_sets_dir();
+        for era in [INFILTRATION, EOR] {
+            let store = open_world_files(&dir, None, era).expect("both sets open");
+            let bare = open_retail_files(&dir, None, era).expect("both sets open");
+            let portal = classic_portal(&store);
+            for id in PICTURES {
+                let ours = layer.read(DataId(id)).expect("the layer's record");
+                let (w, h) = if (0x0600_69AE..=0x0600_69AF).contains(&id) {
+                    (34, 27)
+                } else {
+                    (32, 32)
+                };
+                assert_eq!(ours.len(), 12 + w * h * 3, "{id:#010X}: {w} x {h} RGB");
+                assert_eq!(&ours[..4], &id.to_le_bytes(), "{id:#010X} echoes its id");
+                assert_eq!(
+                    portal.read(DataId(id)).ok(),
+                    Some(ours),
+                    "{era:?} {id:#010X}"
+                );
+                assert!(
+                    !classic_portal(&bare).contains(DataId(id)),
+                    "the older portal itself has no {id:#010X}"
+                );
+            }
+            // The later interface still reads the later files' own pictures at those ids.
+            if let Some(later) = store.modern_files() {
+                for id in PICTURES {
+                    assert_eq!(
+                        later.read_portal(DataId(id)).ok(),
+                        bare.modern_files().unwrap().read_portal(DataId(id)).ok(),
+                        "{era:?} {id:#010X}"
+                    );
+                }
+            }
+            if era == INFILTRATION {
+                // A world read of an id the later files answer is still theirs.
+                assert_eq!(
+                    store.read_portal(DataId(PICTURES[0])).ok(),
+                    bare.read_portal(DataId(PICTURES[0])).ok()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail and February 2005 dats: --features retail-dats"
+    )]
+    fn a_worlds_overlay_record_wins_over_the_clients_at_the_same_id() {
+        use pyreal_dat::overlay::{OverlayDir, OverlayWriter};
+        let scratch =
+            pyreal_dat::testing::ScratchDir::new("client-layer-world-wins").expect("scratch");
+        let dir = pyreal_dat::testing::both_sets_dir();
+        let store = open_world_files(&dir, None, INFILTRATION).expect("both sets open");
+        let overlay = OverlayDir::new(&scratch.path().join("overlay")).expect("an overlay folder");
+        let theirs = {
+            let mut r = PICTURES[2].to_le_bytes().to_vec();
+            r.extend_from_slice(&1u32.to_le_bytes());
+            r.extend_from_slice(&1u32.to_le_bytes());
+            r.extend_from_slice(&[1, 2, 3]);
+            r
+        };
+        let base = store.portal().base();
+        let mut w = OverlayWriter::open_or_create(
+            &overlay.container(pyreal_dat::ModernDat::Portal),
+            &base,
+            "portal.dat",
+            "a world",
+            1,
+        )
+        .expect("the overlay");
+        w.save(&base, DataId(PICTURES[2]), &theirs, 1, 1, 1)
+            .expect("the world's record");
+        w.flush(1).expect("flushed");
+        drop(w);
+        let world = store
+            .with_overlay(&overlay, Some("a world"))
+            .expect("the overlay opens over the older portal");
+        assert_eq!(world.portal().read(DataId(PICTURES[2])).ok(), Some(theirs));
+        // The others are still the client's.
+        assert_eq!(
+            world.portal().read(DataId(PICTURES[3])).ok(),
+            client_layers()[0].read(DataId(PICTURES[3])).ok()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail and February 2005 dats: --features retail-dats"
+    )]
+    fn the_clients_records_change_no_iteration_the_client_reports_and_no_base_file() {
+        let dir = pyreal_dat::testing::both_sets_dir();
+        for era in [INFILTRATION, EOR] {
+            let store = open_world_files(&dir, None, era).expect("both sets open");
+            let bare = open_retail_files(&dir, None, era).expect("both sets open");
+            for product in [1, 1 | crate::app::PRODUCT_HIGHRES] {
+                assert_eq!(
+                    crate::app::ddd_interrogation_response(&store, product, true, None),
+                    crate::app::ddd_interrogation_response(&bare, product, true, None),
+                    "{era:?}"
+                );
+            }
+            for t in pyreal_dat::ModernDat::REQUIRED {
+                let (a, b) = (bare.target_file(t).unwrap(), store.target_file(t).unwrap());
+                assert_eq!(a.header_iteration(), b.header_iteration(), "{era:?} {t:?}");
+                assert_eq!(a.iteration_list().ok(), b.iteration_list().ok());
+                assert_eq!(
+                    pyreal_dat::overlay::fingerprint(a),
+                    pyreal_dat::overlay::fingerprint(b)
+                );
+                for id in PICTURES {
+                    assert_eq!(b.base().contains(DataId(id)), a.base().contains(DataId(id)));
+                }
+            }
+        }
+    }
+
+    // Oracle: the retail `DidMapper 0x25000000` and the four mappers it names. These are the ids the client
+    // reaches through, and every one of them is resolved rather than written
+    // down at a call site.
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_two_level_enum_lookup_finds_the_documented_objects() {
+        let dir = pyreal_dat::testing::dat_dir();
+        assert!(
+            pyreal_dat::testing::have_dats(),
+            "the retail dats are this test's oracle and there are none at {} -- \
+             set PYREAL_TEST_DAT_DIR",
+            dir.display()
+        );
+        let store = open_data_files(&dir).expect("the retail dats open");
+        let s: &dyn AssetSource = &store;
+        // Input startup asks for enum value 1 in action-map group 8 and database type 0x27.
+        assert_eq!(
+            enum_did(s, 8, 1),
+            Some(DataId(0x2600_0000)),
+            "ACTIONMAP/Default"
+        );
+        // Keymap init adds key map 1 and key map 0x10000001.
+        assert_eq!(
+            enum_did(s, 10, 1),
+            Some(DataId(0x1400_0002)),
+            "KEYMAP/Default"
+        );
+        assert_eq!(
+            enum_did(s, 10, 0x1000_0001),
+            Some(DataId(0x1400_0000)),
+            "KEYMAP/0x10000001, the default game key map"
+        );
+        // The UI sound table is enum value 0x10000003 in group 7 and database type 0x22.
+        assert_eq!(
+            enum_did(s, 7, 0x1000_0003),
+            Some(DataId(0x2000_004B)),
+            "UIASSET/UISoundTable"
+        );
+        assert_eq!(
+            enum_did(s, 5, 0x1000_0001),
+            Some(DataId(0x2100_0000)),
+            "UILAYOUT/patch"
+        );
+        // A group and an entry that do not exist are `None`, not a panic and not zero.
+        assert_eq!(enum_did(s, 9999, 1), None);
+        assert_eq!(enum_did(s, 8, 9999), None);
+        // Entry 0 of every mapper is `Undef` -> 0, which must read as absent.
+        assert_eq!(enum_did(s, 10, 0), None, "an id of 0 is not a resolution");
+    }
+}

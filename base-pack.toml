@@ -1,0 +1,8 @@
+# The base art pack the app carries: the pack repository's source at `commit`, packed
+# by `cargo xtask base-pack build` into <target>/base-pack/base-pack.dat, which must
+# hash to `sha256`. `cargo xtask base-pack update [<rev>]` moves the pin.
+repository = "../dereth-enhanced-environment"
+commit = "89eeba1efd1e47c92713761d140b5ea1bfedae5e"
+version = "0.2.0"
+sha256 = "2c045203928448805f88169fb69609a544cd04df3ab893b58d8a8a2461d810f6"
+bytes = 291352576

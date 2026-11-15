@@ -1,0 +1,23 @@
+[package]
+name = "pyreal-ui-logic"
+description = "The game's words, tables and rules the interface reads, kept apart from how it draws them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+pyreal-primitives.workspace = true
+# The game state the helpers read (`GameView`, the view structs) and the radar's shared rules.
+pyreal-client-contract.workspace = true
+# The shared presentation rules: the numbers in an oath's cost and the spell icon's layers.
+pyreal-presentation.workspace = true
+# Character creation's model and its tables.
+pyreal-chargen.workspace = true
+# The dat records the creation tables are decoded from, and the dat set they are read out of.
+pyreal-assets.workspace = true
+pyreal-dat.workspace = true
+
+[lints]
+workspace = true

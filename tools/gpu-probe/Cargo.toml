@@ -1,0 +1,28 @@
+[package]
+name = "pyreal-gpu-probe"
+description = "Measures what the GPU layer can do on this machine: the features and limits the renderer's design depends on, each proved by a small timed workload."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The GPU layer the renderer is built on, the same version as the client's.
+wgpu = "30"
+pollster.workspace = true
+serde_json.workspace = true
+
+# DX12 with DXC linked in, as the engine's, so its ray query test runs there.
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+wgpu = { version = "30", features = ["static-dxc"] }
+
+# Not the workspace lints: those forbid unsafe outright, and asking a device for wgpu's
+# experimental ray queries takes one unsafe token (`src/gpu.rs`, with its SAFETY comment).
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+cast_possible_truncation = "warn"
+undocumented_unsafe_blocks = "warn"

@@ -1,0 +1,1947 @@
+//! Login queues, character sessions, and host state.
+
+use super::*;
+
+impl<S: Shell> App<S> {
+    /// Apply the environment-control message's local visual and sound effects.
+    ///
+    /// `true` means the event belonged to the client's visual `0..=6` / `9999` cases or the
+    /// `101..=124` sound range, including the three sound values which deliberately fall through
+    /// its switch. Malformed and unknown options remain available to the generic diagnostics.
+    fn apply_admin_environs(
+        &mut self,
+        shell: &S,
+        event: &pyreal_client_net::client_session::SessionEvent,
+    ) -> bool {
+        let Some((opcode, body)) = event.ui_body() else {
+            return false;
+        };
+        if opcode != pyreal_protocol::Opcode::ADMIN_ENVIRONS {
+            return false;
+        }
+        let Ok(message) =
+            pyreal_protocol::read_body_padded::<pyreal_protocol::admin::AdminEnvirons>(body)
+        else {
+            return false;
+        };
+        if let Some(blank) = self
+            .environment_override
+            .apply_option(message.environ_option)
+        {
+            self.hud.set_admin_radar_blank(blank);
+            if let Some(mut world) = self.present.scene_mut(self.world.as_mut()) {
+                world.sync_environment_override_flags();
+            }
+            return true;
+        }
+        if !pyreal_protocol::admin::AdminEnvirons::is_sound_cue(message.environ_option) {
+            return false;
+        }
+
+        // The outer range encloses three absent switch cases: they are handled no-ops, not an
+        // unknown Admin_Environs operation. All remaining exits preserve the client's order:
+        // player physics object, UI system/table, and only then centered table playback.
+        let Ok(option) = u32::try_from(message.environ_option) else {
+            return true;
+        };
+        let Some(stype) = pyreal_audio::trigger::environ_sound_type(option) else {
+            return true;
+        };
+        let Some(player) = self.objects.player() else {
+            return true;
+        };
+        if self.objects.world.physics(player).is_none() {
+            return true;
+        }
+        // The live UI-system lookup is a separate client guard from the cached table. The
+        // latter can outlive a screen transition in this host; it must not stand in for a UI
+        // system that was never created.
+        if !shell.has_ui() {
+            return true;
+        }
+        if let (Some(table), Some(audio)) = (self.ui_sound_table, self.audio.as_mut()) {
+            audio.play_ui_sound(pyreal_audio::UiSoundRef::Table { table, stype });
+        }
+        true
+    }
+
+    /// Assemble [`HostState`] from the session, once per frame.
+    ///
+    /// Every value is read from somewhere that already exists: the character set is `0xF658`,
+    /// `in_world` is `SessionState::Playable`, and the error is whatever ended the session.
+    pub(super) fn build_host_state(&mut self) {
+        let has_net = self.link.is_some();
+        let (connected, in_world, error) = match self.link.as_ref() {
+            Some(link) => (
+                link.net.status() == crate::net::LinkStatus::Connected,
+                link.net.session.state()
+                    == pyreal_client_net::client_session::SessionState::Playable,
+                // The transport's own error if it has one, and otherwise **whatever was already
+                // latched**. Overwriting the field with `None` every frame would erase a character
+                // error raised by [`Self::recv_disconnect_notice`] *in the same frame it was
+                // raised*, before the front end could see the edge, and a disconnected client
+                // would never reach the disconnected screen with a server on the line.
+                // Latching is the same statement the `None` arm below already makes, and for the
+                // same reason: the notice is raised once and there is no reconnect path.
+                link.net
+                    .error()
+                    .map(|c| c.id_string().to_string())
+                    .or_else(|| self.host_state.error.clone()),
+            ),
+            // With no `--connect` there is no shared network to ask and no packet controller to wait
+            // for. On this no-controller branch the set is not required, so readiness is immediate.
+            // The connect meter is reported
+            // satisfied because there is no connection to be waiting on -- a statement about *this
+            // build having no network*, not a claim about the retail client, which always connects
+            // before and therefore always has one.
+            //
+            // The error is **latched**, not cleared: the character-error event is a notice raised
+            // once, and with no shared network there is nothing to ask
+            // whether it is still true. Overwriting it with `None` every frame would erase a
+            // locally-raised character error — the subscription-expired error is exactly that —
+            // before the shell's own edge test could see it.
+            // With the screens before any world, no link is no session at all.
+            None => (!self.cfg.front_door, false, self.host_state.error.clone()),
+        };
+        // A session the client ended over the world's data says so, whatever the transport says
+        // of the connection it closed; one it ended at the start is a run that connects and never
+        // did, with no data check over.
+        let refused = self.world_refused().is_some();
+        let error = if refused {
+            self.host_state.error.clone()
+        } else {
+            error
+        };
+        let refused_at_start = refused && !has_net;
+        let connected = connected && !refused_at_start;
+        self.host_state.connected = connected;
+        self.host_state.has_packet_controller = has_net || refused_at_start;
+        self.host_state.in_world = in_world;
+        if self.host_state.disconnect.is_none() {
+            if let Some(code) = self.link.as_ref().and_then(|l| l.net.error()) {
+                self.host_state.disconnect =
+                    Some(pyreal_client_contract::pregame::DisconnectNotice::Net(
+                        code.id_string().to_string(),
+                    ));
+            }
+        }
+        self.host_state.error = error;
+        // With a live connection the DDD stream is real and `patch_finished` is what the
+        // patch-time-end message says rather than an assumption. Without one there is no shared
+        // asset cache to interrogate anything, so the phase is over before it starts.
+        if !has_net && !refused_at_start {
+            self.host_state.patch_finished = true;
+        }
+        // Drained into the screen once per frame; `HostState` is cloned into `UiShell::frame`, so
+        // the queue must be emptied here or every event would be delivered again next frame.
+        self.host_state.ddd = std::mem::take(&mut self.pending_ddd);
+        let phase = self.game_phase();
+        if phase != self.host_state.phase {
+            tracing::debug!("game phase {:?} -> {phase:?}", self.host_state.phase);
+            self.host_state.phase = phase;
+            self.host_state.phase_changes = self.host_state.phase_changes.wrapping_add(1);
+        }
+    }
+
+    /// Where the game is this frame ([`pyreal_client_contract::pregame::GamePhase`]), from the
+    /// session and the requests the UI has made.
+    ///
+    /// The edges are the ones the retail flow takes: the character list is reachable once the
+    /// connection is up, the data check is over and the list has arrived (or there is no server
+    /// to wait for); the world is entered on the session becoming playable; and a log-off returns
+    /// to the list only when the server answers it, which is when the session leaves the world.
+    fn game_phase(&mut self) -> pyreal_client_contract::pregame::GamePhase {
+        use pyreal_client_contract::pregame::{DisconnectNotice, GamePhase};
+        use pyreal_client_net::client_session::SessionState;
+        if let Some(notice) = &self.host_state.disconnect {
+            return GamePhase::Disconnected(notice.clone());
+        }
+        let Some(link) = self.link.as_ref() else {
+            // No server: the character list is up from the start, empty.
+            return if self.duties.creating_character {
+                GamePhase::CharacterCreation
+            } else {
+                GamePhase::CharacterSelect
+            };
+        };
+        let state = link.net.session.state();
+        if state != SessionState::Playable {
+            self.duties.leaving_world = false;
+        }
+        if state != SessionState::CharacterSelect {
+            self.duties.creating_character = false;
+        }
+        match state {
+            SessionState::Connected => GamePhase::Connecting,
+            SessionState::Patching => GamePhase::Patching,
+            SessionState::CharacterSelect if !self.host_state.connected => GamePhase::Connecting,
+            SessionState::CharacterSelect if !self.host_state.patch_finished => GamePhase::Patching,
+            SessionState::CharacterSelect if self.duties.creating_character => {
+                GamePhase::CharacterCreation
+            }
+            SessionState::CharacterSelect => GamePhase::CharacterSelect,
+            SessionState::EnteringWorld => GamePhase::EnteringWorld,
+            SessionState::Playable if self.duties.leaving_world => GamePhase::LoggingOff,
+            SessionState::Playable => GamePhase::InWorld,
+            SessionState::Disconnected(_) => GamePhase::Disconnected(DisconnectNotice::ServerDied),
+        }
+    }
+
+    /// Step 7's UI update and mode switch. Player-description arrival triggers
+    /// loading the automatic screen layout.
+    ///
+    /// Kept as a narrow test seam for the path-and-file stations. The production arm is
+    /// separately covered by a socket-free transport station, which delivers a wire-framed
+    /// `0x0013` through the client network, `Session` and the App event drain.
+    pub fn note_player_description(&mut self) {
+        self.pending_auto_layout = true;
+    }
+
+    /// Whether [`Self::note_player_description`]'s load is still outstanding.
+    #[must_use]
+    pub fn auto_layout_pending(&self) -> bool {
+        self.pending_auto_layout
+    }
+
+    /// Request character logoff through `pyreal_client_net::client_session::Session::log_off`.
+    ///
+    /// **The client's function takes a `bool` and this one does not, which is a declared
+    /// simplification and not a transcription.** The direct character-logoff arm used during
+    /// epilogue-screen construction saves character state and executes logoff **directly**: no `0xF653`, no three
+    /// second deadline, no portal space, because the process is about to exit.
+    /// The ordinary character-logoff arm — also used by the 1,200-second
+    /// idle kick — saves character state, then (unless an item request is outstanding, in which case
+    /// logoff is deferred to the next opportunity) requests departure,
+    /// which is the departure. This build runs the `false` arm for both, and the difference is
+    /// invisible on the quit path only because the epilogue screen requests device shutdown in the same
+    /// frame. The `ask` flag on `UiRequest::EndCharacterSession` already carries the distinction;
+    /// nothing reads it yet.
+    pub fn log_off_character(&mut self) {
+        if let Some(effect) = self.resolution.cancel() {
+            self.apply_resolution_effect(effect);
+        }
+
+        // The logoff request is sent and the log-off-requested flag is armed; that flag fades
+        // the world out three seconds later,
+        // plus twenty when the local player's `is_player_killer` predicate answers true — so
+        // the fade is armed even when there is no link to tell.
+        let is_player_killer = self
+            .objects
+            .player()
+            .and_then(|id| self.objects.world.weenie(id))
+            .is_some_and(pyreal_client_model::Weenie::is_player_killer);
+        // **Saving the player module, which is the *first* thing both
+        // character-logoff arms do.**
+        //
+        // ```text
+        // direct epilogue arm  : save character state ; execute logoff
+        // ordinary logoff arm : save character state ; request logoff
+        //
+        // save(force): if the module is dirty or forced, send the whole player module
+        //              then clear the dirty flag
+        // ```
+        //
+        // Without it the `0x01A1` that carries the **whole** player module never goes out on the
+        // way out. That is not a cosmetic gap: individual changes send a single-option
+        // `0x0005` only for the twenty-one auto-save options, while
+        // changes to every other gameplay option, including the chat
+        // windows' text filters (`0x1000007F`) and all of their placement — sends **nothing** and
+        // only stamps the module dirty. So the other 31 character options, every chat filter and
+        // every window position would reach the shard only by two accidents: the 480-second
+        // player-module flush, and reopening an options page (whose show edge
+        // raises `UiRequest::SavePlayerOptions`). Change one and log out inside eight minutes and
+        // the next login would come back to the old value.
+        //
+        // `force` is **false**, which is the arm both callers use: a session that deferred nothing
+        // still sends nothing, because the save gate is `dirty || force`. The order
+        // is the client's too — the save precedes departure request `0xF653`, so the
+        // module is on the wire before the departure is.
+        if self.link.is_some() {
+            let mut req = pyreal_client_model::RecordingRequests::default();
+            if self
+                .objects
+                .world
+                .player_system
+                .save_to_server(&mut req, false)
+            {
+                self.events.push(FrameEvent::PlayerModuleSavedAtLogout);
+            }
+            for r in req.0 {
+                if let Some(link) = self.link.as_mut() {
+                    let _ = crate::requests::send_request(&mut link.net.session, &r);
+                }
+            }
+        }
+
+        self.teleport
+            .request_log_off(self.timer.cur_time, is_player_killer);
+        self.duties.leaving_world = true;
+        if let Some(link) = self.link.as_mut() {
+            tracing::info!("the epilogue UI requested character logoff");
+            // The departure request sends before its local teardown tail.
+            link.net.session.log_off();
+        }
+
+        // Local teardown disables movement. The returned guard is
+        // `autonomy_level && player && !controlled_by_server`, split at the body boundary here.
+        let apply_and_send = self.movement.disable(&mut self.char_input);
+        if apply_and_send {
+            if let Some(character) = self.world.as_mut().and_then(|w| w.character.as_mut()) {
+                character.flush_command_input(self.char_input);
+            }
+            if let Some(motion) = self.player_motion() {
+                if let Some(link) = self.link.as_mut() {
+                    let _ = self.position.send_movement_event(
+                        self.timer.cur_time,
+                        &motion,
+                        &mut link.net.session,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Leave the game. With a character in the world it logs off first, as the game's own quit
+    /// does: the player module goes to the server ahead of the departure, and the loop ends at
+    /// the next frame's UI step, once that frame's packet step has carried both out. A dead
+    /// server costs that one frame and no more. Anywhere else the device is done at once.
+    pub fn quit_game(&mut self) {
+        use pyreal_client_net::client_session::SessionState;
+        let in_world = !self.duties.leaving_world
+            && self
+                .link
+                .as_ref()
+                .is_some_and(|link| link.net.session.state() == SessionState::Playable);
+        if in_world {
+            self.log_off_character();
+            self.duties.quit_owed = true;
+        } else {
+            self.pump.done();
+        }
+    }
+
+    /// The player system's three character calls, made on the session instead of on a singleton.
+    ///
+    /// Log-on is the two-step `0xF7C8` / `0xF657` exchange (`Session::enter_world` is that state
+    /// machine), delete is `0xF655` addressed by **slot**, and restore is `0xF7D9` on net queue 2.
+    pub fn run_character_actions(
+        &mut self,
+        actions: Vec<pyreal_client_contract::pregame::CharacterAction>,
+    ) {
+        use pyreal_client_contract::pregame::CharacterAction;
+        if actions.is_empty() {
+            return;
+        }
+        let Some(link) = self.link.as_mut() else {
+            for a in actions {
+                tracing::warn!("{a:?} with no server to ask");
+            }
+            return;
+        };
+        let account = link.net.characters().account.clone();
+        for a in actions {
+            match a {
+                CharacterAction::LogOn(gid) => {
+                    let name = link
+                        .net
+                        .characters()
+                        .characters
+                        .iter()
+                        .find(|c| c.gid == gid)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_default();
+                    tracing::info!("entering the world as {name:?} ({:#010X})", gid.0);
+                    // Building the screen-layout path asks
+                    // the player object's singular name for half of the automatic layout file's
+                    // name. This build has
+                    // no `WorldObjects` singleton, so the name is recorded on the edge that knows it.
+                    self.host_state.entered_character = Some(name.clone());
+                    link.net.enter_world(gid, &account);
+                    self.script = EnterWorldScript::Entering;
+                }
+                CharacterAction::Delete(gid) => {
+                    tracing::info!("deleting {:#010X}", gid.0);
+                    link.net.session.delete_character(gid);
+                }
+                CharacterAction::Restore(gid) => {
+                    // Restore-character requests use net queue **2**, with two
+                    // empty packed strings after the id.
+                    tracing::info!("restoring {:#010X}", gid.0);
+                    link.net.session.restore_character(gid);
+                }
+            }
+        }
+    }
+
+    /// Send the character-generation result and the log-on that follows a successful creation.
+    ///
+    /// The conversion from the UI's `CharGenResultData` to the protocol's
+    /// `pyreal_protocol::login::CharGenResult` is field for field and belongs to neither side, so
+    /// it lives here — the same seam, in the same direction, as `ui::character_set_from_login`. The
+    /// **checksum** is computed rather than carried: sums
+    /// fields 2-10, 12, 14, 16 and 24-31 as it writes them, and `pyreal_protocol` already knows how.
+    pub fn run_chargen_actions(
+        &mut self,
+        actions: Vec<pyreal_client_contract::pregame::CharGenAction>,
+    ) {
+        use pyreal_client_contract::pregame::CharGenAction;
+        if actions.is_empty() {
+            return;
+        }
+        let Some(link) = self.link.as_mut() else {
+            for a in actions {
+                tracing::warn!("{a:?} with no server to ask");
+            }
+            return;
+        };
+        for a in actions {
+            match a {
+                CharGenAction::SendCharGenResult(r) => {
+                    let mut msg = chargen_result_to_wire(&r);
+                    msg.checksum_value = msg.checksum();
+                    tracing::info!(
+                        "0xF656 creating {:?} -- heritage {}, gender {}, town {}, \
+                         {} skill entries, slot {}",
+                        msg.name,
+                        msg.heritage_group,
+                        msg.gender,
+                        msg.start_area,
+                        msg.skill_advancement_classes.len(),
+                        msg.slot
+                    );
+                    link.net.session.create_character(msg);
+                }
+                CharGenAction::LogOn(gid) => {
+                    let account = link.net.characters().account.clone();
+                    tracing::info!("entering the world as the new {:#010X}", gid.0);
+                    // See the other two sites. The name is not in the character
+                    // set yet on this path (the server sends the new one back with `0xF658`), so
+                    // it is looked up and left `None` when it is not there rather than guessed:
+                    // an automatic layout file for a character with no name would be `UI--<world>`
+                    // and would collide with every other unnamed one.
+                    self.host_state.entered_character = link
+                        .net
+                        .characters()
+                        .characters
+                        .iter()
+                        .find(|c| c.gid == gid)
+                        .map(|c| c.name.clone());
+                    link.net.enter_world(gid, &account);
+                    self.script = EnterWorldScript::Entering;
+                }
+            }
+        }
+    }
+
+    /// Show the first connection's failure, if the login has just ended before the link was up.
+    ///
+    /// Returns whether it did, which ends the frame loop. The box is shown once, through the
+    /// platform's [`crate::platform::dialog::ErrorDialogHost`], and this returns only after the
+    /// player has closed it; the same text goes to the log first so a run with no desktop still
+    /// says why it stopped.
+    pub(super) fn connect_failure_use_time(&mut self) -> bool {
+        if self.connect_failure.is_some() {
+            return true;
+        }
+        let Some(code) = self.link.as_ref().and_then(|link| link.net.login_refusal()) else {
+            return false;
+        };
+        let failure = crate::connect_failure::connect_failure(code, &*self.store);
+        tracing::warn!("net error {}", code.id_string());
+        tracing::warn!("{}: {}", failure.popup.caption, failure.popup.text);
+        self.last_net_error = Some(code);
+        if self.cfg.front_door {
+            // Back to the screens before any world, which say why.
+            self.session_end_reason = Some(failure.popup.text.clone());
+            self.session_end_owed = true;
+            return false;
+        }
+        self.dialog.show_modal(&failure.popup);
+        self.connect_failure = Some(failure);
+        true
+    }
+
+    /// The first connection's failure and the box it was shown in, once the login has ended
+    /// before the link was up. `None` while the login is running, after it has succeeded, and for
+    /// a link that was up and then went down.
+    #[must_use]
+    pub fn connect_failure(&self) -> Option<&crate::connect_failure::ConnectFailure> {
+        self.connect_failure.as_ref()
+    }
+
+    /// Act on what the session decoded this frame.
+    ///
+    /// The retail function drives the player system and the login UI; with no UI, this is
+    /// the same decisions taken by `--enter-world`'s script, plus a log line per event so a
+    /// headless run says what it reached. Everything it reads is a [`pyreal_client_net::client_session::SessionEvent`];
+    /// it decodes nothing.
+    pub fn process_logon_event_queue(
+        &mut self,
+        shell: &mut S,
+        events: Vec<pyreal_client_net::client_session::SessionEvent>,
+    ) {
+        use pyreal_client_net::client_session::{SessionEvent, SessionState};
+
+        // **The two "any -> Disconnected" edges, taken first.**
+        //
+        // Character-error and server-died receivers
+        // are *notices*: the player system raises them, they queue a UI mode, and they read
+        // nothing from the shared network state. So they are taken here, **before** the link guard below,
+        // which makes them arrive with or without a packet controller -- and it is the one call
+        // site, so there is nothing for a second path to drift away from.
+        for e in &events {
+            self.recv_disconnect_notice(e);
+            // **The phase-two smart-box reset, taken here for the same reason the two notices
+            // above it are: before the link guard.**
+            //
+            // Character log-on phase 2 does not read shared network state to
+            // decide to wipe the world — it wipes it and *then* asks the UI protocol to send. A
+            // teardown that only ran while the link was healthy would skip exactly the endings
+            // that need it (a transport drop, the 110 s timeout). See [`App::reset_world_view`].
+            if matches!(e, SessionEvent::WorldReset) {
+                self.reset_world_view();
+                // **The subsystem sweep, on the same edge and for the same reason.**
+                //
+                // End-character-session handling is retail's *ending*, and in
+                // retail it is reached by the same broadcast that reaches the
+                // client object manager. It is taken here on the **entry** edge instead, which
+                // is the same shape as `ObjectStream::reset` and `Teleport::reset`:
+                // an ending this client never sees leaves the state set, and the entry edge is
+                // reached by every ending there is. Nothing of the new session — its `0xF746`, its
+                // objects, its `0x0013` — has arrived yet, so it needs no object-lifetime guard.
+                //
+                // See [`crate::interaction::Interaction::on_end_character_session`] for the field
+                // list, which is read off rather than chosen here.
+                self.interaction.on_end_character_session();
+                // The same sweep empties the busy count: nothing the last character asked for is
+                // still owed an answer.
+                self.objects.world.magic.busy_count = 0;
+                self.command_interpreter_disable();
+                self.log_on_character_communication_clears();
+            }
+            if matches!(e, SessionEvent::LoggedOff) {
+                // This client's own rule (client divergence CD-032): the world is torn down when
+                // the server answers the log-off, not when the next character enters, so nothing
+                // of it -- its scene, its objects, its sounds -- goes on behind the character
+                // screen. The entry edge tears it down again, which finds nothing left to do.
+                self.reset_world_view();
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.end_world();
+                }
+            }
+            if matches!(e, SessionEvent::PlayerCreated(_)) {
+                // The player-description handler enables the command interpreter after accepting
+                // the player id. Like Reset above,
+                // this is local work owed by the already-decoded event, not by a surviving
+                // packet controller.
+                self.movement.enable(&mut self.char_input);
+            }
+            if let SessionEvent::CharacterSet(set) = e {
+                // **The player system's account-name field.**
+                //
+                // Character-set delivery copies the unpacked account value into the field
+                // **before** it looks
+                // at the Turbine-chat flag and without consulting the link. That field is the one
+                // `get_appropriate_spell_formula` hashes for a spell's tapers, so it is
+                // taken here for the same reason the startup call below is: ahead of the link
+                // guard, which a logon-queue delivery with no packet controller never passes.
+                // `Hud`'s own `CharacterSet` arm sets the same field in stream order for the
+                // batch path; both are plain assignments of the same string and are idempotent.
+                self.objects
+                    .world
+                    .player_system
+                    .account
+                    .clone_from(&set.account);
+                if set.use_turbine_chat != 0 {
+                    // Startup performs local communication-provider registration before any player
+                    // or gameplay screen exists. `Hud` already observes the stream-ordered model
+                    // half; this idempotent call also serves direct logon-queue delivery.
+                    self.objects.world.chat.startup_turbine_chat();
+                    self.interaction.startup_turbine_chat_commands();
+                }
+            }
+        }
+        if self.link.is_none() && self.world_refused().is_some() {
+            // Refused at the start, before any connection: a run with no screen to show why, or
+            // whose script has nobody to press its button, ends here.
+            if !shell.has_ui() || self.cfg.enter_world {
+                self.script = EnterWorldScript::Done;
+            }
+            return;
+        }
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        let status = link.net.status();
+        if self.last_link_status != Some(status) {
+            self.last_link_status = Some(status);
+            tracing::info!("link {status:?}");
+        }
+        let rejected = link.net.rejected();
+        if rejected != self.last_rejected {
+            self.last_rejected = rejected;
+            tracing::warn!("{rejected} datagram(s) rejected");
+        }
+        if let Some(code) = link.net.error() {
+            // Keyed on the code, not on a bool: the line prints
+            // `code.id_string()`, so a latch prints the first error and swallows every distinct
+            // one after it. See [`App::last_net_error`].
+            if should_report_net_error(self.last_net_error, code) {
+                self.last_net_error = Some(code);
+                tracing::warn!("net error {}", code.id_string());
+                // With a UI up the error is a *screen*, not an exit:
+                // `build_host_state` already puts `id_string()` into `HostState::error` and
+                // the front end queues the disconnected screen from it, and the screen's
+                // OK button is the documented way out (the quit path goes gameplay ->
+                // epilogue, never straight to `exit`). A run with no UI at all -- `--no-ui`, the
+                // scripted slices -- still ends here, because in that build there is nothing that
+                // could show the reason or take the player's answer, and so does an
+                // `--enter-world` run, whose script has nobody to press the button.
+                if !shell.has_ui() || self.cfg.enter_world {
+                    self.script = EnterWorldScript::Done;
+                }
+            }
+            return;
+        }
+        let scripted = self.cfg.enter_world;
+        let no_ui = !shell.has_ui();
+        let runtime_enters = !shell.drives_scripted_entry();
+        let wanted = self.cfg.start_char.clone();
+
+        // The `--linger` deadline, checked before the batch so a run with no traffic still ends.
+        if scripted && self.script == EnterWorldScript::Entering && self.cfg.linger > 0.0 {
+            if let Some(at) = self.playable_at {
+                if self.timer.local_time - at >= self.cfg.linger {
+                    tracing::info!("logging off");
+                    link.net.session.log_off();
+                    self.script = EnterWorldScript::LoggingOff;
+                }
+            }
+        }
+
+        let mut tables_stale = false;
+        for e in events {
+            match e {
+                SessionEvent::CharacterSet(set) => {
+                    // The persistent-data object's character-set notice is the hinge between
+                    // the network and the flow. The session decodes `0xF658` and the pre-game
+                    // view owns the destination; the copy between them is
+                    // `character_set_from_login`. Setting it here rather than in `build_host_state`
+                    // is deliberate: the client's is a **notice**, and a notice arrives once.
+                    self.host_state.character_set = Some(character_set_from_login(&set));
+                    self.host_state.received_set = true;
+                    // **A notice is a count, not a value.** ACE re-sends the *same* list six
+                    // seconds after a log-off (all five recorded sessions: `0xF653` and `0xF658`
+                    // in the same instant). An identical set is no value edge at all, so a shell
+                    // that applied this on `host.character_set != last_host.character_set` would
+                    // drop the second notice — and it is the second one that carries the player
+                    // out of the world in retail. See
+                    // `UiShell::apply_host_notices`.
+                    self.host_state.character_set_notices =
+                        self.host_state.character_set_notices.wrapping_add(1);
+                    // The account's Throne of Destiny flag gates one heritage and one start area
+                    // in the character-generation wizard.
+                    self.host_state.account_has_tod = set.has_throne_of_destiny != 0;
+                    self.hud.era.account_has_throne_of_destiny = self.host_state.account_has_tod;
+                    tracing::info!(
+                        "account {:?}, {} character(s): {}",
+                        set.account,
+                        set.characters.len(),
+                        set.characters
+                            .iter()
+                            .map(|c| c.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    );
+                }
+                SessionEvent::WorldInfo {
+                    name,
+                    connections,
+                    max_connections,
+                } => {
+                    tracing::info!("world {name:?}, {connections}/{max_connections} connections");
+                    if let (Some(told), Some(players)) = (
+                        self.world_players.as_mut(),
+                        players_said(connections, max_connections),
+                    ) {
+                        told(players);
+                    }
+                    // The restore response flows through the character-generation response notice
+                    // and updates the character row that the UI then reads back.
+                    self.host_state.world_name = Some(name);
+                }
+                SessionEvent::CharacterScreenMessage(text) => {
+                    tracing::info!(
+                        "0xF65A character screen message, {} character(s)",
+                        text.len()
+                    );
+                    self.host_state.character_screen_message = Some(text);
+                }
+                SessionEvent::EnterWorldReady => tracing::info!("0xF7DF server ready"),
+                SessionEvent::CharGenResponse(r) => {
+                    // The character-create response handler ends every arm by sending the
+                    // character-generation verification notice.
+                    //
+                    // The successful case is **not** followed by a fresh `0xF658`. ACE sends
+                    // `GameMessageCharacterList` on authenticate, on delete and on log-off only
+                    // (`AuthenticationHandler.cs:258`, `CharacterHandler.cs:322`,
+                    // `Session.cs:273`); a creation is answered by
+                    // `GameMessageCharacterCreateResponse` and a restore by
+                    // `GameMessageCharacterRestore`, both `0xF643` and both alone. The client
+                    // rebuilds the row out of *this* message — see the `0xF643` arm in
+                    // `pyreal_client_net::client_session` — and the notice below is what closes the please-wait modal.
+                    tracing::info!(
+                        "0xF643 char-gen response {} for {:?} ({:#010X})",
+                        r.response_type,
+                        r.identity.name,
+                        r.identity.gid.0
+                    );
+                    self.host_state.chargen_response = Some(r.response_type);
+                    // A notice is a count: two refusals in a row carry the same code.
+                    self.host_state.chargen_response_notices =
+                        self.host_state.chargen_response_notices.wrapping_add(1);
+                }
+                SessionEvent::CharacterDeleted => {
+                    tracing::info!("0xF655 the slot was deleted");
+                }
+                // Nothing more of a world whose data the client refused is answered or taken: the
+                // session ends once this frame's events are through.
+                SessionEvent::Ddd(d) if self.ddd.refusal().is_some() => {
+                    tracing::debug!("DDD {d:?} after the world's data was refused");
+                }
+                SessionEvent::Ddd(pyreal_client_net::client_session::DddEvent::Interrogation(
+                    interrogation,
+                )) => {
+                    // The interrogation handler builds a list from every open data-file
+                    // controller and answers with `0xF7E6` on queue 5. **Without
+                    // this the phase never ends**: ACE's `DDDHandler` answers the *response*, not
+                    // the interrogation, so a client that stays quiet is left on the data-patch
+                    // screen for ever and `DDD_EndDDD` never arrives.
+                    // Retail loads the high-resolution dat only when product-id mask `0x4` is set.
+                    // Pyreal opens it at start when it is installed (High-Res Textures decides
+                    // whether it is drawn); the grant here covers a store opened without it, and
+                    // the response names it only under the mask, as retail's does.
+                    if interrogation.product_id & PRODUCT_HIGHRES != 0 {
+                        match self.store.grant_highres() {
+                            Ok(opened) => tracing::debug!(
+                                "0xF7E5 product id {:#x} grants client_highres.dat: {}",
+                                interrogation.product_id,
+                                if opened { "opened" } else { "no such file" }
+                            ),
+                            Err(e) => tracing::warn!("client_highres.dat did not open: {e}"),
+                        }
+                        self.ddd.set_bases(&self.store);
+                    }
+                    // The lists are those of the world whose overlay the files read through, and
+                    // the answer names it (the overlay extension, client divergence CD-031).
+                    let world = crate::world_overlay::laid_world(&self.store);
+                    let mut response = ddd_interrogation_response(
+                        &self.store,
+                        interrogation.product_id,
+                        self.ddd.keeps_overlay(),
+                        world.as_deref(),
+                    );
+                    // This client's own (CD-044): it asks for the patch as a TCP stream, which a
+                    // server that knows none ignores.
+                    if self.cfg.bulk_patch && self.ddd.keeps_overlay() {
+                        response.flags |=
+                            pyreal_protocol::admin::DddInterrogationResponse::FLAG_BULK;
+                    }
+                    tracing::debug!(
+                        "0xF7E6 answering with {} iteration list(s): {:?}",
+                        response.iters_with_keys.len(),
+                        response
+                            .iters_with_keys
+                            .iter()
+                            .map(|l| (l.dat_file_type, l.dat_file_id, l.iterations.iterations))
+                            .collect::<Vec<_>>()
+                    );
+                    link.net.session.answer_ddd_interrogation(&response);
+                    // The DDD state becomes interrogation-received: records
+                    // that arrive from here until `0xF7E7` are early saves, which the begin handler
+                    // subtracts from the byte count it shows the player.
+                    self.ddd.on_interrogation();
+                    self.ddd.answered_for(world.as_deref());
+                    self.pending_ddd
+                        .push(pyreal_client_contract::pregame::DddEvent::PatchtimeInterrogation);
+                    tracing::debug!("DDD Interrogation({interrogation:?})");
+                }
+                SessionEvent::Ddd(d) => {
+                    // The DDD notifier fans the event out to its plugins, including
+                    // the data-patch screen while it is up. The translation is the whole of
+                    // it: the protocol's `DddEvent` is the wire message, the pre-game view's is
+                    // what the screen shows, and the client's `DDDEvent` enum is the same seven
+                    // values.
+                    use pyreal_client_contract::pregame::DddEvent as UiDdd;
+                    // **The patch is applied here, before the screen is told.**
+                    // The `0xF7E2` arm saves the downloaded record asynchronously and only *then*
+                    // notifies the UI of its compressed size, so the byte count
+                    // the player watches is the count of bytes that reached the dat.
+                    let ui_event = match &d {
+                        // The interrogation is handled above, because answering it is what makes
+                        // the phase finish.
+                        pyreal_client_net::client_session::DddEvent::Interrogation(_) => None,
+                        // "The begin handler with a non-zero remaining byte count". The subtraction
+                        // is expected bytes minus early-save bytes, which the patcher owns because
+                        // it is the thing that counted the early saves.
+                        pyreal_client_net::client_session::DddEvent::Begin(b) => {
+                            let (expected, action) = self.ddd.on_begin(b);
+                            if action.send_end {
+                                // Begin-request completion: nothing to download, so
+                                // the DDD state becomes end-sent and `0xF7EA` goes out now.
+                                link.net.session.send_ddd_end();
+                            }
+                            (expected != 0).then_some(UiDdd::PatchtimeBegin { expected })
+                        }
+                        pyreal_client_net::client_session::DddEvent::Data(m) => {
+                            let (outcome, action) = self.ddd.on_data(m);
+                            if action.send_end {
+                                // Removing the last pending download sends the end request.
+                                link.net.session.send_ddd_end();
+                            }
+                            tracing::debug!("DDD applied {outcome:?}");
+                            // The reported compressed size is the payload size minus 4, the wire
+                            // payload length whether or not the body was compressed.
+                            Some(UiDdd::DataDownloaded {
+                                bytes: m.data.len() as u64,
+                            })
+                        }
+                        pyreal_client_net::client_session::DddEvent::End => {
+                            // End-of-DDD closes the books; the application's cache flush runs
+                            // below, after the `link`
+                            // borrow ends.
+                            self.ddd_invalidation = Some(self.ddd.on_end());
+                            Some(UiDdd::PatchtimeEnd)
+                        }
+                        pyreal_client_net::client_session::DddEvent::PatchtimePending => {
+                            Some(UiDdd::PatchtimePending { total: 0 })
+                        }
+                        // The overlay extension's manifest, ahead of the patch: the patcher
+                        // checks it names this client's bases and a world it takes. A world kept
+                        // in a folder of its own at its server, which names itself as another
+                        // than the one the files read through, is read through its own folder
+                        // from now on, before the server asks again.
+                        pyreal_client_net::client_session::DddEvent::OverlayManifest(m) => {
+                            self.ddd.on_manifest(m);
+                            if self.ddd.take_switched() {
+                                let base = self
+                                    .base_store
+                                    .as_deref()
+                                    .cloned()
+                                    .unwrap_or_else(|| (*self.store).clone().without_overlay());
+                                let dir = self.ddd.target().map(|t| t.dir().clone());
+                                let (fresh, refused) = crate::world_overlay::lay_folder(
+                                    base,
+                                    dir.as_ref(),
+                                    &crate::world_overlay::blocklist(&self.cfg),
+                                );
+                                match refused {
+                                    Some(refusal) => self.ddd.refuse_for(refusal),
+                                    None => {
+                                        adopt_store_into(
+                                            StoreHolders {
+                                                store: &mut self.store,
+                                                anim_assets: &mut self.anim_assets,
+                                                objects: &mut self.objects,
+                                                ddd: &mut self.ddd,
+                                                generation: &mut self.store_generation,
+                                            },
+                                            std::sync::Arc::new(fresh),
+                                        );
+                                        tables_stale = true;
+                                    }
+                                }
+                            }
+                            None
+                        }
+                        pyreal_client_net::client_session::DddEvent::Error(e) => {
+                            // The per-frame step's `0xF7E4` arm only marks the asynchronous get
+                            // failed: the pending download stays pending, and no byte is written.
+                            self.ddd.on_error(e);
+                            None
+                        }
+                        // CD-044: the records come down a TCP stream at the server's address,
+                        // and the frame loop applies them as `0xF7E2`s. One that cannot be
+                        // opened is declined at once.
+                        pyreal_client_net::client_session::DddEvent::BulkOffer(offer) => {
+                            let addr = link
+                                .net
+                                .handshake_addr()
+                                .zip(u16::try_from(offer.port).ok());
+                            let started = addr.map(|(a, port)| {
+                                let at = std::net::SocketAddr::new(a.ip(), port);
+                                crate::bulk_patch::BulkDownload::start(at, offer.token)
+                                    .map(|d| (at, d))
+                            });
+                            match started {
+                                Some(Ok((at, download))) => {
+                                    tracing::info!(
+                                        "the patch comes as a stream from {at}: {} records, {} kB",
+                                        offer.records,
+                                        offer.bytes / 1024
+                                    );
+                                    self.bulk = Some(download);
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        "the patch stream cannot be opened; it comes as 0xF7E2s"
+                                    );
+                                    link.net.session.send_ddd_bulk_decline(
+                                        &pyreal_protocol::admin::DddBulkDecline {
+                                            pending: self.ddd.pending_wire(),
+                                        },
+                                    );
+                                }
+                            }
+                            None
+                        }
+                    };
+                    if let Some(e) = ui_event {
+                        // `DDD_PatchtimeEnd` also triggers the application's cache reload; what the
+                        // *flow* needs from it is that the patch phase is over.
+                        if e == UiDdd::PatchtimeEnd {
+                            self.host_state.patch_finished = true;
+                        }
+                        self.pending_ddd.push(e);
+                    }
+                    tracing::debug!("DDD {d:?}");
+                }
+                SessionEvent::Dropped {
+                    queue,
+                    opcode,
+                    reason,
+                } => {
+                    tracing::debug!("dropped {opcode:?} on {queue:?}: {reason:?}");
+                }
+                SessionEvent::PlayerCreated(id) => {
+                    tracing::debug!("0xF746 player is {:#010X}", id.0);
+                }
+                SessionEvent::PlayerDescription(_) => {
+                    tracing::info!("0x0013 player description -- in world");
+                    // Player-description delivery raises the notice answered with
+                    // loading the `"#auto"` screen layout. The field is used rather than
+                    // [`Self::note_player_description`] because `link` is borrowed here; the
+                    // method exists so the same decision is reachable from a test.
+                    self.pending_auto_layout = true;
+                }
+                SessionEvent::StateChanged(SessionState::Playable) => {
+                    // In the world, in every session: the travel carries a journey out from where
+                    // the character stands from now on, whoever asked for it.
+                    self.playable_at = Some(self.timer.local_time);
+                    if !scripted {
+                        tracing::info!("session Playable");
+                    } else if self.cfg.linger <= 0.0 {
+                        // `--linger` holds the session in the world so the objects have time to
+                        // move. Without it a scripted run logs off in the same frame `0x0013`
+                        // arrives, which is the default.
+                        tracing::info!("logging off");
+                        link.net.session.log_off();
+                        self.script = EnterWorldScript::LoggingOff;
+                    } else {
+                        tracing::info!("in world; staying {} s", self.cfg.linger);
+                    }
+                }
+                SessionEvent::StateChanged(s) => {
+                    // Out of the world: no journey is carried out until it is playable again.
+                    self.playable_at = None;
+                    tracing::info!("session {s:?}");
+                }
+                SessionEvent::LoggedOff => {
+                    tracing::info!("logged off");
+                    // **The loop does not end on every `0xF653`.**
+                    //
+                    // `EnterWorldScript::Done` is `App::frame`'s exit condition. Set with no guard,
+                    // the *server's* `0xF653` — which in every one of the five recorded sessions
+                    // arrives **six seconds** after the client asks — would end the main loop of a
+                    // client that had just returned to character select, and the player could not
+                    // enter the world again because there would be no process to do it with.
+                    //
+                    // A log-off to character select never ends the retail client:
+                    // character-session teardown clears the player and leaves the
+                    // loop running, and the only thing that stops is
+                    // the device-done edge from the epilogue screen. So the loop ends here **only** when
+                    // there is no screen to go back to (`--no-ui`) or when this run's own script
+                    // asked for the log-off (`--enter-world --linger`), which are the two builds
+                    // that have nothing to return to. This is exactly the shape of the
+                    // `CharacterError` arm below, and for the same reason: ending the loop instead
+                    // of showing a screen is indistinguishable from a crash from the player's seat.
+                    if no_ui || self.script == EnterWorldScript::LoggingOff {
+                        self.script = EnterWorldScript::Done;
+                    }
+                }
+                SessionEvent::CharacterError(code) => {
+                    tracing::warn!("character error {code}");
+                    // Character-error delivery reaches the UI flow, which maps the code
+                    // to a `StringInfo` in table `0x10000002` and
+                    // queues disconnected mode `0x10000002` with that text. A code with no token is the
+                    // switch's `default:` arm and **never queues a mode**.
+                    //
+                    // The notice itself is raised in [`Self::recv_disconnect_notice`], above and
+                    // outside this loop. What is left here is the *script*, and it does not end the
+                    // process when there is a UI: the client's own answer to a character error is
+                    // a screen with the reason on it and a button, and ending the loop instead is
+                    // indistinguishable from a crash from the player's seat. `--no-ui` ends the
+                    // loop, because in that build there is no screen to show it on and nothing to
+                    // take the answer. So does an `--enter-world` run, screen or not: the screen's
+                    // one button only leads to the quit screen, and a script that will never press
+                    // it would otherwise wait on it for ever (a second login a second after a
+                    // log-off is refused as an account already logged on, code 1).
+                    if no_ui || scripted {
+                        self.script = EnterWorldScript::Done;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if tables_stale {
+            self.reload_store_tables();
+        }
+        // The `DDD_PatchtimeEnd` cache-invalidation arm is taken here
+        // rather than in the loop because it needs `&mut self` and the loop holds `link`.
+        self.invalidate_after_ddd();
+        // A world whose data the client refused during the data patch, or reading what it left,
+        // is not played: the session ends before any character goes in (client divergence
+        // CD-031).
+        if self.host_state.entered_character.is_none() {
+            if let Some(refusal) = self.ddd.refusal().cloned() {
+                self.host_state.patch_finished = false;
+                // Once: a session another notice ended first (the server's own boot) keeps it.
+                if self.host_state.disconnect.is_none() {
+                    self.end_session_refused(&refusal);
+                }
+                if no_ui || scripted {
+                    self.script = EnterWorldScript::Done;
+                }
+                return;
+            }
+        }
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        // A front end whose pre-game drive ([`Shell::drive_pregame_screens`]) presses its screens'
+        // own buttons does the rest itself. For every other one -- `--no-ui` included -- the
+        // runtime logs the character on here, once the character list has arrived and the server
+        // has finished with the data files, as the screens' own Log In waits for both.
+        let ready = scripted
+            && runtime_enters
+            && self.script == EnterWorldScript::AwaitingCharacterSet
+            && self.host_state.patch_finished;
+        if let Some(set) = self.host_state.character_set.as_ref().filter(|_| ready) {
+            // `-u`/`-user` names the character in the retail switch set and this build is the
+            // first thing to read it; without one, the first slot.
+            let pick = set
+                .set
+                .iter()
+                .find(|c| !wanted.is_empty() && c.name.eq_ignore_ascii_case(&wanted))
+                .or_else(|| set.set.first())
+                .map(|c| (c.id, c.name.clone()));
+            let account = set.account.clone();
+            if let Some((gid, name)) = pick {
+                tracing::info!("entering the world as {name:?}");
+                // See `CharacterAction::LogOn`.
+                self.host_state.entered_character = Some(name);
+                link.net.enter_world(gid, &account);
+                self.script = EnterWorldScript::Entering;
+            } else {
+                tracing::info!("the account has no characters");
+                self.script = EnterWorldScript::Done;
+            }
+        }
+    }
+
+    /// CD-044: the records the patch stream has brought since the last frame, up to a frame's
+    /// worth, as the `0xF7E2` events they stand for. Once a stream has ended and every record it
+    /// brought is applied, one that broke, or ended with records still pending, is declined, and
+    /// the server sends what is pending as `0xF7E2`s.
+    pub(super) fn take_bulk_records(
+        &mut self,
+    ) -> Vec<pyreal_client_net::client_session::SessionEvent> {
+        use pyreal_client_net::client_session::{DddEvent, SessionEvent};
+        /// The record bytes a frame applies at most.
+        const FRAME_BYTES: usize = 32 << 20;
+        let Some(download) = self.bulk.as_mut() else {
+            return Vec::new();
+        };
+        let records = download.drain(FRAME_BYTES);
+        if !records.is_empty() {
+            return records
+                .into_iter()
+                .map(|d| SessionEvent::Ddd(DddEvent::Data(d)))
+                .collect();
+        }
+        let Some(end) = download.ended().cloned() else {
+            return Vec::new();
+        };
+        let (n, bytes, secs) = download.progress();
+        self.bulk = None;
+        let pending = self.ddd.pending_wire();
+        #[allow(clippy::cast_precision_loss)] // Megabytes for a log line.
+        let mib = bytes as f64 / 1_048_576.0;
+        match end {
+            Ok(()) if pending.is_empty() => tracing::info!(
+                "the patch stream brought {n} records, {mib:.1} MiB in {secs:.1} s ({:.1} MiB/s)",
+                mib / secs.max(1e-3)
+            ),
+            Ok(()) => tracing::warn!(
+                "the patch stream ended with {} records still pending; they come as 0xF7E2s",
+                pending.len()
+            ),
+            Err(e) => tracing::warn!(
+                "the patch stream broke after {n} records ({e}); the {} still pending come as 0xF7E2s",
+                pending.len()
+            ),
+        }
+        if !pending.is_empty() {
+            if let Some(link) = self.link.as_mut() {
+                link.net
+                    .session
+                    .send_ddd_bulk_decline(&pyreal_protocol::admin::DddBulkDecline { pending });
+            }
+        }
+        Vec::new()
+    }
+
+    /// End the session over `refusal`, the world's data the client did not take: the server is
+    /// told goodbye when it was connected to, and the interface shows why, as it shows any
+    /// session's end, with its one way out. Nothing of the world is entered.
+    pub(super) fn end_session_refused(&mut self, refusal: &crate::world_overlay::Refusal) {
+        let text = refusal.message();
+        tracing::warn!("the world's data is refused and the session ends: {text}");
+        if let Some(link) = self.link.as_mut() {
+            let (sent, queued) = link.log_off_server();
+            tracing::debug!("goodbye: {sent} of {queued} datagram(s) sent");
+        }
+        self.host_state.error = Some(text.clone());
+        self.host_state.disconnect =
+            Some(pyreal_client_contract::pregame::DisconnectNotice::OverlayRefused(text));
+    }
+
+    /// Handle `DDD_PatchtimeEnd` by making caches forget what
+    /// the patch changed.
+    ///
+    /// The client shuts down the language interface, releases the master property list, flushes
+    /// each object cache, restarts the language interface, and refreshes the active region, in that
+    /// order.
+    ///
+    /// Retail's free-object flush drops only objects nothing still holds, so **the client does not
+    /// invalidate a referenced object either** — it drops the two singletons it knows are
+    /// referenced (the language interface and the master property list) by hand and re-creates
+    /// them.
+    ///
+    /// This build's equivalent is to reopen the store, with the world's overlay laid over it as the
+    /// patch left it. Every `DatFile` caches its whole B-tree at open, so a reader that was up
+    /// across the patch would read the files as they were. The reopened store is handed to
+    /// everything that holds one through [`Self::adopt_store`], and the front ends read their
+    /// files again, letting go of the pictures they made from the old records, when they see
+    /// [`Self::store_generation`] move.
+    ///
+    /// The `0xF7EA` arm runs this once the event loop's borrow of the link has ended; a driver
+    /// that patches through the patcher (`App::ddd`) itself ends the patch by setting
+    /// [`Self::ddd_invalidation`] and calling it.
+    pub fn invalidate_after_ddd(&mut self) {
+        let Some(summary) = self.ddd_invalidation.take() else {
+            return;
+        };
+        tracing::info!(
+            "DDD finished -- {} applied, {} refused, {} stale, {} still pending, \
+             {} file(s) changed",
+            summary.applied,
+            summary.refused,
+            summary.stale,
+            summary.still_pending,
+            summary.changed.len()
+        );
+        if !summary.changed_anything() {
+            // The overwhelmingly common case: the server said "you are up to date". Reopening
+            // 1.4 GB of container for nothing is exactly the kind of cost a patch path should not
+            // impose on a session that had no patch.
+            return;
+        }
+        let (fresh, refused) = self.reopen_store_noting();
+        if let Some(refusal) = refused {
+            // What the patch left will not lie over the files: the world is not played without
+            // it.
+            self.ddd.refuse_for(refusal);
+            return;
+        }
+        self.adopt_store(std::sync::Arc::new(fresh));
+        self.reload_store_tables();
+        tracing::info!(
+            "DDD reopened the dat files; {} changed",
+            summary
+                .changed
+                .iter()
+                .map(|t| t.file_name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    /// The data files opened again after a patch, with the world's overlay over them: the files
+    /// as the application reads them, or, when the platform opened the files itself, the files it
+    /// opened ([`Self::bring_up_with_store`]), neither of which a patch changes, with the overlay
+    /// of the folder the run names ([`crate::config::Config::overlay_dat_dir`]), else the folder
+    /// the patcher writes the world's records in.
+    ///
+    /// # Errors
+    /// None: the files are already open, and an overlay that will not lie over them is left out
+    /// and logged ([`Self::reopen_store_noting`] says why).
+    pub fn reopen_store(
+        &self,
+    ) -> Result<pyreal_dat::RetailDatStore, crate::assets::DataFilesError> {
+        Ok(self.reopen_store_noting().0)
+    }
+
+    /// [`Self::reopen_store`], with the reason when the overlay is refused.
+    #[must_use]
+    pub fn reopen_store_noting(
+        &self,
+    ) -> (
+        pyreal_dat::RetailDatStore,
+        Option<crate::world_overlay::Refusal>,
+    ) {
+        let base = self
+            .base_store
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| (*self.store).clone().without_overlay());
+        let dir = if self.cfg.overlay_dat_dir.is_some() {
+            crate::world_overlay::folder(&self.cfg)
+        } else {
+            self.ddd.target().map(|t| t.dir().clone())
+        };
+        crate::world_overlay::lay_folder(
+            base,
+            dir.as_ref(),
+            &crate::world_overlay::blocklist(&self.cfg),
+        )
+    }
+
+    /// Make `fresh`, the data files reopened after a patch, the store every reader of this
+    /// application reads: the application's own handle, the animation assets the preview spaces
+    /// and the portal space build from, the object stream's, and the bases the patcher writes
+    /// against. Then count the reopen, so a front end that keeps what it read from the files (its
+    /// pictures, its fonts, its own handle on them) reads them again ([`Self::store_generation`]).
+    ///
+    /// The world, once entered, keeps the handles it took at world entry; the one patch that
+    /// reaches it in play, a landblock answering a run-time get, is handed to the land source by
+    /// its caller.
+    pub fn adopt_store(&mut self, fresh: std::sync::Arc<pyreal_dat::RetailDatStore>) {
+        adopt_store_into(
+            StoreHolders {
+                store: &mut self.store,
+                anim_assets: &mut self.anim_assets,
+                objects: &mut self.objects,
+                ddd: &mut self.ddd,
+                generation: &mut self.store_generation,
+            },
+            fresh,
+        );
+    }
+
+    /// The tables read from the data files read again from the new ones: the HUD's (spells,
+    /// skills, the experience and vitals tables, the enum mappers) and the model's copies of them.
+    pub fn reload_store_tables(&mut self) {
+        self.hud.forget_tables();
+        self.objects.world.magic.spell_table = None;
+        self.interaction.chat_pose_table = None;
+        self.nav_spells = None;
+        self.load_store_tables();
+        let magic = &mut self.objects.world.magic;
+        if let Some(t) = self.hud.spell_table.as_ref() {
+            magic.spell_table = Some(std::sync::Arc::new(t.clone()));
+            // A character's description filled these; they are filled again from the new table.
+            if !magic.spell_beneficial.is_empty() {
+                magic.spell_beneficial = t
+                    .spells
+                    .iter()
+                    .map(|(id, b)| (*id, b.bitfield & 4 != 0))
+                    .collect();
+            }
+        }
+        if !magic.school_pack_wcid.is_empty() {
+            magic.school_pack_wcid = self.hud.school_pack_wcid.iter().copied().collect();
+        }
+        if !magic.catalogue.is_empty() {
+            magic.catalogue = Default::default();
+            let catalogue = self.hud.component_catalogue.clone();
+            self.objects.world.install_component_catalogue(&catalogue);
+        }
+    }
+
+    /// How many times the data files have been reopened since start-up. See
+    /// [`Self::adopt_store`].
+    #[must_use]
+    pub fn store_generation(&self) -> u64 {
+        self.store_generation
+    }
+
+    /// The asynchronous cache-miss path's production caller.
+    ///
+    /// [`pyreal_world_data::land_source::DatLandSource::build`] is the run-time cache miss: a landblock record
+    /// the store does not carry, discovered while the streaming ring was building a block. This
+    /// turns each one into the `0xF7E3` the client sends, under the client's own two conditions --
+    /// a connection has to exist and one `QualifiedDataID` gets one
+    /// outstanding request per `QualifiedDataID`.
+    ///
+    /// The return leg is the other half: a `0xF7E2` answering one of those gets goes through the
+    /// ordinary patcher (the client's arm has no state gate either), and the record then has to
+    /// reach the *land source's* handle on the store, which is an `Arc` it took at world entry.
+    /// That is what [`pyreal_world_data::land_source::DatLandSource::resupply`] is for.
+    pub(super) fn request_missing_cell_records(&mut self) {
+        let land = self
+            .world
+            .as_ref()
+            .and_then(|w| w.character.as_ref())
+            .map(|c| std::sync::Arc::clone(c.land()));
+        let Some(land) = land else { return };
+        let resupplied = self.ddd.take_resupplied();
+        if !resupplied.is_empty() {
+            // The patch is on disk; the land source is still reading through the handle it took
+            // at world entry. `invalidate_after_ddd` replaced `App::store` for the *patch* phase;
+            // a run-time answer arrives with no `0xF7EA` behind it, so the reopen happens here.
+            match self.reopen_store() {
+                Ok(fresh) => {
+                    let fresh = std::sync::Arc::new(fresh);
+                    self.adopt_store(std::sync::Arc::clone(&fresh));
+                    land.resupply(fresh, &resupplied);
+                    tracing::info!(
+                        "0xF7E2 answered {} run-time get(s); the land source was reseeded",
+                        resupplied.len()
+                    );
+                }
+                Err(e) => tracing::warn!(
+                    "a run-time DDD answer landed but the dat files would not reopen ({}); the old view stands",
+                    e.cause
+                ),
+            }
+        }
+        // `0xF7E4` failed a get. The asynchronous-get failure path has already taken
+        // it out of the pending-gets list; forgetting the cached `None` is what lets the streaming
+        // ring ask for the block again rather than answering from the miss it remembers.
+        let failed = self.ddd.take_failed_gets();
+        if !failed.is_empty() {
+            land.forget_blocks(&failed);
+        }
+        // A network cache lookup returns false without
+        // a packet controller, so with no link the get simply fails and nothing is
+        // queued for later. Draining the misses anyway would lose them; leaving them is what lets
+        // the next connected frame ask.
+        let Some(link) = self.link.as_mut() else {
+            return;
+        };
+        let sent = crate::ddd::drain_cache_misses(&land, &mut self.ddd, &mut link.net.session);
+        if sent > 0 {
+            tracing::info!("0xF7E3 requested {sent} missing cell record(s) from the server");
+        }
+    }
+
+    /// The `DddPatcher` this client patches through, for a test that wants to see what a session
+    /// did with a patch.
+    #[must_use]
+    pub fn ddd(&self) -> &crate::ddd::DddPatcher {
+        &self.ddd
+    }
+
+    /// Character-error and server-died notices, the two edges that reach the disconnected screen
+    /// from anywhere; and account-booted and account-banned responses, the two that reach it
+    /// without a notice.
+    ///
+    /// Both are notices rather than reads: the player system raises them and the flow queues
+    /// disconnected mode `0x10000002` with the string info. What this function produces is its
+    /// **symbolic id**; the front end's UI does the queueing (its host-state step carries
+    /// the server-died notice's "unless the current mode is already `0x10000002`" guard) and
+    /// the screen resolves the id against table enum `0x10000002`.
+    ///
+    /// `character_error_string_id` returning `None` is the switch's `default:` arm, which "leaves
+    /// the `StringInfo` untouched and **never queues a mode**" — so a code with no token shows
+    /// nothing at all, rather than an empty screen.
+    ///
+    /// The latch is first-notice-wins because there is no reconnect path: once the client is on
+    /// the disconnected screen the only way off it is the OK button.
+    ///
+    /// **`0xF7DC` and `0xF7C1` are the two edges that carry their own sentence.**
+    /// Account-booted and account-banned handling raises no character error and looks no token up:
+    /// each formats a message from a built-in literal, wraps it with
+    /// a literal string value, and queues disconnected mode `0x10000002`
+    /// itself. So what those two arms put in `HostState::error` is the **text**, not a token, and
+    /// the shell's resolve-or-pass-through is what shows it — which is why the shell's string
+    /// resolver must not find a row for it.
+    ///
+    /// The literals and the tables are [`pyreal_client_contract::disconnect`]'s, so every front end
+    /// shows the same reason; the notice itself is `HostState::disconnect`, and its phase
+    /// `GamePhase::Disconnected`.
+    fn recv_disconnect_notice(&mut self, e: &pyreal_client_net::client_session::SessionEvent) {
+        use pyreal_client_contract::disconnect as text;
+        use pyreal_client_contract::pregame::DisconnectNotice;
+        use pyreal_client_net::client_session::{DisconnectReason, SessionEvent, SessionState};
+        let (notice, id) = match e {
+            // Send the character-error notice for this code. A code with no token is the
+            // switch's `default:` arm and never shows the screen.
+            SessionEvent::CharacterError(code) => match text::character_error_string_id(*code) {
+                Some(id) => (DisconnectNotice::CharacterError(*code), id.to_string()),
+                None => return,
+            },
+            // The session independently decides both the 110-second world-entry timeout and the
+            // 40-second heartbeat gap.
+            SessionEvent::StateChanged(SessionState::Disconnected(
+                DisconnectReason::ServerDied,
+            )) => (
+                DisconnectNotice::ServerDied,
+                text::SERVER_DIED_STRING_ID.to_string(),
+            ),
+            // `None` is a `0xF7DC` with no body at all, which the handler cannot tell from an
+            // empty reason; both take the default.
+            SessionEvent::AccountBooted(reason) => (
+                DisconnectNotice::Booted(reason.clone()),
+                text::account_booted_message(reason.as_deref()),
+            ),
+            // The clock is an input because the handler reads real time at the moment the
+            // message lands, and the zone is an input because it does `asctime(localtime(&t))`.
+            // The zone is read for the **expiry** instant, not for now: a ban that ends after a
+            // daylight change is announced in the zone it will end in.
+            SessionEvent::AccountBanned { expiry, reason } => {
+                let now = self.clock.unix_secs();
+                let at = text::ban_expiry_epoch(*expiry, now);
+                (
+                    DisconnectNotice::Banned {
+                        expiry: *expiry,
+                        reason: reason.clone(),
+                    },
+                    text::account_banned_message(
+                        *expiry,
+                        reason,
+                        now,
+                        self.clock.utc_offset_secs(at),
+                    ),
+                )
+            }
+            _ => return,
+        };
+        if self.host_state.error.is_none() {
+            tracing::info!("the disconnected screen, showing {id}");
+            self.host_state.error = Some(id);
+            self.host_state.disconnect = Some(notice);
+        }
+    }
+
+    /// Whether the next message waits. Once a teleport begins, nothing more is taken until portal
+    /// space has been drawn for a few frames; then a few milliseconds of messages a frame, in
+    /// order, until the world is back.
+    fn holds_for_portal(&mut self) -> bool {
+        /// Frames and seconds portal space is drawn before the destination's messages are taken.
+        const SHOWN_FRAMES: u64 = 3;
+        const SHOWN_SECONDS: f64 = 0.3;
+        /// Milliseconds of messages a frame inside portal space.
+        const MESSAGE_MS: f64 = 6.0;
+        if let Some((frames, at)) = self.teleport_hold {
+            let waited = at.elapsed().as_secs_f64();
+            let counted = self.portal_messages.is_some();
+            let drawn = self.frames_drawn() >= frames + SHOWN_FRAMES;
+            let shown = if counted {
+                drawn
+            } else {
+                self.teleport.anim.state.is_tunnel() && drawn && waited >= SHOWN_SECONDS
+            };
+            // A tunnel that never shows does not hold the session for good.
+            if !shown && (counted || waited < 2.0) {
+                return true;
+            }
+            self.teleport_hold = None;
+        }
+        if !self.teleport.anim.teleport_in_progress || !self.paces_teleport() {
+            return false;
+        }
+        if let Some((per_frame, taken)) = &mut self.portal_messages {
+            if *taken >= *per_frame {
+                return true;
+            }
+            *taken += 1;
+            return false;
+        }
+        let began = *self
+            .messages_began
+            .get_or_insert_with(std::time::Instant::now);
+        began.elapsed().as_secs_f64() * 1e3 >= MESSAGE_MS
+    }
+
+    /// Whether portal space is paced: the presentation's answer, or a count stands in for it.
+    fn paces_teleport(&self) -> bool {
+        self.portal_messages.is_some() || self.present.paces_teleport()
+    }
+
+    /// Complete one admitted message and its synchronous object-arrival callbacks before the
+    /// owner asks Session for another raw entry. No second instance or UI timestamp admission.
+    pub(super) fn deliver_session_events(
+        &mut self,
+        shell: &mut S,
+        now: pyreal_primitives::LocalTime,
+    ) {
+        let mut events = std::mem::take(&mut self.held_events);
+        events.extend(
+            self.link
+                .as_mut()
+                .map(|link| link.net.drain_events())
+                .unwrap_or_default(),
+        );
+        // The use-position-from-server test, which answers `autonomy_level != 2`.
+        // The vector-update path asks it before applying a `0xF74E` **about the player**, and `ObjectStream`
+        // has no command interpreter — in the client `WorldObjects` holds a pointer to one.
+        // Pushed in here, before the drain that consumes it, so the answer a message is
+        // measured against is the one the interpreter held when it arrived.
+        self.objects
+            .note_use_position_from_server(self.movement.lists.autonomy_level != 2);
+        while let Some(event) = events.pop_front() {
+            if self.holds_for_portal() {
+                events.push_front(event);
+                // What a nested call held came out of this message, so it goes first.
+                let mut held = std::mem::take(&mut self.held_events);
+                held.append(&mut events);
+                self.held_events = held;
+                break;
+            }
+            self.session_events_taken += 1;
+            let teleporting = self.teleport.teleport_in_progress();
+            let body = self.world.as_ref().and_then(|w| w.character.as_ref());
+            self.interaction.prepare_ui_dispatch(
+                body,
+                &mut self.objects.world,
+                self.present.size(),
+            );
+            let (geometry, radius) = self.current_selection_geometry();
+            self.interaction.last_use_time = now;
+            let inter = &mut self.interaction;
+            let hud = &mut self.hud;
+            let positions_accepted = self.objects.stats.player_positions_accepted;
+            let arrived =
+                self.objects
+                    .apply_event_with_dispatch(&event, now, &mut |world, notice| {
+                        inter.dispatch_object_notice(world, notice.clone(), &geometry, radius, now);
+                        object_panel_notice(shell, hud, inter, world, &notice);
+                    });
+            // A public description update forces a synchronous object-description Control enqueue. Preserve that
+            // boundary: it reaches Session before queued notice delivery, released arrivals, or
+            // the next admitted object message. Packet serialization retains the packet controller's
+            // frame slot and may therefore happen on the next frame.
+            self.objects
+                .drain_pending_requests(self.link.as_mut().map(|link| &mut link.net.session));
+            // Old lifetime queues are retired here, before publishing the new instance and
+            // before any callback can admit a subsequent object-scoped packet.
+            self.objects
+                .retire_session_instances(self.link.as_mut().map(|l| &mut l.net.session));
+            self.deliver_object_notices();
+            // `Admin_Environs` is a player-system local handler, not a Hud or interaction
+            // notice. Consume only its accepted visual and sound cases here; unknown values remain
+            // visible to the generic unreceived-opcode diagnostics.
+            let admin_environs = self.apply_admin_environs(shell, &event);
+            let events = if admin_environs {
+                &[][..]
+            } else {
+                std::slice::from_ref(&event)
+            };
+            // `Hud::now` is stamped here, not only once a frame by `Hud::drive` — which runs on
+            // the **gameplay screen**, so a message arriving during the login transition would be
+            // measured against `0.0`.
+            // `0x0013 Login_PlayerDescription` is exactly such a message and it carries the
+            // enchantment registry, whose `_start_time` is relative to receipt. Stamped here, from
+            // the same clock `ObjectStream::apply_event` and `Interaction::last_use_time` get, so
+            // that every handler in the batch reads the instant the packet was processed — which
+            // is what reads in retail.
+            self.hud.now = now;
+            let lines = self.apply_hud_events(shell, events);
+            self.gather_hook_chat(lines);
+            // A spell that fizzled, for the travel to cast again.
+            self.travel_fizzles += crate::frame_hook::outcomes_of(events)
+                .iter()
+                .filter(|o| {
+                    matches!(
+                        o,
+                        crate::frame_hook::Outcome::WeenieError {
+                            code: crate::travel::FIZZLED
+                        }
+                    )
+                })
+                .count();
+            if let Some(hook) = &self.frame_hook {
+                self.hook_outcomes
+                    .extend(crate::frame_hook::outcomes_of(events));
+                if hook.wants_messages() {
+                    self.hook_messages.extend(
+                        events
+                            .iter()
+                            .filter_map(crate::frame_hook::WireMessage::received),
+                    );
+                }
+            }
+            self.answer_plugin_audit(&event);
+            self.interaction.last_use_time = now;
+            let (geometry, radius) = self.current_selection_geometry();
+            let hud = &mut self.hud;
+            crate::interaction::apply_events_at_boundary(
+                &mut self.interaction,
+                events,
+                &mut self.objects.world,
+                Some((&geometry, radius)),
+                &mut |inter, world, notice| object_panel_notice(shell, hud, inter, world, notice),
+            );
+            // Defender handlers stamp/AutoTarget first; their synchronously raised selection
+            // notices then reenter Combat before another admitted UI packet can change state.
+            let body = self.world.as_ref().and_then(|w| w.character.as_ref());
+            self.interaction
+                .dispatch_ui_selection_notices(body, &mut self.objects, now);
+            self.teleport.apply_events(events);
+            if self.objects.stats.player_positions_accepted > positions_accepted {
+                self.teleport.player_position_accepted();
+            }
+            // A teleport just began: what follows waits until portal space is on screen.
+            if !teleporting && self.teleport.teleport_in_progress() && self.paces_teleport() {
+                self.teleport_hold = Some((self.frames_drawn(), std::time::Instant::now()));
+            }
+            // Accepted local movement/control-transfer tails precede the next accepted message.
+            self.player_teleport_use_time(shell);
+            if matches!(
+                event,
+                pyreal_client_net::client_session::SessionEvent::WorldObject { .. }
+                    | pyreal_client_net::client_session::SessionEvent::PlayerCreated(_)
+            ) {
+                // `sync_objects` performs no physics or animation clock advance. Drain remote
+                // movement and physical/state projections now, so two accepted commands cannot
+                // overwrite Presence.pending_movement before the first callback runs. The local
+                // journal above has already removed its matching snapshot to avoid double apply.
+                self.sync_objects();
+            }
+            self.process_logon_event_queue(shell, vec![event]);
+            for (id, instance) in arrived {
+                let Some(link) = self.link.as_mut() else {
+                    continue;
+                };
+                if self.objects.world.weenie(id).is_some() {
+                    link.net.session.begin_weenie_arrival(id);
+                }
+                // Weenie creation and the physical null-object setup have independent success. A
+                // surviving Weenie remains known to subsequent UI input, without publishing a body.
+                if self.objects.world.physics(id).is_none() {
+                    continue;
+                }
+                link.net.session.begin_object_arrival(id, instance);
+                // Object-net-blob processing updates the object first. Callback
+                // deletion can remove this ordering window, so ask it for only one entry.
+                while self
+                    .link
+                    .as_mut()
+                    .is_some_and(|link| link.net.session.process_next_object_ui(id, now))
+                {
+                    self.deliver_session_events(shell, now);
+                }
+                // Snapshot only after UI callbacks finish; each physical blob is admitted
+                // against the then-current object table, and re-parks if still not ready.
+                let blobs = self
+                    .link
+                    .as_mut()
+                    .map(|link| link.net.session.take_object_message(id))
+                    .unwrap_or_default();
+                for blob in blobs {
+                    if let Some(link) = self.link.as_mut() {
+                        link.net.session.process_object_message(&blob, now);
+                    }
+                    self.deliver_session_events(shell, now);
+                }
+            }
+        }
+    }
+}
+
+/// `CharGenResultData` → `pyreal_protocol::login::CharGenResult`, field for field.
+///
+/// The UI crate may not depend on `pyreal-protocol` and the protocol may not depend on the UI; the
+/// copy between them is the application's, exactly as [`character_set_from_login`] is in the other
+/// direction. `version` is the client's hard-coded 1 and the checksum is filled in by the caller.
+#[must_use]
+pub fn chargen_result_to_wire(
+    r: &pyreal_client_contract::pregame::CharGenResultData,
+) -> pyreal_protocol::login::CharGenResult {
+    pyreal_protocol::login::CharGenResult {
+        // "Hard-coded 1 by the client"; ACE's `CharacterCreateInfo::Unpack` skips it as
+        // "Unknown constant (1)".
+        version: 1,
+        heritage_group: r.heritage_group,
+        gender: r.gender,
+        eyes_strip: r.eyes_strip,
+        nose_strip: r.nose_strip,
+        mouth_strip: r.mouth_strip,
+        hair_color: r.hair_color,
+        eye_color: r.eye_color,
+        hair_style: r.hair_style,
+        headgear_style: r.headgear_style,
+        headgear_color: r.headgear_color,
+        shirt_style: r.shirt_style,
+        shirt_color: r.shirt_color,
+        trousers_style: r.trousers_style,
+        trousers_color: r.trousers_color,
+        footwear_style: r.footwear_style,
+        footwear_color: r.footwear_color,
+        skin_shade: r.skin_shade,
+        hair_shade: r.hair_shade,
+        headgear_shade: r.headgear_shade,
+        shirt_shade: r.shirt_shade,
+        trousers_shade: r.trousers_shade,
+        footwear_shade: r.footwear_shade,
+        template_num: r.template_num,
+        strength: r.strength,
+        endurance: r.endurance,
+        coordination: r.coordination,
+        quickness: r.quickness,
+        focus: r.focus,
+        self_: r.self_,
+        slot: r.slot,
+        class_id: r.class_id,
+        skill_advancement_classes: r.skill_advancement_classes.clone(),
+        name: r.name.clone(),
+        start_area: r.start_area,
+        is_admin: r.is_admin,
+        is_envoy: r.is_envoy,
+        checksum_value: 0,
+    }
+}
+
+/// `0xF658 Login_LoginCharacterSet` → the persistent-data object's character set.
+///
+/// The session decodes the message and the pre-game view owns the destination; the conversion
+/// between them is the application's. It is a field-for-field copy and nothing more.
+#[must_use]
+pub fn character_set_from_login(
+    set: &pyreal_protocol::login::LoginCharacterSet,
+) -> pyreal_client_contract::persist::persistent_data::CharacterSet {
+    let one = |c: &pyreal_protocol::login::CharacterIdentity| {
+        pyreal_client_contract::persist::persistent_data::CharacterIdentity {
+            id: c.gid,
+            name: c.name.clone(),
+            seconds_grace_period: c.seconds_greyed_out,
+        }
+    };
+    pyreal_client_contract::persist::persistent_data::CharacterSet {
+        set: set.characters.iter().map(one).collect(),
+        del_set: set.deleted.iter().map(one).collect(),
+        status: set.status,
+        // The client's own default is 5 and the server overwrites it; a negative count is not a
+        // state the message can legally carry, and clamping is what the client's unsigned
+        // allowed-characters field does with one.
+        num_allowed_characters: u32::try_from(set.num_allowed_characters).unwrap_or(0),
+        account: set.account.clone(),
+        // `0xF658` carries `has_throne_of_destiny` and nothing about Dark Majesty or a pre-order;
+        // the other two flags are set from elsewhere in the client and are left at their defaults
+        // rather than guessed at.
+        is_dark_majesty: false,
+        is_throne_of_destiny: set.has_throne_of_destiny != 0,
+        pre_ordered_throne_of_destiny: false,
+    }
+}
+
+/// Answer server interrogation with one iteration list per open DAT file.
+///
+/// ```text
+/// iteration lists = []
+/// ok = true
+/// for each open data file:
+///     if it is initialized:
+///         append its type, then its file id
+///         ok = load its mostly-consecutive integer set and ok
+/// if (ok) adopt and deliver the interrogation response;                // 0xF7E6 on queue 5
+/// ```
+///
+/// The **type dword comes first**, then the id: type 0 portal, 1 cell and language, `"HiFi"` as an
+/// int for the high-res dat; id 1 portal and highres, 2 cell, 3 language. The id ordering was
+/// cross-checked against the server's `switch (entry.DatFileId)`.
+///
+/// **The set is re-emitted from the dat's own bytes rather than re-encoded.** In the original client,
+/// every initialized file contributes its load result to the final success condition and the response
+/// copies that loaded payload. This Rust function instead skips an unreadable set while still
+/// avoiding re-encoding ambiguity. The dat reader in `pyreal_dat::iteration` expands a negative `-k`
+/// by reading a **following `first` dword**; `pyreal_protocol`'s (and ACE's) reader treats it as a run of `k - 1` with no operand.
+/// Both consume the retail portal list (`count 2072`, then `-2072, 1`) to exactly the same end, and
+/// which is right in general is a question this function does not need to answer to send the
+/// right bytes.
+///
+/// **Known limitation:** the two serializers for the
+/// mostly-consecutive integer set disagree for any list that is not one run, and no shipped dat exercises the
+/// difference.
+/// A product-id bit test loads the high-resolution dat when mask `0x4` is set.
+/// `pyreal_protocol::admin::DddInterrogation::PRODUCT_HIGHRES` is the same bit on the wire side.
+pub const PRODUCT_HIGHRES: u32 = 4;
+
+///
+/// `keeps_overlay` is whether the client keeps the world's records in an overlay this run
+/// ([`crate::ddd::DddPatcher::keeps_overlay`]): only then does the answer carry the overlay
+/// extension. `world` is the world whose overlay `store`'s files read through, when they read
+/// through one: the answer then names it, after the bases.
+#[must_use]
+pub fn ddd_interrogation_response(
+    store: &pyreal_dat::RetailDatStore,
+    product_id: u32,
+    keeps_overlay: bool,
+    world: Option<&str>,
+) -> pyreal_protocol::admin::DddInterrogationResponse {
+    use pyreal_protocol::admin::{
+        DddInterrogationResponse, MostlyConsecutiveIntSet, TaggedIterationList,
+    };
+
+    /// `"HiFi"` as a little-endian int, which is `DDDManager.HiFi_String_As_Int`.
+    const HIFI: u32 = u32::from_le_bytes(*b"HiFi");
+
+    /// The file's `0xFFFF0001` payload as `(count, the run-length dwords that follow)`.
+    ///
+    /// A file from before Throne of Destiny has no such record; its iteration is in its header,
+    /// and it answers as one run of that many (`count n`, then `-n, 1`), the shape a file patched
+    /// from its first iteration to its last has.
+    fn set_of(f: &pyreal_dat::DatFile) -> Option<MostlyConsecutiveIntSet> {
+        if let Some(n) = f.header_iteration() {
+            let n = i32::try_from(n).ok()?;
+            return Some(MostlyConsecutiveIntSet {
+                iterations: n,
+                ints: vec![-n, 1],
+            });
+        }
+        let raw = f.read(pyreal_dat::divine::ITERATION_LIST).ok()?;
+        let (head, rest) = raw.split_at_checked(4)?;
+        let iterations = i32::from_le_bytes([head[0], head[1], head[2], head[3]]);
+        let ints = rest
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .copied()
+            .map(i32::from_le_bytes)
+            .collect();
+        Some(MostlyConsecutiveIntSet { iterations, ints })
+    }
+
+    let mut iters_with_keys = Vec::new();
+    let mut push = |ty: u32, id: u32, f: &pyreal_dat::DatFile| {
+        if let Some(iterations) = set_of(f) {
+            iters_with_keys.push(TaggedIterationList {
+                dat_file_type: ty,
+                dat_file_id: id,
+                iterations,
+            });
+        }
+    };
+    // The recorded client's order: portal, language, cell.
+    push(0, 1, store.portal());
+    push(1, 3, store.local());
+    push(1, 2, store.cell());
+    if product_id & PRODUCT_HIGHRES != 0 {
+        if let Some(hi) = store.highres() {
+            push(HIFI, 1, hi);
+        }
+    }
+    // Not retail: the overlay extension. The flag says the client keeps the world's records in an
+    // overlay over its locked files, and the bases it holds follow; a second flag says it checks a
+    // base the world names by its records itself, so its files may be laid out otherwise. A server
+    // that does not know the extension reads none of it (see
+    // `pyreal_protocol::admin::DddInterrogationResponse`). A run that keeps no overlay answers as
+    // retail does, with neither.
+    let mut overlay_bases = Vec::new();
+    let mut base = |ty: u32, id: u32, f: &pyreal_dat::DatFile| {
+        overlay_bases.push(pyreal_protocol::admin::OverlayBase {
+            dat_file_type: ty,
+            dat_file_id: id,
+            fingerprint: pyreal_dat::overlay::fingerprint(f),
+        });
+    };
+    if keeps_overlay {
+        base(0, 1, store.portal());
+        base(1, 2, store.cell());
+        base(1, 3, store.local());
+        if product_id & PRODUCT_HIGHRES != 0 {
+            if let Some(hi) = store.highres() {
+                base(HIFI, 1, hi);
+            }
+        }
+    }
+    let mut flags = if keeps_overlay {
+        DddInterrogationResponse::FLAG_OVERLAY | DddInterrogationResponse::FLAG_RECORDS
+    } else {
+        0
+    };
+    // The world the lists are of, so a server that is another world asks again once this client
+    // reads through that world's own folder.
+    if let Some(world) = world.filter(|_| keeps_overlay) {
+        flags |= DddInterrogationResponse::FLAG_WORLD;
+        overlay_bases.push(pyreal_protocol::admin::OverlayBase::world(
+            pyreal_dat::overlay::world_hash(world),
+        ));
+    }
+    DddInterrogationResponse {
+        // Read the local language. 1 is English, which is the only `client_local_*.dat` this
+        // install has; `-language` does not reach this yet.
+        client_language: 1,
+        iters_with_keys,
+        // "a second `CAllIterationList`, always empty in practice" -- and ACE does not read it.
+        iters_without_keys: Vec::new(),
+        flags,
+        overlay_bases,
+    }
+}
+
+/// The holders of the application's store, which a reopen of the data files replaces together.
+pub(super) struct StoreHolders<'a> {
+    pub store: &'a mut std::sync::Arc<pyreal_dat::RetailDatStore>,
+    pub anim_assets: &'a mut std::sync::Arc<pyreal_world_data::anim_assets::DatAnimAssets>,
+    pub objects: &'a mut crate::objects::ObjectStream,
+    pub ddd: &'a mut crate::ddd::DddPatcher,
+    pub generation: &'a mut u64,
+}
+
+/// [`App::adopt_store`] on its holders, for a caller that holds the link at the same time.
+pub(super) fn adopt_store_into(
+    holders: StoreHolders<'_>,
+    fresh: std::sync::Arc<pyreal_dat::RetailDatStore>,
+) {
+    *holders.anim_assets = std::sync::Arc::new(pyreal_world_data::anim_assets::DatAnimAssets::new(
+        std::sync::Arc::clone(&fresh),
+    ));
+    holders.objects.set_store(std::sync::Arc::clone(&fresh));
+    holders.ddd.set_bases(&fresh);
+    *holders.store = fresh;
+    *holders.generation += 1;
+}
+
+/// How many players a world says it has, from `0xF7E1 Login_WorldInfo`: none when what it says
+/// cannot be so, a count below zero or above a maximum it names, and none when it says nothing, a
+/// count of zero with no maximum, which is all a relay for a wire with no count can say.
+fn players_said(connections: i32, max_connections: i32) -> Option<u32> {
+    let players = u32::try_from(connections).ok()?;
+    if max_connections <= 0 {
+        return (connections > 0).then_some(players);
+    }
+    (connections <= max_connections).then_some(players)
+}
+
+#[cfg(test)]
+mod world_players_tests {
+    use super::players_said;
+
+    #[test]
+    fn a_count_below_zero_or_over_the_worlds_maximum_is_no_count() {
+        assert_eq!(players_said(12, 128), Some(12));
+        assert_eq!(players_said(0, 128), Some(0));
+        assert_eq!(players_said(128, 128), Some(128));
+        assert_eq!(
+            players_said(12, -1),
+            Some(12),
+            "a world that names no maximum"
+        );
+        assert_eq!(
+            players_said(12, 0),
+            Some(12),
+            "a world that names no maximum"
+        );
+        assert_eq!(players_said(129, 128), None);
+        assert_eq!(players_said(-1, 128), None);
+        assert_eq!(
+            players_said(0, 0),
+            None,
+            "a relay that has no count to give"
+        );
+        assert_eq!(players_said(0, -1), None);
+    }
+}

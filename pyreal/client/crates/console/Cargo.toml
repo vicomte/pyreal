@@ -1,0 +1,30 @@
+[package]
+name = "pyreal-console"
+description = "The desktop's native console attachment, error box, read-only display queries and the Mac's open-URL events."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# NOT `[lints] workspace = true`, for exactly the reason `pyreal-clipboard`'s manifest gives: the
+# workspace sets `unsafe_code = "forbid"`, `forbid` cannot be lifted by an inner `#[allow]`, and
+# `pyreal-client`'s own manifest asserts that it keeps `forbid`. So the console call this crate
+# exists for cannot live in `pyreal-client`. `deny` here, with one `#[allow(unsafe_code)]` on
+# each native module (console, modal error box, read-only desktop queries), is the narrowest
+# scope the language offers.
+#
+# The precedents are `pyreal-primitives`' `text` module (kernel32 NLS conversion) and `pyreal-clipboard` (user32 clipboard).
+# On Windows this crate takes **no dependencies at all**: a few `extern "system"` declarations are
+# smaller than a `windows` crate feature set. On the Mac, `objc2` sends the open-URL handler's messages.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+cast_possible_truncation = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }

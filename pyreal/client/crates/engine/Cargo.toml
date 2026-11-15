@@ -1,0 +1,80 @@
+[package]
+name = "pyreal-engine"
+description = "The new renderer's engine: dat assets converted into GPU-resident pools and a bindless material table, culled and drawn by the GPU through a frame graph of deferred passes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# Test targets are declared explicitly, so a stray tests/*.rs cannot become one silently.
+autotests = false
+
+[features]
+# Tier switch only: no code is gated on it. It selects the `dat` and `gpu` test binaries, which
+# read the retail dats under $PYREAL_TEST_DAT_DIR (and, for `gpu`, draw on the hardware GPU).
+retail-dats = []
+
+[dependencies]
+pyreal-primitives.workspace = true
+pyreal-dat.workspace = true
+pyreal-assets.workspace = true
+# The landscape's meshes, split direction, terrain merge plans and scenery placement.
+pyreal-terrain.workspace = true
+# The landblock ids, the region loader and the static shapes scenery placement tests.
+pyreal-world-data.workspace = true
+# The sky's time-of-day lighting and fog.
+pyreal-world-render.workspace = true
+# A part's detail level at the near band.
+pyreal-animation.workspace = true
+# The texture codecs: DXT, JPEG, palettes and mip chains.
+pyreal-codecs.workspace = true
+# The art pack: opened by the reader the client's presentation uses.
+pyreal-art-pack.workspace = true
+wgpu = "30"
+glam.workspace = true
+pollster.workspace = true
+thiserror.workspace = true
+
+# MetalFX's temporal upscaling (`src/metalfx.rs`), at the versions `wgpu`'s Metal backend hands its
+# objects over in (as `dereth-render`'s).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6" }
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLAllocation", "MTLCommandBuffer", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture"] }
+objc2-metal-fx = { version = "0.3", default-features = false, features = ["std", "MTLFXTemporalScaler"] }
+
+# DX12 compiles shaders with DXC linked in (shader model 6.5, ray queries) rather than falling back to
+# FXC. Not offered for Windows on ARM.
+[target.'cfg(all(windows, target_arch = "x86_64"))'.dependencies]
+wgpu = { version = "30", features = ["static-dxc"] }
+
+[dev-dependencies]
+pyreal-dat = { workspace = true, features = ["test-support"] }
+# Validates every shader this crate carries, without a device.
+naga = { version = "30", features = ["wgsl-in", "spv-out", "hlsl-out"] }
+# The creation tables a dressed body is tested with.
+pyreal-chargen.workspace = true
+
+# Not the workspace lints: those forbid unsafe outright, and asking a device for wgpu's
+# experimental ray queries takes one unsafe token (`src/gpu.rs`), and MetalFX takes Metal's own objects
+# (`src/metalfx.rs`); each block with its SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+cast_possible_truncation = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[[test]]
+name = "cpu"
+path = "tests/cpu/main.rs"
+
+[[test]]
+name = "dat"
+path = "tests/dat/main.rs"
+required-features = ["retail-dats"]
+
+[[test]]
+name = "gpu"
+path = "tests/gpu/main.rs"
+required-features = ["retail-dats"]

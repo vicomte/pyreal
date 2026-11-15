@@ -1,0 +1,30 @@
+//! The chat command interpreter: a line beginning `/` or `@` is normalised, tokenised, and looked
+//! up case-insensitively in a table of command names and aliases.
+//!
+//! These commands belong to chat and communication. Movement commands are interpreted
+//! by the runtime's movement handler, while dotted console names are registered in `console`.
+//! The three command systems have separate routing and behavior, and callers must
+//! distinguish them.
+//!
+//! **An unknown `@command` is forwarded verbatim, with no access gate.** That is how every
+//! game-master command reaches the server, and it was confirmed live by typing a command the
+//! client has never heard of and getting the server's reply.
+
+pub mod admin;
+pub mod clouds;
+pub mod console;
+pub mod fog;
+pub mod help;
+pub mod interp;
+pub mod loadfile;
+pub mod moon;
+pub mod report;
+pub mod table;
+pub mod tod;
+pub mod weather;
+pub mod weenies;
+pub mod world_commands;
+
+pub use help::HelpType;
+pub use interp::{CommandInterp, CommandOutcome, TalkFocus, NOT_A_VALID_COMMAND};
+pub use table::{CommandEntry, CommandHandler};

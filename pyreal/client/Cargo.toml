@@ -1,0 +1,151 @@
+[package]
+name = "pyreal-client"
+description = "Pyreal, the Asheron's Call client: the window, the graphics device, the renderer, the interface and the sound device, plugged into the runtime's frame loop."
+# Pyreal's release version.
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# One test target per tier, listed at the bottom of this file. `autotests = false` so that a
+# stray `tests/*.rs` cannot silently become another link step.
+autotests = false
+
+# The executable is `pyreal` (`Pyreal` inside the macOS bundle).
+[[bin]]
+name = "pyreal"
+path = "src/main.rs"
+
+[build-dependencies]
+# Links the application icon (`assets/pyreal.ico`) into the executable. Explorer, the taskbar and
+# Alt-Tab read the icon out of the binary before any of our code runs, so it cannot be a file
+# loaded at start-up. Same crate and version as the launcher's build script uses.
+embed-resource = "3"
+
+# `wgpu`, on by default, is the device: Metal, Vulkan or Direct3D 12 through `wgpu`, with the
+# high-fidelity presentation. Without it the crate still builds and the pure-logic units (config,
+# the message pump, the frame order) still test, which is what keeps
+# `cargo check --no-default-features` honest on a host with no graphics driver at all.
+[features]
+# Fixture access through the client facade; ordinary clients leave this disabled.
+test-support = ["pyreal-client-shell/test-support"]
+default = ["wgpu"]
+wgpu = ["pyreal-scene/wgpu", "pyreal-client-shell/wgpu"]
+# Tier switch only: no code is gated on it. It selects the `dat` and `gpu` test binaries,
+# whose modules read the retail dats under $PYREAL_TEST_DAT_DIR.
+retail-dats = []
+
+# The product composes the desktop host and application shell. Tests additionally exercise
+# their shared subsystems directly.
+[dependencies]
+pyreal-client-runtime.workspace = true
+pyreal-primitives.workspace = true
+pyreal-client-shell.workspace = true
+pyreal-desktop.workspace = true
+pyreal-scene.workspace = true
+pyreal-console.workspace = true
+# The headless replay translates recorded host events and physical controls.
+pyreal-input.workspace = true
+# Plugins: the host, the interface and the Luau engine (`src/plugins.rs`).
+pyreal-plugin-api.workspace = true
+pyreal-plugin-host.workspace = true
+pyreal-plugin-lua.workspace = true
+pyreal-plugin-wasm = { workspace = true, default-features = true }
+# The game's data files, read for the plugins that draw maps.
+pyreal-dat.workspace = true
+# Plugins' HTTPS requests to the domains their manifests list, and a world policy published at a
+# URL (`src/plugins.rs`, off the frame's thread). The same client and TLS the server's importer
+# already uses.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde_json.workspace = true
+tracing.workspace = true
+# What the client knows before it connects: the player's worlds, accounts and data sets, and the
+# launch plan a session starts from (`src/front_door.rs`).
+pyreal-launch.workspace = true
+# The screens before the world, which the front door fills and reads.
+pyreal-horizon.workspace = true
+# The status ping, which tells the front door the era of a world added by hand.
+pyreal-transport.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Passwords in the login Keychain.
+keyring = { version = "3", features = ["apple-native"] }
+# The folder picker for the data files.
+rfd = { version = "0.16", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+# Passwords in Credential Manager.
+keyring = { version = "3", features = ["windows-native"] }
+# The folder picker for the data files.
+rfd = { version = "0.16", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Passwords in the desktop's keyring over the Secret Service. Pure-Rust crypto, and libdbus built
+# in, so neither OpenSSL nor the D-Bus development files are needed.
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
+[dev-dependencies]
+# The contract's views, chat lines and options, which the tests read.
+pyreal-client-contract.workspace = true
+pyreal-terrain.workspace = true
+pyreal-rules.workspace = true
+pyreal-client-shell = { workspace = true, features = ["test-support"] }
+pyreal-chargen.workspace = true
+pyreal-client-runtime = { workspace = true, features = ["test-support"] }
+pyreal-world-render.workspace = true
+# The picture codecs, for the tests that decode the dats' pictures.
+pyreal-codecs.workspace = true
+pyreal-assets.workspace = true
+pyreal-animation.workspace = true
+pyreal-transport.workspace = true
+pyreal-protocol.workspace = true
+pyreal-client-model = { workspace = true, features = ["test-support"] }
+pyreal-audio.workspace = true
+pyreal-client-net = { workspace = true, default-features = true, features = ["test-support"] }
+# Recorded movement comparisons retain the physics trace recorder.
+pyreal-physics = { workspace = true, features = ["trace"] }
+pyreal-dat = { workspace = true, features = ["test-support"] }
+# Synthetic data folders, for the front door's tests.
+pyreal-launch = { workspace = true, features = ["testing"] }
+pyreal-world-data.workspace = true
+# The engine's picture path and an art pack's materials, for the served records' test.
+pyreal-engine.workspace = true
+pyreal-art-pack.workspace = true
+# The widget kit Horizon is drawn with: the context its windows are drawn in, for the pixel tests.
+pyreal-ui-kit.workspace = true
+# The icon composition and its mapper groups, for the icon tests.
+pyreal-ui-logic.workspace = true
+glam.workspace = true
+# Surface capabilities offered a headless renderer, for the HDR Output test.
+wgpu = "30"
+winit = { workspace = true, features = ["rwh_06"] }
+# Capture tests inspect PNGs; production encoding belongs to the scene and icon decoding
+# belongs to the desktop host.
+png.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+winit = { workspace = true, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita"] }
+
+[lints]
+workspace = true
+
+# Three test binaries, one per tier:
+#
+#   cpu  no retail dats, no device        `cargo test -p pyreal-client --test cpu`
+#   dat  reads the retail dats            `... --features retail-dats --test dat`
+#   gpu  holds a device (a software rasteriser is enough)          `... --features retail-dats,wgpu --test gpu`
+#
+# Each test file is a module of its tier's binary: run one with `--test <tier> <stem>::<fn>`.
+[[test]]
+name = "cpu"
+path = "tests/cpu/main.rs"
+
+[[test]]
+name = "dat"
+path = "tests/dat/main.rs"
+required-features = ["retail-dats"]
+
+[[test]]
+name = "gpu"
+path = "tests/gpu/main.rs"
+required-features = ["retail-dats", "wgpu"]

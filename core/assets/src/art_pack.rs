@@ -1,0 +1,2842 @@
+//! An art pack's manifest: which retail objects the pack has models for, the files of each
+//! model's levels of detail and the distances they are drawn to, and who made each model, with
+//! what, under which license.
+//!
+//! A pack is a folder: `manifest.toml` at its top, beside the glTF 2.0 models it names. Every
+//! file is named by a path relative to the folder, with `/` between its parts and nothing that
+//! climbs out of the folder, so the manifest says nothing about where the folder is. That is what
+//! lets a pack be packed into one data file: each file the manifest names becomes a record keyed
+//! by its path, and the manifest itself one more, read through the same paths.
+//!
+//! ```toml
+//! [pack]
+//! name = "Remastered"
+//! format = 1
+//!
+//! [[model]]
+//! id = "0x02000258"          # a setup (0x02...) or a graphics object (0x01...)
+//! foliage = true             # its cut-out materials are growth: two-sided, lit through
+//! wind = 1.0                 # how much the wind moves it, 0 to 2; 1 for growth, otherwise 0
+//! fingerprint = "model 0123456789abcdef"  # the retail object it was made for (see below)
+//! draws_on = "matching"      # matching, any or none: which records it is drawn on
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//!
+//! [[model.lod]]
+//! file = "tree/lod0.gltf"
+//! distance = 40.0            # drawn out to this many metres from the eye
+//!
+//! [[model.lod]]
+//! file = "tree/lod1.gltf"    # the last level is drawn at any distance unless it names one
+//!
+//! [[model.lod]]
+//! file = "tree/far.gltf"     # pictures of the model seen from round it (see `views`)
+//! views = 16
+//! columns = 8
+//! ```
+//!
+//! A level that names `shadows_only = true` is drawn into the sun's shadows alone, where they ask
+//! for a coarser level than the view draws, and never into the view, which goes from the level
+//! before it straight to the level after it; its distance, which it may leave out, is not read.
+//! The first and the last level are always drawn into the view.
+//!
+//! A level that names `views` is pictures of the model, not its shape: its glTF holds an upright
+//! quad across the model's axis (its first axis across, its height up), which is turned to face
+//! the eye about the model's upright axis. Its base colour picture holds `views` pictures of the
+//! model laid in tiles, `columns` to a row (all in one row when it names none), left to right
+//! and then down; view `k` is the model seen level from 360 k / `views` degrees round its axis,
+//! from its first axis toward its second, looking at the axis. Its normal picture holds, for each
+//! view, the model's own normal in its colour (each part -1..1 as 0..1) and, in its alpha, how
+//! far the surface stands along the view from the plane through the axis (0.5 on the plane, 0
+//! and 1 half the quad's width nearer and farther).
+//!
+//! A pack may also lay the ground: a material for each retail terrain type it covers, drawn in
+//! place of that type's ground picture wherever retail lays it, through retail's own blend
+//! masks. A type the pack names no material for keeps retail's picture.
+//!
+//! ```toml
+//! [[terrain]]
+//! ground = [1, 9]            # the retail terrain types (0 to 31) it is drawn for, or "road"
+//! base_color = "ground/grass_albedo.png"
+//! normal = "ground/grass_normal.png"         # tangent space: red east, green north
+//! height = "ground/grass_height.png"         # red; where layers meet, the higher one shows
+//! roughness = "ground/grass_roughness.png"   # red
+//! occlusion = "ground/grass_occlusion.png"   # red
+//! size = 4.0                 # metres one repeat of the pictures covers
+//! fingerprint = "picture 128x128 0123456789abcdef"  # the retail picture it stands in for
+//! detail = "ground/grain.png"                # a fine grain over the ground close by
+//! detail_size = 1.0          # metres one repeat of the detail covers; 1 unless named
+//! detail_strength = 1.0      # how far the detail moves the ground's colour; 1 unless named
+//! pebbles = true             # whether the presentation's pebbles lie on these grounds
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
+//! Only `base_color`, `size` and the credit are required. The pictures of every material are
+//! square and repeat seamlessly, seen from straight above with north up.
+//!
+//! The detail picture is a grain multiplied over the ground near the eye at twice its value in
+//! display values, so mid-gray (128) leaves the ground as it is. It fades out over the first few
+//! tens of metres. `detail_strength` scales how far it moves the ground: 0 not at all, more than
+//! 1 further. `pebbles = false` keeps the pebbles and stones off the grounds it names, and off the
+//! road's edges for the road. The keys match Dereth's, so a pack made for either reads in both.
+//!
+//! A `[[steep]]` material, with the same keys but `pebbles` (refused there), is laid on the steep slopes of the
+//! terrain types it names, in place of the scree and rock the presentation lays on steep ground
+//! of a type with none: an obsidian cliff, a sandstone face. A type may have one of each kind.
+//!
+//! A pack may also draw a picture of its own in place of a retail picture, wherever a retail
+//! object or room is drawn with it: buildings, statics, rooms, dungeon pieces and what the
+//! server places alike. Each such material names the retail pictures (texture records, `0x05...`)
+//! it stands for. The retail surface's coordinates, its flags (cut out, translucent, additive,
+//! luminous) and its collision are kept, so the picture keeps the retail one's layout: a model's
+//! coordinates point into it as they point into the retail picture. A model of the pack's own
+//! is drawn in place of the whole object, so where the pack has one, its materials do not reach.
+//!
+//! ```toml
+//! [[material]]
+//! texture = "0x0500287C"     # the retail picture, or a list of them
+//! base_color = "materials/0x0500287C_albedo.png"   # with the retail picture's alpha
+//! normal = "materials/0x0500287C_normal.png"       # tangent space: red along the picture's
+//!                                                  # width, green up it
+//! roughness = "materials/0x0500287C_roughness.png" # red
+//! occlusion = "materials/0x0500287C_occlusion.png" # red
+//! height = "materials/0x0500287C_height.png"       # red; white is the surface, black its deepest
+//! normal_scale = 1.0         # how strongly the normal picture bends the normal
+//! keep_retail_picture = true # draw the player's own retail picture, not base_color
+//! damp = 0.8                 # 0 to 1: how wet it looks in a room, darker and catching the light
+//! damp_map = "materials/0x0500287C_damp.png"       # red: white as wet as damp says, black dry
+//! damp_floors = true         # wet on floors too, not only on walls
+//! slime = true               # a film lies on it in a room where it is damp, in pools and runs
+//! ice = true                 # glacier ice: deep blue, opaque, with light bent through it
+//! sheen = 0.6                # 0 to 1: how strongly it shines as silk or satin does, in soft bands
+//!                            # along the picture's height that sweep across its folds
+//! grit = "grit/stone.png"    # a small picture of fine surface many materials share: its bend
+//!                            # in red and green, its speckle in blue, its roughness in alpha
+//! grit_repeat = [4, 3]       # how often the grit repeats across one repeat of the retail
+//!                            # picture, along its width and up it; [1, 1] unless named
+//! metal = true               # a metal: its colour is what it mirrors
+//! brighten = 4.5             # how many times brighter than its picture its colour is drawn
+//! gloss = 0.8                # 0 to 1: how smooth it is where no roughness picture says
+//! clear = 0.5                # 0 to 1: clear as ice or a gem in its picture's own colour, this
+//!                            # much of the world behind it seen through it, bent
+//! refraction = 1.31          # how strongly a clear material bends light (its index, 1 to 3)
+//! wet = 0.8                  # 0 to 1: a film of water lies on it, darker and as smooth as a puddle
+//! palettes = ["0x04000BA1"]  # drawn only where the picture is drawn in one of these palettes:
+//!                            # one picture several creatures wear, told apart by palette
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
+//! Only `texture`, `base_color` and the credit are required. A material that names
+//! `keep_retail_picture = true` keeps drawing the retail picture, in whichever form the player's
+//! files hold it, and adds only what its other pictures say of the surface: its relief, its grit
+//! and how damp it is. Its `base_color` is then a flat colour for a reader that draws no relief,
+//! and is neither read nor drawn here. The keys after `occlusion` are all optional, and a reader
+//! of this format that does not know them draws the material without them.
+//!
+//! A pack may also plant ground cover: plants retail never places, scattered over the terrain
+//! types each kind grows on. They are pictures alone: nothing collides with them. A kind's levels
+//! are a model's, and its last names how far from the eye the plant is drawn at all.
+//!
+//! ```toml
+//! [[ground_cover]]
+//! ground = [1, 9]            # the retail terrain types (0 to 31) it grows on
+//! density = 0.5              # plants a square metre
+//! scale = [0.8, 1.3]         # the smallest and the largest it is scaled by; 1 unless named
+//! steepest = 40.0            # the steepest slope it grows on, degrees; 40 unless named
+//! foliage = true             # as a model's; true unless named
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//!
+//! [[ground_cover.lod]]
+//! file = "grass/lod0.gltf"
+//! distance = 30.0
+//!
+//! [[ground_cover.lod]]
+//! file = "grass/lod1.gltf"
+//! distance = 70.0
+//! ```
+//!
+//! A `[[cover]]` table, as Dereth's packs write it, is read as a `[[ground_cover]]` one with
+//! Dereth's meaning: its `density` in plants per 100 square metres, its `max_slope` (0.6 unless
+//! named, 0 for level ground alone) in metres of rise a metre across, `scale` a pair alone, and
+//! `foliage` off unless named. It names no `id`. Its `category`, `fingerprint` and `draws_on` are
+//! read past: a cover names terrain types, not a retail record.
+//!
+//! A pack may also give a retail object a light of its own, in place of whatever light and
+//! sprites of light retail gives it. It shines day and night, lights what is around it, casts
+//! shadows as soft as it is large, and the air about it glows, so it holds its own by day as it
+//! does at night. An object's light stands where retail's light or sprite of light stood.
+//!
+//! ```toml
+//! [[light]]
+//! object = "0x0200069D"      # the retail object: a setup (0x02...) or a graphics object (0x01...)
+//! where = "outdoors"         # where it is placed: outdoors, indoors or both; both unless named
+//! offset = [0.0, 0.0, 0.0]   # metres from where retail's light stood, east, north and up
+//! kelvin = 1900              # its colour temperature: 1500 is a deep flame, 6500 daylight
+//! brightness = 800           # lumens: a candle is about 12, a torch about 800
+//! size = 0.3                 # metres across the light: how soft its shadows are
+//! reach = 12.0               # metres its light reaches
+//! shadows = true             # whether it casts shadows; true unless named
+//! flicker = "flame"          # flame, embers or steady; steady unless named
+//! haze = 0.6                 # how brightly the air about it glows, 0 to 4; 0 for none
+//! presence = 1.0             # 0 to 1: how much of its glow it keeps against the daylight
+//! gather = 6.0               # metres: the object's lights this near each other are one light,
+//!                            # at their middle and as large as they stand apart; 0 unless named
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
+//! Only `object`, `kelvin`, `brightness`, `reach` and the credit are required.
+//!
+//! A pack may draw one of retail's moons again as a ball of its own. Its pictures cover the whole
+//! ball, longitude by latitude: longitude 0, the face turned to Dereth, at the middle of the
+//! picture's width, north at its top. The sky lights it from the sun as in open space, and its
+//! lights picture burns where its night falls.
+//!
+//! ```toml
+//! [[moon]]
+//! object = "0x01001F6A"      # the retail moon's graphics object
+//! surface = "sky/albarel_surface.png"  # its colour, and its height in alpha
+//! lights = "sky/albarel_lights.png"    # what burns on its night side; none unless named
+//! clouds = "sky/albarel_clouds.png"    # a layer of cloud over the ground, its cover in alpha;
+//!                                      # none unless named
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
+//! **A pack may draw a body in place of a setup's parts** (`[[skin]]`): one skinned glTF 2.0
+//! mesh, drawn for every object built on the setup, standing where the object stands. Joints
+//! named `part_00`, `part_01` ... (or carrying `extras.part`) name the setup's parts it is drawn
+//! in place of, by their place in the setup: those draw nothing, and any other part draws as it
+//! is. Every other joint is a bone of the body's own skeleton. The object's collision, selection
+//! and everything the server sees are its parts'.
+//!
+//! ```toml
+//! [[skin]]
+//! setup = "0x02000001"       # the setup whose objects it is drawn for
+//! file = "human/body.gltf"
+//! palettes = ["0x04001A2B"]  # drawn for objects whose look lays one of these; any unless named
+//! clips = { idle = "Idle", walk = "Walk", run = "Run", melee_med = "Swing", die = "Death" }
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
+//! A `[[skin]]` may name the fingerprint of the setup record it was made for (`fingerprint`,
+//! `draws_on`), as a `[[model]]` does, and is then drawn only on a world whose record of the
+//! setup matches; one that names none is drawn on every world. A setup may have several bodies:
+//! of those drawn on the world, the ones naming a fingerprint come first, and among them the
+//! first whose `palettes` the object's look lays, else one that names none. A body's `clips` name a glTF animation for each motion slot it
+//! fills ([`CLIP_SLOTS`]), the same slots for every creature. A slot the body leaves empty plays
+//! another's (a run the walk, a side step the walk, a stance's idle the peace idle, an attack the
+//! medium one, a sleep the dead pose). With no clip for what the object does, the joints that
+//! name parts follow the parts as the game animates them. A turn or a side step is to the right,
+//! and one to the left plays it backwards. A clip may carry `extras.stride`, the metres one round
+//! of a walk, run or side step carries the body, so its feet hold, and `extras.hit`, the seconds
+//! from an attack's start to its blow, which lands when the object's own attack does. A key
+//! `"0x03000044"` names a clip for that retail animation, as older packs did.
+//!
+//! A pack may keep some objects as they are (`[keep]`), whatever bodies it has for their setups:
+//! the weenies it lists by class id, and with `launchers = true` any object that has held a bow,
+//! crossbow, sling or atlatl.
+//!
+//! ```toml
+//! [keep]
+//! weenies = [7, 237, 19196]
+//! launchers = true
+//! ```
+//!
+//! **Which era's record an entry is for.** A `[[model]]` or `[[material]]` may name the
+//! fingerprint of the retail record it was made from ([`crate::fingerprint`]); a material for
+//! several pictures names a list, one for each. The client draws an entry only on a record whose
+//! fingerprint matches, so one id may have an entry for each era's record of it, and a record no
+//! entry matches draws as the world's files hold it. An entry with no fingerprint is drawn on any
+//! record. `draws_on = "any"` draws an entry on any record whatever its fingerprint, and
+//! `draws_on = "none"` on none. Where several entries are for one id, the first that is drawn on
+//! the record draws it, so one that names no fingerprint may follow those that do, for every other
+//! record, and none may follow it or another of the same fingerprint. A `[[terrain]]` or
+//! `[[steep]]` material's fingerprint is that of the picture the world's region lays its ground
+//! with, and the same rules hold for each ground it names.
+//!
+//! This module reads the manifest only. The models and their pictures are read by whatever
+//! draws them.
+
+use std::collections::{HashMap, HashSet};
+
+use pyreal_primitives::DataId;
+
+pub use crate::fingerprint::Fingerprint;
+
+/// The manifest format this module reads.
+pub const FORMAT: i64 = 1;
+
+/// The manifest's file name at the top of a pack's folder.
+pub const MANIFEST_FILE: &str = "manifest.toml";
+
+/// The number the first kind of ground cover's model is known by, the kinds after it counting up:
+/// it stands for no retail object, and no retail object's id reaches it.
+pub const GROUND_COVER_IDS: u32 = 0xC000_0000;
+
+/// A pack's manifest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtPackManifest {
+    /// The pack's name.
+    pub name: String,
+    /// Its models, in the order the manifest lists them.
+    pub models: Vec<ManifestModel>,
+    /// Its ground materials, in the order the manifest lists them.
+    pub grounds: Vec<ManifestGround>,
+    /// Its materials for retail pictures, in the order the manifest lists them.
+    pub materials: Vec<ManifestMaterial>,
+    /// The kinds of plant it lays over the land. Each kind's model is among [`Self::models`], after
+    /// the models for retail objects, under the id the kind names.
+    pub ground_cover: Vec<ManifestGroundCover>,
+    /// The lights it gives retail objects, in the order the manifest lists them.
+    pub lights: Vec<ManifestLight>,
+    /// The moons it draws again, in the order the manifest lists them.
+    pub moons: Vec<ManifestMoon>,
+    /// The bodies it draws in place of setups' parts, in the order the manifest lists them.
+    pub skins: Vec<ManifestSkin>,
+    /// The weenies (class ids) whose objects keep their own parts (`[keep]`).
+    pub keep: Vec<u32>,
+    /// Whether an object that has held a launcher keeps its own parts.
+    pub keep_launchers: bool,
+}
+
+/// The motion slots a body's clips fill ([`ManifestSkin::clips`]): a stance's idle (peace,
+/// melee, missile, magic); walking, walking backwards, running, a side step and a turn; attacks
+/// high, medium and low, a special, a missile, a cast and the warning before one; a hit and a
+/// heavy hit; dying, dead and asleep; a change of stance; an emote and a cheer; falling and a jump.
+pub const CLIP_SLOTS: [&str; 26] = [
+    "idle",
+    "idle_melee",
+    "idle_missile",
+    "idle_magic",
+    "walk",
+    "walk_back",
+    "run",
+    "side_step",
+    "turn",
+    "melee_high",
+    "melee_med",
+    "melee_low",
+    "special",
+    "missile",
+    "cast",
+    "telegraph",
+    "hit",
+    "hit_heavy",
+    "die",
+    "dead",
+    "sleep",
+    "stance",
+    "emote",
+    "cheer",
+    "fall",
+    "jump",
+];
+
+/// One body a pack draws in place of a setup's parts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestSkin {
+    /// The setup (`0x02...`) whose objects it is drawn for.
+    pub setup: DataId,
+    /// The glTF 2.0 file, relative to the pack's folder.
+    pub file: String,
+    /// The palettes (`0x04...`) an object's look must lay one of; none for the setup's others.
+    pub palettes: Vec<DataId>,
+    /// Each slot ([`CLIP_SLOTS`]) and the glTF animation it plays.
+    pub clips: Vec<(String, String)>,
+    /// Clips named by the retail animation (`0x03...`) they are played for.
+    pub by_animation: Vec<(DataId, String)>,
+    /// The fingerprint of the setup record it was made for, where it names one.
+    pub fingerprint: Option<Fingerprint>,
+    /// Which records it is drawn on.
+    pub draws_on: DrawsOn,
+    /// Who made it, with what, and under which license.
+    pub credit: Credit,
+}
+
+/// A retail moon a pack draws again as a ball.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestMoon {
+    /// The retail moon's graphics object.
+    pub object: DataId,
+    /// Its colour, and its height in alpha, over the whole ball longitude by latitude.
+    pub surface: String,
+    /// What burns on its night side, laid as the surface is.
+    pub lights: Option<String>,
+    /// A layer of cloud over the ground, its cover in alpha, laid as the surface is.
+    pub clouds: Option<String>,
+    /// Who made it, with what, under which license.
+    pub credit: Credit,
+}
+
+/// Where a pack's light is given to its object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightPlace {
+    /// Where the object stands outdoors.
+    Outdoors,
+    /// Where it stands in a building's or a dungeon's rooms.
+    Indoors,
+    /// Wherever it stands.
+    Both,
+}
+
+impl LightPlace {
+    /// Whether an object standing outdoors (`outdoors`) or in a room is given the light.
+    #[must_use]
+    pub fn takes(self, outdoors: bool) -> bool {
+        match self {
+            Self::Outdoors => outdoors,
+            Self::Indoors => !outdoors,
+            Self::Both => true,
+        }
+    }
+}
+
+/// How a pack's light moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LightFlicker {
+    /// As a flame does.
+    Flame,
+    /// As a bed of embers breathes.
+    Embers,
+    /// Not at all.
+    Steady,
+}
+
+/// A light a pack gives a retail object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestLight {
+    /// The retail object.
+    pub object: DataId,
+    /// Where it is given.
+    pub place: LightPlace,
+    /// Metres from where retail's light stood: east, north and up.
+    pub offset: [f32; 3],
+    /// Its colour temperature, kelvin.
+    pub kelvin: f32,
+    /// Lumens.
+    pub brightness: f32,
+    /// Metres across.
+    pub size: f32,
+    /// Metres its light reaches.
+    pub reach: f32,
+    /// Whether it casts shadows.
+    pub shadows: bool,
+    /// How it moves.
+    pub flicker: LightFlicker,
+    /// How brightly the air about it glows.
+    pub haze: f32,
+    /// How much of its glow it keeps against the daylight.
+    pub presence: f32,
+    /// Metres: the object's lights this near each other are one light; 0 for none.
+    pub gather: f32,
+    /// Who made it, with what, and under which license.
+    pub credit: Credit,
+}
+
+/// One kind of plant a pack lays over the land.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestGroundCover {
+    /// The number its model is known by, from [`GROUND_COVER_IDS`].
+    pub id: DataId,
+    /// The retail terrain types it grows on, each 0 to 31.
+    pub grounds: Vec<u8>,
+    /// How many plants a square metre.
+    pub density: f32,
+    /// The smallest and the largest it is scaled by.
+    pub scale: (f32, f32),
+    /// The steepest slope it grows on, degrees.
+    pub steepest: f32,
+}
+
+/// One material drawn in place of retail pictures: the pictures it stands for and its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestMaterial {
+    /// The retail pictures (texture records, `0x05...`) it is drawn in place of.
+    pub textures: Vec<DataId>,
+    /// The base color picture, with the retail picture's alpha.
+    pub base_color: String,
+    /// The tangent-space normal picture: red along the picture's width, green up it.
+    pub normal: Option<String>,
+    /// The roughness picture, in its red.
+    pub roughness: Option<String>,
+    /// The ambient occlusion picture, in its red.
+    pub occlusion: Option<String>,
+    /// The height picture, in its red: white is the surface, black its deepest.
+    pub height: Option<String>,
+    /// How strongly the normal picture bends the normal.
+    pub normal_scale: f32,
+    /// Whether the retail picture is drawn in place of [`Self::base_color`], which is then only
+    /// a flat colour for a reader that draws no relief.
+    pub keep_retail_picture: bool,
+    /// How wet it looks in a room, from 0 to 1.
+    pub damp: f32,
+    /// A picture of where it is wet, in its red: white as wet as [`Self::damp`] says, black dry.
+    pub damp_map: Option<String>,
+    /// Whether it is wet on floors too, not only on walls.
+    pub damp_floors: bool,
+    /// Whether a film of slime lies on it where it is damp.
+    pub slime: bool,
+    /// Whether it is glacier ice: deep blue, opaque, with light bent through it.
+    pub ice: bool,
+    /// How strongly it shines as silk or satin does, from 0 to 1.
+    pub sheen: f32,
+    /// A small picture of fine surface many materials may share, laid over its own: its bend in
+    /// red and green, its speckle in blue and its roughness in alpha, each about a half.
+    pub grit: Option<String>,
+    /// How many times the grit repeats across one repeat of the retail picture, along its width
+    /// and up it.
+    pub grit_repeat: [f32; 2],
+    /// What it is made of beyond its pictures.
+    pub matter: Matter,
+    /// The fingerprint of the retail picture each of [`Self::textures`] was made from, where it
+    /// names one.
+    pub fingerprints: Vec<Option<Fingerprint>>,
+    /// Which records it is drawn on.
+    pub draws_on: DrawsOn,
+    /// The palettes (`0x04...`) it is drawn in alone; any, where it names none.
+    pub palettes: Vec<DataId>,
+    /// Who made it, with what, and under which license.
+    pub credit: Credit,
+}
+
+/// What a material is made of beyond its pictures: a metal, how smooth, or clear as ice or a gem.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Matter {
+    /// A metal, its picture brightened this many times to its colour.
+    pub metal: Option<f32>,
+    /// How smooth it is where no roughness picture says, 0 to 1.
+    pub gloss: Option<f32>,
+    /// Clear in its picture's own colour, this share of the world behind seen through it.
+    pub clear: Option<f32>,
+    /// How strongly a clear material bends light: its index of refraction.
+    pub refraction: f32,
+    /// How much of a film of water lies on it, 0 to 1.
+    pub wet: Option<f32>,
+}
+
+impl Matter {
+    /// Whether it says nothing beyond its pictures.
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        self.metal.is_none() && self.gloss.is_none() && self.clear.is_none() && self.wet.is_none()
+    }
+}
+
+/// Which retail records an entry is drawn on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DrawsOn {
+    /// Those whose fingerprint matches its own; any, where it names none.
+    #[default]
+    Matching,
+    /// Any record of its id.
+    Any,
+    /// None: the entry is not drawn.
+    Nothing,
+}
+
+impl DrawsOn {
+    /// Whether an entry made from a record of fingerprint `made_from` is drawn on a record of
+    /// fingerprint `record`; a record whose fingerprint is not known is drawn on as any.
+    #[must_use]
+    pub fn draws(self, made_from: Option<&Fingerprint>, record: Option<&Fingerprint>) -> bool {
+        match (self, made_from, record) {
+            (Self::Nothing, _, _) => false,
+            (Self::Matching, Some(a), Some(b)) => a.matches(b),
+            _ => true,
+        }
+    }
+}
+
+/// A retail ground a pack's material is drawn for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Ground {
+    /// A terrain type, 0 to 31.
+    Type(u8),
+    /// The road laid over the terrain.
+    Road,
+}
+
+/// One ground material: the retail grounds it is drawn for, its pictures and how large a repeat
+/// of them is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestGround {
+    /// The retail grounds it is drawn for.
+    pub grounds: Vec<Ground>,
+    /// The base colour picture.
+    pub base_color: String,
+    /// The tangent-space normal picture, red toward east and green toward north.
+    pub normal: Option<String>,
+    /// The height picture, in its red: where two grounds meet, the higher shows through.
+    pub height: Option<String>,
+    /// The roughness picture, in its red.
+    pub roughness: Option<String>,
+    /// The ambient occlusion picture, in its red.
+    pub occlusion: Option<String>,
+    /// How many metres one repeat of the pictures covers.
+    pub size: f32,
+    /// How strongly the normal picture bends the normal.
+    pub normal_scale: f32,
+    /// Laid on the steep slopes of its grounds rather than on their flat ground: a `[[steep]]`
+    /// table's.
+    pub steep: bool,
+    /// The fingerprint of the retail picture its grounds are laid with in the world it was made
+    /// for, where it names one: it is drawn only where the world's region matches.
+    pub fingerprint: Option<Fingerprint>,
+    /// A grain picture multiplied over it near the eye, in its red.
+    pub detail: Option<String>,
+    /// How many metres one repeat of the detail covers.
+    pub detail_size: f32,
+    /// How far the detail moves its colour: 0 not at all, 1 as the picture is made.
+    pub detail_strength: f32,
+    /// Whether the presentation's pebbles lie on its grounds.
+    pub pebbles: bool,
+    /// Who made it, with what, and under which license.
+    pub credit: Credit,
+}
+
+/// One model: the retail object it is drawn in place of, its levels of detail, how it is lit
+/// and who made it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestModel {
+    /// The retail object: a setup (`0x02...`) or a graphics object (`0x01...`).
+    pub id: DataId,
+    /// The levels of detail, nearest first.
+    pub lods: Vec<ManifestLod>,
+    /// Cut-out growth: the model's cut-out materials (needles, leaves, grass) are drawn from both
+    /// sides and lit through from behind as well as from the front. Its other materials (a
+    /// trunk) are ordinary surfaces.
+    pub foliage: bool,
+    /// How much the wind moves it: 0 not at all, 1 as much as growth of its height moves.
+    pub wind: f32,
+    /// The fingerprint of the retail object it was made for, where it names one.
+    pub fingerprint: Option<Fingerprint>,
+    /// Which records it is drawn on.
+    pub draws_on: DrawsOn,
+    /// Who made it, with what, and under which license.
+    pub credit: Credit,
+}
+
+/// One level of detail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManifestLod {
+    /// The glTF 2.0 file, relative to the pack's folder.
+    pub file: String,
+    /// How far from the eye it is drawn, metres; `None` for the last level drawn at any
+    /// distance.
+    pub distance: Option<f32>,
+    /// For a level that is pictures of the model seen from round it, how they are laid out.
+    pub views: Option<Views>,
+    /// Drawn into the sun's shadows alone, never into the view.
+    pub shadows_only: bool,
+}
+
+/// How a level made of pictures of its model lays them out: how many views round the model, and
+/// how many tiles to a row of its pictures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Views {
+    /// The views, evenly round the model's upright axis.
+    pub count: u32,
+    /// The tiles to a row.
+    pub columns: u32,
+}
+
+/// Who made a model, with what, and under which license.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Credit {
+    /// The author.
+    pub author: String,
+    /// The tool or pipeline it was made with.
+    pub tool: String,
+    /// The license it is shared under.
+    pub license: String,
+}
+
+/// Why a manifest was refused, as a sentence.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("art pack manifest: {0}")]
+pub struct ManifestError(pub String);
+
+fn fail<T>(why: impl Into<String>) -> Result<T, ManifestError> {
+    Err(ManifestError(why.into()))
+}
+
+impl ArtPackManifest {
+    /// The manifest in `text`.
+    ///
+    /// # Errors
+    /// [`ManifestError`] when the text is not TOML, its format is not [`FORMAT`], or a model is
+    /// incomplete or contradicts another: an id that is not a setup or a graphics object, an id
+    /// listed twice, no level of detail, a file path that is absolute or climbs out of the pack,
+    /// distances that do not grow, a level before the last with no distance, or a credit left
+    /// out; or a ground material is: a ground that is not a terrain type or the road, a ground
+    /// two materials claim, no base color, or a size that is not a positive number; or a
+    /// material for retail pictures is: a picture that is not a texture record, a picture two
+    /// materials claim, no base color, a picture path outside the pack, or a damp, a grit repeat
+    /// or a switch out of range; or a kind of ground cover is: a ground that is not a terrain
+    /// type, a density, scale or slope out of range, or a last level with no distance or pictures
+    /// for a level.
+    pub fn parse(text: &str) -> Result<Self, ManifestError> {
+        let table: toml::Table = match text.parse() {
+            Ok(t) => t,
+            Err(e) => return fail(format!("not TOML: {e}")),
+        };
+        let Some(pack) = table.get("pack").and_then(toml::Value::as_table) else {
+            return fail("no [pack] table");
+        };
+        match pack.get("format").and_then(toml::Value::as_integer) {
+            Some(FORMAT) => {}
+            Some(f) => return fail(format!("format {f}, and this client reads format {FORMAT}")),
+            None => return fail("the [pack] table names no format"),
+        }
+        let name = pack
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let empty = Vec::new();
+        let listed = match table.get("model") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`model` is not a list of [[model]] tables"),
+        };
+        // Each entry is checked against the earlier entries of its own id, found through these.
+        let mut model_at: HashMap<DataId, Vec<usize>> = HashMap::new();
+        let mut models: Vec<ManifestModel> = Vec::with_capacity(listed.len());
+        for (i, m) in listed.iter().enumerate() {
+            let Some(m) = m.as_table() else {
+                return fail(format!("model {} is not a table", i + 1));
+            };
+            let model = model(m).map_err(|e| ManifestError(format!("model {}: {}", i + 1, e.0)))?;
+            let same = model_at.entry(model.id).or_default();
+            if same.iter().any(|&k| {
+                let o = &models[k];
+                o.fingerprint.is_none() || o.fingerprint == model.fingerprint
+            }) {
+                return fail(format!("{:#010X} is listed twice", model.id.0));
+            }
+            same.push(models.len());
+            models.push(model);
+        }
+        let mut ground_at: HashMap<(bool, Ground), Vec<usize>> = HashMap::new();
+        let mut grounds: Vec<ManifestGround> = Vec::new();
+        for (kind, steep) in [("terrain", false), ("steep", true)] {
+            let listed = match table.get(kind) {
+                None => &empty,
+                Some(toml::Value::Array(a)) => a,
+                Some(_) => return fail(format!("`{kind}` is not a list of [[{kind}]] tables")),
+            };
+            for (i, g) in listed.iter().enumerate() {
+                let Some(g) = g.as_table() else {
+                    return fail(format!("{kind} {} is not a table", i + 1));
+                };
+                let mut ground =
+                    ground(g).map_err(|e| ManifestError(format!("{kind} {}: {}", i + 1, e.0)))?;
+                ground.steep = steep;
+                if steep && g.contains_key("pebbles") {
+                    return fail(format!(
+                        "{kind} {}: pebbles is named on the [[terrain]] material of its grounds",
+                        i + 1
+                    ));
+                }
+                for k in &ground.grounds {
+                    let same = ground_at.get(&(steep, *k)).map_or(&[][..], Vec::as_slice);
+                    if same.iter().any(|&j| {
+                        let o = &grounds[j];
+                        o.fingerprint.is_none() || o.fingerprint == ground.fingerprint
+                    }) {
+                        return fail(format!("{kind} {}: {k:?} has a material already", i + 1));
+                    }
+                }
+                for k in &ground.grounds {
+                    let same = ground_at.entry((steep, *k)).or_default();
+                    if same.last() != Some(&grounds.len()) {
+                        same.push(grounds.len());
+                    }
+                }
+                grounds.push(ground);
+            }
+        }
+        let listed = match table.get("material") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`material` is not a list of [[material]] tables"),
+        };
+        let mut material_at: HashMap<DataId, Vec<usize>> = HashMap::new();
+        let mut materials: Vec<ManifestMaterial> = Vec::with_capacity(listed.len());
+        for (i, m) in listed.iter().enumerate() {
+            let Some(m) = m.as_table() else {
+                return fail(format!("material {} is not a table", i + 1));
+            };
+            let material =
+                material(m).map_err(|e| ManifestError(format!("material {}: {}", i + 1, e.0)))?;
+            for (t, print) in material.textures.iter().zip(&material.fingerprints) {
+                let same = material_at.get(t).map_or(&[][..], Vec::as_slice);
+                if same.iter().map(|&j| &materials[j]).any(|o| {
+                    let apart = !o.palettes.is_empty()
+                        && !material.palettes.is_empty()
+                        && !o.palettes.iter().any(|p| material.palettes.contains(p));
+                    !apart
+                        && o.textures
+                            .iter()
+                            .zip(&o.fingerprints)
+                            .any(|(u, p)| u == t && (p.is_none() || p == print))
+                }) {
+                    return fail(format!(
+                        "material {}: {:#010X} has a material already",
+                        i + 1,
+                        t.0
+                    ));
+                }
+            }
+            for t in &material.textures {
+                let same = material_at.entry(*t).or_default();
+                if same.last() != Some(&materials.len()) {
+                    same.push(materials.len());
+                }
+            }
+            materials.push(material);
+        }
+        let listed = match table.get("ground_cover") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`ground_cover` is not a list of [[ground_cover]] tables"),
+        };
+        let mut ground_cover: Vec<ManifestGroundCover> = Vec::with_capacity(listed.len());
+        for (i, c) in listed.iter().enumerate() {
+            let Some(c) = c.as_table() else {
+                return fail(format!("ground cover {} is not a table", i + 1));
+            };
+            let id = DataId(GROUND_COVER_IDS + u32::try_from(i).unwrap_or(u32::MAX >> 2));
+            let (kind, model) = kind_of_cover(c, id)
+                .map_err(|e| ManifestError(format!("ground cover {}: {}", i + 1, e.0)))?;
+            ground_cover.push(kind);
+            models.push(model);
+        }
+        let listed = match table.get("cover") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`cover` is not a list of [[cover]] tables"),
+        };
+        for (i, c) in listed.iter().enumerate() {
+            let Some(c) = c.as_table() else {
+                return fail(format!("cover {} is not a table", i + 1));
+            };
+            let n = ground_cover.len();
+            let id = DataId(GROUND_COVER_IDS + u32::try_from(n).unwrap_or(u32::MAX >> 2));
+            let (kind, model) = cover_as_ground_cover(c)
+                .and_then(|c| kind_of_cover(&c, id))
+                .map_err(|e| ManifestError(format!("cover {}: {}", i + 1, e.0)))?;
+            ground_cover.push(kind);
+            models.push(model);
+        }
+        let listed = match table.get("light") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`light` is not a list of [[light]] tables"),
+        };
+        let mut light_at: HashMap<DataId, Vec<usize>> = HashMap::new();
+        let mut lights: Vec<ManifestLight> = Vec::with_capacity(listed.len());
+        for (i, l) in listed.iter().enumerate() {
+            let Some(l) = l.as_table() else {
+                return fail(format!("light {} is not a table", i + 1));
+            };
+            let light = light(l).map_err(|e| ManifestError(format!("light {}: {}", i + 1, e.0)))?;
+            let same = light_at.entry(light.object).or_default();
+            if same.iter().map(|&j| &lights[j]).any(|o| {
+                o.place.takes(true) && light.place.takes(true)
+                    || o.place.takes(false) && light.place.takes(false)
+            }) {
+                return fail(format!(
+                    "light {}: {:#010X} has a light there already",
+                    i + 1,
+                    light.object.0
+                ));
+            }
+            same.push(lights.len());
+            lights.push(light);
+        }
+        let listed = match table.get("moon") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`moon` is not a list of [[moon]] tables"),
+        };
+        let mut moon_ids: HashSet<DataId> = HashSet::new();
+        let mut moons: Vec<ManifestMoon> = Vec::with_capacity(listed.len());
+        for (i, m) in listed.iter().enumerate() {
+            let Some(m) = m.as_table() else {
+                return fail(format!("moon {} is not a table", i + 1));
+            };
+            let moon = moon(m).map_err(|e| ManifestError(format!("moon {}: {}", i + 1, e.0)))?;
+            if !moon_ids.insert(moon.object) {
+                return fail(format!(
+                    "moon {}: {:#010X} is listed twice",
+                    i + 1,
+                    moon.object.0
+                ));
+            }
+            moons.push(moon);
+        }
+        let listed = match table.get("skin") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`skin` is not a list of [[skin]] tables"),
+        };
+        let mut skins: Vec<ManifestSkin> = Vec::with_capacity(listed.len());
+        for (i, k) in listed.iter().enumerate() {
+            let Some(k) = k.as_table() else {
+                return fail(format!("skin {} is not a table", i + 1));
+            };
+            let one = skin(k).map_err(|e| ManifestError(format!("skin {}: {}", i + 1, e.0)))?;
+            if skins.iter().any(|o| {
+                o.setup == one.setup
+                    && o.palettes.is_empty()
+                    && one.palettes.is_empty()
+                    && o.fingerprint == one.fingerprint
+            }) {
+                return fail(format!(
+                    "skin {}: {:#010X} has a skin already",
+                    i + 1,
+                    one.setup.0
+                ));
+            }
+            skins.push(one);
+        }
+        let (keep, keep_launchers) = match table.get("keep") {
+            None => (Vec::new(), false),
+            Some(toml::Value::Table(k)) => keep(k)?,
+            Some(_) => return fail("`keep` is not a [keep] table"),
+        };
+        Ok(Self {
+            name,
+            models,
+            grounds,
+            materials,
+            ground_cover,
+            lights,
+            moons,
+            skins,
+            keep,
+            keep_launchers,
+        })
+    }
+
+    /// The body drawn for an object built on `setup`, whose record's fingerprint is `record`,
+    /// and whose look lays `palettes`: of the setup's bodies drawn on the record, those naming a
+    /// fingerprint first, and in each the first naming one of the palettes, else one naming none.
+    #[must_use]
+    pub fn skin_for(
+        &self,
+        setup: DataId,
+        record: Option<&Fingerprint>,
+        palettes: &[DataId],
+    ) -> Option<&ManifestSkin> {
+        let drawn = |k: &&ManifestSkin| {
+            k.setup == setup && k.draws_on.draws(k.fingerprint.as_ref(), record)
+        };
+        [true, false].into_iter().find_map(|printed| {
+            let mut rows = self
+                .skins
+                .iter()
+                .filter(drawn)
+                .filter(move |k| k.fingerprint.is_some() == printed);
+            rows.clone()
+                .find(|k| k.palettes.iter().any(|p| palettes.contains(p)))
+                .or_else(|| rows.find(|k| k.palettes.is_empty()))
+        })
+    }
+
+    /// The light the pack gives `object` standing outdoors (`outdoors`) or in a room, if any.
+    #[must_use]
+    pub fn light(&self, object: DataId, outdoors: bool) -> Option<&ManifestLight> {
+        self.lights
+            .iter()
+            .find(|l| l.object == object && l.place.takes(outdoors))
+    }
+
+    /// The material drawn in place of the retail picture `texture`, if the pack has one.
+    #[must_use]
+    pub fn material(&self, texture: DataId) -> Option<&ManifestMaterial> {
+        self.materials
+            .iter()
+            .find(|m| m.textures.contains(&texture))
+    }
+
+    /// The material drawn for `ground`, if the pack has one.
+    #[must_use]
+    pub fn ground(&self, ground: Ground) -> Option<&ManifestGround> {
+        self.grounds
+            .iter()
+            .find(|g| !g.steep && g.grounds.contains(&ground))
+    }
+
+    /// The material laid on `ground`'s steep slopes, if the pack has one.
+    #[must_use]
+    pub fn steep_ground(&self, ground: Ground) -> Option<&ManifestGround> {
+        self.grounds
+            .iter()
+            .find(|g| g.steep && g.grounds.contains(&ground))
+    }
+
+    /// The model drawn in place of `id`, if the pack has one.
+    #[must_use]
+    pub fn model(&self, id: DataId) -> Option<&ManifestModel> {
+        self.models.iter().find(|m| m.id == id)
+    }
+}
+
+/// The id in `raw`: `0x` and eight hex digits, of a setup or a graphics object.
+fn object_id(raw: &str) -> Result<DataId, ManifestError> {
+    let digits = raw
+        .trim()
+        .strip_prefix("0x")
+        .or_else(|| raw.trim().strip_prefix("0X"));
+    let Some(id) = digits.and_then(|d| u32::from_str_radix(d, 16).ok()) else {
+        return fail(format!("id {raw:?} is not 0x and hex digits"));
+    };
+    match id >> 24 {
+        0x01 | 0x02 => Ok(DataId(id)),
+        _ => fail(format!(
+            "id {id:#010X} is neither a setup (0x02...) nor a graphics object (0x01...)"
+        )),
+    }
+}
+
+/// Whether `path` names a file inside the pack: relative, `/` between its parts, and no part
+/// empty, `.` or `..`.
+fn inside_the_pack(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn text<'t>(t: &'t toml::Table, key: &str) -> Result<&'t str, ManifestError> {
+    match t.get(key).and_then(toml::Value::as_str).map(str::trim) {
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => fail(format!("no {key}")),
+    }
+}
+
+/// The grounds `v` names: a terrain type, `"road"`, or a list of them.
+fn grounds_of(v: Option<&toml::Value>) -> Result<Vec<Ground>, ManifestError> {
+    let one = |v: &toml::Value| -> Result<Ground, ManifestError> {
+        match v {
+            toml::Value::Integer(t) => match u8::try_from(*t) {
+                Ok(t) if t < 32 => Ok(Ground::Type(t)),
+                _ => fail(format!("ground {t} is not a terrain type from 0 to 31")),
+            },
+            toml::Value::String(s) if s.trim().eq_ignore_ascii_case("road") => Ok(Ground::Road),
+            other => fail(format!(
+                "ground {other} is neither a terrain type nor \"road\""
+            )),
+        }
+    };
+    let grounds = match v {
+        None => return fail("no ground"),
+        Some(toml::Value::Array(a)) => a.iter().map(one).collect::<Result<Vec<_>, _>>()?,
+        Some(v) => vec![one(v)?],
+    };
+    if grounds.is_empty() {
+        return fail("no ground");
+    }
+    Ok(grounds)
+}
+
+fn ground(t: &toml::Table) -> Result<ManifestGround, ManifestError> {
+    let grounds = grounds_of(t.get("ground"))?;
+    let picture = |key: &str| -> Result<Option<String>, ManifestError> {
+        match t.get(key) {
+            None => Ok(None),
+            Some(v) => match v.as_str().map(str::trim) {
+                Some(p) if inside_the_pack(p) => Ok(Some(p.to_owned())),
+                _ => fail(format!("{key} is not a path inside the pack")),
+            },
+        }
+    };
+    let Some(base_color) = picture("base_color")? else {
+        return fail("no base_color");
+    };
+    let number = |key: &str| -> Result<Option<f32>, ManifestError> {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        // Metres and strengths, well inside both types' range.
+        match t.get(key) {
+            None => Ok(None),
+            Some(toml::Value::Float(f)) => Ok(Some(*f as f32)),
+            Some(toml::Value::Integer(i)) => Ok(Some(*i as f32)),
+            Some(_) => fail(format!("{key} is not a number")),
+        }
+    };
+    let size = match number("size")? {
+        Some(s) if s.is_finite() && s > 0.0 => s,
+        Some(s) => return fail(format!("size {s} is not a positive number")),
+        None => return fail("no size"),
+    };
+    let normal_scale = match number("normal_scale")? {
+        Some(s) if s.is_finite() && s >= 0.0 => s,
+        Some(s) => return fail(format!("normal_scale {s} is not a number from 0")),
+        None => 1.0,
+    };
+    let detail_size = match number("detail_size")? {
+        Some(s) if s.is_finite() && s > 0.0 => s,
+        Some(s) => return fail(format!("detail_size {s} is not a positive number")),
+        None => 1.0,
+    };
+    let detail_strength = match number("detail_strength")? {
+        Some(s) if s.is_finite() && s >= 0.0 => s,
+        Some(s) => return fail(format!("detail_strength {s} is not a number from 0")),
+        None => 1.0,
+    };
+    Ok(ManifestGround {
+        grounds,
+        base_color,
+        normal: picture("normal")?,
+        height: picture("height")?,
+        roughness: picture("roughness")?,
+        occlusion: picture("occlusion")?,
+        size,
+        normal_scale,
+        steep: false,
+        fingerprint: fingerprints_of(t.get("fingerprint"), 1)?.remove(0),
+        detail: picture("detail")?,
+        detail_size,
+        detail_strength,
+        pebbles: flag(t, "pebbles", true)?,
+        credit: Credit {
+            author: text(t, "author")?.to_owned(),
+            tool: text(t, "tool")?.to_owned(),
+            license: text(t, "license")?.to_owned(),
+        },
+    })
+}
+
+/// The retail pictures `v` names: a texture record id (`0x05...`), or a list of them.
+fn textures_of(v: Option<&toml::Value>) -> Result<Vec<DataId>, ManifestError> {
+    let one = |v: &toml::Value| -> Result<DataId, ManifestError> {
+        let Some(raw) = v.as_str() else {
+            return fail(format!("texture {v} is not 0x and hex digits"));
+        };
+        let digits = raw
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| raw.trim().strip_prefix("0X"));
+        match digits.and_then(|d| u32::from_str_radix(d, 16).ok()) {
+            Some(id) if id >> 24 == 0x05 => Ok(DataId(id)),
+            Some(id) => fail(format!(
+                "texture {id:#010X} is not a texture record (0x05...)"
+            )),
+            None => fail(format!("texture {raw:?} is not 0x and hex digits")),
+        }
+    };
+    let textures = match v {
+        None => return fail("no texture"),
+        Some(toml::Value::Array(a)) => a.iter().map(one).collect::<Result<Vec<_>, _>>()?,
+        Some(v) => vec![one(v)?],
+    };
+    if textures.is_empty() {
+        return fail("no texture");
+    }
+    Ok(textures)
+}
+
+/// The fingerprints `v` names for `count` records: one text, or a list of one for each.
+fn fingerprints_of(
+    v: Option<&toml::Value>,
+    count: usize,
+) -> Result<Vec<Option<Fingerprint>>, ManifestError> {
+    let one = |v: &toml::Value| -> Result<Fingerprint, ManifestError> {
+        v.as_str()
+            .and_then(Fingerprint::parse)
+            .map_or_else(|| fail(format!("fingerprint {v} is not one")), Ok)
+    };
+    match v {
+        None => Ok(vec![None; count]),
+        Some(toml::Value::Array(a)) if a.len() == count => {
+            a.iter().map(|v| one(v).map(Some)).collect()
+        }
+        Some(toml::Value::Array(_)) => fail(format!("fingerprint does not name {count}")),
+        Some(v) if count == 1 => Ok(vec![Some(one(v)?)]),
+        Some(_) => fail(format!("fingerprint does not name {count}")),
+    }
+}
+
+/// The palettes `v` names: palette records (`0x04...`), one or a list.
+fn palettes_of(v: Option<&toml::Value>) -> Result<Vec<DataId>, ManifestError> {
+    let one = |v: &toml::Value| -> Result<DataId, ManifestError> {
+        let id = v
+            .as_str()
+            .and_then(|s| s.trim().strip_prefix("0x"))
+            .and_then(|d| u32::from_str_radix(d, 16).ok());
+        match id {
+            Some(id) if id >> 24 == 0x04 => Ok(DataId(id)),
+            _ => fail(format!("palette {v} is not a palette record (0x04...)")),
+        }
+    };
+    match v {
+        None => Ok(Vec::new()),
+        Some(toml::Value::Array(a)) => a.iter().map(one).collect(),
+        Some(v) => Ok(vec![one(v)?]),
+    }
+}
+
+/// The records an entry is drawn on, as its `draws_on` says.
+fn draws_on(t: &toml::Table) -> Result<DrawsOn, ManifestError> {
+    match t.get("draws_on").map(|v| v.as_str()) {
+        None | Some(Some("matching")) => Ok(DrawsOn::Matching),
+        Some(Some("any")) => Ok(DrawsOn::Any),
+        Some(Some("none")) => Ok(DrawsOn::Nothing),
+        Some(_) => fail("draws_on is not matching, any or none"),
+    }
+}
+
+fn material(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
+    let textures = textures_of(t.get("texture"))?;
+    let picture = |key: &str| -> Result<Option<String>, ManifestError> {
+        match t.get(key) {
+            None => Ok(None),
+            Some(v) => match v.as_str().map(str::trim) {
+                Some(p) if inside_the_pack(p) => Ok(Some(p.to_owned())),
+                _ => fail(format!("{key} is not a path inside the pack")),
+            },
+        }
+    };
+    let Some(base_color) = picture("base_color")? else {
+        return fail("no base_color");
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A strength, well inside both types' range.
+    let normal_scale = match t.get("normal_scale") {
+        None => 1.0,
+        Some(toml::Value::Float(f)) if f.is_finite() && *f >= 0.0 => *f as f32,
+        Some(toml::Value::Integer(i)) if *i >= 0 => *i as f32,
+        Some(v) => return fail(format!("normal_scale {v} is not a number from 0")),
+    };
+    let flag = |key: &str| match t.get(key) {
+        None => Ok(false),
+        Some(toml::Value::Boolean(b)) => Ok(*b),
+        Some(v) => fail(format!("{key} {v} is not true or false")),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A share, well inside both types' range.
+    let damp = match t.get("damp") {
+        None => 0.0,
+        Some(toml::Value::Float(f)) if (0.0..=1.0).contains(f) => *f as f32,
+        Some(toml::Value::Integer(i)) if (0..=1).contains(i) => *i as f32,
+        Some(v) => return fail(format!("damp {v} is not a number from 0 to 1")),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A share, well inside both types' range.
+    let sheen = match t.get("sheen") {
+        None => 0.0,
+        Some(toml::Value::Float(f)) if (0.0..=1.0).contains(f) => *f as f32,
+        Some(toml::Value::Integer(i)) if (0..=1).contains(i) => *i as f32,
+        Some(v) => return fail(format!("sheen {v} is not a number from 0 to 1")),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A count of repeats, well inside both types' range.
+    let part = |v: &toml::Value| {
+        match v {
+            toml::Value::Float(f) if *f > 0.0 => Some(*f as f32),
+            toml::Value::Integer(i) if *i > 0 => Some(*i as f32),
+            _ => None,
+        }
+        // Finite once narrowed: a manifest's 1e300 is an `f32` infinity.
+        .filter(|f| f.is_finite())
+    };
+    let grit_repeat = match t.get("grit_repeat") {
+        None => [1.0, 1.0],
+        Some(toml::Value::Array(a)) if a.len() == 2 => match (part(&a[0]), part(&a[1])) {
+            (Some(u), Some(v)) => [u, v],
+            _ => return fail("grit_repeat is not two numbers above 0"),
+        },
+        Some(_) => return fail("grit_repeat is not two numbers above 0"),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A share or an index, well inside both types' range.
+    let number = |key: &str, lo: f64, hi: f64| match t.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Float(f)) if (lo..=hi).contains(f) => Ok(Some(*f as f32)),
+        Some(toml::Value::Integer(i)) if (lo..=hi).contains(&(*i as f64)) => Ok(Some(*i as f32)),
+        Some(v) => fail(format!("{key} {v} is not a number from {lo} to {hi}")),
+    };
+    let fingerprints = fingerprints_of(t.get("fingerprint"), textures.len())?;
+    let draws_on = draws_on(t)?;
+    let palettes = palettes_of(t.get("palettes"))?;
+    let matter = Matter {
+        metal: flag("metal")?.then_some(number("brighten", 0.1, 20.0)?.unwrap_or(1.0)),
+        gloss: number("gloss", 0.0, 1.0)?,
+        clear: number("clear", 0.0, 1.0)?,
+        refraction: number("refraction", 1.0, 3.0)?.unwrap_or(1.31),
+        wet: number("wet", 0.0, 1.0)?,
+    };
+    Ok(ManifestMaterial {
+        textures,
+        base_color,
+        normal: picture("normal")?,
+        roughness: picture("roughness")?,
+        occlusion: picture("occlusion")?,
+        height: picture("height")?,
+        normal_scale,
+        keep_retail_picture: flag("keep_retail_picture")?,
+        damp,
+        damp_map: picture("damp_map")?,
+        damp_floors: flag("damp_floors")?,
+        slime: flag("slime")?,
+        ice: flag("ice")?,
+        sheen,
+        grit: picture("grit")?,
+        grit_repeat,
+        matter,
+        fingerprints,
+        draws_on,
+        palettes,
+        credit: Credit {
+            author: text(t, "author")?.to_owned(),
+            tool: text(t, "tool")?.to_owned(),
+            license: text(t, "license")?.to_owned(),
+        },
+    })
+}
+
+/// A light a pack gives a retail object.
+fn light(t: &toml::Table) -> Result<ManifestLight, ManifestError> {
+    let object = object_id(t.get("object").and_then(toml::Value::as_str).unwrap_or(""))?;
+    let place = match t.get("where").map(|v| v.as_str()) {
+        None => LightPlace::Both,
+        Some(Some("outdoors")) => LightPlace::Outdoors,
+        Some(Some("indoors")) => LightPlace::Indoors,
+        Some(Some("both")) => LightPlace::Both,
+        Some(_) => return fail("where is not outdoors, indoors or both"),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // Metres, lumens and kelvin from a manifest, well inside both types' range.
+    let part = |v: &toml::Value| {
+        match v {
+            toml::Value::Float(f) => Some(*f as f32),
+            toml::Value::Integer(i) => Some(*i as f32),
+            _ => None,
+        }
+        // Finite once narrowed: a manifest's 1e300 is an `f32` infinity.
+        .filter(|f| f.is_finite())
+    };
+    let offset = match t.get("offset") {
+        None => [0.0; 3],
+        Some(toml::Value::Array(a)) if a.len() == 3 => {
+            match (part(&a[0]), part(&a[1]), part(&a[2])) {
+                (Some(x), Some(y), Some(z)) => [x, y, z],
+                _ => return fail("offset is not three numbers"),
+            }
+        }
+        Some(_) => return fail("offset is not three numbers"),
+    };
+    let within = |key: &str, lo: f32, hi: f32, otherwise: Option<f32>| match t.get(key) {
+        None => otherwise.map_or_else(|| fail(format!("no {key}")), Ok),
+        Some(v) => match part(v) {
+            Some(v) if (lo..=hi).contains(&v) => Ok(v),
+            Some(v) => fail(format!("{key} {v} is not from {lo} to {hi}")),
+            None => fail(format!("{key} is not a number")),
+        },
+    };
+    let shadows = match t.get("shadows") {
+        None => true,
+        Some(v) => match v.as_bool() {
+            Some(b) => b,
+            None => return fail("shadows is not true or false"),
+        },
+    };
+    let flicker = match t.get("flicker").map(|v| v.as_str()) {
+        None | Some(Some("steady")) => LightFlicker::Steady,
+        Some(Some("flame")) => LightFlicker::Flame,
+        Some(Some("embers")) => LightFlicker::Embers,
+        Some(_) => return fail("flicker is not flame, embers or steady"),
+    };
+    Ok(ManifestLight {
+        object,
+        place,
+        offset,
+        kelvin: within("kelvin", 1000.0, 12000.0, None)?,
+        brightness: within("brightness", 0.1, 100_000.0, None)?,
+        size: within("size", 0.0, 2.0, Some(0.1))?,
+        reach: within("reach", 0.5, 60.0, None)?,
+        shadows,
+        flicker,
+        haze: within("haze", 0.0, 4.0, Some(0.0))?,
+        presence: within("presence", 0.0, 1.0, Some(0.0))?,
+        gather: within("gather", 0.0, 30.0, Some(0.0))?,
+        credit: Credit {
+            author: text(t, "author")?.to_owned(),
+            tool: text(t, "tool")?.to_owned(),
+            license: text(t, "license")?.to_owned(),
+        },
+    })
+}
+
+/// A retail moon a pack draws again.
+fn moon(t: &toml::Table) -> Result<ManifestMoon, ManifestError> {
+    let object = object_id(t.get("object").and_then(toml::Value::as_str).unwrap_or(""))?;
+    if object.0 >> 24 != 0x01 {
+        return fail(format!("{:#010X} is not a graphics object", object.0));
+    }
+    let picture = |key: &str| -> Result<Option<String>, ManifestError> {
+        match t.get(key) {
+            None => Ok(None),
+            Some(v) => match v.as_str().map(str::trim) {
+                Some(p) if inside_the_pack(p) => Ok(Some(p.to_owned())),
+                _ => fail(format!("{key} is not a path inside the pack")),
+            },
+        }
+    };
+    let Some(surface) = picture("surface")? else {
+        return fail("no surface");
+    };
+    Ok(ManifestMoon {
+        object,
+        surface,
+        lights: picture("lights")?,
+        clouds: picture("clouds")?,
+        credit: Credit {
+            author: text(t, "author")?.to_owned(),
+            tool: text(t, "tool")?.to_owned(),
+            license: text(t, "license")?.to_owned(),
+        },
+    })
+}
+
+/// A `[[skin]]` table.
+fn skin(t: &toml::Table) -> Result<ManifestSkin, ManifestError> {
+    let setup = object_id(t.get("setup").and_then(toml::Value::as_str).unwrap_or(""))?;
+    if setup.0 >> 24 != 0x02 {
+        return fail(format!("{:#010X} is not a setup (0x02...)", setup.0));
+    }
+    let file = text(t, "file")?;
+    if !inside_the_pack(file) {
+        return fail(format!("file {file:?} is not a path inside the pack"));
+    }
+    let hex = |v: &str| {
+        let d = v.trim().strip_prefix("0x")?;
+        u32::from_str_radix(d, 16).ok()
+    };
+    let palettes = match t.get("palettes") {
+        None => Vec::new(),
+        Some(toml::Value::Array(a)) => {
+            let mut out = Vec::with_capacity(a.len());
+            for v in a {
+                match v.as_str().and_then(hex) {
+                    Some(id) if id >> 24 == 0x04 => out.push(DataId(id)),
+                    _ => return fail(format!("palette {v} is not a palette (0x04...)")),
+                }
+            }
+            out
+        }
+        Some(_) => return fail("`palettes` is not a list of palette ids"),
+    };
+    let (mut clips, mut by_animation) = (Vec::new(), Vec::new());
+    match t.get("clips") {
+        None => {}
+        Some(toml::Value::Table(c)) => {
+            for (k, v) in c {
+                let Some(name) = v.as_str() else {
+                    return fail(format!("clip {k} = {v} is not an animation's name"));
+                };
+                if k.trim().starts_with("0x") {
+                    match hex(k) {
+                        Some(id) if id >> 24 == 0x03 => {
+                            by_animation.push((DataId(id), name.to_owned()));
+                        }
+                        _ => return fail(format!("{k} is not an animation (0x03...)")),
+                    }
+                } else if CLIP_SLOTS.contains(&k.as_str()) {
+                    clips.push((k.clone(), name.to_owned()));
+                } else {
+                    return fail(format!("clip {k} is not a slot"));
+                }
+            }
+        }
+        Some(_) => return fail("`clips` is not a table of slots and animation names"),
+    }
+    Ok(ManifestSkin {
+        setup,
+        file: file.to_owned(),
+        palettes,
+        clips,
+        by_animation,
+        fingerprint: fingerprints_of(t.get("fingerprint"), 1)?.remove(0),
+        draws_on: draws_on(t)?,
+        credit: Credit {
+            author: text(t, "author")?.to_owned(),
+            tool: text(t, "tool")?.to_owned(),
+            license: text(t, "license")?.to_owned(),
+        },
+    })
+}
+
+/// The `[keep]` table: the weenies listed, and whether launchers' holders keep their parts.
+fn keep(t: &toml::Table) -> Result<(Vec<u32>, bool), ManifestError> {
+    let launchers = match t.get("launchers") {
+        None => false,
+        Some(toml::Value::Boolean(b)) => *b,
+        Some(_) => return fail("keep: `launchers` is not true or false"),
+    };
+    let weenies = match t.get("weenies") {
+        None => Vec::new(),
+        Some(toml::Value::Array(a)) => {
+            let mut out = Vec::with_capacity(a.len());
+            for v in a {
+                match v.as_integer().and_then(|i| u32::try_from(i).ok()) {
+                    Some(id) if id > 0 => out.push(id),
+                    _ => return fail(format!("keep: {v} is not a weenie's class id")),
+                }
+            }
+            out
+        }
+        Some(_) => return fail("keep: `weenies` is not a list of class ids"),
+    };
+    Ok((weenies, launchers))
+}
+
+/// The number at `key`, whole or not.
+fn number(t: &toml::Table, key: &str) -> Result<Option<f32>, ManifestError> {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // A small number from a manifest, well inside both types' range.
+    match t.get(key) {
+        None => Ok(None),
+        Some(toml::Value::Float(f)) => Ok(Some(*f as f32)),
+        Some(toml::Value::Integer(i)) => Ok(Some(*i as f32)),
+        Some(_) => fail(format!("{key} is not a number")),
+    }
+}
+
+/// One kind of ground cover and its model, known by `id`.
+fn kind_of_cover(
+    t: &toml::Table,
+    id: DataId,
+) -> Result<(ManifestGroundCover, ManifestModel), ManifestError> {
+    let grounds = grounds_of(t.get("ground"))?
+        .into_iter()
+        .map(|g| match g {
+            Ground::Type(t) => Ok(t),
+            Ground::Road => fail("nothing grows on the road"),
+        })
+        .collect::<Result<Vec<u8>, ManifestError>>()?;
+    let Some(density) = number(t, "density")? else {
+        return fail("no density");
+    };
+    if !(density > 0.0 && density <= 16.0) {
+        return fail(format!("density {density} is not above 0 and at most 16"));
+    }
+    let scale = match t.get("scale") {
+        None => (1.0, 1.0),
+        Some(toml::Value::Array(a)) => {
+            let at = |k: usize| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+                // A small number from a manifest, well inside both types' range.
+                a.get(k).and_then(|v| {
+                    v.as_float()
+                        .map(|f| f as f32)
+                        .or_else(|| v.as_integer().map(|i| i as f32))
+                })
+            };
+            match (a.len(), at(0), at(1)) {
+                (2, Some(lo), Some(hi)) => (lo, hi),
+                _ => return fail("scale is not two numbers"),
+            }
+        }
+        Some(_) => match number(t, "scale")? {
+            Some(s) => (s, s),
+            None => return fail("scale is not a number"),
+        },
+    };
+    if !(scale.0 > 0.0 && scale.0 <= scale.1 && scale.1.is_finite()) {
+        return fail(format!("scale {scale:?} does not grow from above 0"));
+    }
+    let steepest = number(t, "steepest")?.unwrap_or(40.0);
+    if !(steepest > 0.0 && steepest <= 90.0) {
+        return fail(format!("steepest {steepest} is not above 0 and at most 90"));
+    }
+    let foliage = flag(t, "foliage", true)?;
+    let model = model_known_as(t, id, foliage)?;
+    if model.lods.iter().any(|l| l.views.is_some()) {
+        return fail("a level is pictures of the model, which ground cover does not draw");
+    }
+    if model
+        .lods
+        .iter()
+        .rfind(|l| !l.shadows_only)
+        .is_none_or(|l| l.distance.is_none())
+    {
+        return fail("its last level names no distance, and it is drawn near the eye alone");
+    }
+    Ok((
+        ManifestGroundCover {
+            id,
+            grounds,
+            density,
+            scale,
+            steepest,
+        },
+        model,
+    ))
+}
+
+/// A Dereth `[[cover]]` table as a `[[ground_cover]]` one: its density from plants per 100 square
+/// metres to a square metre, and its `max_slope` (rise a metre across) to `steepest` (degrees).
+fn cover_as_ground_cover(t: &toml::Table) -> Result<toml::Table, ManifestError> {
+    if t.contains_key("id") {
+        return fail("a cover is no retail object's, and names no id");
+    }
+    if t.get("scale").is_some_and(|v| !v.is_array()) {
+        return fail("scale is not two positive numbers, the least first");
+    }
+    let mut out = t.clone();
+    // A cover names terrain types, not a retail record: these mean nothing on it.
+    for key in ["category", "fingerprint", "draws_on"] {
+        out.remove(key);
+    }
+    if let Some(d) = number(t, "density")? {
+        out.insert("density".into(), toml::Value::Float(f64::from(d) / 100.0));
+    }
+    let rise = number(t, "max_slope")?.unwrap_or(0.6);
+    if !(rise.is_finite() && rise >= 0.0) {
+        return fail(format!("max_slope {rise} is not a number from 0"));
+    }
+    out.remove("max_slope");
+    // Level ground alone, where it is 0.
+    let degrees = pyreal_primitives::num::math::atan(f64::from(rise)).to_degrees();
+    out.insert("steepest".into(), toml::Value::Float(degrees.max(0.01)));
+    out.insert(
+        "foliage".into(),
+        toml::Value::Boolean(flag(t, "foliage", false)?),
+    );
+    Ok(out)
+}
+
+/// The true or false at `key`, `otherwise` where there is none.
+fn flag(t: &toml::Table, key: &str, otherwise: bool) -> Result<bool, ManifestError> {
+    match t.get(key) {
+        None => Ok(otherwise),
+        Some(v) => match v.as_bool() {
+            Some(b) => Ok(b),
+            None => fail(format!("{key} is not true or false")),
+        },
+    }
+}
+
+fn model(t: &toml::Table) -> Result<ManifestModel, ManifestError> {
+    let id = object_id(t.get("id").and_then(toml::Value::as_str).unwrap_or(""))?;
+    let foliage = flag(t, "foliage", false)?;
+    model_known_as(t, id, foliage)
+}
+
+/// The model a table describes, its levels and its credit, known by `id`.
+fn model_known_as(
+    t: &toml::Table,
+    id: DataId,
+    foliage: bool,
+) -> Result<ManifestModel, ManifestError> {
+    let credit = Credit {
+        author: text(t, "author")?.to_owned(),
+        tool: text(t, "tool")?.to_owned(),
+        license: text(t, "license")?.to_owned(),
+    };
+    let Some(levels) = t.get("lod").and_then(toml::Value::as_array) else {
+        return fail("no [[model.lod]] level of detail");
+    };
+    if levels.is_empty() {
+        return fail("no [[model.lod]] level of detail");
+    }
+    let mut lods: Vec<ManifestLod> = Vec::with_capacity(levels.len());
+    for (k, l) in levels.iter().enumerate() {
+        let Some(l) = l.as_table() else {
+            return fail(format!("level {k} is not a table"));
+        };
+        let file = text(l, "file")?;
+        if !inside_the_pack(file) {
+            return fail(format!(
+                "level {k}'s file {file:?} is not a path inside the pack"
+            ));
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        // A distance in metres, well inside both types' range.
+        let distance = match l.get("distance") {
+            None => None,
+            Some(toml::Value::Float(f)) => Some(*f as f32),
+            Some(toml::Value::Integer(i)) => Some(*i as f32),
+            Some(_) => return fail(format!("level {k}'s distance is not a number")),
+        };
+        let shadows_only = match l.get("shadows_only") {
+            None => false,
+            Some(v) => match v.as_bool() {
+                Some(b) => b,
+                None => return fail(format!("level {k}'s shadows_only is not true or false")),
+            },
+        };
+        if shadows_only && (k == 0 || k + 1 == levels.len()) {
+            return fail(format!(
+                "level {k} is for the shadows only, and the first and the last level are drawn"
+            ));
+        }
+        // A level for the shadows alone has no distance of its own in the view.
+        let distance = distance.filter(|_| !shadows_only);
+        if let Some(d) = distance {
+            if !(d.is_finite() && d > 0.0) {
+                return fail(format!("level {k}'s distance {d} is not a positive number"));
+            }
+            if let Some(before) = lods
+                .iter()
+                .rev()
+                .find(|p| !p.shadows_only)
+                .and_then(|p| p.distance)
+            {
+                if d <= before {
+                    return fail(format!(
+                        "level {k}'s distance {d} does not reach past the level before it"
+                    ));
+                }
+            }
+        }
+        if !shadows_only
+            && lods
+                .iter()
+                .rev()
+                .find(|p| !p.shadows_only)
+                .is_some_and(|p| p.distance.is_none())
+        {
+            return fail(format!(
+                "a level before level {k} names no distance, and only the last level may leave \
+                 it out"
+            ));
+        }
+        let count = |key: &str| -> Result<Option<u32>, ManifestError> {
+            match l.get(key) {
+                None => Ok(None),
+                Some(v) => match v.as_integer().and_then(|n| u32::try_from(n).ok()) {
+                    Some(n) if n >= 1 => Ok(Some(n)),
+                    _ => fail(format!("level {k}'s {key} is not a whole number from 1")),
+                },
+            }
+        };
+        let views = match (count("views")?, count("columns")?) {
+            (None, None) => None,
+            (None, Some(_)) => return fail(format!("level {k} names columns and no views")),
+            (Some(count), columns) => {
+                if count < 2 {
+                    return fail(format!("level {k} names fewer than two views"));
+                }
+                Some(Views {
+                    count,
+                    columns: columns.unwrap_or(count).min(count),
+                })
+            }
+        };
+        lods.push(ManifestLod {
+            file: file.to_owned(),
+            distance,
+            views,
+            shadows_only,
+        });
+    }
+    let wind = number(t, "wind")?.unwrap_or(if foliage { 1.0 } else { 0.0 });
+    if !(0.0..=2.0).contains(&wind) {
+        return fail(format!("wind {wind} is not from 0 to 2"));
+    }
+    Ok(ManifestModel {
+        id,
+        lods,
+        foliage,
+        wind,
+        fingerprint: fingerprints_of(t.get("fingerprint"), 1)?.remove(0),
+        draws_on: draws_on(t)?,
+        credit,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PILOT: &str = r#"
+[pack]
+name = "Pilot"
+format = 1
+
+[[model]]
+id = "0x02000258"
+foliage = true
+author = "Someone"
+tool = "A generator"
+license = "CC0-1.0"
+
+[[model.lod]]
+file = "tree/lod0.gltf"
+distance = 40.0
+
+[[model.lod]]
+file = "tree/lod1.gltf"
+distance = 120
+
+[[model.lod]]
+file = "tree/lod2.gltf"
+
+[[model]]
+id = "0x01000A7E"
+author = "Someone"
+tool = "A generator"
+license = "CC0-1.0"
+
+[[model.lod]]
+file = "rock.gltf"
+"#;
+
+    const COVER: &str = r#"
+[pack]
+name = "Meadow"
+format = 1
+
+[[model]]
+id = "0x02000258"
+author = "Someone"
+tool = "A generator"
+license = "CC0-1.0"
+
+[[model.lod]]
+file = "tree.gltf"
+
+[[ground_cover]]
+ground = [1, 9]
+density = 0.5
+scale = [0.8, 1.3]
+steepest = 30
+author = "Someone"
+tool = "A generator"
+license = "CC0-1.0"
+
+[[ground_cover.lod]]
+file = "grass/lod0.gltf"
+distance = 30.0
+
+[[ground_cover.lod]]
+file = "grass/lod1.gltf"
+distance = 70.0
+
+[[ground_cover]]
+ground = 3
+density = 1
+author = "Someone"
+tool = "A generator"
+license = "CC0-1.0"
+
+[[ground_cover.lod]]
+file = "fern.gltf"
+distance = 40.0
+"#;
+
+    #[test]
+    fn ground_cover_lists_its_kinds_and_each_kinds_model_follows_the_models_for_retail_objects() {
+        let m = ArtPackManifest::parse(COVER).expect("reads");
+        assert_eq!(m.ground_cover.len(), 2);
+        let grass = &m.ground_cover[0];
+        assert_eq!(grass.id, DataId(GROUND_COVER_IDS));
+        assert_eq!(grass.grounds, [1, 9]);
+        assert_eq!(grass.density, 0.5);
+        assert_eq!(grass.scale, (0.8, 1.3));
+        assert_eq!(grass.steepest, 30.0);
+        let fern = &m.ground_cover[1];
+        assert_eq!(fern.id, DataId(GROUND_COVER_IDS + 1));
+        assert_eq!(fern.grounds, [3]);
+        assert_eq!(fern.scale, (1.0, 1.0), "no scale named");
+        assert_eq!(fern.steepest, 40.0, "no slope named");
+        assert_eq!(m.models.len(), 3);
+        assert_eq!(m.models[0].id, DataId(0x0200_0258));
+        assert_eq!(m.models[1].id, grass.id);
+        assert_eq!(m.models[2].id, fern.id);
+        assert!(
+            !m.models[0].foliage,
+            "a model's foliage is off unless named"
+        );
+        assert!(m.models[1].foliage, "a plant's is on unless named");
+        assert_eq!(m.models[1].lods[1].distance, Some(70.0));
+    }
+
+    #[test]
+    fn a_model_is_moved_by_the_wind_as_it_asks_and_growth_is_moved_unless_it_says_otherwise() {
+        let m = ArtPackManifest::parse(COVER).expect("reads");
+        assert_eq!(m.models[0].wind, 0.0, "not growth");
+        assert_eq!(m.models[1].wind, 1.0, "growth");
+        let still = COVER.replacen("id = \"0x02000258\"", "id = \"0x02000258\"\nwind = 0.5", 1);
+        assert_eq!(
+            ArtPackManifest::parse(&still).expect("reads").models[0].wind,
+            0.5
+        );
+        let wild = COVER.replacen("id = \"0x02000258\"", "id = \"0x02000258\"\nwind = 3", 1);
+        assert!(ArtPackManifest::parse(&wild).is_err());
+    }
+
+    #[test]
+    fn ground_cover_that_cannot_be_drawn_is_refused_and_says_why() {
+        for (from, to, why) in [
+            ("ground = [1, 9]", r#"ground = ["road"]"#, "road"),
+            ("ground = [1, 9]", "ground = [32]", "terrain type"),
+            ("density = 0.5", "density = 0", "density"),
+            ("density = 0.5", "density = 17", "density"),
+            (
+                "density = 0.5
+",
+                "",
+                "no density",
+            ),
+            ("scale = [0.8, 1.3]", "scale = [1.3, 0.8]", "scale"),
+            ("scale = [0.8, 1.3]", "scale = [1.3]", "scale"),
+            ("steepest = 30", "steepest = 91", "steepest"),
+            (
+                "distance = 70.0
+",
+                "",
+                "no distance",
+            ),
+            (
+                "distance = 70.0",
+                "distance = 70.0
+views = 8",
+                "pictures",
+            ),
+        ] {
+            let text = COVER.replacen(from, to, 1);
+            assert_ne!(text, COVER, "{from}");
+            let e = ArtPackManifest::parse(&text).expect_err(why);
+            assert!(
+                e.0.contains("ground cover 1") && e.0.contains(why),
+                "{why}: {e}"
+            );
+        }
+    }
+
+    /// A Dereth `[[cover]]` reads as ground cover in Pyreal's units, after the pack's own kinds.
+    #[test]
+    fn a_dereth_cover_table_reads_as_ground_cover_in_its_own_units() {
+        let text = format!(
+            "{COVER}
+[[cover]]
+ground = [5]
+density = 4.0
+max_slope = 1.0
+category = \"plant\"
+author = \"Someone\"
+tool = \"A generator\"
+license = \"CC0-1.0\"
+
+[[cover.lod]]
+file = \"cover/lupins.gltf\"
+distance = 40.0
+"
+        );
+        let m = ArtPackManifest::parse(&text).expect("reads");
+        assert_eq!(m.ground_cover.len(), 3);
+        let lupins = &m.ground_cover[2];
+        assert_eq!(lupins.id, DataId(GROUND_COVER_IDS + 2));
+        assert_eq!(lupins.grounds, [5]);
+        assert!((lupins.density - 0.04).abs() < 1e-6, "4 per 100 m2");
+        assert!(
+            (lupins.steepest - 45.0).abs() < 1e-3,
+            "a rise of 1 is 45 degrees"
+        );
+        assert_eq!(m.models.last().map(|m| m.id), Some(lupins.id));
+        let plain = text.replacen("max_slope = 1.0\n", "", 1);
+        let lupins = &ArtPackManifest::parse(&plain).expect("reads").ground_cover[2];
+        assert!(
+            (lupins.steepest - pyreal_primitives::num::math::atanf(0.6).to_degrees()).abs() < 1e-3
+        );
+        assert!(
+            !m.models.last().is_some_and(|m| m.foliage),
+            "foliage off unless named"
+        );
+        let printed = text.replacen(
+            "category = \"plant\"",
+            "fingerprint = \"model 0123456789abcdef\"\ndraws_on = \"none\"",
+            1,
+        );
+        assert_eq!(
+            ArtPackManifest::parse(&printed)
+                .expect("read past")
+                .ground_cover
+                .len(),
+            3
+        );
+        let level = text.replacen("max_slope = 1.0", "max_slope = 0", 1);
+        let lupins = &ArtPackManifest::parse(&level)
+            .expect("level ground")
+            .ground_cover[2];
+        assert!(lupins.steepest > 0.0 && lupins.steepest < 0.1);
+        for (from, to, why) in [
+            ("max_slope = 1.0", "max_slope = -1", "max_slope"),
+            (
+                "density = 4.0",
+                "density = 4.0\nid = \"0x02000001\"",
+                "names no id",
+            ),
+            ("density = 4.0", "density = 4.0\nscale = 2", "scale"),
+        ] {
+            let bad = text.replacen(from, to, 1);
+            let e = ArtPackManifest::parse(&bad).expect_err(why);
+            assert!(e.0.contains("cover 1") && e.0.contains(why), "{e}");
+        }
+    }
+
+    /// A ground's detail grain and its pebbles switch, with their defaults.
+    #[test]
+    fn a_ground_names_its_detail_grain_and_whether_pebbles_lie_on_it() {
+        let m = ArtPackManifest::parse(GROUND).expect("reads");
+        let grass = m.ground(Ground::Type(9)).expect("type 9's");
+        assert_eq!(grass.detail, None);
+        assert!((grass.detail_size - 1.0).abs() < 1e-6);
+        assert!((grass.detail_strength - 1.0).abs() < 1e-6);
+        assert!(grass.pebbles);
+        let text = GROUND.replacen(
+            "size = 4\n",
+            "size = 4\ndetail = \"ground/grain.png\"\ndetail_size = 0.5\ndetail_strength = 1.5\npebbles = false\n",
+            1,
+        );
+        let m = ArtPackManifest::parse(&text).expect("reads");
+        let grass = m.ground(Ground::Type(9)).expect("type 9's");
+        assert_eq!(grass.detail.as_deref(), Some("ground/grain.png"));
+        assert!((grass.detail_size - 0.5).abs() < 1e-6);
+        assert!((grass.detail_strength - 1.5).abs() < 1e-6);
+        assert!(!grass.pebbles);
+        let strong = GROUND.replacen("size = 4\n", "size = 4\ndetail_strength = 9\n", 1);
+        assert!(ArtPackManifest::parse(&strong).is_ok(), "no upper bound");
+        let steep = format!(
+            "{GROUND}\n[[steep]]\nground = [1]\nbase_color = \"a.png\"\nsize = 4\npebbles = false\n\
+             author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+        );
+        let e = ArtPackManifest::parse(&steep).expect_err("pebbles on a steep");
+        assert!(e.0.contains("steep 1") && e.0.contains("pebbles"), "{e}");
+        for (to, why) in [
+            ("detail = \"../grain.png\"", "inside the pack"),
+            ("detail_size = 0", "detail_size"),
+            ("detail_strength = -1", "detail_strength"),
+            ("pebbles = 1", "pebbles"),
+        ] {
+            let text = GROUND.replacen("size = 4\n", &format!("size = 4\n{to}\n"), 1);
+            let e = ArtPackManifest::parse(&text).expect_err(why);
+            assert!(e.0.contains(why), "{why}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_manifest_lists_each_model_with_its_levels_its_lighting_and_its_credit() {
+        let m = ArtPackManifest::parse(PILOT).expect("the pilot manifest reads");
+        assert_eq!(m.name, "Pilot");
+        assert_eq!(m.models.len(), 2);
+        let tree = m.model(DataId(0x0200_0258)).expect("the tree");
+        assert!(tree.foliage);
+        assert_eq!(
+            tree.lods
+                .iter()
+                .map(|l| (l.file.as_str(), l.distance))
+                .collect::<Vec<_>>(),
+            [
+                ("tree/lod0.gltf", Some(40.0)),
+                ("tree/lod1.gltf", Some(120.0)),
+                ("tree/lod2.gltf", None),
+            ]
+        );
+        assert_eq!(tree.credit.license, "CC0-1.0");
+        let rock = m
+            .model(DataId(0x0100_0A7E))
+            .expect("a graphics object's model");
+        assert!(!rock.foliage, "foliage is off unless the manifest says so");
+        assert_eq!(rock.lods.len(), 1);
+        assert!(m.model(DataId(0x0200_0001)).is_none());
+        assert!(tree.lods.iter().all(|l| l.views.is_none()));
+    }
+
+    #[test]
+    fn a_level_of_pictures_round_the_model_names_its_views_and_their_rows() {
+        let far = PILOT.replacen(
+            "file = \"tree/lod2.gltf\"",
+            "file = \"tree/far.gltf\"\nviews = 16\ncolumns = 8",
+            1,
+        );
+        let m = ArtPackManifest::parse(&far).expect("reads");
+        let tree = m.model(DataId(0x0200_0258)).expect("the tree");
+        assert_eq!(
+            tree.lods[2].views,
+            Some(Views {
+                count: 16,
+                columns: 8
+            })
+        );
+        // All in one row when it names no columns.
+        let one_row = PILOT.replacen(
+            "file = \"tree/lod2.gltf\"",
+            "file = \"tree/far.gltf\"\nviews = 12",
+            1,
+        );
+        let m = ArtPackManifest::parse(&one_row).expect("reads");
+        assert_eq!(
+            m.model(DataId(0x0200_0258)).expect("the tree").lods[2].views,
+            Some(Views {
+                count: 12,
+                columns: 12
+            })
+        );
+        for bad in [
+            "views = 1",
+            "views = 0",
+            "views = \"many\"",
+            "columns = 4",
+            "shadows_only = true",
+        ] {
+            let text = PILOT.replacen(
+                "file = \"tree/lod2.gltf\"",
+                &format!("file = \"tree/far.gltf\"\n{bad}"),
+                1,
+            );
+            assert!(ArtPackManifest::parse(&text).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_manifest_that_contradicts_itself_or_leaves_something_out_is_refused() {
+        let with = |from: &str, to: &str| {
+            assert!(PILOT.contains(from), "{from}");
+            ArtPackManifest::parse(&PILOT.replacen(from, to, 1))
+        };
+        for (from, to) in [
+            ("format = 1", "format = 2"),
+            ("format = 1", ""),
+            ("[pack]", "[box]"),
+            ("0x02000258", "0x08000258"),
+            ("0x02000258", "02000258"),
+            ("0x01000A7E", "0x02000258"),
+            ("tree/lod0.gltf", "/tree/lod0.gltf"),
+            ("tree/lod0.gltf", "../tree/lod0.gltf"),
+            ("tree/lod0.gltf", "C:/tree/lod0.gltf"),
+            ("tree/lod0.gltf", "tree\\\\lod0.gltf"),
+            ("distance = 120", "distance = 30"),
+            ("distance = 120", "distance = -5"),
+            ("distance = 40.0", ""),
+            ("foliage = true", "foliage = \"yes\""),
+            ("license = \"CC0-1.0\"", "license = \"\""),
+            ("author = \"Someone\"", ""),
+        ] {
+            assert!(with(from, to).is_err(), "{from} -> {to}");
+        }
+        assert!(ArtPackManifest::parse("not toml at all [").is_err());
+        let bare = "[pack]\nformat = 1\n[[model]]\nid = \"0x02000001\"\nauthor = \"a\"\n\
+                    tool = \"t\"\nlicense = \"l\"\n";
+        assert!(
+            ArtPackManifest::parse(bare).is_err(),
+            "a model with no level of detail"
+        );
+    }
+
+    /// Each entry is checked for a duplicate among the entries of its own id only, so a manifest of
+    /// tens of thousands of materials opens in about the time its text takes to read.
+    #[test]
+    fn a_manifest_of_many_materials_is_checked_in_linear_time() {
+        let mut text = String::from("[pack]\nformat = 1\n");
+        for k in 0..60_000u32 {
+            text.push_str(&format!(
+                "[[material]]\ntexture = \"{:#010X}\"\nbase_color = \"m.png\"\nauthor = \"a\"\ntool = \"t\"\nlicense = \"l\"\n",
+                0x0500_0000 + k
+            ));
+        }
+        let t = std::time::Instant::now();
+        let read = toml::from_str::<toml::Table>(&text).expect("toml");
+        let toml_alone = t.elapsed();
+        drop(read);
+        let t = std::time::Instant::now();
+        let m = ArtPackManifest::parse(&text).expect("reads");
+        let all = t.elapsed();
+        assert_eq!(m.materials.len(), 60_000);
+        assert!(
+            all < toml_alone * 4 + std::time::Duration::from_millis(500),
+            "{all:?} against {toml_alone:?}"
+        );
+    }
+
+    #[test]
+    fn a_level_for_the_shadows_alone_is_kept_out_of_the_views_distances() {
+        let shadows = PILOT.replacen(
+            "file = \"tree/lod1.gltf\"\ndistance = 120",
+            "file = \"tree/lod1.gltf\"\nshadows_only = true",
+            1,
+        );
+        let m = ArtPackManifest::parse(&shadows).expect("reads");
+        let tree = m.model(DataId(0x0200_0258)).expect("the tree");
+        assert_eq!(
+            tree.lods
+                .iter()
+                .map(|l| (l.distance, l.shadows_only))
+                .collect::<Vec<_>>(),
+            [(Some(40.0), false), (None, true), (None, false)]
+        );
+        // Its distance, when it names one, is not read, and the next level is measured against
+        // the one before it.
+        let named = PILOT.replacen(
+            "file = \"tree/lod1.gltf\"\ndistance = 120",
+            "file = \"tree/lod1.gltf\"\ndistance = 10\nshadows_only = true",
+            1,
+        );
+        assert_eq!(
+            ArtPackManifest::parse(&named).expect("reads").models[0].lods[1].distance,
+            None
+        );
+        let first = PILOT.replacen("distance = 40.0", "distance = 40.0\nshadows_only = true", 1);
+        assert!(ArtPackManifest::parse(&first).is_err(), "the first level");
+    }
+
+    #[test]
+    fn a_manifest_with_no_models_is_an_empty_pack() {
+        let m = ArtPackManifest::parse("[pack]\nformat = 1\n").expect("reads");
+        assert!(m.models.is_empty());
+        assert_eq!(m.name, "");
+    }
+
+    const GROUND: &str = r#"
+[pack]
+name = "Ground"
+format = 1
+
+[[terrain]]
+ground = [1, 9]
+base_color = "ground/grass_albedo.png"
+normal = "ground/grass_normal.png"
+height = "ground/grass_height.png"
+size = 4
+author = "a"
+tool = "t"
+license = "CC0-1.0"
+
+[[terrain]]
+ground = "road"
+base_color = "ground/road_albedo.png"
+size = 8.5
+normal_scale = 0.5
+author = "a"
+tool = "t"
+license = "CC0-1.0"
+"#;
+
+    #[test]
+    fn a_manifest_lays_a_ground_material_for_each_terrain_type_it_names_and_the_road() {
+        let m = ArtPackManifest::parse(GROUND).expect("the ground manifest reads");
+        assert!(m.models.is_empty());
+        assert_eq!(m.grounds.len(), 2);
+        let grass = m.ground(Ground::Type(9)).expect("type 9's material");
+        assert_eq!(grass.grounds, [Ground::Type(1), Ground::Type(9)]);
+        assert_eq!(grass.normal.as_deref(), Some("ground/grass_normal.png"));
+        assert_eq!(grass.roughness, None);
+        assert!((grass.size - 4.0).abs() < 1e-6);
+        assert!(
+            (grass.normal_scale - 1.0).abs() < 1e-6,
+            "a full bend unless named"
+        );
+        let road = m.ground(Ground::Road).expect("the road's material");
+        assert!((road.size - 8.5).abs() < 1e-6);
+        assert!((road.normal_scale - 0.5).abs() < 1e-6);
+        assert!(
+            m.ground(Ground::Type(3)).is_none(),
+            "an unnamed type keeps retail's"
+        );
+        for (from, to, why) in [
+            ("ground = [1, 9]", "ground = [1, 32]", "not a terrain type"),
+            (
+                "ground = [1, 9]",
+                "ground = [1, \"river\"]",
+                "neither a terrain type",
+            ),
+            (
+                "ground = \"road\"",
+                "ground = [9]",
+                "has a material already",
+            ),
+            ("size = 4\n", "size = 0\n", "not a positive number"),
+            ("size = 4\n", "", "no size"),
+            (
+                "base_color = \"ground/grass_albedo.png\"",
+                "",
+                "no base_color",
+            ),
+            (
+                "normal = \"ground/grass_normal.png\"",
+                "normal = \"../x.png\"",
+                "inside the pack",
+            ),
+            (
+                "license = \"CC0-1.0\"\n\n[[terrain]]",
+                "\n[[terrain]]",
+                "no license",
+            ),
+        ] {
+            let text = GROUND.replacen(from, to, 1);
+            assert_ne!(text, GROUND, "{from}");
+            let e = ArtPackManifest::parse(&text).expect_err(why);
+            assert!(e.0.contains(why), "{why}: {}", e.0);
+        }
+    }
+
+    const MATERIALS: &str = r#"
+[pack]
+name = "Materials"
+format = 1
+
+[[material]]
+texture = "0x0500287C"
+base_color = "materials/wall_albedo.png"
+normal = "materials/wall_normal.png"
+roughness = "materials/wall_roughness.png"
+author = "a"
+tool = "t"
+license = "CC0-1.0"
+
+[[material]]
+texture = ["0x05002752", "0x0500274E"]
+base_color = "materials/floor_albedo.png"
+normal_scale = 0.5
+author = "a"
+tool = "t"
+license = "CC0-1.0"
+"#;
+
+    #[test]
+    fn a_steep_material_is_laid_on_its_grounds_steep_slopes_and_not_on_their_flat_ground() {
+        let text = format!(
+            "{GROUND}\n[[steep]]\nground = [9, 13]\n\
+             base_color = \"ground/scrub_steep_albedo.png\"\nsize = 8\n\
+             author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+        );
+        let m = ArtPackManifest::parse(&text).expect("the manifest reads");
+        assert_eq!(m.grounds.len(), 3);
+        let flat = m.ground(Ground::Type(9)).expect("type 9's material");
+        assert!(!flat.steep);
+        assert_eq!(flat.base_color, "ground/grass_albedo.png");
+        let steep = m
+            .steep_ground(Ground::Type(9))
+            .expect("type 9's steep material");
+        assert!(steep.steep);
+        assert_eq!(steep.base_color, "ground/scrub_steep_albedo.png");
+        assert!(m.steep_ground(Ground::Type(13)).is_some());
+        assert!(
+            m.ground(Ground::Type(13)).is_none(),
+            "a type with a steep material alone keeps retail's flat ground"
+        );
+        assert!(m.steep_ground(Ground::Type(1)).is_none());
+        let bad = text.replace("ground = [9, 13]", "ground = [9, 40]");
+        assert!(ArtPackManifest::parse(&bad).is_err());
+        let twice = format!(
+            "{text}
+[[steep]]
+ground = 13
+base_color = \"b.png\"
+size = 8
+author = \"a\"
+tool = \"t\"
+license = \"CC0-1.0\"
+"
+        );
+        assert!(
+            ArtPackManifest::parse(&twice).is_err(),
+            "one steep material a type"
+        );
+    }
+
+    /// A ground may have a material for each era's picture of it, told apart by fingerprint; one
+    /// that names none stands for every other picture and nothing may follow it.
+    #[test]
+    fn a_ground_may_have_a_material_for_each_eras_picture() {
+        const HEAD: &str = "[pack]\nformat = 1\n";
+        let entry = |print: &str| {
+            format!(
+                "[[terrain]]\nground = 1\nbase_color = \"g.png\"\nsize = 4\n{print}\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        let old = "fingerprint = \"picture 128x128 00000000ffffffff\"\n";
+        let eor = "fingerprint = \"picture 512x512 ffffffff00000000\"\n";
+        let m = ArtPackManifest::parse(&(HEAD.to_owned() + &entry(old) + &entry(eor) + &entry("")))
+            .expect("one for each era, then one for any other");
+        assert_eq!(m.grounds.len(), 3);
+        assert_eq!(
+            m.grounds[0].fingerprint,
+            Fingerprint::parse("picture 128x128 00000000ffffffff")
+        );
+        assert!(m.grounds[2].fingerprint.is_none());
+        for twice in [entry(old) + &entry(old), entry("") + &entry(old)] {
+            let e = ArtPackManifest::parse(&(HEAD.to_owned() + &twice))
+                .expect_err("the same picture twice");
+            assert!(e.0.contains("has a material already"), "{}", e.0);
+        }
+    }
+
+    #[test]
+    fn a_manifest_names_a_material_for_each_retail_picture_it_stands_for() {
+        let m = ArtPackManifest::parse(MATERIALS).expect("the materials manifest reads");
+        assert!(m.models.is_empty() && m.grounds.is_empty());
+        assert_eq!(m.materials.len(), 2);
+        let wall = m
+            .material(DataId(0x0500_287C))
+            .expect("the wall's material");
+        assert_eq!(wall.base_color, "materials/wall_albedo.png");
+        assert_eq!(wall.normal.as_deref(), Some("materials/wall_normal.png"));
+        assert_eq!(wall.occlusion, None);
+        assert!(
+            (wall.normal_scale - 1.0).abs() < 1e-6,
+            "a full bend unless named"
+        );
+        let floor = m
+            .material(DataId(0x0500_274E))
+            .expect("the floor's material");
+        assert_eq!(floor.textures, [DataId(0x0500_2752), DataId(0x0500_274E)]);
+        assert!((floor.normal_scale - 0.5).abs() < 1e-6);
+        assert!(
+            m.material(DataId(0x0500_1CB4)).is_none(),
+            "an unnamed picture keeps retail's"
+        );
+        for (from, to, why) in [
+            ("\"0x0500287C\"", "\"0x0800287C\"", "not a texture record"),
+            ("\"0x0500287C\"", "\"0500287C\"", "not 0x and hex digits"),
+            ("\"0x0500287C\"", "[]", "no texture"),
+            (
+                "\"0x0500274E\"]",
+                "\"0x0500287C\"]",
+                "has a material already",
+            ),
+            (
+                "base_color = \"materials/wall_albedo.png\"",
+                "",
+                "no base_color",
+            ),
+            (
+                "normal = \"materials/wall_normal.png\"",
+                "normal = \"/x.png\"",
+                "inside the pack",
+            ),
+            (
+                "normal_scale = 0.5",
+                "normal_scale = -1",
+                "not a number from 0",
+            ),
+            ("author = \"a\"", "", "no author"),
+        ] {
+            let text = MATERIALS.replacen(from, to, 1);
+            assert_ne!(text, MATERIALS, "{from}");
+            let e = ArtPackManifest::parse(&text).expect_err(why);
+            assert!(e.0.contains(why), "{why}: {}", e.0);
+        }
+    }
+
+    /// A material for a retail picture, its base color named and the given `lines` after it.
+    fn wall_with(lines: &str) -> String {
+        format!(
+            "[pack]\nname = \"x\"\nformat = 1\n[[material]]\ntexture = \"0x05000001\"\n\
+             base_color = \"b.png\"\nnormal = \"n.png\"\n{lines}\nauthor = \"a\"\ntool = \"t\"\n\
+             license = \"CC0-1.0\"\n"
+        )
+    }
+
+    #[test]
+    fn a_material_may_shine_as_silk_does() {
+        let sheen = |lines: &str| {
+            let pack = ArtPackManifest::parse(&wall_with(lines)).expect("reads");
+            pack.material(DataId(0x0500_0001)).expect("named").sheen
+        };
+        assert!((sheen("sheen = 0.6") - 0.6).abs() < 1e-6);
+        assert!((sheen("sheen = 1") - 1.0).abs() < 1e-6);
+        assert!(sheen("").abs() < 1e-6, "none unless named");
+        for bad in ["sheen = 1.5", "sheen = -0.1", "sheen = true"] {
+            let e = ArtPackManifest::parse(&wall_with(bad)).expect_err(bad);
+            assert!(e.0.contains("sheen"), "{bad}: {}", e.0);
+        }
+    }
+
+    #[test]
+    fn a_material_may_keep_the_retail_picture_and_its_base_color_is_only_a_fallback() {
+        let pack = ArtPackManifest::parse(&wall_with(
+            "keep_retail_picture = true\nheight = \"h.png\"\ndamp = 0.8",
+        ))
+        .expect("reads");
+        let m = pack.material(DataId(0x0500_0001)).expect("named");
+        assert!(m.keep_retail_picture);
+        assert_eq!(
+            m.base_color, "b.png",
+            "still named, for a reader without relief"
+        );
+        assert_eq!(m.height.as_deref(), Some("h.png"));
+        assert!((m.damp - 0.8).abs() < 1e-6);
+        let plain = ArtPackManifest::parse(&wall_with("")).expect("reads");
+        let m = plain.material(DataId(0x0500_0001)).expect("named");
+        assert!(!m.keep_retail_picture && m.height.is_none() && m.damp == 0.0);
+        assert!(!m.slime && !m.ice);
+        // The base color is required all the same.
+        let bare = wall_with("keep_retail_picture = true").replace("base_color = \"b.png\"\n", "");
+        let e = ArtPackManifest::parse(&bare).expect_err("no base_color");
+        assert!(e.0.contains("no base_color"), "{}", e.0);
+        for bad in [
+            "keep_retail_picture = 1",
+            "damp = 2",
+            "slime = \"yes\"",
+            "ice = 0",
+            "height = \"../h.png\"",
+        ] {
+            assert!(ArtPackManifest::parse(&wall_with(bad)).is_err(), "{bad}");
+        }
+        let film = ArtPackManifest::parse(&wall_with("slime = true\nice = true")).expect("reads");
+        let m = film.material(DataId(0x0500_0001)).expect("named");
+        assert!(m.slime && m.ice);
+    }
+
+    #[test]
+    fn a_material_may_say_where_it_is_wet_and_be_wet_on_floors() {
+        let pack = ArtPackManifest::parse(&wall_with("damp_map = \"w.png\"\ndamp_floors = true"))
+            .expect("reads");
+        let m = pack.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!(
+            (m.damp_map.as_deref(), m.damp_floors),
+            (Some("w.png"), true)
+        );
+        let plain = ArtPackManifest::parse(&wall_with("")).expect("reads");
+        let m = plain.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!((m.damp_map.as_deref(), m.damp_floors), (None, false));
+        assert!(ArtPackManifest::parse(&wall_with("damp_floors = 1")).is_err());
+        assert!(ArtPackManifest::parse(&wall_with("damp_map = \"../w.png\"")).is_err());
+    }
+
+    #[test]
+    fn a_material_may_name_a_grit_and_how_often_it_repeats() {
+        let pack = ArtPackManifest::parse(&wall_with("grit = \"g.png\"\ngrit_repeat = [3, 4.5]"))
+            .expect("reads");
+        let m = pack.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!(m.grit.as_deref(), Some("g.png"));
+        assert_eq!(m.grit_repeat, [3.0, 4.5]);
+        let plain = ArtPackManifest::parse(&wall_with("")).expect("reads");
+        let m = plain.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!((m.grit.as_deref(), m.grit_repeat), (None, [1.0, 1.0]));
+        assert!(ArtPackManifest::parse(&wall_with("grit_repeat = [0, 1]")).is_err());
+        assert!(ArtPackManifest::parse(&wall_with("grit_repeat = [1]")).is_err());
+        assert!(ArtPackManifest::parse(&wall_with("grit = \"../g.png\"")).is_err());
+    }
+
+    const LIGHTS: &str = r#"
+[pack]
+name = "Lamps"
+format = 1
+
+[[light]]
+object = "0x0200069D"
+where = "outdoors"
+kelvin = 1600
+brightness = 800
+reach = 12
+flicker = "flame"
+haze = 0.8
+presence = 1
+author = "Someone"
+tool = "By hand"
+license = "CC0-1.0"
+
+[[light]]
+object = "0x0200069D"
+where = "indoors"
+kelvin = 2700
+brightness = 40
+reach = 4.5
+author = "Someone"
+tool = "By hand"
+license = "CC0-1.0"
+"#;
+
+    #[test]
+    fn a_light_is_given_to_its_object_where_it_stands() {
+        let m = ArtPackManifest::parse(LIGHTS).expect("reads");
+        let outside = m.light(DataId(0x0200_069D), true).expect("outdoors");
+        assert_eq!(outside.flicker, LightFlicker::Flame);
+        assert!((outside.reach - 12.0).abs() < 1e-6 && outside.shadows);
+        let inside = m.light(DataId(0x0200_069D), false).expect("indoors");
+        assert!((inside.kelvin - 2700.0).abs() < 1e-6);
+        assert_eq!(inside.flicker, LightFlicker::Steady);
+        assert!((inside.size - 0.1).abs() < 1e-6 && inside.haze == 0.0 && inside.gather == 0.0);
+        assert!(m.light(DataId(0x0200_069E), true).is_none());
+    }
+
+    #[test]
+    fn a_light_that_says_too_little_or_claims_a_place_twice_is_refused() {
+        let twice = LIGHTS.replace("where = \"indoors\"", "where = \"both\"");
+        assert!(ArtPackManifest::parse(&twice).is_err());
+        let cold = LIGHTS.replace("kelvin = 1600", "kelvin = 300");
+        assert!(ArtPackManifest::parse(&cold).is_err());
+        let dark = LIGHTS.replace("brightness = 800\n", "");
+        assert!(ArtPackManifest::parse(&dark).is_err());
+        let odd = LIGHTS.replace("flicker = \"flame\"", "flicker = \"strobe\"");
+        assert!(ArtPackManifest::parse(&odd).is_err());
+    }
+
+    /// A number finite in the manifest but past `f32`'s range is refused, not read as infinity.
+    #[test]
+    fn a_number_too_large_for_a_float_is_refused() {
+        let far = LIGHTS.replace(
+            "where = \"indoors\"",
+            "where = \"indoors\"\noffset = [1e300, 0, 0]",
+        );
+        assert!(ArtPackManifest::parse(&far).is_err());
+        assert!(
+            ArtPackManifest::parse(&wall_with("grit = \"g.png\"\ngrit_repeat = [1e300, 1]"))
+                .is_err()
+        );
+    }
+
+    const MOONS: &str = r#"
+[pack]
+name = "Moons"
+format = 1
+
+[[moon]]
+object = "0x01001F6A"
+surface = "sky/albarel_surface.png"
+lights = "sky/albarel_lights.png"
+clouds = "sky/albarel_clouds.png"
+author = "Someone"
+tool = "By hand"
+license = "CC0-1.0"
+
+[[moon]]
+object = "0x01001F67"
+surface = "sky/rezarel_surface.png"
+author = "Someone"
+tool = "By hand"
+license = "CC0-1.0"
+"#;
+
+    #[test]
+    fn a_moon_names_its_ball_pictures_and_refuses_what_is_not_one() {
+        let m = ArtPackManifest::parse(MOONS).expect("reads");
+        assert_eq!(m.moons.len(), 2);
+        assert_eq!(m.moons[0].object, DataId(0x0100_1F6A));
+        assert_eq!(m.moons[0].lights.as_deref(), Some("sky/albarel_lights.png"));
+        assert!(m.moons[1].lights.is_none(), "no lights unless named");
+        assert_eq!(m.moons[0].clouds.as_deref(), Some("sky/albarel_clouds.png"));
+        assert!(m.moons[1].clouds.is_none(), "no clouds unless named");
+        for (from, to, why) in [
+            ("\"0x01001F67\"", "\"0x02001F67\"", "not a graphics object"),
+            ("\"0x01001F67\"", "\"0x01001F6A\"", "listed twice"),
+            ("surface = \"sky/rezarel_surface.png\"\n", "", "no surface"),
+            (
+                "\"sky/albarel_lights.png\"",
+                "\"../x.png\"",
+                "inside the pack",
+            ),
+        ] {
+            let e = ArtPackManifest::parse(&MOONS.replacen(from, to, 1)).expect_err(why);
+            assert!(e.0.contains(why), "{why}: {}", e.0);
+        }
+    }
+
+    /// A pack of two materials for one picture, the lines after each `texture`.
+    fn two_walls(first: &str, second: &str) -> String {
+        let wall = |lines: &str| {
+            format!(
+                "[[material]]\ntexture = \"0x05000001\"\n{lines}\nbase_color = \"b.png\"\n\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        format!(
+            "[pack]\nname = \"x\"\nformat = 1\n{}{}",
+            wall(first),
+            wall(second)
+        )
+    }
+
+    #[test]
+    fn a_picture_may_have_a_material_for_each_era_told_apart_by_fingerprint() {
+        let eor = "fingerprint = \"picture 128x128 00000000ffffffff\"";
+        let old = "fingerprint = \"picture 64x64 ffffffff00000000\"";
+        let m = ArtPackManifest::parse(&two_walls(eor, old)).expect("reads");
+        assert_eq!(m.materials.len(), 2);
+        assert_eq!(
+            m.materials[1].fingerprints,
+            [Fingerprint::parse("picture 64x64 ffffffff00000000")]
+        );
+        // One naming none after one that names one draws on every other record; before it, it
+        // would leave the second never drawn.
+        assert!(ArtPackManifest::parse(&two_walls(eor, "")).is_ok());
+        for (first, second) in [(eor, eor), ("", old)] {
+            let e = ArtPackManifest::parse(&two_walls(first, second)).expect_err(first);
+            assert!(e.0.contains("has a material already"), "{}", e.0);
+        }
+    }
+
+    #[test]
+    fn an_entry_names_which_records_it_draws_on() {
+        let on = |lines: &str| {
+            ArtPackManifest::parse(&wall_with(lines))
+                .map(|m| m.materials[0].draws_on)
+                .map_err(|e| e.0)
+        };
+        assert_eq!(on(""), Ok(DrawsOn::Matching));
+        assert_eq!(on("draws_on = \"any\""), Ok(DrawsOn::Any));
+        assert_eq!(on("draws_on = \"none\""), Ok(DrawsOn::Nothing));
+        assert!(on("draws_on = \"some\"").is_err());
+        assert!(on("fingerprint = \"picture 64\"").is_err());
+        assert!(
+            on("fingerprint = [\"model 0123456789abcdef\", \"model 0123456789abcdef\"]").is_err()
+        );
+
+        let made = Fingerprint::Model(1);
+        assert!(DrawsOn::Matching.draws(Some(&made), Some(&made)));
+        assert!(!DrawsOn::Matching.draws(Some(&made), Some(&Fingerprint::Model(2))));
+        assert!(
+            DrawsOn::Matching.draws(None, Some(&made)),
+            "one naming none draws on any"
+        );
+        assert!(
+            DrawsOn::Matching.draws(Some(&made), None),
+            "an unknown record is drawn on"
+        );
+        assert!(DrawsOn::Any.draws(Some(&made), Some(&Fingerprint::Model(2))));
+        assert!(!DrawsOn::Nothing.draws(None, None));
+    }
+
+    #[test]
+    fn one_picture_may_have_a_material_for_each_palette_it_is_drawn_in() {
+        let copper = "palettes = [\"0x04000BA1\", \"0x04000B9F\"]";
+        let ice = "palettes = \"0x04000BA3\"";
+        let m = ArtPackManifest::parse(&two_walls(copper, ice)).expect("reads");
+        assert_eq!(
+            m.materials[0].palettes,
+            [DataId(0x0400_0BA1), DataId(0x0400_0B9F)]
+        );
+        assert_eq!(m.materials[1].palettes, [DataId(0x0400_0BA3)]);
+        for (first, second) in [(copper, copper), ("", ice), (copper, "")] {
+            let e = ArtPackManifest::parse(&two_walls(first, second)).expect_err(first);
+            assert!(e.0.contains("has a material already"), "{}", e.0);
+        }
+        assert!(ArtPackManifest::parse(&wall_with("palettes = \"0x05000001\"")).is_err());
+    }
+
+    /// A `[[skin]]` names its setup, file, palettes and clips; a setup has one body naming no
+    /// palettes, and an object's palettes pick among its bodies.
+    #[test]
+    fn a_skin_names_its_setup_file_palettes_and_clips() {
+        let row = |extra: &str| {
+            format!(
+                "\n[[skin]]\nsetup = \"0x02000001\"\nfile = \"human/body.gltf\"\n{extra}\n\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        let text = format!(
+            "{PILOT}{}{}",
+            row("palettes = [\"0x04001A2B\"]\nclips = { idle = \"Idle\", run = \"Run\", \"0x03000044\" = \"Old\" }"),
+            row("")
+        );
+        let m = ArtPackManifest::parse(&text).expect("reads");
+        assert_eq!(m.skins.len(), 2);
+        let red = &m.skins[0];
+        assert_eq!(red.palettes, [DataId(0x0400_1A2B)]);
+        assert!(red.clips.contains(&("run".to_owned(), "Run".to_owned())));
+        assert_eq!(red.by_animation, [(DataId(0x0300_0044), "Old".to_owned())]);
+        let human = DataId(0x0200_0001);
+        assert!(std::ptr::eq(
+            m.skin_for(human, None, &[DataId(0x0400_1A2B)]).unwrap(),
+            red
+        ));
+        assert!(std::ptr::eq(
+            m.skin_for(human, None, &[]).unwrap(),
+            &m.skins[1]
+        ));
+        assert!(m.skin_for(DataId(0x0200_0002), None, &[]).is_none());
+        for bad in [
+            row("clips = { swim = \"Swim\" }"),
+            row("palettes = [\"0x02000001\"]"),
+            format!("{}{}", row(""), row("")),
+            row("").replace("0x02000001", "0x01000001"),
+            row("").replace("human/body.gltf", "../body.gltf"),
+        ] {
+            assert!(
+                ArtPackManifest::parse(&format!("{PILOT}{bad}")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// `[keep]` lists weenies by class id, and whether a launcher's holder keeps its parts.
+    #[test]
+    fn keep_lists_weenies_and_launchers() {
+        let m = ArtPackManifest::parse(&format!(
+            "{PILOT}\n[keep]\nweenies = [7, 237]\nlaunchers = true\n"
+        ))
+        .expect("reads");
+        assert_eq!(m.keep, [7, 237]);
+        assert!(m.keep_launchers);
+        let plain = ArtPackManifest::parse(PILOT).expect("reads");
+        assert!(plain.keep.is_empty() && !plain.keep_launchers && plain.skins.is_empty());
+        for bad in [
+            "[keep]\nweenies = [0]",
+            "[keep]\nweenies = [\"7\"]",
+            "[[keep]]\nweenies = [7]",
+            "[keep]\nlaunchers = 1",
+        ] {
+            assert!(
+                ArtPackManifest::parse(&format!("{PILOT}\n{bad}\n")).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    /// A body naming a fingerprint draws only on the world whose setup record matches, before
+    /// one naming none; two bodies for one setup with other fingerprints both read.
+    #[test]
+    fn a_skin_draws_on_the_world_its_fingerprint_names() {
+        let row = |file: &str, extra: &str| {
+            format!(
+                "\n[[skin]]\nsetup = \"0x02000001\"\nfile = \"{file}\"\n{extra}\n\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        let eor = "model 0123456789abcdef";
+        let old = "model fedcba9876543210";
+        let text = format!(
+            "{PILOT}{}{}{}",
+            row("eor.gltf", &format!("fingerprint = \"{eor}\"")),
+            row("old.gltf", &format!("fingerprint = \"{old}\"")),
+            row("any.gltf", "")
+        );
+        let m = ArtPackManifest::parse(&text).expect("reads");
+        let print = |p: &str| Fingerprint::parse(p);
+        let file = |record: Option<Fingerprint>| {
+            m.skin_for(DataId(0x0200_0001), record.as_ref(), &[])
+                .map(|k| k.file.as_str())
+        };
+        assert_eq!(file(print(eor)), Some("eor.gltf"));
+        assert_eq!(file(print(old)), Some("old.gltf"));
+        assert_eq!(file(print("model 1111111111111111")), Some("any.gltf"));
+        let none = text.replace(
+            &row("any.gltf", ""),
+            &row("any.gltf", "draws_on = \"none\""),
+        );
+        let m = ArtPackManifest::parse(&none).expect("reads");
+        assert!(m
+            .skin_for(
+                DataId(0x0200_0001),
+                print("model 1111111111111111").as_ref(),
+                &[]
+            )
+            .is_none());
+        let twice = format!("{PILOT}{}{}", row("a.gltf", ""), row("b.gltf", ""));
+        let e = ArtPackManifest::parse(&twice).expect_err("one plain body a setup");
+        assert!(e.0.contains("has a skin already"), "{}", e.0);
+    }
+}

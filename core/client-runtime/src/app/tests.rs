@@ -1,0 +1,1309 @@
+use super::*;
+
+#[test]
+fn navigation_offers_only_the_recall_commands_the_world_announces() {
+    use pyreal_primitives::era::{EraFeatures, EraId};
+    let mut world = pyreal_client_model::World::new();
+    world.player = Some(pyreal_primitives::ObjectId(1));
+    let has = |features: EraFeatures, recall: pyreal_navigation::Recall| {
+        nav_character(&world, None, features)
+            .recall_commands
+            .iter()
+            .any(|(r, _)| *r == recall)
+    };
+    for era in EraId::ALL {
+        let later = era != EraId::Launch;
+        let f = era.features();
+        assert_eq!(has(f, pyreal_navigation::Recall::Lifestone), later, "{era}");
+        assert_eq!(
+            has(f, pyreal_navigation::Recall::Marketplace),
+            later,
+            "{era}"
+        );
+    }
+    // The announcement decides, not the era's name.
+    let launch_with_recalls = EraFeatures {
+        lifestone_recall: true,
+        marketplace_recall: true,
+        ..EraId::Launch.features()
+    };
+    assert!(has(
+        launch_with_recalls,
+        pyreal_navigation::Recall::Lifestone
+    ));
+    assert!(has(
+        launch_with_recalls,
+        pyreal_navigation::Recall::Marketplace
+    ));
+    let eor_without = EraFeatures {
+        lifestone_recall: false,
+        marketplace_recall: false,
+        ..EraId::Eor.features()
+    };
+    assert!(!has(eor_without, pyreal_navigation::Recall::Lifestone));
+    assert!(!has(eor_without, pyreal_navigation::Recall::Marketplace));
+}
+
+/// The landblock line prints when any number in it moves under a held block.
+#[test]
+fn the_landblock_line_prints_when_any_number_in_it_moves_under_a_held_block() {
+    use crate::present::SceneCensus;
+    let block = (0xA9, 0xB4);
+    let base = SceneCensus::default();
+    let quiet = ViewerBlockReport::new(block, &base);
+
+    // Every one of the six printed counters, on its own, with the block never moving. Each
+    // closure is a landblock finishing its mesh under a player who has not walked anywhere.
+    type BumpScene = fn(&mut SceneCensus);
+    let held: [(&str, BumpScene); 6] = [
+        ("blocks_meshed", |s| s.blocks_meshed += 1),
+        ("terrain_surfaces", |s| s.terrain_surfaces += 1),
+        ("scenery_objects", |s| s.scenery_objects += 1),
+        ("buildings", |s| s.buildings += 1),
+        ("static_objects", |s| s.static_objects += 1),
+        ("object_triangles", |s| s.object_triangles += 1),
+    ];
+    for (name, bump) in held {
+        let mut s = base;
+        bump(&mut s);
+        assert_ne!(
+            quiet,
+            ViewerBlockReport::new(block, &s),
+            "{name} climbed and the landblock line stayed silent"
+        );
+    }
+    // And the term it has always carried.
+    assert_ne!(
+        quiet,
+        ViewerBlockReport::new((0xA9, 0xB5), &base),
+        "the crossing itself"
+    );
+}
+
+/// **`last_viewer_cell`.** The key was the cell; the line also prints `env_cell_counts().1`,
+/// which streams and is asked of the *camera's* cell rather than the body's.
+///
+/// Falsified by: keying on the cell alone.
+#[test]
+fn the_viewer_cell_line_prints_when_the_interior_batch_count_moves_under_a_held_cell() {
+    // An **interior** cell: `is_outdoors` is `(id & 0xFFFF) < 0x100`, so 0x0129 is indoors.
+    let cell = pyreal_primitives::CellId(0xA9B4_0129);
+    let quiet = ViewerCellReport::new(cell, 0);
+    assert!(
+        !quiet.outdoors,
+        "the fixture cell is indoors, which is what the line prints"
+    );
+
+    // The body has not moved a millimetre; the block carrying its cell finished meshing.
+    assert_ne!(
+        quiet,
+        ViewerCellReport::new(cell, 7),
+        "the interior batch count arrived and the line stayed silent"
+    );
+    // The two terms the line has always carried, through the same constructor the frame uses.
+    let outdoor = pyreal_primitives::CellId(0xA9B4_0001);
+    assert_ne!(quiet, ViewerCellReport::new(outdoor, 0));
+    assert!(
+        ViewerCellReport::new(outdoor, 0).outdoors,
+        "is_outdoors is not being consulted, so the line's own word is a constant"
+    );
+}
+
+/// **`last_object_count`.** The key was the drawn count; eleven other printed numbers can move
+/// while it holds still, and the first arm below is the one that actually happens — a sync in
+/// which as many objects left as arrived.
+///
+/// Falsified by: keying on `drawn` alone (every arm fails), or by dropping the magnitude on the
+/// two message-rate counters (the last arm fails and the line floods).
+#[test]
+fn the_object_census_prints_when_creates_and_removes_move_together() {
+    use crate::objects::ObjectStats;
+    use crate::present::SceneCensus;
+    let w = SceneCensus::default();
+    let s = ObjectStats::default();
+    let quiet = ObjectReport::new(4, &w, &s).key();
+
+    // One object created and one removed in the same sync: the count is unchanged and the
+    // line used to stay silent over it.
+    let churn = ObjectStats {
+        creates: 1,
+        removes: 1,
+        ..s
+    };
+    assert_ne!(
+        quiet,
+        ObjectReport::new(4, &w, &churn).key(),
+        "a create and a remove cancelled in the count and the census stayed silent"
+    );
+
+    // Each of the other printed numbers that leaves the count alone, **on its own**.
+    //
+    // `creates` and `removes` are in this list as well as in the churn arm above, and that is
+    // not redundancy: a mutation blanking `creates` in the constructor SURVIVED the churn arm,
+    // because that arm moves both counters at once and `removes` alone still moved the key.
+    // The station confounded two variables; this is it rebuilt on one. `drawn` is a
+    // parameter here, so a create with no matching remove can be driven with the count held.
+    type BumpBoth = fn(&mut SceneCensus, &mut ObjectStats);
+    let held: [(&str, BumpBoth); 10] = [
+        ("creates", |_, s| s.creates += 1),
+        ("removes", |_, s| s.removes += 1),
+        ("merges", |_, s| s.merges += 1),
+        ("recreates", |_, s| s.recreates += 1),
+        ("parent_events", |_, s| s.parent_events += 1),
+        ("container_exits_offered", |_, s| {
+            s.container_exits_offered += 1
+        }),
+        ("server_objects_animated", |w, _| {
+            w.server_objects_animated += 1
+        }),
+        ("server_objects_held", |w, _| w.server_objects_held += 1),
+        ("server_object_setups", |w, _| w.server_object_setups += 1),
+        ("server_object_triangles", |w, _| {
+            w.server_object_triangles += 1
+        }),
+    ];
+    for (name, bump) in held {
+        let (mut w2, mut s2) = (w, s);
+        bump(&mut w2, &mut s2);
+        assert_ne!(
+            quiet,
+            ObjectReport::new(4, &w2, &s2).key(),
+            "{name} climbed and the object census stayed silent"
+        );
+    }
+    // And the term it has always carried.
+    assert_ne!(
+        quiet,
+        ObjectReport::new(5, &w, &s).key(),
+        "the drawn count itself"
+    );
+
+    // The two message-rate counters: announced on the first one and at every power of two,
+    // silent in between. Both halves matter -- never silent, and never a line per frame.
+    let mut printed = 0u32;
+    let mut last = Some(quiet);
+    for n in 0..=1024u64 {
+        let r = ObjectReport::new(
+            4,
+            &w,
+            &ObjectStats {
+                position_updates: n,
+                ..s
+            },
+        );
+        if last != Some(r.key()) {
+            last = Some(r.key());
+            printed += 1;
+            assert_eq!(
+                r.position_updates, n,
+                "the print carries the raw value, not the key's"
+            );
+        }
+    }
+    assert_eq!(
+        printed, 11,
+        "1,025 position updates must announce at 1, 2, 4 .. 1024 and nowhere else"
+    );
+    assert!(
+        ObjectReport::new(
+            4,
+            &w,
+            &ObjectStats {
+                movement_updates: 1,
+                ..s
+            }
+        )
+        .key()
+            != quiet,
+        "the first movement update was never announced at all"
+    );
+}
+
+/// **`net_error_reported`.** It was a `bool` over a printed *code*, so the second distinct
+/// error was silent -- and the second one is the interesting one, because it is what the
+/// reconnection did.
+///
+/// Falsified by: `last.is_none()` (the old latch: the third arm fails), or by returning `true`
+/// unconditionally (the second arm fails and the line prints every frame the error is live).
+#[test]
+fn the_net_error_line_prints_the_second_distinct_error_and_not_a_repeat() {
+    use pyreal_transport::conn::NetErrorCode;
+    // Two real connection-error codes, in the order a dropped session
+    // then a refused re-login produces them.
+    let first = NetErrorCode::ClientTimedOutServer;
+    let second = NetErrorCode::PlayerAlreadyLoggedOn;
+    assert_ne!(
+        first, second,
+        "the two arms below are the same code; this asserts nothing"
+    );
+
+    let mut last: Option<NetErrorCode> = None;
+    let mut printed: Vec<NetErrorCode> = Vec::new();
+    for code in [first, first, first, second, second, first] {
+        if should_report_net_error(last, code) {
+            last = Some(code);
+            printed.push(code);
+        }
+    }
+    assert_eq!(
+        printed,
+        vec![first, second, first],
+        "each distinct error prints once and a repeat is silent"
+    );
+}
+
+// Oracle: the original fixed window class and non-resizable window style.
+#[test]
+fn the_documented_window_style_has_no_resize_and_no_maximise() {
+    assert_eq!(style::WINDOWED, 0x12CA_0000);
+    const WS_THICKFRAME: u32 = 0x0004_0000;
+    const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
+    assert_eq!(style::WINDOWED & WS_THICKFRAME, 0);
+    assert_eq!(style::WINDOWED & WS_MAXIMIZEBOX, 0);
+    assert_eq!(style::EX_STYLE, 0);
+    assert_eq!(RETAIL_WINDOW_CLASS, "Turbine Device Class");
+}
+
+/// Drawing the February 2005 world beside the modern interface files, the client answers the
+/// DDD interrogation (`0xF7E6`) with the world it draws: the 2005 portal and cell files as one
+/// run of their header iterations (2112 and 1593), and the later language file's own list.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail and February 2005 dats: --features retail-dats"
+)]
+fn a_client_drawing_the_february_2005_world_answers_ddd_with_that_worlds_iterations() {
+    let old = pyreal_dat::testing::classic_dat_dir().unwrap_or_else(|| {
+        panic!(
+            "{}",
+            pyreal_dat::testing::classic_shortfall().unwrap_or_default()
+        )
+    });
+    let store =
+        pyreal_dat::RetailDatStore::open_classic_with_modern(&old, &pyreal_dat::testing::dat_dir())
+            .expect("the two dat sets");
+    let r = ddd_interrogation_response(&store, 0, true, None);
+    let by = |ty: u32, id: u32| {
+        r.iters_with_keys
+            .iter()
+            .find(|l| (l.dat_file_type, l.dat_file_id) == (ty, id))
+            .map(|l| (l.iterations.iterations, l.iterations.ints.clone()))
+    };
+    assert_eq!(by(0, 1), Some((2112, vec![-2112, 1])), "portal");
+    assert_eq!(by(1, 2), Some((1593, vec![-1593, 1])), "cell");
+    let local = by(1, 3).expect("the language file");
+    assert!(local.0 > 0, "the later language file's own list");
+}
+
+/// A store the platform opened itself is the one the application reads: bring-up never looks
+/// at `dat_dir`, which here names nothing.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_store_opened_by_the_platform_is_the_one_the_app_reads() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let cfg = Config {
+        headless: true,
+        frames: None,
+        connect: false,
+        sound: false,
+        dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+        ..Config::default()
+    };
+    let app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(std::sync::Arc::clone(&store)),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .expect("bring-up takes the store it is given");
+    assert!(std::sync::Arc::ptr_eq(app.probe().dat_store(), &store));
+}
+
+/// A windowed App takes a relay-fed endpoint, which the replay attachment refuses it, and a
+/// second endpoint is handed back while the first is attached.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_windowed_app_takes_one_relay_endpoint() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let cfg = Config {
+        headless: false,
+        frames: None,
+        connect: false,
+        sound: false,
+        dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .expect("bring-up");
+    let endpoint = || {
+        crate::net::ClientNetwork::new("127.0.0.1", 9000, "account", "password", 1)
+            .expect("an endpoint")
+    };
+    assert!(
+        app.attach_replay_network(endpoint()).is_err(),
+        "the replay attachment is for a headless run"
+    );
+    assert!(app.attach_relay_network(endpoint()).is_ok());
+    assert!(
+        app.replay_network_mut().is_some(),
+        "the endpoint is socket-free"
+    );
+    assert!(
+        app.attach_relay_network(endpoint()).is_err(),
+        "one link at a time"
+    );
+}
+
+/// With no interface, `--enter-world` takes the character the list names only once the server has
+/// finished updating the data files, as the screens' own Log In waits.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_scripted_entry_with_no_interface_waits_for_the_data_files_to_be_updated() {
+    use pyreal_client_net::client_session::{DddEvent, SessionEvent};
+    use pyreal_protocol::login::{CharacterIdentity, LoginCharacterSet};
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let cfg = Config {
+        headless: true,
+        frames: None,
+        connect: false,
+        sound: false,
+        enter_world: true,
+        start_char: "builder".into(),
+        dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .expect("bring-up");
+    let net = crate::net::ClientNetwork::new("127.0.0.1", 9000, "builder", "password", 1)
+        .expect("an endpoint");
+    assert!(app.attach_replay_network(net).is_ok());
+    let mut shell = NullShell;
+    let one = |gid: u32, name: &str| CharacterIdentity {
+        gid: pyreal_primitives::ObjectId(gid),
+        name: name.into(),
+        seconds_greyed_out: 0,
+    };
+    let set = LoginCharacterSet {
+        characters: vec![one(0x5000_0001, "Other"), one(0x5000_0002, "Builder")],
+        account: "builder".into(),
+        ..LoginCharacterSet::default()
+    };
+    app.process_logon_event_queue(&mut shell, vec![SessionEvent::CharacterSet(Box::new(set))]);
+    app.process_logon_event_queue(&mut shell, Vec::new());
+    assert_eq!(
+        app.script,
+        EnterWorldScript::AwaitingCharacterSet,
+        "not while the files are being updated"
+    );
+    assert_eq!(app.host_state().entered_character, None);
+    app.process_logon_event_queue(&mut shell, vec![SessionEvent::Ddd(DddEvent::End)]);
+    assert_eq!(app.script, EnterWorldScript::Entering);
+    assert_eq!(
+        app.host_state().entered_character.as_deref(),
+        Some("Builder")
+    );
+}
+
+mod explore;
+mod world_refusal;
+
+/// A minimized window, which the host reports as having no extent, rests a frame at full rate, and
+/// goes back to full rate when it is restored. The world goes on running throughout.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_minimized_window_rests_its_frames_until_it_is_restored() {
+    use crate::platform::clock::Pacer;
+    use pyreal_client_contract::options::store;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// What each frame's pace was asked for, never sleeping.
+    struct Told(Rc<RefCell<Vec<&'static str>>>);
+    impl Pacer for Told {
+        fn frame_sleep(&mut self, _is_active_app: bool) -> u32 {
+            self.0.borrow_mut().push("full rate");
+            0
+        }
+        fn hidden_frame_sleep(&mut self) -> u32 {
+            self.0.borrow_mut().push("rests");
+            0
+        }
+    }
+
+    let store_ = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let told = Rc::new(RefCell::new(Vec::new()));
+    let pacer = Told(Rc::clone(&told));
+    let cfg = Config {
+        headless: true,
+        frames: None,
+        connect: false,
+        sound: false,
+        dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store_),
+        move |_| {
+            Ok(Platform {
+                pacer: Box::new(pacer),
+                ..Platform::headless(64, 64)
+            })
+        },
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .expect("bring-up");
+    let mut shell = NullShell;
+    store::init();
+    app.pump.state.is_active_app = false;
+    assert!(app.frame(&mut shell));
+    let minimized = HostEvent::Resized {
+        width: 0,
+        height: 0,
+    };
+    app.handle_window_event(&mut shell, &minimized, 0);
+    assert!(app.frame(&mut shell));
+    let restored = HostEvent::Resized {
+        width: 64,
+        height: 64,
+    };
+    app.handle_window_event(&mut shell, &restored, 0);
+    assert!(app.frame(&mut shell));
+    assert_eq!(*told.borrow(), ["full rate", "rests", "full rate"]);
+    store::clear();
+}
+
+/// A window that draws full screen at a share of its screen's pixels offers the render scale: the
+/// preferences, once read, hold it at the share the window starts at, whatever the profile says. A
+/// window that cannot leaves it out.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_window_that_draws_at_a_share_of_its_screen_offers_the_render_scale_at_its_start() {
+    use crate::platform::window::WindowHost;
+    use pyreal_client_contract::options::{render_scale, store};
+
+    /// A window that draws full screen at the share it holds, where it holds one.
+    struct Scaled(Option<u32>);
+    impl WindowHost for Scaled {
+        fn client_size(&self) -> (u32, u32) {
+            (64, 64)
+        }
+        fn screen_metrics(
+            &self,
+            _frame: (i32, i32, i32),
+        ) -> pyreal_client_contract::window::ScreenMetrics {
+            crate::platform::window::headless_screen_metrics()
+        }
+        fn render_scale(&self) -> Option<u32> {
+            self.0
+        }
+    }
+
+    let data = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let folder = std::env::temp_dir().join(format!("render-scale-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let profile = folder.join("UserPreferences.ini");
+    std::fs::write(&profile, "[Display]\r\nRenderScale=50\r\n").unwrap();
+    for (share, held) in [(Some(67), Some(50)), (None, None), (Some(100), Some(50))] {
+        let cfg = Config {
+            headless: true,
+            frames: None,
+            connect: false,
+            sound: false,
+            dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+            preferences_file: profile.clone(),
+            ..Config::default()
+        };
+        let mut app = App::<NullShell>::bring_up_with_store(
+            cfg,
+            Some(std::sync::Arc::clone(&data)),
+            move |_| {
+                Ok(Platform {
+                    window: Box::new(Scaled(share)),
+                    ..Platform::headless(64, 64)
+                })
+            },
+            |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+        )
+        .expect("bring-up");
+        store::init();
+        app.start_preferences();
+        assert_eq!(render_scale::offered(), held.is_some());
+        assert_eq!(
+            store::inq_value(render_scale::RENDER_SCALE),
+            held.map(pyreal_client_contract::PrefValue::Int)
+        );
+        store::clear();
+    }
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// A landscape or high-fidelity option set while playing is recorded in the next world's scene;
+/// an option the store holds is read back from it instead, and is not.
+#[test]
+fn a_live_fidelity_or_landscape_change_is_kept_for_the_next_world() {
+    use pyreal_client_contract::options::{landscape, names::fidelity};
+    for name in fidelity::NAMES {
+        assert!(kept_for_the_next_world(name), "{name}");
+    }
+    assert!(kept_for_the_next_world(landscape::GROUND));
+    assert!(!kept_for_the_next_world("Render.ScreenBrightness"));
+    let mut next = crate::scene::SceneConfig::default();
+    assert!(next.render.set_named(
+        fidelity::SHADOWS,
+        &pyreal_client_contract::PrefValue::Bool(true)
+    ));
+    assert!(next.render.fidelity.any_effective());
+    assert!(!with_stored_options(next)
+        .render
+        .fidelity
+        .eq(&Default::default()));
+}
+
+/// A front end whose screen is the world or one before it, drawn at the player's own size or
+/// held at the login size, as the test says.
+#[derive(Debug, Default)]
+struct Screens {
+    world: bool,
+    own_size: bool,
+}
+
+impl Shell for Screens {
+    type Hud = crate::shell::PlainHud;
+    type Present = dyn crate::present::Presentation;
+    fn has_ui(&self) -> bool {
+        true
+    }
+    fn in_gameplay(&self) -> bool {
+        self.world
+    }
+    fn keeps_login_size(&self) -> bool {
+        !self.own_size
+    }
+}
+
+/// A client whose saved setting asks for full screen, brought up at the screen `shell` says.
+/// A window the switch really makes full screen, as on Windows. A Mac's window has its own
+/// button, and offers none.
+struct OffersFullScreen;
+
+impl crate::platform::window::WindowHost for OffersFullScreen {
+    fn screen_metrics(
+        &self,
+        _frame: (i32, i32, i32),
+    ) -> pyreal_client_contract::window_proc::ScreenMetrics {
+        crate::platform::window::headless_screen_metrics()
+    }
+    fn client_size(&self) -> (u32, u32) {
+        (800, 600)
+    }
+    fn offers_full_screen(&self) -> bool {
+        true
+    }
+}
+
+fn full_screen_client(shell: &mut Screens) -> App<Screens> {
+    full_screen_client_in(shell, Box::new(OffersFullScreen))
+}
+
+/// A client set to full screen, in `window`.
+fn full_screen_client_in(
+    shell: &mut Screens,
+    window: Box<dyn crate::platform::window::WindowHost>,
+) -> App<Screens> {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap_or_else(|| {
+        panic!(
+            "the retail dats are this test's oracle and they are not under {}",
+            pyreal_dat::testing::dat_dir().display()
+        )
+    }));
+    let mut cfg = Config {
+        headless: true,
+        frames: None,
+        connect: false,
+        sound: false,
+        dat_dir: std::path::PathBuf::from("a directory that does not exist"),
+        ..Config::default()
+    };
+    cfg.display.full_screen = true;
+    let mut app = App::<Screens>::bring_up_with_store(
+        cfg,
+        Some(store),
+        move |_| {
+            Ok(Platform {
+                window,
+                ..Platform::headless(800, 600)
+            })
+        },
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(800, 600))),
+    )
+    .expect("bring-up");
+    show(&mut app, shell);
+    app
+}
+
+/// The screen `shell` says is shown: the edge a front end follows, and what the window wears
+/// after it.
+fn show(app: &mut App<Screens>, shell: &mut Screens) {
+    app.follow_screen_forced_resolution(shell);
+    app.follow_gameplay_full_screen(shell);
+    app.apply_changed_display_presentation(shell);
+}
+
+/// Alt and Enter, as the window's loop takes them: latched, then the loop's own epilogue.
+fn alt_enter(app: &mut App<Screens>, shell: &mut Screens) {
+    app.pump.state.toggle_full_screen_mode = true;
+    let _ = app.do_event_loop(shell);
+}
+
+/// The options' full-screen box, ticked or not.
+fn tick(app: &mut App<Screens>, shell: &mut Screens, on: bool) {
+    use pyreal_client_contract::{options::names::DISPLAY_FULL_SCREEN, PrefValue, UiRequest};
+    let rest = app.apply_display_preference_requests(
+        shell,
+        vec![UiRequest::SetPreference(
+            DISPLAY_FULL_SCREEN,
+            PrefValue::Bool(on),
+        )],
+    );
+    assert!(rest.is_empty(), "the box is the display's to take");
+    app.apply_changed_display_presentation(shell);
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn the_window_is_held_only_on_a_screen_that_keeps_the_login_size() {
+    struct Told(std::rc::Rc<std::cell::Cell<Option<bool>>>);
+    impl crate::platform::window::WindowHost for Told {
+        fn screen_metrics(
+            &self,
+            _frame: (i32, i32, i32),
+        ) -> pyreal_client_contract::window_proc::ScreenMetrics {
+            crate::platform::window::headless_screen_metrics()
+        }
+        fn client_size(&self) -> (u32, u32) {
+            (800, 600)
+        }
+        fn hold_at_login_size(&self, held: bool) {
+            self.0.set(Some(held));
+        }
+    }
+    let told = std::rc::Rc::new(std::cell::Cell::new(None));
+    let mut shell = Screens::default();
+    let mut app = full_screen_client(&mut shell);
+    app.window = Box::new(Told(told.clone()));
+    let _ = app.do_event_loop(&mut shell);
+    assert_eq!(told.get(), Some(true), "the login screen holds it");
+    shell.world = true;
+    let _ = app.do_event_loop(&mut shell);
+    assert_eq!(told.get(), Some(false), "the world does not");
+    shell.world = false;
+    shell.own_size = true;
+    let _ = app.do_event_loop(&mut shell);
+    assert_eq!(told.get(), Some(false), "nor a screen at the player's size");
+}
+
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn screens_before_the_world_drawn_at_the_players_size_are_full_screen_and_a_switch_there_is_kept() {
+    // Character select drawn at the player's own size, as Horizon draws it.
+    let mut own = Screens {
+        world: false,
+        own_size: true,
+    };
+    let mut app = full_screen_client(&mut own);
+    assert!(app.applied_full_screen, "the setting applies at once");
+    alt_enter(&mut app, &mut own);
+    assert!(!app.applied_full_screen, "the switch key works there");
+    own.world = true;
+    show(&mut app, &mut own);
+    assert!(
+        !app.applied_full_screen,
+        "a switch made at character select is kept into the world"
+    );
+    alt_enter(&mut app, &mut own);
+    assert!(app.applied_full_screen);
+    own.world = false;
+    show(&mut app, &mut own);
+    assert!(app.applied_full_screen, "and back out of it");
+    tick(&mut app, &mut own, false);
+    assert!(!app.applied_full_screen, "the box works there");
+    tick(&mut app, &mut own, true);
+    assert!(app.applied_full_screen);
+    assert!(app.config().display.full_screen, "the setting is kept");
+
+    // Character select held at the login size, as the modern and classic interfaces hold it.
+    let mut login = Screens::default();
+    let mut app = full_screen_client(&mut login);
+    assert!(!app.applied_full_screen, "a window there");
+    alt_enter(&mut app, &mut login);
+    assert!(!app.applied_full_screen, "the switch key is refused");
+    tick(&mut app, &mut login, true);
+    assert!(!app.applied_full_screen, "the box waits for the world");
+    login.world = true;
+    show(&mut app, &mut login);
+    assert!(app.applied_full_screen, "the world takes the setting");
+    login.world = false;
+    show(&mut app, &mut login);
+    assert!(!app.applied_full_screen, "and leaving gives it back");
+
+    // An interface drawn at the player's size switched in before the world takes the setting;
+    // one held at the login size switched in after it gives the window back.
+    login.own_size = true;
+    show(&mut app, &mut login);
+    assert!(app.applied_full_screen);
+    login.own_size = false;
+    show(&mut app, &mut login);
+    assert!(!app.applied_full_screen);
+
+    // A window with its own full-screen button (a Mac's) is never made full screen by the box.
+    let mut own = Screens {
+        world: true,
+        own_size: true,
+    };
+    let mut app = full_screen_client_in(
+        &mut own,
+        Box::new(crate::platform::window::NullWindow::new(800, 600)),
+    );
+    assert!(!app.applied_full_screen, "the setting is not read there");
+    tick(&mut app, &mut own, true);
+    assert!(!app.applied_full_screen, "the window's own button decides");
+}
+
+/// A window that says when it closes.
+#[derive(Debug)]
+struct ClosingWindow {
+    inner: NullWindow,
+    drop_log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
+}
+
+impl Drop for ClosingWindow {
+    fn drop(&mut self) {
+        self.drop_log.borrow_mut().push("window");
+    }
+}
+
+impl WindowHost for ClosingWindow {
+    fn client_size(&self) -> (u32, u32) {
+        self.inner.client_size()
+    }
+    fn screen_metrics(
+        &self,
+        frame_metrics: (i32, i32, i32),
+    ) -> pyreal_client_contract::window::ScreenMetrics {
+        self.inner.screen_metrics(frame_metrics)
+    }
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn at_exit_the_device_goes_before_the_window_it_presents_to() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let drop_log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (window_log, device_log) = (drop_log.clone(), drop_log.clone());
+    let app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        move |_| {
+            let mut platform = Platform::headless(64, 64);
+            platform.window = Box::new(ClosingWindow {
+                inner: NullWindow::new(64, 64),
+                drop_log: window_log,
+            });
+            Ok(platform)
+        },
+        move |_, _, _, _| {
+            let mut device = crate::present::NullPresentation::new(64, 64);
+            device.drop_log = Some(device_log);
+            Ok(Box::new(device))
+        },
+    )
+    .unwrap();
+    let mut shell = NullShell;
+    let log = app.shutdown(&mut shell);
+    assert_eq!(log.order(), crate::shutdown::Step::ORDER);
+    assert_eq!(*drop_log.borrow(), ["device", "window"]);
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn a_host_can_advance_a_session_without_presenting_over_its_other_view() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    let mut shell = NullShell;
+    assert!(app.frame_with_drawing(&mut shell, false));
+    assert_eq!(app.frames_drawn(), 0);
+    assert!(app.timer.local_time > 0.0);
+    assert!(app.frame(&mut shell));
+    assert_eq!(app.frames_drawn(), 1);
+    let (mut present, log) = app.shutdown_retaining_presentation(&mut shell);
+    let device = present
+        .as_any_mut()
+        .downcast_mut::<crate::present::NullPresentation>()
+        .unwrap();
+    assert_eq!(device.counts().start_frame, 1);
+    assert_eq!(device.counts().end_frame, 1);
+    assert_eq!(device.counts().wait_idle, 1);
+    assert_eq!(log.order(), crate::shutdown::Step::ORDER);
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn ending_a_session_drops_the_travels_journey_and_requests() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    let mut shell = NullShell;
+    app.travel
+        .request(crate::travel::TravelRequest::LearnRecalls { id: 7 });
+    assert!(app.travel.wanted());
+    app.end_session(&mut shell);
+    assert!(
+        !app.travel.wanted(),
+        "a journey asked for in one session ran on in the next"
+    );
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn the_window_procedures_effects_do_not_outlive_their_frame() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    let mut shell = NullShell;
+    let mouse_move = crate::pump::WindowMessage::new(0x0200, 0, 0);
+    for t in 0..100 {
+        app.pump.dispatch(mouse_move, t);
+    }
+    assert!(!app.pump.effects.is_empty());
+    assert!(app.frame(&mut shell));
+    assert!(
+        app.pump.effects.is_empty(),
+        "{} effects kept",
+        app.pump.effects.len()
+    );
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn the_hooks_control_loss_latch_starts_over_with_the_session() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    let mut shell = NullShell;
+    // Two losses of control, both already told to the hook.
+    app.movement.lists.control_losses = 2;
+    app.hook_control_losses = 2;
+    app.end_session(&mut shell);
+    assert_eq!(
+        app.movement.lists.control_losses, app.hook_control_losses,
+        "the next session's first hook frame would hear of a loss that never happened"
+    );
+}
+
+/// An app over `profile` that reads the player's preferences, as a windowed start does.
+fn app_over_profile(profile: &std::path::Path) -> App<NullShell> {
+    let cfg = Config {
+        headless: true,
+        frames: None,
+        connect: false,
+        sound: false,
+        dat_dir: pyreal_dat::testing::dat_dir(),
+        preferences_file: profile.to_path_buf(),
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(std::sync::Arc::new(
+            pyreal_dat::testing::open_store().expect("retail data"),
+        )),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .expect("bring-up");
+    pyreal_client_contract::options::store::init();
+    app.start_preferences();
+    app
+}
+
+/// Retail writes `UserPreferences.ini` in Windows-1252. Such a file is read, and the exit save
+/// keeps every key this build does not register, in the file's own encoding.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_windows_1252_profile_is_read_and_the_exit_save_keeps_its_other_keys() {
+    use pyreal_client_contract::{options::store, PrefValue};
+    let folder = std::env::temp_dir().join(format!("ansi-profile-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let profile = folder.join("UserPreferences.ini");
+    std::fs::write(
+        &profile,
+        b"[Net]\r\nServer=play.example\r\n[Input]\r\nKeymapFile=C:\\Users\\Jos\xe9\\acmap.txt\r\n[Sound]\r\nSoundVolume=0.25\r\n",
+    )
+    .unwrap();
+    let app = app_over_profile(&profile);
+    assert_eq!(
+        store::inq_value("Sound.SoundVolume"),
+        Some(PrefValue::Float(0.25)),
+        "a Windows-1252 profile was not read"
+    );
+    let _ = app.shutdown(&mut NullShell);
+    let saved = std::fs::read(&profile).unwrap();
+    let has = |needle: &[u8]| saved.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"Server=play.example"), "the save dropped Net.Server");
+    assert!(
+        has(b"KeymapFile=C:\\Users\\Jos\xe9\\acmap.txt"),
+        "the save dropped or re-encoded Input.KeymapFile"
+    );
+    store::clear();
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// A profile that is there but cannot be read is never saved over.
+#[cfg(unix)]
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn an_unreadable_profile_is_not_saved_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = std::env::temp_dir().join(format!("unreadable-profile-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let profile = folder.join("UserPreferences.ini");
+    let kept = b"[Net]\r\nServer=play.example\r\n".to_vec();
+    std::fs::write(&profile, &kept).unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o200)).unwrap();
+    let app = app_over_profile(&profile);
+    let _ = app.shutdown(&mut NullShell);
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        std::fs::read(&profile).unwrap(),
+        kept,
+        "the exit save replaced a profile it could not read"
+    );
+    pyreal_client_contract::options::store::clear();
+    let _ = std::fs::remove_dir_all(&folder);
+}
+
+/// What the player held with the orbit camera, and the mouse-look hold, go with the world on a
+/// log-off: a release the window never delivered does not turn the next character.
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn a_log_off_lets_go_of_the_orbit_keys_and_mouse_look() {
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    app.orbit_keys.buttons = (true, false);
+    app.orbit_keys.walking = true;
+    app.orbit_pending
+        .push(pyreal_client_contract::actions::Action::begin(
+            pyreal_client_contract::actions::movement::TURN_LEFT,
+        ));
+    app.orbit_look = (1.0, 0.0);
+    app.mouse_look_button(true);
+    // The server's answer to the log-off tears the world down.
+    app.reset_world_view();
+    assert_eq!(app.orbit_keys, crate::orbit::MovementKeys::default());
+    assert!(app.orbit_pending.is_empty());
+    assert_eq!(app.orbit_look, (0.0, 0.0));
+    assert!(!app.mouse_look, "mouse look survived the log-off");
+}
+
+/// A portal frame whose message budget runs out inside the messages a create released keeps
+/// them, ahead of the rest of the batch it was taking.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_portal_frame_keeps_the_messages_a_create_released_ahead_of_the_rest() {
+    use pyreal_client_net::client_session::SessionEvent;
+    use pyreal_primitives::ObjectId;
+    use pyreal_protocol::objects::{ItemCreateObject, ItemSetState, ObjectCreatePayload};
+    use pyreal_protocol::types::{physicsdesc::flags, PhysicsDesc, PhysicsEventStamp};
+    use pyreal_protocol::{write_body, Opcode};
+
+    let store = std::sync::Arc::new(pyreal_dat::testing::open_store().unwrap());
+    let cfg = Config {
+        headless: true,
+        connect: false,
+        sound: false,
+        ..Config::default()
+    };
+    let mut app = App::<NullShell>::bring_up_with_store(
+        cfg,
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(crate::present::NullPresentation::new(64, 64))),
+    )
+    .unwrap();
+    let net = crate::net::ClientNetwork::new("127.0.0.1", 9000, "builder", "password", 1)
+        .expect("an endpoint");
+    assert!(app.attach_replay_network(net).is_ok());
+    let state = |id: u32| {
+        write_body(&ItemSetState {
+            state: 0,
+            id: ObjectId(id),
+            timestamps: PhysicsEventStamp {
+                instance: 9,
+                event: 1,
+            },
+        })
+        .expect("encode")
+    };
+    let created = 0x5000_0001;
+    // A state for an object not yet known is parked on it.
+    let parked = app
+        .network_mut()
+        .unwrap()
+        .session
+        .recheck_world_object_delivery(Opcode::ITEM_SET_STATE, &state(created));
+    assert!(parked.is_none(), "the state is parked on the object");
+    let create = write_body(&ItemCreateObject(ObjectCreatePayload {
+        id: ObjectId(created),
+        objdesc: Default::default(),
+        physicsdesc: PhysicsDesc {
+            bitfield: flags::SETUP,
+            setup_id: Some(0x0200_0001),
+            timestamps: pyreal_protocol::types::PhysicsTimestamps {
+                instance: 9,
+                ..Default::default()
+            },
+            ..PhysicsDesc::default()
+        },
+        wdesc: Default::default(),
+    }))
+    .expect("encode");
+    let after = SessionEvent::WorldObject {
+        opcode: Opcode::ITEM_SET_STATE,
+        body: state(0x5000_0002),
+    };
+    app.teleport.anim.teleport_in_progress = true;
+    // One message a frame: the create, so the released state is the first to wait.
+    app.pace_portal_by_messages(Some(1));
+    app.held_events = [
+        SessionEvent::WorldObject {
+            opcode: Opcode::ITEM_CREATE_OBJECT,
+            body: create,
+        },
+        after.clone(),
+    ]
+    .into();
+    app.deliver_session_events(&mut NullShell, pyreal_primitives::LocalTime(1.0));
+    assert_eq!(app.session_events_taken(), 1);
+    let held: Vec<_> = app.held_events.iter().cloned().collect();
+    assert_eq!(
+        held,
+        vec![
+            SessionEvent::WorldObject {
+                opcode: Opcode::ITEM_SET_STATE,
+                body: state(created),
+            },
+            after,
+        ],
+        "the state the create released was dropped or put behind the rest"
+    );
+}
+
+/// The size a window closed at is cut to the screen it is put back on, not the one it opened on:
+/// a big window kept on a big second screen comes back big there.
+#[test]
+fn a_saved_size_is_cut_to_the_screen_the_window_is_put_back_on() {
+    use crate::platform::window::WindowHost;
+    use std::cell::Cell;
+
+    /// A small main screen at the origin and a big one to its right.
+    struct TwoScreens(Cell<(i32, i32)>);
+    impl WindowHost for TwoScreens {
+        fn client_size(&self) -> (u32, u32) {
+            (800, 600)
+        }
+        fn screen_metrics(
+            &self,
+            _frame: (i32, i32, i32),
+        ) -> pyreal_client_contract::window::ScreenMetrics {
+            crate::platform::window::headless_screen_metrics()
+        }
+        fn player_sizes_window(&self) -> bool {
+            true
+        }
+        fn shows_at(&self, x: i32, _y: i32) -> bool {
+            (0..5000).contains(&x)
+        }
+        fn set_outer_position(&self, x: i32, y: i32) {
+            self.0.set((x, y));
+        }
+        fn largest_client_size(&self) -> Option<(u32, u32)> {
+            Some(if self.0.get().0 >= 1280 {
+                (3800, 2100)
+            } else {
+                (1240, 760)
+            })
+        }
+    }
+
+    let window = TwoScreens(Cell::new((100, 100)));
+    let display = crate::config::DisplayPrefs {
+        window_size: Some((2400, 1400)),
+        window_position: Some((1500, 50)),
+        ..crate::config::DisplayPrefs::default()
+    };
+    let size = super::startup::restore_window_place(&window, &display, true, (800, 600));
+    assert_eq!(window.0.get(), (1500, 50));
+    assert_eq!(size, (2400, 1400));
+}
+
+/// The `0xF7E6` answer lists the files as the client does: portal, then language, then cell.
+/// Oracle: the recorded client's answer in `ddd-interrogation-only` (blob 1), to the recorded
+/// question (blob 0), over files at the same iterations.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn the_interrogation_answer_is_the_recorded_clients_byte_for_byte() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/message-corpus/ddd-interrogation-only/blobs.jsonl");
+    let text = std::fs::read_to_string(&path).expect("the recording");
+    let payload = |idx: u32| {
+        let line = text
+            .lines()
+            .find(|l| l.contains(&format!("\"idx\": {idx},")))
+            .expect("the blob");
+        let hex = line
+            .split("\"payload_hex\": \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .expect("its payload");
+        (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect::<Vec<u8>>()
+    };
+    let question = payload(0);
+    let product_id = u32::from_le_bytes(question[12..16].try_into().unwrap());
+    let store = pyreal_dat::testing::open_store().expect("the retail dats");
+    let answer = super::session::ddd_interrogation_response(&store, product_id, false, None);
+    let bytes = pyreal_protocol::write_body(&answer).expect("encode");
+    assert_eq!(bytes, payload(1)[4..]);
+}

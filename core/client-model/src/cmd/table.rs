@@ -69,6 +69,8 @@ pub enum CommandHandler {
     Messagetypes,
     /// This client's own moon phase command, not retail's (CD-moon-command).
     Moon,
+    /// This client's own waypoint command, not retail's.
+    Waypoint,
     /// This client's own fog density command, not retail's.
     Fog,
     Motd,
@@ -821,6 +823,16 @@ pub const PYREAL_COMMANDS: &[CommandEntry] = &[
         handler: Some(CommandHandler::PerfCapture),
         help: Some("help_perfcapture"),
     },
+    CommandEntry {
+        name: "way",
+        handler: Some(CommandHandler::Waypoint),
+        help: Some("help_way"),
+    },
+    CommandEntry {
+        name: "waypoint",
+        handler: Some(CommandHandler::Waypoint),
+        help: Some("help_way"),
+    },
 ];
 
 /// The names the Turbine-chat startup removes before re-adding, so the Turbine-chat entry wins.
@@ -935,5 +947,7 @@ pub const HELP_TEXTS: &[(&str, &[&str], &[&str])] = &[
     // This client's own commands' help (CD-report-commands), not retail's.
     ("help_report", &["@report - Prints a debug line with diagnostic information about where you are (@loc), what you're looking at (camera values), and various client rendering state.\n"], &["@report - Prints a debug line with diagnostic information about where you are (@loc), what you're looking at (camera values), and various client rendering state. Please include this when reporting bugs.\n"]),
     ("help_perfcapture", &["@perfcapture <seconds> - Records performance metrics for <seconds> (default 10) to a file in your settings folder.\n"], &["@perfcapture <seconds> - Records performance metrics for <seconds> (default 10) to a file in your settings folder. Please include this when reporting performance-related bugs.\n"]),
+    // This client's own command's help, not one of retail's.
+    ("help_way", &["@way - Shows the waypoint the radar points to.\n"], &["@way - Shows the waypoint the radar points to.\n@way <place> <name> - Sets a waypoint at a place such as 41.6N 33.9E. The name is optional.\n@way clear - Clears the waypoint.\nA waypoint can also be set by double clicking the map or from a page of the Journal's Notebook.\n"]),
     ("help_version", &["@version - Tells you what version of the software you are using.\n"], &["@version - Tells you what version of the software you are using.\n"]),
 ];

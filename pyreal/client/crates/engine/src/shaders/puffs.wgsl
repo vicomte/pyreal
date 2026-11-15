@@ -474,6 +474,10 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     let first = p.material & 0x7FFFu;
     let count = puff_count(first, (p.material >> 15u) & 0xFFu);
     let kind = (p.material >> 23u) & PUFF_KINDS;
+    // A portal is its own disc (`gates.wgsl`).
+    if (kind == GATE_KIND) {
+        return gate_volume(in);
+    }
     // Smoke and dust march their own way (`smoke.wgsl`).
     if (kind >= PUFF_SMOKE && kind != PUFF_SNOW) {
         return smokes_volume(in);

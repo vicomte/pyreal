@@ -67,7 +67,13 @@ impl<S: Shell> App<S> {
             }
         }
         self.input = CameraInput::default();
-        self.explore = Some(Explore::new(self.hud.era.era, start.place));
+        let mut e = Explore::new(self.hud.era.era, start.place);
+        // An instrument: `PYREAL_EXPLORE_FLY=<m/s>` flies straight on at that speed from the start.
+        e.scripted = std::env::var("PYREAL_EXPLORE_FLY")
+            .ok()
+            .and_then(|v| v.trim().parse().ok());
+        self.input.forward = e.scripted.is_some();
+        self.explore = Some(e);
         tracing::info!(
             "exploring {} from {}",
             self.cfg.dat_dir.display(),
@@ -93,6 +99,12 @@ impl<S: Shell> App<S> {
 
     /// A key of explore mode's, held (`down`) or let go.
     pub fn explore_key(&mut self, key: Key, down: bool) {
+        if key == Key::SaveTimings {
+            if down && self.exploring() {
+                self.save_frame_timings();
+            }
+            return;
+        }
         let Some(e) = self.explore.as_mut() else {
             return;
         };
@@ -113,6 +125,11 @@ impl<S: Shell> App<S> {
 
     /// Carry out what explore mode's overlay asked. Leaving is the front end's: it ends the mode.
     pub fn explore_ask(&mut self, ask: Ask) {
+        match ask {
+            Ask::SaveTimings => return self.save_frame_timings(),
+            Ask::OpenTimings => return self.open_hitch_folder(),
+            _ => {}
+        }
         let Some(e) = self.explore.as_mut() else {
             return;
         };
@@ -131,15 +148,49 @@ impl<S: Shell> App<S> {
                     let _ = crate::weather::apply(ws, set);
                 }
             }
-            Ask::Fog(level) => {
-                use pyreal_client_contract::options::names::fidelity::FOG_DENSITY;
-                let value = pyreal_client_contract::PrefValue::Int(level);
-                let _ =
-                    pyreal_client_contract::options::store::set_value(FOG_DENSITY, value.clone());
-                self.scripted_preferences.push((FOG_DENSITY, value));
+            Ask::Clouds(cover) => {
+                if let Some(ws) = self.world.as_mut() {
+                    use crate::clouds::{CloudOption, CloudsCommand};
+                    let set = cover.map_or(CloudsCommand::Unset(CloudOption::Cover), |c| {
+                        CloudsCommand::Set(CloudOption::Cover, c)
+                    });
+                    let _ = crate::clouds::apply(ws, set);
+                }
             }
-            Ask::Leave => {}
+            Ask::Go(north, east) => {
+                if let Some(ws) = self.world.as_mut() {
+                    e.go(ws, &self.store, north, east);
+                }
+            }
+            Ask::Leave | Ask::SaveTimings | Ask::OpenTimings => {}
         }
+    }
+
+    /// Where the viewer stands in the world: explore mode's camera, else the player's body as it
+    /// moves. `None` with neither.
+    #[must_use]
+    pub fn viewer_position(&self) -> Option<pyreal_primitives::Position> {
+        let ws = self.world.as_ref()?;
+        if self.explore.is_some() {
+            return crate::explore::camera_place(ws);
+        }
+        Some(ws.character.as_ref()?.position())
+    }
+
+    /// Whether the player stands in a dungeon: a room that sees no outside, as a building's rooms
+    /// do. Explore mode's camera never does.
+    #[must_use]
+    pub fn viewer_in_dungeon(&self) -> bool {
+        if self.explore.is_some() {
+            return false;
+        }
+        let Some(ws) = self.world.as_ref() else {
+            return false;
+        };
+        ws.character.as_ref().is_some_and(|c| {
+            let cell = c.position().cell;
+            !pyreal_physics::landdefs::is_outdoors(cell) && !ws.cell_seen_outside(cell)
+        })
     }
 
     /// What explore mode's overlay shows, while it is up.
@@ -148,12 +199,6 @@ impl<S: Shell> App<S> {
         let e = self.explore.as_ref()?;
         let ws = self.world.as_ref();
         let place = ws.and_then(crate::explore::camera_place);
-        let fog = match pyreal_client_contract::options::store::inq_value(
-            pyreal_client_contract::options::names::fidelity::FOG_DENSITY,
-        ) {
-            Some(pyreal_client_contract::PrefValue::Int(v)) => v,
-            _ => pyreal_client_contract::options::fog_density::DEFAULT,
-        };
         Some(ExploreView {
             era: e.era,
             coordinates: place
@@ -171,7 +216,8 @@ impl<S: Shell> App<S> {
                 .unwrap_or_default()
                 .to_owned(),
             weather: ws.map_or_else(Default::default, |w| w.weather),
-            fog,
+            clouds: ws.and_then(|w| w.clouds.get(crate::clouds::CloudOption::Cover)),
+            map_at: place.as_ref().map(crate::explore::map_at),
             copied: e.copied(self.timer.cur_time).map(str::to_owned),
         })
     }
@@ -180,6 +226,10 @@ impl<S: Shell> App<S> {
     pub(super) fn explore_before_update(&mut self) {
         if let (Some(e), Some(ws)) = (self.explore.as_ref(), self.world.as_mut()) {
             ws.flight_speed = e.speed();
+            // A scripted flight holds its key whatever the window does with the keys.
+            if e.scripted.is_some() {
+                self.input.forward = true;
+            }
         }
     }
 

@@ -57,6 +57,18 @@ pub struct FarField {
     /// Landscape Smoothing: the heights drawn as a smooth surface through the vertices, meeting
     /// the drawn ground at the square's edge.
     pub smooth: bool,
+    /// Its textures' levels and its nodes' bounds, worked out where it was made
+    /// ([`Self::prepare`]); worked out when it is drawn without.
+    pub prepared: Option<FarLevels>,
+}
+
+/// A far field's height and colour levels as the textures take them, and its nodes' bounds.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FarLevels {
+    /// Each level's side and bytes, finest first.
+    pub heights: Vec<(u32, Vec<u8>)>,
+    pub colours: Vec<(u32, Vec<u8>)>,
+    pub bounds: Vec<Vec<(f32, f32)>>,
 }
 
 impl FarField {
@@ -165,6 +177,50 @@ impl FarField {
             near_min: near.0,
             near_max: near.1,
             smooth: false,
+            prepared: None,
+        }
+    }
+
+    /// Its textures' levels and nodes' bounds, worked out now: on the thread that made it, so
+    /// drawing it only uploads them.
+    pub fn prepare(&mut self) {
+        self.prepared = Some(self.levels());
+    }
+
+    /// Its textures' levels (the colours box-filtered level to level, the heights point-sampled)
+    /// and its nodes' bounds.
+    #[must_use]
+    pub fn levels(&self) -> FarLevels {
+        let mips = self.size.trailing_zeros() + 1;
+        let mut heights = Vec::with_capacity(mips as usize);
+        let mut colours = Vec::with_capacity(mips as usize);
+        let mut rgba: Vec<u8> = self.colours.iter().flatten().copied().collect();
+        let mut size = self.size;
+        for level in 0..mips {
+            let (s, h) = self.height_level(level);
+            heights.push((s, h.iter().flat_map(|v| v.to_le_bytes()).collect()));
+            // The next colour level: a box filter (in the bytes, near enough this far away).
+            let next = (size / 2).max(1);
+            let mut down = Vec::with_capacity((next * next * 4) as usize);
+            for y in 0..next {
+                for x in 0..next {
+                    for c in 0..4 {
+                        let mut sum = 0u32;
+                        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                            let (sx, sy) = ((x * 2 + dx).min(size - 1), (y * 2 + dy).min(size - 1));
+                            sum += u32::from(rgba[((sy * size + sx) * 4 + c) as usize]);
+                        }
+                        down.push(u8::try_from(sum / 4).unwrap_or(u8::MAX));
+                    }
+                }
+            }
+            colours.push((size, std::mem::replace(&mut rgba, down)));
+            size = next;
+        }
+        FarLevels {
+            heights,
+            colours,
+            bounds: self.bounds(levels_for(self.size)),
         }
     }
 
@@ -592,30 +648,14 @@ impl FarTerrain {
                 },
             );
         };
-        let mut rgba: Vec<u8> = field.colours.iter().flatten().copied().collect();
-        let mut size = field.size;
-        for level in 0..mips {
-            let (s, h) = field.height_level(level);
-            let bytes: Vec<u8> = h.iter().flat_map(|v| v.to_le_bytes()).collect();
-            write(&heights, level, s, &bytes, 4);
-            write(&colours, level, size, &rgba, 4);
-            // The next colour level: a box filter (in the bytes, near enough this far away).
-            let next = (size / 2).max(1);
-            let mut down = Vec::with_capacity((next * next * 4) as usize);
-            for y in 0..next {
-                for x in 0..next {
-                    for c in 0..4 {
-                        let mut sum = 0u32;
-                        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                            let (sx, sy) = ((x * 2 + dx).min(size - 1), (y * 2 + dy).min(size - 1));
-                            sum += u32::from(rgba[((sy * size + sx) * 4 + c) as usize]);
-                        }
-                        down.push(u8::try_from(sum / 4).unwrap_or(u8::MAX));
-                    }
-                }
-            }
-            rgba = down;
-            size = next;
+        let mut field = field;
+        let prepared = field.prepared.take().unwrap_or_else(|| field.levels());
+        for (level, ((hs, h), (cs, c))) in
+            prepared.heights.iter().zip(&prepared.colours).enumerate()
+        {
+            let level = u32::try_from(level).unwrap_or(0);
+            write(&heights, level, *hs, h, 4);
+            write(&colours, level, *cs, c, 4);
         }
         let side = field.water_side.max(1);
         let water = device.create_texture(&wgpu::TextureDescriptor {
@@ -714,7 +754,7 @@ impl FarTerrain {
                 },
             ],
         });
-        let bounds = field.bounds(levels);
+        let bounds = prepared.bounds;
         Self {
             field_origin: field.origin,
             field,
@@ -751,6 +791,18 @@ impl FarTerrain {
     #[must_use]
     pub fn water_bindings(&self) -> (&wgpu::TextureView, &wgpu::Buffer) {
         (&self.water, &self.params)
+    }
+
+    /// Leaves the square from `min` to `max` (render space) to the exact cells: the drawn square
+    /// moved, and this field is kept beside it.
+    pub fn set_near(&mut self, gpu: &Gpu, min: Vec2, max: Vec2) {
+        self.field.near_min = min;
+        self.field.near_max = max;
+        gpu.queue.write_buffer(
+            &self.params,
+            0,
+            &params_bytes(&self.field, self.terrain_material),
+        );
     }
 
     /// Moves the field by `delta` (render space's origin moved the other way).

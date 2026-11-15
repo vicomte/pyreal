@@ -190,6 +190,67 @@ fn a_spellbook_filter_the_horizon_interface_sets_is_the_game_s_filter() {
     let _ = std::fs::remove_dir_all(&state);
 }
 
+/// Ctrl+Shift+P, the performance panel's key, pressed and released with a frame after each edge;
+/// whether the panel's option flipped.
+fn performance_key_flips(c: &mut Client) -> bool {
+    use pyreal_input::keys::Key;
+    let was = pyreal_client_contract::options::performance::shown();
+    let mut key = |vk, scan, pressed| {
+        c.shell.queue_window_event(HostEvent::KeyboardInput {
+            key: Key::new(vk, scan),
+            pressed,
+            text: None,
+        });
+        c.frame();
+    };
+    for pressed in [true, false] {
+        let keys = [(0xA2, 0x1D), (0xA0, 0x2A), (0x50, 0x19)];
+        if pressed {
+            keys.into_iter().for_each(|(vk, scan)| key(vk, scan, true));
+        } else {
+            keys.into_iter()
+                .rev()
+                .for_each(|(vk, scan)| key(vk, scan, false));
+        }
+    }
+    pyreal_client_contract::options::performance::shown() != was
+}
+
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn ctrl_shift_p_shows_the_performance_panel_on_every_screen_but_not_from_a_text_box() {
+    let state = std::env::temp_dir().join(format!("pyreal-horizon-perf-{}", std::process::id()));
+    let mut c = Client::before_the_world(&state);
+    assert!(performance_key_flips(&mut c), "before the world");
+
+    c.install_horizon_with(pyreal_horizon::options::HorizonOptions::default());
+    assert!(performance_key_flips(&mut c), "in the game");
+    // Enter opens the chat line, which keeps the keys.
+    tap(&mut c, 0x0D, 0x1C, None);
+    assert!(c.shell.horizon.ui.as_ref().unwrap().ui.text_focus);
+    assert!(!performance_key_flips(&mut c), "from the chat line");
+    tap(&mut c, 0x1B, 0x01, None);
+    c.finish();
+
+    // Explore, from the screens before the world.
+    let mut c = Client::before_the_world(&state);
+    c.app
+        .begin_explore(
+            &mut c.shell,
+            &pyreal_client_runtime::explore::ExploreStart {
+                dat_dir: pyreal_dat::testing::dat_dir(),
+                ..Default::default()
+            },
+        )
+        .expect("explore begins");
+    c.frame();
+    c.frame();
+    assert!(c.shell.horizon.ui.as_ref().unwrap().exploring());
+    assert!(performance_key_flips(&mut c), "in explore");
+    c.finish();
+    let _ = std::fs::remove_dir_all(&state);
+}
+
 /// A key `vk` (scan code `scan`) pressed and released over two frames, typing `text` if any.
 fn tap(c: &mut Client, vk: usize, scan: u16, text: Option<&str>) {
     use pyreal_input::keys::Key;

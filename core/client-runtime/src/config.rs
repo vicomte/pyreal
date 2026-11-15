@@ -390,6 +390,9 @@ pub struct Config {
     /// queued at once. Unset, a connected run uses a small budget (so the portal tunnel keeps
     /// animating through a load) and an offline run or capture builds everything at once.
     pub stream_budget_ms: Option<u32>,
+    /// `--hitch-ms <ms>`: a frame longer than this is saved as a hitch report (nought for none);
+    /// `PYREAL_HITCH_MS` sets it too, and [`crate::hitch::DEFAULT_THRESHOLD_MS`] without either.
+    pub hitch_ms: Option<f32>,
     /// `--object-identity-ms <n>`: milliseconds per frame the client gives, from start-up, to
     /// working out which of the other era's records stand for the world's, so the other era's
     /// object look is ready before it is asked for. `0` works them out at once the first time
@@ -590,6 +593,7 @@ impl Default for Config {
             land_radius: crate::render_prefs::LANDSCAPE_DRAW_DISTANCE_DEFAULT,
             scenery_radius: 1,
             stream_budget_ms: None,
+            hitch_ms: None,
             object_identity_ms: None,
             world: true,
             character: true,
@@ -925,6 +929,12 @@ const REBUILD_SWITCHES: &[Switch] = &[
     },
     Switch {
         long: "stream-budget-ms",
+        short: None,
+        arity: Arity::Required,
+    },
+    // How long a frame is before it is saved as a hitch report.
+    Switch {
+        long: "hitch-ms",
         short: None,
         arity: Arity::Required,
     },
@@ -1899,6 +1909,14 @@ impl Config {
                 self.stream_budget_ms = Some(v.parse::<u32>().map_err(|_| {
                     ConfigError::new(format!("bad --stream-budget-ms value {v:?}"))
                 })?);
+            }
+            "hitch-ms" => {
+                self.hitch_ms = Some(
+                    v.parse::<f32>()
+                        .ok()
+                        .filter(|ms| ms.is_finite() && *ms >= 0.0)
+                        .ok_or_else(|| ConfigError::new(format!("bad --hitch-ms value {v:?}")))?,
+                );
             }
             "object-identity-ms" => {
                 self.object_identity_ms = Some(v.parse::<u32>().map_err(|_| {

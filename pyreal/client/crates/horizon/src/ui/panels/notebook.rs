@@ -1,7 +1,8 @@
 //! The Journal's Notebook tab: the player's own notes, kept by the game's shared notebook and
 //! saved beside the preferences for the character. Each page has a label, a title, notes, a timer
 //! of days, hours and minutes, and a place; pages are added, deleted, turned, sorted and searched
-//! as the game's journal panel does, every change through the shared notebook.
+//! as the game's journal panel does, every change through the shared notebook. A page with a place
+//! can make it the waypoint.
 
 use pyreal_client_contract::journal::{JournalAction, JournalField, JournalView};
 use pyreal_client_contract::UiRequest;
@@ -232,6 +233,27 @@ impl Windows {
             ) {
                 out.requests
                     .push(UiRequest::Journal(JournalAction::StampLocation));
+            }
+            // A page's place becomes the waypoint, named for the page.
+            if d.location_set
+                && kit::button(
+                    p,
+                    ctx,
+                    Rect::new(x + w - 250.0 * k, row_y, 126.0 * k, 26.0 * k),
+                    "Set Waypoint",
+                    true,
+                )
+            {
+                let name = [&d.title, &d.label]
+                    .into_iter()
+                    .map(|t| t.trim())
+                    .find(|t| !t.is_empty())
+                    .map(str::to_owned);
+                self.waypoints.set(crate::ui::waypoint::Waypoint {
+                    ns: d.ns,
+                    ew: d.ew,
+                    name,
+                });
             }
             row_y += 34.0 * k;
             // The notes, written in place: a click gives them the keyboard.

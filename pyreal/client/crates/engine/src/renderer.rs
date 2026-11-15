@@ -112,7 +112,7 @@ pub mod source {
     #[must_use]
     pub fn forward() -> String {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             gbuffer(),
             include_str!("shaders/sun_shadow.wgsl"),
             include_str!("shaders/lamp_types.wgsl"),
@@ -127,6 +127,8 @@ pub mod source {
             include_str!("shaders/blobs.wgsl"),
             include_str!("shaders/puffs.wgsl"),
             include_str!("shaders/smoke.wgsl"),
+            include_str!("shaders/gates.wgsl"),
+            include_str!("shaders/beacons.wgsl"),
             include_str!("shaders/bolts.wgsl")
         )
     }
@@ -622,7 +624,9 @@ pub fn indoor_physical(light: &SkyLight, open_to_sky: bool, lamps_lit: bool) -> 
 }
 
 /// The frame uniform's bytes.
-pub const FRAME_SIZE: u64 = 1216;
+pub const FRAME_SIZE: u64 = 1248;
+/// Where the waypoint's ring lies in the frame uniform: after the shadows' pools of darkness.
+const WAYPOINT_AT: usize = 1216;
 /// The most shadows' pools of darkness a frame lays.
 pub const UMBRAE: usize = 8;
 /// A shadow's pool of darkness's radius, metres.
@@ -803,6 +807,20 @@ pub struct Selection {
     pub ring: Option<(glam::Vec3, f32)>,
     /// The ring's and the selected outline's colour, packed `0xAABBGGRR`; zero for the default.
     pub colour: u32,
+}
+
+/// The waypoint's ring: laid on whatever stands round its middle, with an arrow on its rim
+/// pointing the way to the waypoint.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaypointMark {
+    /// Its middle (the player's feet), render space.
+    pub at: glam::Vec3,
+    /// Metres from its middle to its rim.
+    pub radius: f32,
+    /// The way the arrow points, east and north, of unit length.
+    pub way: glam::Vec2,
+    /// The object it rings, by number, which it is not laid over.
+    pub around: Option<u32>,
 }
 
 /// What the cull pass kept in the last frame read back.
@@ -1088,6 +1106,8 @@ pub struct Renderer {
     pub output_size: (u32, u32),
     /// What is highlighted.
     pub selection: Selection,
+    /// The waypoint's ring round the player, when a waypoint is followed.
+    pub waypoint: Option<WaypointMark>,
     /// Translucent surfaces and particles drawn order-independently (weighted, blended) rather
     /// than sorted.
     pub oit: bool,
@@ -3106,6 +3126,7 @@ impl Renderer {
             internal: (0, 0),
             output_size: (0, 0),
             selection: Selection::default(),
+            waypoint: None,
             oit: false,
             particles_drawn: 0,
             particle_draws: 0,
@@ -4168,6 +4189,22 @@ impl Renderer {
                 f32s(&mut frame, &u.extend(UMBRA_RADIUS).to_array());
             }
         }
+        // The waypoint's ring: its middle and radius (0: none), the way its arrow points and the
+        // object it rings plus one.
+        frame.resize(WAYPOINT_AT, 0);
+        let (ring, way) = self.waypoint.map_or(([0.0; 4], [0.0; 4]), |w| {
+            (
+                w.at.extend(w.radius).to_array(),
+                [
+                    w.way.x,
+                    w.way.y,
+                    f32::from_bits(w.around.map_or(0, |o| o.wrapping_add(1))),
+                    0.0,
+                ],
+            )
+        });
+        f32s(&mut frame, &ring);
+        f32s(&mut frame, &way);
         frame.resize(usize::try_from(FRAME_SIZE).unwrap_or(0), 0);
         gpu.queue.write_buffer(&self.frame_buffer, 0, &frame);
 

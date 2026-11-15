@@ -46,6 +46,8 @@ impl<S: Shell> App<S> {
             .frame_started(std::time::Instant::now(), self.perf_steps);
         // `@perfcapture`, while it records: the frame just finished.
         self.perf_capture_use_time(interval);
+        // The hitch log: the frame just finished, and a report when one is due.
+        self.hitch_use_time(shell, interval);
         self.events.drain_frame();
         // `--capture-at` and `--set-at`: a picture of the frame just drawn, then the settings for
         // the one about to be.

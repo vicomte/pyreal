@@ -2627,7 +2627,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "pyreal-animation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-art"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glam",
  "png",
@@ -2656,7 +2656,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-art-pack"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "glam",
@@ -2672,7 +2672,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-assets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-dat",
  "pyreal-primitives",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-audio"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-audio-out"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "cpal",
  "pyreal-audio",
@@ -2705,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-chargen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "embed-resource",
  "glam",
@@ -2766,7 +2766,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-contract"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glam",
  "pyreal-primitives",
@@ -2775,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-model"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -2790,7 +2790,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-client-net",
  "pyreal-primitives",
@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "blake3",
  "pyreal-animation",
@@ -2831,7 +2831,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-shell"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -2866,14 +2866,14 @@ dependencies = [
 
 [[package]]
 name = "pyreal-clipboard"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "arboard",
 ]
 
 [[package]]
 name = "pyreal-codecs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-client-contract",
  "pyreal-primitives",
@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-console"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
@@ -2891,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-dat"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-primitives",
  "sha2",
@@ -2900,7 +2900,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "gilrs",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-engine"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glam",
  "naga",
@@ -2948,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-engine-view"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glam",
  "png",
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-gpu-probe"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pollster",
  "serde_json",
@@ -2974,7 +2974,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-horizon"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "png",
  "pyreal-animation",
@@ -3005,7 +3005,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-input"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -3016,14 +3016,14 @@ dependencies = [
 
 [[package]]
 name = "pyreal-landscape"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-primitives",
 ]
 
 [[package]]
 name = "pyreal-launch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-client-contract",
  "pyreal-dat",
@@ -3040,7 +3040,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-navigation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-runtime",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-physics"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -3063,7 +3063,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-plugin-api",
  "pyreal-plugin-lua",
@@ -3078,14 +3078,14 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-primitives",
 ]
 
 [[package]]
 name = "pyreal-plugin-host"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-lua"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mlua",
  "pyreal-plugin-api",
@@ -3114,7 +3114,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-package"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-plugin-api",
  "sha2",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-template"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-plugin-api",
  "toml",
@@ -3132,7 +3132,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-ui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "png",
  "pyreal-assets",
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-plugin-api",
  "scoped-tls-hkt",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-presentation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-client-contract",
  "pyreal-primitives",
@@ -3164,7 +3164,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-primitives"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libm",
  "pxfm",
@@ -3173,7 +3173,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-primitives",
  "thiserror 2.0.20",
@@ -3181,7 +3181,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-rules"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-primitives",
@@ -3190,7 +3190,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-scene"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "glam",
  "png",
@@ -3218,7 +3218,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-terrain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-landscape",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-testkit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -3264,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-text"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-primitives",
@@ -3273,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-transport"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-primitives",
  "thiserror 2.0.20",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-ui-kit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "png",
  "pyreal-client-contract",
@@ -3293,7 +3293,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-ui-logic"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-chargen",
@@ -3305,7 +3305,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-world-data"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -3318,7 +3318,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-world-render"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -5421,7 +5421,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flate2",
  "pyreal-dat",

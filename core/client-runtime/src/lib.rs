@@ -55,6 +55,8 @@ pub mod frame;
 /// The frame's event log. `App`'s ~30 test-only counters are one-line reads over it, and a
 /// replay harness's golden event log is built on it.
 pub mod frame_events;
+/// Hitch reports: the last thirty seconds of frames, saved when one is slow or when asked.
+pub mod hitch;
 pub mod perf;
 /// `@perfcapture`: every frame's time for a few seconds, saved to a file.
 pub mod perf_capture;

@@ -7,7 +7,8 @@ struct Lamp {
     colour: vec3<f32>,
     // Bits 0-7 the flicker (0 steady, 1 flame, 2 embers); bit 8 indoors; bit 9 shadowed; bit 10
     // the dats' own (its light held within a metre); bit 11 a flame found without a light; bit 12
-    // magic, the dats' light of a colour no lamp burns (a portal's, a spell's).
+    // magic, the dats' light of a colour no lamp burns (a portal's, a spell's); bit 13 an acid
+    // body's glow; bit 14 a strike of lightning; bit 15 a portal's own light (`gates::lamp`).
     flags: u32,
     // The client's light: colour times intensity.
     retail: vec3<f32>,
@@ -47,6 +48,8 @@ const EMBER: vec3<f32> = vec3<f32>(1.0, 0.2, 0.04);
 const OUTDOOR_GAIN: f32 = 12.0;
 // How bright an acid body's glow is outdoors, of a full lamp's.
 const ACID_LAMP: f32 = 0.45;
+// How bright a portal's own light is outdoors.
+const PORTAL_LAMP: f32 = 0.5;
 const OUTDOOR_CORE: f32 = 0.6;
 // A strike's lamp's intensity (the client's units) that lights as a bright lamp does.
 const LIGHTNING_UNITS: f32 = 40.0;
@@ -105,6 +108,10 @@ fn outdoor_lamp(l: Lamp, d: f32) -> vec3<f32> {
         // An acid body's glow washes the ground round it.
         bright = ACID_LAMP;
         reach = clamp(falloff, 4.0, 8.0);
+    } else if ((l.flags & 32768u) != 0u) {
+        // A portal washes the ground round it in its colour.
+        bright = PORTAL_LAMP;
+        reach = clamp(falloff, 4.0, 10.0);
     } else if (magic(l)) {
         // A soft glow round it, as neither retail nor the old renderer lit the ground with one.
         bright = 0.25;

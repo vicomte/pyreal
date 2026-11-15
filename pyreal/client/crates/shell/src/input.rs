@@ -131,6 +131,10 @@ pub struct InputShell {
     /// callback. Held actions are released and handed on first, before unregistration discards
     /// their state: a movement key held through log-off must not stay held on the character screen.
     session_callback: CallbackId,
+    /// The callback explore mode's maps are registered under, and whether they are. See
+    /// [`InputShell::set_explore_input_maps`].
+    explore_callback: CallbackId,
+    explore_input_maps: bool,
     /// Whether the character-session maps are registered. See
     /// [`InputShell::set_character_session_input_maps`].
     character_session_input_maps: bool,
@@ -313,6 +317,7 @@ impl InputShell {
         // The current pre-game screen's own callback. See [`Self::set_mode_input_maps`].
         let mode_callback = manager.new_callback();
         let target_callback = manager.new_callback();
+        let explore_callback = manager.new_callback();
         let modern = manager.keymap.clone();
         Ok(Self {
             manager,
@@ -324,6 +329,8 @@ impl InputShell {
             target_callback,
             target_input_map_active: false,
             session_callback,
+            explore_callback,
+            explore_input_maps: false,
             character_session_input_maps: true,
             combat_input_mode: pyreal_input::combat::mode::NONCOMBAT,
             stats: InputStats::default(),
@@ -1447,5 +1454,107 @@ mod tests {
             "the mouse position is stored, not dispatched"
         );
         assert_eq!(shell.stats.messages_handled, 2);
+    }
+
+    /// The key the key map binds to `action` in `map`, as the pump would press it: one of the
+    /// letters or function keys.
+    fn bound_key(shell: &InputShell, action: ActionId, map: InputMapId) -> Option<Key> {
+        use pyreal_input::keys::KeyCode;
+        use pyreal_input::pump::{scan_code_from_key_code, vk_from_key_code};
+        let chord = shell.keys_for_action(action, map).into_iter().next()?;
+        let scan = chord.control.offset();
+        let names = (b'A'..=b'Z')
+            .map(|c| format!("Key{}", c as char))
+            .chain((1..=12).map(|n| format!("F{n}")));
+        names.into_iter().find_map(|name| {
+            let code = KeyCode::from_code_name(&name)?;
+            (scan_code_from_key_code(code)? == scan)
+                .then(|| Key::new(vk_from_key_code(code).unwrap_or(0), scan))
+        })
+    }
+
+    /// Behaviour: none (Pyreal's own: explore mode's window keys)
+    /// Explore mode answers the game's own window keys, read from the key map, the player's
+    /// rebinding among them: the key bound to the map gives the map's action there, and not on the
+    /// screens before a world, nor while a text box has the keyboard.
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_games_window_keys_reach_explore_mode_as_the_key_map_binds_them() {
+        let store = store();
+        let mut shell = InputShell::new(&store, None).expect("the input tables load");
+        let mut pump = crate::pump::Pump::new();
+        let t = std::cell::Cell::new(1_000u32);
+        let map_panel = ActionId(0x1000_0017);
+        let settings = ActionId(0x1000_001A);
+        let mut press = |shell: &mut InputShell, key: Key| -> Vec<ActionId> {
+            let mut actions = Vec::new();
+            for down in [true, false] {
+                t.set(t.get() + 100);
+                shell.on_message(pump.key_message_for_key(key, down, t.get()));
+                actions.extend(shell.manager.take_events().iter().map(|e| e.action));
+            }
+            actions
+        };
+        // The Horizon interface's keys, on the screens before a world.
+        shell.activate_horizon(true);
+        shell.set_character_session_input_maps(false);
+        shell.finish_session_retirement(|_| {});
+        shell.set_mode_input_maps(&[9]);
+        let m = bound_key(&shell, map_panel, pyreal_input::maps::UI).expect("a key for the map");
+        let k = bound_key(&shell, settings, pyreal_input::maps::UI).expect("a key for Settings");
+        assert!(
+            !press(&mut shell, m).contains(&map_panel),
+            "not before a world"
+        );
+
+        shell.set_explore_input_maps(true);
+        assert!(
+            press(&mut shell, m).contains(&map_panel),
+            "the map's key in explore"
+        );
+        assert!(
+            press(&mut shell, k).contains(&settings),
+            "Settings' key in explore"
+        );
+
+        // A key the player binds to the map instead.
+        let n = Key::new(0x4E, 0x31);
+        assert!(
+            shell.set_binding(pyreal_input::maps::UI, map_panel, Some(0), {
+                let mut c = shell.keys_for_action(map_panel, pyreal_input::maps::UI)[0];
+                c.control = pyreal_input::ControlCode::new(
+                    c.control.device_index(),
+                    c.control.sub_control(),
+                    0x31,
+                );
+                c
+            })
+        );
+        assert_eq!(
+            bound_key(&shell, map_panel, pyreal_input::maps::UI),
+            Some(n)
+        );
+        assert!(
+            press(&mut shell, n).contains(&map_panel),
+            "the player's own key"
+        );
+
+        // Typing in a text box keeps the key a letter.
+        shell.set_focused_input_maps(&FOCUSED_TEXT_MAP_REGISTRATIONS);
+        assert!(
+            !press(&mut shell, n).contains(&map_panel),
+            "not while typing"
+        );
+        shell.set_focused_input_maps(&[]);
+        assert!(press(&mut shell, n).contains(&map_panel));
+
+        shell.set_explore_input_maps(false);
+        assert!(
+            !press(&mut shell, n).contains(&map_panel),
+            "gone with explore mode"
+        );
     }
 }

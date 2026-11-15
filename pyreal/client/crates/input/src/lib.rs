@@ -375,8 +375,9 @@ impl InputManager {
     ) -> Result<(), InputError> {
         let gm = MasterInputMap::read(gm_default_map)?;
         let mut dm = MasterInputMap::read(default_map)?;
-        // Keep the registered client-action section in the saved map even when it has no keys.
+        // Keep the registered client-action section in the saved map, with its default keys.
         dm.create_input_map(pyreal::INPUT_MAP);
+        pyreal::add_default_keys(&mut dm);
         let merged = Self::load_over_defaults(user_file, &[&gm, &dm], Some(&self.action_map));
         self.keymap.clear();
         self.keymap.merge(&merged, true);

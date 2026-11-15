@@ -25,8 +25,8 @@
 //!             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
 //!             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0]
 //!             [--budget MS] [--ui overlay.png] [--select X,Y] [--hover X,Y]
-//!             [--no-particles] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--no-wind] [--stride VX,VY]
-//!             [--turn DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
+//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--retail-beacons] [--no-wind] [--stride VX,VY]
+//!             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
 //! ```
 //!
 //! Scripted objects run their default scripts, and their emitters' particles are drawn;
@@ -177,17 +177,26 @@ struct Args {
     no_aa: bool,
     /// No particles; translucency drawn order-independently.
     no_particles: bool,
+    /// Objects' fire drawn as their retail particles, not drawn flames.
+    no_flames: bool,
     /// Cobwebs drawn as the dats' cards, not silk.
     no_webs: bool,
     /// Smoke, mist and creatures' liquid, vapour, glow, frost and lightning drawn as their
     /// particles' cards, as retail draws them.
     no_volumes: bool,
+    /// Portals drawn as retail draws their swirl, not as a vortex drawing in dust.
+    retail_portals: bool,
+    /// The lighthouses' beacons drawn as retail's added pictures, not a magical white light.
+    retail_beacons: bool,
     /// No wind: the grass, shrubs and trees stand still.
     no_wind: bool,
     /// Every body walked at this velocity, metres a second east and north.
     stride: Option<(f32, f32)>,
     /// The camera turned this many degrees a frame, clockwise.
     turn: f32,
+    /// The camera carried round the first body this many degrees a frame, anticlockwise, turning
+    /// as it goes so the body stays where it was in view.
+    orbit: f32,
     /// How much of Rez'arel's and Alb'arel's faces are lit, 0 new to 1 full.
     moon_phase: Option<(f32, f32)>,
     /// Every this many frames written beside `--out`, numbered.
@@ -290,11 +299,15 @@ impl Default for Args {
             base_pack: None,
             no_aa: false,
             no_particles: false,
+            no_flames: false,
             no_webs: false,
             no_volumes: false,
+            retail_portals: false,
+            retail_beacons: false,
             no_wind: false,
             stride: None,
             turn: 0.0,
+            orbit: 0.0,
             moon_phase: None,
             save_every: 0,
             set_time: None,
@@ -404,9 +417,9 @@ const USAGE: &str =
             [--out place.png] [--window] [--walk] [--no-cut] [--no-hiz] [--no-high-res] [--ground-coloring classic|tod] [--lod-bias 1.0] [--cards-from 1.0]
             [--far BLOCKS] [--fog-end METRES]
             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0] [--budget MS]
-            [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--oit]
-            [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--no-wind] [--stride VX,VY]
-            [--turn DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]";
+            [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--oit]
+            [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--retail-beacons] [--no-wind] [--stride VX,VY]
+            [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]";
 
 fn parse() -> Result<Args, String> {
     let mut a = Args::default();
@@ -529,8 +542,11 @@ fn parse() -> Result<Args, String> {
             "--base-pack" => a.base_pack = Some(PathBuf::from(val()?)),
             "--no-aa" => a.no_aa = true,
             "--no-particles" => a.no_particles = true,
+            "--no-flames" => a.no_flames = true,
             "--no-webs" => a.no_webs = true,
             "--no-volumes" => a.no_volumes = true,
+            "--retail-portals" => a.retail_portals = true,
+            "--retail-beacons" => a.retail_beacons = true,
             "--no-wind" => a.no_wind = true,
             "--stride" => {
                 let v = val()?;
@@ -538,6 +554,7 @@ fn parse() -> Result<Args, String> {
                 a.stride = Some((num(x)?, num(y)?));
             }
             "--turn" => a.turn = num(&val()?)?,
+            "--orbit" => a.orbit = num(&val()?)?,
             "--moon-phase" => {
                 let v = val()?;
                 let (r, l) = v.split_once(',').ok_or("--moon-phase takes REZ,ALB")?;
@@ -1119,6 +1136,8 @@ fn headless(a: &Args) -> Result<(), String> {
     engine.renderer.cut_ground = !a.no_cut;
     engine.renderer.webs.on = !a.no_webs;
     engine.particles.smoke &= !a.no_volumes;
+    engine.particles.portals &= !a.retail_portals;
+    engine.particles.beacons &= !a.retail_beacons;
     if a.no_wind {
         engine.renderer.foliage_wind = 0.0;
     }
@@ -1170,11 +1189,28 @@ fn headless(a: &Args) -> Result<(), String> {
             bodies::advance(&mut engine, &mut loader, &v.store, &mut bodies, FRAME_STEP);
             engine.renderer.clock += FRAME_STEP;
             camera.yaw -= a.turn.to_radians();
+            // Presentation only: where the camera stands, not anything the game computes.
+            #[allow(clippy::disallowed_methods)]
+            if let Some(b) = bodies.first().filter(|_| a.orbit != 0.0) {
+                let o = b.frame.origin;
+                let (sin, cos) = a.orbit.to_radians().sin_cos();
+                let p = camera.position - glam::Vec3::new(o.x, o.y, camera.position.z);
+                camera.position.x = o.x + p.x * cos - p.y * sin;
+                camera.position.y = o.y + p.x * sin + p.y * cos;
+                camera.yaw += a.orbit.to_radians();
+            }
         }
         if frame == 1 {
             select(&mut engine, a, &bodies);
         }
-        bodies::gather(&mut engine, &mut loader, &v.store, &bodies, statics);
+        bodies::gather(
+            &mut engine,
+            &mut loader,
+            &v.store,
+            &bodies,
+            statics,
+            camera.position,
+        );
         // The output and its read-back as `render_to_rgba`, with the render call timed alone.
         let target = engine.gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("output"),
@@ -1417,6 +1453,7 @@ fn load_ui(
 }
 
 fn apply_light(engine: &mut Engine, a: &Args) {
+    engine.flames.on = !a.no_flames;
     let r = &mut engine.renderer;
     r.calibration = if a.retail {
         Calibration::Retail
@@ -1625,6 +1662,7 @@ mod window {
                 &self.view.store,
                 &self.bodies,
                 self.statics,
+                self.view.camera.position,
             );
             self.engine.renderer.clock += f64::from(dt);
             let c = &mut self.view.camera;

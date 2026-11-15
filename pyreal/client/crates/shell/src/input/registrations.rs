@@ -486,6 +486,26 @@ impl InputShell {
         }
     }
 
+    /// Explore mode's maps: the game's interface map ([`pyreal_input::maps::UI`]), whose window
+    /// keys (the map, Settings and the rest) the explore screen answers, at the priority the
+    /// character session registers it, so a focused text box's barrier stops it as in the game.
+    /// The keys are the key map's, the player's own bindings among them. `false` drops them.
+    pub fn set_explore_input_maps(&mut self, live: bool) {
+        if self.explore_input_maps == live {
+            return;
+        }
+        self.explore_input_maps = live;
+        if live {
+            self.manager.register_input_map(
+                pyreal_input::maps::UI,
+                pyreal_input::dispatch::priority::GAMEPLAY,
+                self.explore_callback,
+            );
+        } else {
+            self.manager.unregister_callback(self.explore_callback);
+        }
+    }
+
     /// The callback the current pre-game screen's maps are registered under.
     #[must_use]
     pub const fn mode_callback(&self) -> CallbackId {

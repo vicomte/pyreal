@@ -367,6 +367,12 @@ impl HorizonFrontEnd {
         self.ui.screen == crate::ui::Screen::Game
     }
 
+    /// Whether explore mode's screen is up.
+    #[must_use]
+    pub fn exploring(&self) -> bool {
+        self.ui.screen == crate::ui::Screen::Explore
+    }
+
     /// Whether the examine window is on screen.
     #[must_use]
     pub fn examine_panel_open(&self) -> bool {
@@ -376,6 +382,14 @@ impl HorizonFrontEnd {
     /// The game asks for the examine window to close.
     pub fn close_examine_panel(&mut self) {
         self.examine_close = true;
+    }
+
+    /// A typed `@way`, carried out on the waypoint the interface keeps; the line to print.
+    pub fn waypoint_command(
+        &mut self,
+        command: pyreal_client_model::cmd::waypoint::WaypointCommand,
+    ) -> String {
+        self.ui.windows.waypoints.command(command)
     }
 
     /// The game asks for the vendor's buying tab.
@@ -693,12 +707,14 @@ impl HorizonFrontEnd {
         now: LocalTime,
     ) -> Vec<pyreal_input::InputEvent> {
         let gameplay = self.in_gameplay();
+        let exploring = self.exploring();
         let mut rest = Vec::with_capacity(events.len());
         for e in events {
             let a = e.action.0;
             // The actions the interface answers itself: shortcut and window keys, and logging
-            // out. Taken on the press; the release goes nowhere.
-            if gameplay && crate::ui::takes_action(a) {
+            // out. Taken on the press; the release goes nowhere. Explore mode keeps its map and
+            // Settings keys.
+            if (gameplay || exploring) && crate::ui::takes_action(a) {
                 if e.start {
                     self.frame_input.actions.push(a);
                 }
@@ -1461,6 +1477,11 @@ impl HorizonFrontEnd {
                         options.status_style = s;
                     }
                 }
+                "waypoints" => {
+                    if let Some(s) = crate::ui::waypoint::WaypointStyle::from_word(value) {
+                        options.waypoint_style = s;
+                    }
+                }
                 "mouse-turn" | "key-turn" | "tilt-min" | "tilt-max" | "camera-height"
                 | "camera-recentre" => {
                     if let Ok(v) = value.parse::<f32>() {
@@ -1557,6 +1578,7 @@ impl HorizonFrontEnd {
                 }
             }
         }
+        cx.present_mut().set_waypoint_ring(self.ui.waypoint_ring);
         cx.present_mut().set_ground_markers(&crate::ring::markers(
             target,
             self.ring_time,

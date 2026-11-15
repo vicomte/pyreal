@@ -7,6 +7,30 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-15
+
+### Added
+
+- Character creation has a Random button beside the name. It makes a name that suits the chosen heritage, following the game's own naming help.
+- Ctrl+Shift+P (Command+Shift+P on a Mac) shows or hides the performance panel on every screen, including the sign-in and loading screens and explore. It does nothing while you type in a text box, and the keys list lets you change it.
+- Explore mode has the game's Map and Settings buttons in the lower right, and the game's own keys for them, as bound. A click on the map moves the camera there.
+- The Explore panel sets the cloud cover. Its Fog row is gone because Settings has it.
+- Waypoints. Double-click the map, type `/way 41.6N 33.9E` with an optional name (`/way clear` clears it), or press Set Waypoint on a Journal page with a place. An arrow on the radar's rim points the way, and the Waypoints setting can also lay a ring with an arrow on the ground around your character, overland only. A Clear Waypoint button stands under the radar, and the waypoint clears when you come within 10 m of it. Each character keeps its own waypoint in each world.
+- Portals in the world are drawn as a spiralling funnel of their own colour that always faces you, with arms of different widths, lengths and speeds, and they light the ground round them in that colour. Dust from round a portal drifts toward it, speeds up as it nears and turns purple as it enters. Every era's portals of every colour are drawn this way.
+- A frame longer than 100 ms is saved as a hitch report in the settings folder's `logs/hitches`, with the 5 seconds before it and the second after. Explore's Save Timings button or F9 saves the last 30 seconds on request, and Open Folder opens the folder. `--hitch-ms` sets the threshold.
+
+### Changed
+
+- The world list's Explore panel shows one Explore button when only the End of Retail files are installed, a button for each era installed otherwise, and nothing with no data files.
+
+### Fixed
+
+- The small stones and pebbles lying among the grass, on sand and dirt and along roads have a rock texture. They were drawn in one flat colour.
+- The beacons on top of the Empyrean lighthouses, Tou-Tou's and six others, shine as a giant white light. A star of light burns at the heart, a shaft of light rises from it into the sky, white wisps rise round it and it lights the top of the tower. They were drawn as a grey cloud blown off the tower.
+- Braziers, the fires on top of beacon towers and other open fires burn as rolling fire shaped like the original game's, with a yellow heart cooling to red as it rises. They were drawn as a row of small flames.
+- Flying fast no longer reloads the world every few blocks. Explore's fastest speed is now 1 km/s, down from 5 km/s, which the land keeps up with.
+- A long Landscape Draw Distance no longer stops the world for two seconds at a time in fast flight. The far terrain already drawn serves the new square while a new one is made, the square is loaded ahead of a fast camera, and the far trees' work is kept small and drops what has been flown past.
+
 ## [0.1.1] - 2026-11-14
 
 ### Added
@@ -14,7 +38,7 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 - Art packs made for Dereth read in Pyreal: a `[[cover]]` table grows as ground cover, a ground's `detail` picture lays a fine grain over it near the eye (`detail_size`, `detail_strength`), and `pebbles = false` keeps the pebbles and stones off its grounds.
 - An art pack's models are drawn for objects the server makes too: a thing (not a creature, nor held) whose setup the pack has a model for is drawn as that model, and a part whose graphics object it has one for is drawn as that model.
 - The map reads a world's places from the place store its status names, so Empyrean worlds list their portals, towns and dungeons, and admins also get the detailed marks. A world with no place store, such as an ACE server, uses Pyreal's built-in list for its era.
-- Explore flies a free camera over Dereth with no server, from the world list for each era's files or with `--explore [place]`. It keeps above the ground, flies from 2 m/s to 5 km/s, sets the hour, the weather and the fog, and copies the camera's place or its report line.
+- Explore flies a free camera over Dereth with no server, from the world list for each era's files or with `--explore [place]`. It keeps above the ground, flies from 2 m/s to 1 km/s, sets the hour, the weather and the fog, and copies the camera's place or its report line.
 - Art packs can draw a creature or character as a skinned body of their own (`[[skin]]`, with `[keep]`), played by clips for what the creature is doing or following its parts as the game animates them, and `pyreal-art skeleton` writes a setup as a body to rig against.
 
 ### Fixed
@@ -258,5 +282,6 @@ work.
 - Far terrain pipelines are made once, and the ray scene gathers nearby statics once a frame.
 - Startup makes its pipelines side by side on several threads, warms up the ray-tracing builders in the background, and keeps a Vulkan pipeline cache in the settings folder, so a first launch on Windows reaches the world about twice as fast and later launches sooner still. The front door says when shaders are being prepared.
 
-[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.2
 [0.1.1]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.1

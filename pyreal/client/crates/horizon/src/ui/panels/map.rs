@@ -86,6 +86,15 @@ const KIND_LIST_W: f32 = 150.0;
 const MARK_REACH: f32 = 6.0;
 /// A mark's side, in layout units.
 const MARK_SIDE: f32 = 5.0;
+/// How far, in layout units, the pointer may move between a press and its release for a click.
+const CLICK_SLOP: f32 = 4.0;
+/// How long, in seconds, explore mode waits after a click before it moves there, so a double
+/// click sets a waypoint and goes nowhere.
+const GO_AFTER: f64 = 0.5;
+/// The line above the picture.
+const WAYPOINT_HINT: &str = "Double-click a point on the map to create a waypoint marker.";
+/// The waypoint's marker, on the screen at this many layout units a side.
+const WAYPOINT_UNITS: f32 = 26.0;
 
 /// An administrator's arrow, on the screen at this many layout units tall.
 const ARROW_UNITS: f32 = 30.0;
@@ -560,6 +569,15 @@ pub struct MapView {
     pub buttons: Option<[Rect; 3]>,
     /// Where the pointer last was in a pan under way.
     drag: Option<(f32, f32)>,
+    /// Where the press that began it was.
+    press: Option<(f32, f32)>,
+    /// The place under the pointer this frame, `(ns, ew)`, and its name.
+    pointed: Option<(f64, f64)>,
+    pointed_name: Option<String>,
+    /// Where explore mode goes once no second click comes, and when it was clicked.
+    go_waiting: Option<((f64, f64), f64)>,
+    /// The waypoint marker's tooltip, while the pointer is on it.
+    waypoint_tip: Option<(String, Vec<String>)>,
     /// The tiles drawn, and when a view last needed each.
     tiles: HashMap<(u32, u32), f64>,
     /// The places, once read, and what from: the era, and the world's own document by address.
@@ -583,6 +601,11 @@ impl Default for MapView {
             centre: (MAP_SIZE / 2.0, MAP_SIZE / 2.0),
             buttons: None,
             drag: None,
+            press: None,
+            pointed: None,
+            pointed_name: None,
+            go_waiting: None,
+            waypoint_tip: None,
             tiles: HashMap::new(),
             places: None,
             hidden: Vec::new(),
@@ -895,9 +918,18 @@ impl Windows {
     ) {
         let k = p.scale;
         p.fill(body, 0xFF2A_2418);
+        // How to set a waypoint, above the picture.
+        let hint = TextStyle::new(Family::Body, 13.0, ctx.colours.dim()).edge(ctx.colours.edge());
+        p.text_in(
+            &hint,
+            Rect::new(body.x, body.y + 4.0 * k, body.w, 20.0 * k),
+            Align::Centre,
+            WAYPOINT_HINT,
+        );
         // The picture, as large as the window holds it.
-        let side = (body.w - 24.0 * k).min(body.h - 48.0 * k);
-        let area = Rect::new(body.x + (body.w - side) / 2.0, body.y + 8.0 * k, side, side);
+        let top = 28.0 * k;
+        let side = (body.w - 24.0 * k).min(body.h - 48.0 * k - top + 8.0 * k);
+        let area = Rect::new(body.x + (body.w - side) / 2.0, body.y + top, side, side);
         self.map_view.settle(area);
         self.map_zoom_buttons(p, ctx, state, body, area);
         self.map_pointer(ctx, area, p.scale);
@@ -913,6 +945,7 @@ impl Windows {
         self.map_picture = Some(area);
         self.tell_map_presses(ctx, area, p.scale);
         self.map_places(p, ctx, state, area);
+        self.map_waypoint(p, ctx, state, area);
         self.map_kinds(p, ctx, state, area);
         // The plugins' points and lines on the map.
         if !self.plugins.frame.marks.map.is_empty() {
@@ -942,6 +975,120 @@ impl Windows {
             );
         }
         self.map_teleport(p, ctx, state, (body, area), out);
+        self.map_explore_go(ctx, state, (area, k));
+        self.map_explore_went(ctx, state, out);
+        // The marker's own tooltip over explore mode's.
+        if let Some(tip) = self.map_view.waypoint_tip.take() {
+            self.tip = Some(tip);
+        }
+    }
+
+    /// In explore mode a click on the picture that does not pan moves the camera there, onto the
+    /// place under the pointer if there is one, once no second click follows it.
+    fn map_explore_go(&mut self, ctx: &mut Ctx<'_>, state: &GameState, (area, k): (Rect, f32)) {
+        const GO: &str = "Click to go there.";
+        let view = &mut self.map_view;
+        let press = if ctx.input.released[0] {
+            view.press.take()
+        } else {
+            None
+        };
+        if state.explore.is_none() || !ctx.input.hover(&area) {
+            return;
+        }
+        let mouse = ctx.input.mouse;
+        if view.kinds_open && kinds_rect(area, k).contains(mouse.0, mouse.1) {
+            return;
+        }
+        let (x, y) = view.on_picture(area, mouse);
+        let Some(at) = view.pointed.or_else(|| map_place(x, y)) else {
+            return;
+        };
+        match &mut self.tip {
+            Some((_, lines)) if view.pointed.is_some() => lines.push(GO.to_owned()),
+            _ => {
+                #[allow(clippy::cast_possible_truncation)]
+                // LINT-OK: a coordinate within the world.
+                let here = coords_text(at.0 as f32, at.1 as f32);
+                self.tip = Some((here, vec![GO.to_owned()]));
+            }
+        }
+        let still = press.is_some_and(|p| hypotf(p.0 - mouse.0, p.1 - mouse.1) <= CLICK_SLOP * k);
+        if still {
+            view.go_waiting = Some((at, ctx.time));
+        }
+    }
+
+    /// Explore mode's move to a place clicked, once no second click has made it a waypoint.
+    fn map_explore_went(&mut self, ctx: &Ctx<'_>, state: &GameState, out: &mut Outcome) {
+        let view = &mut self.map_view;
+        if state.explore.is_none() {
+            view.go_waiting = None;
+            return;
+        }
+        if let Some((at, _)) = view.go_waiting.filter(|(_, t)| ctx.time - t >= GO_AFTER) {
+            view.go_waiting = None;
+            out.explore
+                .push(pyreal_client_runtime::explore::Ask::Go(at.0, at.1));
+        }
+    }
+
+    /// The waypoint on the map: a double click on the picture sets it there (on the place under
+    /// the pointer, named for it, when there is one), and its marker stands on it, its tip on the
+    /// very place.
+    fn map_waypoint(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        area: Rect,
+    ) {
+        use crate::ui::waypoint as wp;
+        let k = p.scale;
+        let mouse = ctx.input.mouse;
+        let on_list = self.map_view.kinds_open && kinds_rect(area, k).contains(mouse.0, mouse.1);
+        if !self.admin.map_armed && !on_list && ctx.input.double_clicked(&area) {
+            let (x, y) = self.map_view.on_picture(area, mouse);
+            let picked = match self.map_view.pointed {
+                Some(at) => Some((at, self.map_view.pointed_name.clone())),
+                None => map_place(x, y).map(|at| (at, None)),
+            };
+            if let Some(((ns, ew), name)) = picked {
+                self.waypoints.set(wp::Waypoint { ns, ew, name });
+            }
+            // The double click neither pans nor moves explore mode's camera.
+            self.map_view.press = None;
+            self.map_view.drag = None;
+            self.map_view.go_waiting = None;
+        }
+        let Some(w) = self.waypoints.active.clone() else {
+            return;
+        };
+        let view = &self.map_view;
+        let (px, py) = view.on_screen(area, map_pixel(w.ns, w.ew));
+        if !area.contains(px, py) {
+            return;
+        }
+        let Some(arrow) = p.art.cached(wp::ARROW_KEY, || Some(wp::arrow_image())) else {
+            return;
+        };
+        let side = WAYPOINT_UNITS * k;
+        let dst = Rect::new(
+            px - side / 2.0,
+            py - side * (1.0 - wp::ARROW_TIP),
+            side,
+            side,
+        );
+        p.list.push_clip(area);
+        p.sprite_turned(&arrow, dst, WHITE, std::f32::consts::PI);
+        p.list.pop_clip();
+        if ctx.over(&dst) {
+            let mut lines = vec![wp::set_text(&w)];
+            if let Some(here) = state.here {
+                lines.push(format!("{} away.", wp::distance_text(w.way_from(here).1)));
+            }
+            self.map_view.waypoint_tip = Some(("Waypoint".to_owned(), lines));
+        }
     }
 
     /// The buttons under the picture: closer about the player while they are in view and otherwise
@@ -1012,6 +1159,7 @@ impl Windows {
             }
         } else if over && !armed && ctx.input.pressed[0] {
             view.drag = Some(mouse);
+            view.press = Some(mouse);
         }
     }
 
@@ -1208,6 +1356,8 @@ impl Windows {
             pointed_at = pointed_at.or(nearest.map(|(_, place)| place));
         }
         p.list.pop_clip();
+        self.map_view.pointed = pointed_at.map(|pl| (pl.ns, pl.ew));
+        self.map_view.pointed_name = pointed_at.map(|pl| pl.name.clone());
         if let Some(place) = pointed_at {
             #[allow(clippy::cast_possible_truncation)] // LINT-OK: a coordinate within the world.
             let at = coords_text(place.ns as f32, place.ew as f32);
@@ -1256,15 +1406,15 @@ impl Windows {
         }
     }
 
-    /// Where the player is, when that is in view: the game's mark, or for an administrator an
-    /// arrow pointing straight down with its tip on the very place.
+    /// Where the player is, when that is in view: the game's mark, or for an administrator and in
+    /// explore mode an arrow pointing straight down with its tip on the very place.
     fn map_player(&self, p: &mut Painter<'_>, state: &GameState, area: Rect, at: (f32, f32)) {
         let (x, y) = map_pixel(f64::from(at.0), f64::from(at.1));
         if !self.map_view.shown().contains(x, y) {
             return;
         }
         let (px, py) = self.map_view.on_screen(area, (x, y));
-        if state.is_admin {
+        if state.is_admin || state.explore.is_some() {
             if let Some(arrow) = p.art.cached("map.arrow", || Some(arrow_image())) {
                 let side = ARROW_UNITS * p.scale;
                 #[allow(clippy::cast_precision_loss)]

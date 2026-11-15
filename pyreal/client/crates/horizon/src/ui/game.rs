@@ -610,6 +610,11 @@ pub struct GameState {
     pub camera_heading: f32,
     /// The player's map coordinates, north and east positive.
     pub coords: Option<(f32, f32)>,
+    /// Where the viewer stands in the game's coordinates, `(ns, ew)`, to the metre: the player's
+    /// body, indoors too, or explore mode's camera.
+    pub here: Option<(f64, f64)>,
+    /// Whether the player stands in a dungeon, where the waypoint's arrows are not shown.
+    pub in_dungeon: bool,
     /// The region the player is in.
     pub zone: String,
     pub shortcuts: Vec<Shortcut>,

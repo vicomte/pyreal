@@ -401,13 +401,14 @@ fn run_scripts(b: &mut Body) {
 
 /// Hands the bodies' live particles to the next frame, their pictures made ready first, and
 /// places their lamps where they stand after the first `statics` of the engine's, as the client
-/// places a creature's: its setup's, less those its emitters carry.
+/// places a creature's: its setup's, less those its emitters carry. Seen from `eye`.
 pub fn gather(
     engine: &mut Engine,
     loader: &mut AssetLoader,
     store: &RetailDatStore,
     bodies: &[Body],
     statics: usize,
+    eye: glam::Vec3,
 ) {
     engine.lamps.truncate(statics);
     for b in bodies {
@@ -415,11 +416,9 @@ pub fn gather(
             for g in engine.particles.missing_sprites(&b.driver) {
                 pyreal_engine::particles::prepare_sprite(engine, loader, store, g);
             }
-            let o = b.frame.origin;
-            let at = glam::Vec3::new(o.x, o.y, o.z);
             engine
                 .particles
-                .gather(&b.driver, b.cell, glam::Vec3::ZERO, at, b.shadow);
+                .gather(&b.driver, b.cell, glam::Vec3::ZERO, eye, b.shadow);
         }
         if b.setup.0 != 0 {
             let at = pyreal_engine::asset::object::frame_affine(&b.frame);

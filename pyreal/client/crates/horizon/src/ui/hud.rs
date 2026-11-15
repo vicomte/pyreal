@@ -197,6 +197,8 @@ pub struct Hud {
     pub rows_saved: Option<usize>,
     /// What the vitals' bars read, as the player chose.
     pub status_style: StatusStyle,
+    /// Where the way to a waypoint is shown.
+    pub waypoint_style: crate::ui::waypoint::WaypointStyle,
     /// The plugins' blips for the minimap this frame.
     pub plugin_radar: Vec<pyreal_plugin_ui::RadarMark>,
     /// What the HUD's clicks asked the information windows to show this frame.
@@ -232,6 +234,58 @@ pub const ACTION_PREVIOUS_MONSTER: u32 = 0x1000_0036;
 pub const ACTION_NEXT_MONSTER: u32 = 0x1000_0037;
 /// The game's map action, which opens and closes the Map window.
 pub const ACTION_MAP: u32 = 0x1000_0017;
+/// The menu bar's buttons' side, layout units.
+const MENU_BUTTON: f32 = 34.0;
+
+/// How far the menu bar stands from the screen's right edge and its foot, layout units.
+const MENU_MARGIN: f32 = 14.0;
+
+/// The menu bar in the lower right for `count` buttons close together, with room above and below
+/// them and its ground drawn: the bar, and each button's place on it, each on a whole pixel.
+pub(crate) fn menu_bar(p: &mut Painter<'_>, count: usize) -> (Rect, Vec<Rect>) {
+    let k = p.scale;
+    let (sw, sh) = p.screen;
+    let size = (MENU_BUTTON * k).round();
+    let gap = (2.0 * k).round().max(1.0);
+    let (pad_x, pad_y) = ((6.0 * k).round(), (7.0 * k).round());
+    let margin = (MENU_MARGIN * k).round();
+    #[allow(clippy::cast_precision_loss)]
+    let n = count as f32;
+    let bar_w = n * size + (n - 1.0).max(0.0) * gap + 2.0 * pad_x;
+    let bar = Rect::new(
+        sw - margin - bar_w,
+        sh - margin - size - 2.0 * pad_y,
+        bar_w,
+        size + 2.0 * pad_y,
+    );
+    if p.art.has_piece("window.tl") {
+        // So the gold reads against any ground.
+        kit::plain_ground(p, bar);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let places = (0..count)
+        .map(|i| {
+            Rect::new(
+                bar.x + pad_x + i as f32 * (size + gap),
+                bar.y + pad_y,
+                size,
+                size,
+            )
+        })
+        .collect();
+    (bar, places)
+}
+
+/// A menu bar button's own icon `icon` at `r`, brighter and backed while `lit`.
+pub(crate) fn menu_icon(p: &mut Painter<'_>, r: Rect, icon: &str, lit: bool) {
+    if lit && p.art.has_piece("window.tl") {
+        p.fill(r, 0x30C8_9646);
+    }
+    if let Some(icon) = p.piece(icon) {
+        p.sprite(&icon, r, if lit { WHITE } else { 0xFFD0_D0D0 });
+    }
+}
+
 /// The game's options-panel action, which opens and closes the Settings window.
 pub const ACTION_OPTIONS: u32 = 0x1000_001A;
 
@@ -741,7 +795,10 @@ impl Hud {
             }};
         }
         element!("server", self.server_info(p, ctx, state));
-        element!("minimap", self.minimap(p, ctx, state, out));
+        element!(
+            "minimap",
+            self.minimap(p, ctx, state, &mut windows.waypoints, out)
+        );
         self.window_over_effects = windows
             .latest_opened_at()
             .is_some_and(|t| t > self.effects_opened_at);
@@ -2016,6 +2073,7 @@ impl Hud {
         p: &mut Painter<'_>,
         ctx: &mut Ctx<'_>,
         state: &GameState,
+        waypoints: &mut crate::ui::waypoint::Waypoints,
         out: &mut Outcome,
     ) {
         let k = p.scale;
@@ -2171,6 +2229,7 @@ impl Hud {
                 p.text_in(&style, lr.offset(0.8 * k, 0.0), Align::Centre, letter);
             }
         }
+        self.minimap_waypoint(p, ctx, state, waypoints, (r, heading, range));
         // Zoom in (+) and back out (-), from the radar's full reach to a quarter of it.
         let mut zoom_button = None;
         for i in [0, 1] {
@@ -2223,6 +2282,73 @@ impl Hud {
             } else if ctx.input.clicked(&r) {
                 // A click on no blip is the minimap's own: it does not reach the world.
             }
+        }
+    }
+
+    /// The waypoint on the minimap `r` turned to `heading` with `range` metres to its rim: an
+    /// arrow on the rim the way to it, a mark where it stands while it is in reach, and the Clear
+    /// Waypoint button under the coordinates.
+    fn minimap_waypoint(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        waypoints: &mut crate::ui::waypoint::Waypoints,
+        (r, heading, range): (Rect, f32, f32),
+    ) {
+        use crate::ui::waypoint as wp;
+        let Some(w) = waypoints.active.clone() else {
+            return;
+        };
+        let k = p.scale;
+        let way = state.here.map(|here| w.way_from(here));
+        if let (Some((bearing, metres)), true) =
+            (way, self.waypoint_style.on_radar() && !state.in_dungeon)
+        {
+            let centre = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+            let a = bearing - heading.to_radians();
+            let (sin, cos) = (
+                pyreal_primitives::num::math::sinf(a),
+                pyreal_primitives::num::math::cosf(a),
+            );
+            let radius = r.w / 2.0 - 16.0 * k;
+            #[allow(clippy::cast_possible_truncation)] // LINT-OK: metres within the world.
+            let reach = metres as f32 / range;
+            if let Some(arrow) = p.art.cached(wp::ARROW_KEY, || Some(wp::arrow_image())) {
+                // Within reach a small arrow stands on the place itself, its tip on it.
+                if reach < 1.0 {
+                    let s = 12.0 * k;
+                    let (x, y) = (
+                        centre.0 + sin * reach * radius,
+                        centre.1 - cos * reach * radius,
+                    );
+                    p.sprite_turned(
+                        &arrow,
+                        Rect::new(x - s / 2.0, y - s * (1.0 - wp::ARROW_TIP), s, s),
+                        WHITE,
+                        std::f32::consts::PI,
+                    );
+                }
+                // On the rim, pointing out the way to it.
+                let s = 28.0 * k;
+                let rim = radius + 2.0 * k;
+                let (x, y) = (centre.0 + sin * rim, centre.1 - cos * rim);
+                p.sprite_turned(&arrow, Rect::new(x - s / 2.0, y - s / 2.0, s, s), WHITE, a);
+            }
+        }
+        // Under the coordinates, while a waypoint is followed.
+        let label = "Clear Waypoint";
+        let bw = kit::button_label_width(p, label) + 24.0 * k;
+        let button = Rect::new(r.x + (r.w - bw) / 2.0, r.bottom() + 30.0 * k, bw, 24.0 * k);
+        if ctx.over(&button) {
+            let mut lines = vec![wp::set_text(&w)];
+            if let Some((_, metres)) = way {
+                lines.push(format!("{} away.", wp::distance_text(metres)));
+            }
+            self.tip("Waypoint", lines);
+        }
+        if kit::button(p, ctx, button, label, true) {
+            waypoints.clear();
         }
     }
 
@@ -2389,7 +2515,7 @@ impl Hud {
         out: &mut Outcome,
     ) {
         let k = p.scale;
-        let (sw, sh) = p.screen;
+        let (sw, _) = p.screen;
         // Character, Journal, Spellbook, Travel, Social, Allegiance, System: the menu's seven
         // medallions.
         let menus: [(&str, &[(&str, MenuAction)]); 7] = [
@@ -2431,12 +2557,8 @@ impl Hud {
                 ],
             ),
         ];
-        // The seven buttons close together on one shared bar, with room above and below them,
-        // the bar as far from the screen's right edge as from its foot. Each on a whole pixel.
-        let size = (34.0 * k).round();
-        let gap = (2.0 * k).round().max(1.0);
-        let (pad_x, pad_y) = ((6.0 * k).round(), (7.0 * k).round());
-        let margin = (14.0 * k).round();
+        let size = (MENU_BUTTON * k).round();
+        let margin = (MENU_MARGIN * k).round();
         // A button with nothing the world's era offers is left off the bar.
         let shown: Vec<usize> = menus
             .iter()
@@ -2449,32 +2571,12 @@ impl Hud {
             })
             .map(|(i, _)| i)
             .collect();
-        #[allow(clippy::cast_precision_loss)]
-        let count = shown.len() as f32;
-        let bar_w = count * size + (count - 1.0).max(0.0) * gap + 2.0 * pad_x;
-        let bar = Rect::new(
-            sw - margin - bar_w,
-            sh - margin - size - 2.0 * pad_y,
-            bar_w,
-            size + 2.0 * pad_y,
-        );
-        let own_art = p.art.has_piece("window.tl");
-        if own_art {
-            // So the gold reads against any ground.
-            kit::plain_ground(p, bar);
-        }
-        let x0 = bar.x + pad_x;
-        let y = bar.y + pad_y;
-        for (place, &i) in shown.iter().enumerate() {
+        let (bar, places) = menu_bar(p, shown.len());
+        for (&i, r) in shown.iter().zip(places) {
             let (name, items) = &menus[i];
-            #[allow(clippy::cast_precision_loss)]
-            let r = Rect::new(x0 + place as f32 * (size + gap), y, size, size);
             let over = ctx.over(&r);
-            if own_art && (over || self.menu_open == Some(i)) {
-                p.fill(r, 0x30C8_9646);
-            }
             // The own icons, one for each of the menu's groups.
-            let own_icon = [
+            let icon = [
                 "menu.character",
                 "menu.journal",
                 "menu.spellbook",
@@ -2482,20 +2584,8 @@ impl Hud {
                 "menu.social",
                 "menu.allegiance",
                 "menu.settings",
-            ]
-            .get(i)
-            .and_then(|n| p.piece(n));
-            if let Some(icon) = own_icon {
-                p.sprite(
-                    &icon,
-                    r,
-                    if over || self.menu_open == Some(i) {
-                        WHITE
-                    } else {
-                        0xFFD0_D0D0
-                    },
-                );
-            }
+            ][i];
+            menu_icon(p, r, icon, over || self.menu_open == Some(i));
             // What the world's era does not have is not on the menu.
             let items: Vec<_> = items
                 .iter()

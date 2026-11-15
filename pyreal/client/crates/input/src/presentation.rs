@@ -627,6 +627,8 @@ pub const ROWS: &[Row] = &[
     row_not_used(M::OWN, "RepeatLastMessage", G::Chat, "Repeat Message (in chat box)", Some(Why::REPEAT_MESSAGE)),
     row(M::OWN, "LookAtFront", G::Camera, "Look At Your Front"),
     row(M::OWN, "ToggleAdminWindow", G::Other, "Admin Window"),
+    row(M::OWN, "SaveFrameTimings", G::Other, "Save Frame Timings"),
+    row(M::OWN, "OpenFrameTimingsFolder", G::Other, "Open Frame Timings Folder"),
 ];
 
 #[cfg(test)]
@@ -809,7 +811,7 @@ mod tests {
             );
             assert!(!r.label.is_empty(), "{}", r.action_name);
         }
-        assert_eq!(ROWS.len(), 358);
+        assert_eq!(ROWS.len(), 360);
     }
 
     #[test]

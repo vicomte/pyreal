@@ -58,6 +58,8 @@ pub struct HorizonOptions {
     pub spell_rows: usize,
     /// What the vitals' bars read.
     pub status_style: crate::ui::hud::StatusStyle,
+    /// Where the way to a waypoint is shown.
+    pub waypoint_style: crate::ui::waypoint::WaypointStyle,
     /// The log window's tab names, one for each of the game's chat windows.
     pub chat_tabs: TabNames,
     /// How opaque the log window's ground is, docked and popped out.
@@ -91,6 +93,7 @@ impl Default for HorizonOptions {
             minimap_rotates: false,
             spell_rows: 1,
             status_style: crate::ui::hud::StatusStyle::default(),
+            waypoint_style: crate::ui::waypoint::WaypointStyle::default(),
             chat_tabs: TabNames::default(),
             chat_opacity: ChatOpacity::default(),
             chat_popped: [None; 5],
@@ -333,6 +336,11 @@ impl HorizonOptions {
                         o.status_style = s;
                     }
                 }
+                "waypoints" => {
+                    if let Some(s) = crate::ui::waypoint::WaypointStyle::from_word(value) {
+                        o.waypoint_style = s;
+                    }
+                }
                 // Bodies are always drawn smoothly: an older file's switches are read as nothing.
                 "smooth-animation" | "smooth-movement" => {}
                 other => {
@@ -380,6 +388,7 @@ camera-recentre={}
 minimap-rotates={}
 spell-rows={}
 status-bar-style={}
+waypoints={}
 ",
             scale_word(self.scale),
             movement_word(self.orbit.movement),
@@ -399,6 +408,7 @@ status-bar-style={}
             self.minimap_rotates,
             self.spell_rows,
             self.status_style.word(),
+            self.waypoint_style.word(),
         );
         for slot in 0..DEFAULT_TAB_NAMES.len() {
             let _ = writeln!(

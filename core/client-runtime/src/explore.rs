@@ -18,9 +18,10 @@ use crate::report::{block_id, block_xy, outdoor_cell, ReportCamera, VisualReport
 use crate::world_state::WorldState;
 
 /// The flying speeds, metres a second, slowest first.
-pub const SPEEDS: [f32; 11] = [
-    2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 2500.0, 5000.0,
-];
+pub const SPEEDS: [f32; 9] = [2.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0];
+
+/// The fastest the camera flies, metres a second: the land is streamed in time up to it.
+pub const MOST_SPEED: f32 = SPEEDS[SPEEDS.len() - 1];
 
 /// The speed the camera starts at: 25 m/s.
 pub const START_SPEED: usize = 3;
@@ -52,6 +53,8 @@ pub enum Key {
     CopyPlace,
     /// Copy the frame's report line.
     CopyReport,
+    /// Save the last thirty seconds of frame timings.
+    SaveTimings,
 }
 
 /// What the overlay asks of the mode.
@@ -60,10 +63,15 @@ pub enum Ask {
     /// Draw the sky at this fraction of the day.
     Time(f32),
     Weather(pyreal_client_model::cmd::weather::Weather),
-    /// Set Fog Density to this stored level.
-    Fog(i32),
+    /// Cover this much of the sky with cloud, as `@clouds cover` does, or the day's own for none.
+    Clouds(Option<f32>),
+    /// Move the camera over the map's place `(north, east)`, keeping its height over the ground.
+    Go(f64, f64),
     /// One step faster (above zero) or slower.
     Speed(i32),
+    /// Save the last thirty seconds of frame timings, and open the folder they are saved in.
+    SaveTimings,
+    OpenTimings,
     /// End the mode.
     Leave,
 }
@@ -95,8 +103,10 @@ pub struct ExploreView {
     pub time: f32,
     pub time_name: String,
     pub weather: pyreal_client_model::cmd::weather::Weather,
-    /// Fog Density's stored level.
-    pub fog: i32,
+    /// The cloud cover asked for, the day's own for none.
+    pub clouds: Option<f32>,
+    /// The map's coordinates under the camera as numbers, north and east.
+    pub map_at: Option<(f32, f32)>,
     /// What was last copied, while it is fresh.
     pub copied: Option<String>,
 }
@@ -252,6 +262,22 @@ pub fn coordinates(cell: CellId) -> Option<String> {
     Some(format!("{:.1}{ns}, {:.1}{ew}", north.abs(), east.abs()))
 }
 
+/// The map's coordinates of `p`, north and east, to a fraction of a cell.
+#[must_use]
+pub fn map_at(p: &Position) -> (f32, f32) {
+    let (bx, by) = block_xy(p.cell.landblock().0);
+    // LINT-OK: block indices, at most 255, exact in f32.
+    #[allow(clippy::cast_precision_loss)]
+    let unit = |block: i32, m: f32| (block as f32 * BLOCK + m) / MAP_UNIT - MAP_ZERO;
+    (unit(by, p.frame.origin.y), unit(bx, p.frame.origin.x))
+}
+
+/// Metres to one of the map's units.
+const MAP_UNIT: f32 = 240.0;
+
+/// The map's coordinate at the world's south-west corner, negated.
+const MAP_ZERO: f32 = 101.95;
+
 /// The mode's state while it runs. See the module header.
 #[derive(Debug)]
 pub struct Explore {
@@ -259,14 +285,17 @@ pub struct Explore {
     /// Where it started, `None` for Holtburg: placed once the world is built.
     pub start: Option<ReportCamera>,
     speed: usize,
-    /// The ground under the camera, read from the files as it flies.
+    /// The ground under the camera, read from the files as it flies, and the region it reads by.
     ground: Option<DatLandSource>,
+    region: Option<pyreal_assets::Region>,
     /// What was copied last, and when.
     copied: Option<(String, f64)>,
     /// A copy asked for and not yet made.
     copy: Option<Key>,
     /// Metres the camera stood above the ground last frame.
     height: f32,
+    /// A scripted run's own speed, metres a second (`PYREAL_EXPLORE_FLY`).
+    pub scripted: Option<f32>,
 }
 
 impl Explore {
@@ -277,9 +306,11 @@ impl Explore {
             start,
             speed: START_SPEED,
             ground: None,
+            region: None,
             copied: None,
             copy: None,
             height: 0.0,
+            scripted: None,
         }
     }
 
@@ -302,6 +333,9 @@ impl Explore {
     /// Metres a second.
     #[must_use]
     pub fn speed(&self) -> f32 {
+        if let Some(v) = self.scripted {
+            return v.clamp(0.0, MOST_SPEED);
+        }
         SPEEDS[self.speed.min(SPEEDS.len() - 1)]
     }
 
@@ -336,8 +370,10 @@ impl Explore {
             self.ground = None;
         }
         if self.ground.is_none() {
-            let region = pyreal_world_data::landblock::load_region(store).ok()?;
-            self.ground = DatLandSource::new(Arc::clone(store), &region).ok();
+            if self.region.is_none() {
+                self.region = pyreal_world_data::landblock::load_region(store).ok();
+            }
+            self.ground = DatLandSource::new(Arc::clone(store), self.region.as_ref()?).ok();
         }
         // LINT-OK: a point in the world as a block index.
         #[allow(clippy::cast_possible_truncation)]
@@ -346,6 +382,27 @@ impl Explore {
         let (lx, ly) = (x - bx as f32 * BLOCK, y - by as f32 * BLOCK);
         let id = LandblockId(block_id((bx, by)));
         self.ground.as_ref()?.ground_height(id, lx, ly)
+    }
+
+    /// Move the camera in `ws` over the map's `(north, east)`, as high over the ground there as it
+    /// stands over the ground here, at a body's eyes at least. The window follows it next frame.
+    pub fn go(&mut self, ws: &mut WorldState, store: &Arc<RetailDatStore>, north: f64, east: f64) {
+        let Some((vx, vy)) = ws.viewer_block() else {
+            return;
+        };
+        let edge = 256.0 * BLOCK - 0.01;
+        // LINT-OK: a map coordinate within the world, as metres.
+        #[allow(clippy::cast_possible_truncation)]
+        let at =
+            |u: f64| (((u + f64::from(MAP_ZERO)) * f64::from(MAP_UNIT)) as f32).clamp(0.0, edge);
+        let (gx, gy) = (at(east), at(north));
+        let above = self.height.max(EYES);
+        let ground = self.ground_height(store, gx, gy).unwrap_or(0.0);
+        #[allow(clippy::cast_precision_loss)]
+        let (ox, oy) = (vx as f32 * BLOCK, vy as f32 * BLOCK);
+        let c = &mut ws.camera;
+        c.position = Vec3::new(gx - ox, gy - oy, ground + above);
+        self.height = above;
     }
 
     /// Keep the camera in `ws` inside the world and [`ROOM`] above its ground. The camera's height
@@ -418,15 +475,18 @@ mod tests {
 
     /// Behaviour: none (Pyreal's own: explore mode's speeds)
     #[test]
-    fn the_speed_steps_from_a_walk_to_five_kilometres_a_second_and_holds_there() {
+    fn the_speed_steps_from_a_walk_to_a_kilometre_a_second_and_holds_there() {
         let mut e = Explore::new(EraId::Eor, None);
         assert_eq!(e.speed(), 25.0);
         e.change_speed(-10);
         assert_eq!(e.speed(), 2.0);
         e.change_speed(100);
-        assert_eq!(e.speed(), 5000.0);
+        assert_eq!(e.speed(), 1000.0);
+        assert_eq!(e.speed(), MOST_SPEED);
         e.change_speed(-1);
-        assert_eq!(e.speed(), 2500.0);
+        assert_eq!(e.speed(), 500.0);
+        e.scripted = Some(5000.0);
+        assert_eq!(e.speed(), MOST_SPEED, "a scripted flight is held to it too");
     }
 
     /// Behaviour: none (Pyreal's own: the block explore mode starts round)
@@ -444,6 +504,15 @@ mod tests {
             "a camera past its block's corner starts the world there"
         );
         assert_eq!(start_block(None), 0xA9B4);
+        let holtburg = Position::new(
+            CellId(0xA9B4_0017),
+            Frame::new(Vec3::new(84.0, 7.1, 94.0), Quat::new(1.0, 0.0, 0.0, 0.0)),
+        );
+        let (ns, ew) = map_at(&holtburg);
+        assert!(
+            (ns - 42.08).abs() < 0.01 && (ew - 33.6).abs() < 0.01,
+            "{ns} {ew}"
+        );
         assert_eq!(
             coordinates(CellId(0xA9B4_0001)).as_deref(),
             Some("42.1N, 33.3E")

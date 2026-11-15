@@ -1,13 +1,13 @@
 // Flames where objects burn (`flames::frame_flames`): a card per flame turned to the eye about
 // the upright, its fire scrolling noise shaped by its kind (a candle's teardrop, a torch's
-// licking tongue, a brazier's bed of flames and embers) under a temperature ramp, white-yellow at
-// the core to red at the tips, drawn additively bright enough to bloom. It breathes with its
-// lamp's flicker and leans with the wind outdoors.
+// licking tongue) under a temperature ramp, white-yellow at the core to red at the tips, drawn
+// additively bright enough to bloom. It breathes with its lamp's flicker and leans with the wind
+// outdoors. A brazier's bed of fire is drawn as its fire puffs (`particles.wgsl`'s `fire_seen`).
 
 struct Flame {
     base: vec3<f32>,
     height: f32,
-    // Bits 0-7 the kind (1 candle, 2 torch, 3 brazier, 4 a body of fire, 5 one of its points, 6 a
+    // Bits 0-7 the kind (1 candle, 2 torch, 4 a body of fire, 5 one of its points, 6 a
     // length of its trail); bit 8 in a room; bit 9 flickering; bits 10-15 a body's whirl; bits
     // 16-31 its count of points.
     flags: u32,
@@ -39,7 +39,7 @@ struct FlameOut {
 
 // A flame's half width over its height, and how far its card reaches past it each side.
 fn flame_width(kind: u32) -> f32 {
-    return select(select(0.22, 0.32, kind == 1u), 0.75, kind == 3u);
+    return select(0.22, 0.32, kind == 1u);
 }
 
 @vertex
@@ -153,10 +153,9 @@ fn flame_light(p: vec2<f32>, kind: u32, seed: u32, flick: vec4<f32>) -> vec3<f32
     let y = p.y / mix(0.8, 1.15, clamp(flick.r - 0.6, 0.0, 1.0));
     let sway = (fire_noise(vec2<f32>(t * 1.1, s), seed + 3u) - 0.5) * 0.5 + flick.a;
     var f = vec2<f32>(0.0);
-    var bed = 0.0;
     if (kind == 1u) {
         f = tongue(vec2<f32>(p.x, y), seed, 4.5, sway * 0.5);
-    } else if (kind == 2u) {
+    } else {
         // A torch: a tall tongue with lower ones licking up beside it.
         f = tongue(vec2<f32>(p.x, y), seed, 3.2, sway);
         for (var k = 0u; k < 2u; k++) {
@@ -164,24 +163,13 @@ fn flame_light(p: vec2<f32>, kind: u32, seed: u32, flick: vec4<f32>) -> vec3<f32
             let h = mix(0.45, 0.75, fire_noise(vec2<f32>(t * 1.7 + f32(k) * 5.0, s), seed + 13u + k));
             f = max(f, tongue(vec2<f32>((p.x - side) / 0.6, y / h), seed + 17u + k, 3.6, sway) * 0.8);
         }
-    } else {
-        // A bed of flames: tongues of their own heights side by side, embers glowing at its foot.
-        for (var k = 0u; k < 4u; k++) {
-            let at = -0.6 + 0.4 * f32(k) + (fire_noise(vec2<f32>(t * 0.6, f32(k) * 3.0 + s), seed + 23u + k) - 0.5) * 0.15;
-            let h = mix(0.4, 1.0, fire_noise(vec2<f32>(t * 1.3 + f32(k) * 7.0, s), seed + 29u + k));
-            f = max(f, tongue(vec2<f32>((p.x - at) / 0.38, y / h), seed + 31u + k, 2.6, sway));
-        }
-        let e = fire_noise(vec2<f32>(p.x * 9.0, t * 0.7 + s), seed + 5u);
-        bed = smoothstep(0.55, 0.9, e) * (1.0 - smoothstep(0.0, 0.1, abs(p.y - 0.02)))
-            * (1.0 - smoothstep(0.75, 0.95, abs(p.x)));
     }
     var c = fire_colour(f.y * 1.15) * f.x * (0.35 + 2.6 * f.y * f.y);
-    c += vec3<f32>(1.0, 0.25, 0.02) * bed * 0.8;
     // The air round it glowing.
     let r2 = p.x * p.x * 0.25 + (p.y - 0.3) * (p.y - 0.3) * 1.6;
     let card = (1.0 - smoothstep(1.2, 2.2, abs(p.x))) * smoothstep(-0.35, -0.1, p.y)
         * (1.0 - smoothstep(1.0, 1.5, p.y));
-    c += vec3<f32>(1.0, 0.45, 0.12) * FLAME_HALO * exp(-r2 * 4.0) * card * select(1.0, 0.35, kind == 3u);
+    c += vec3<f32>(1.0, 0.45, 0.12) * FLAME_HALO * exp(-r2 * 4.0) * card;
     return c * flick.rgb;
 }
 

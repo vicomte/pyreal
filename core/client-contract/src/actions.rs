@@ -252,6 +252,10 @@ pub mod pyreal {
     pub const LOOK_AT_FRONT: super::ActionId = super::ActionId(0x2000_000C);
     /// Show or hide the Horizon interface's Admin window, for an administrator.
     pub const TOGGLE_ADMIN_WINDOW: super::ActionId = super::ActionId(0x2000_000D);
+    /// Save the last thirty seconds of frame timings as a hitch report.
+    pub const SAVE_FRAME_TIMINGS: super::ActionId = super::ActionId(0x2000_000E);
+    /// Open the folder the hitch reports are saved in.
+    pub const OPEN_FRAME_TIMINGS_FOLDER: super::ActionId = super::ActionId(0x2000_000F);
     /// Retired: hotbar slots 13 to 48 of an earlier Horizon layout, kept by name so a key map
     /// that saved them still reads.
     pub const RETIRED_HOTBAR_SLOT_13: super::ActionId = super::ActionId(0x2000_0010);
@@ -733,6 +737,11 @@ pub mod names {
         (super::pyreal::REPEAT_LAST_MESSAGE.0, "RepeatLastMessage"),
         (super::pyreal::LOOK_AT_FRONT.0, "LookAtFront"),
         (super::pyreal::TOGGLE_ADMIN_WINDOW.0, "ToggleAdminWindow"),
+        (super::pyreal::SAVE_FRAME_TIMINGS.0, "SaveFrameTimings"),
+        (
+            super::pyreal::OPEN_FRAME_TIMINGS_FOLDER.0,
+            "OpenFrameTimingsFolder",
+        ),
         (super::pyreal::RETIRED_HOTBAR_SLOT_13.0, "UseHotbarSlot_13"),
         (
             super::pyreal::RETIRED_HOTBAR_SLOT_13.0 + 1,

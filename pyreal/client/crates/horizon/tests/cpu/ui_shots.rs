@@ -529,6 +529,9 @@ fn draw_the_creation_pages_for_a_person_to_look_at() {
             for step in [Step::Profession, Step::Attributes, Step::Skills, Step::Name] {
                 if let Some(c) = h.ui.pregame.creation.as_mut() {
                     c.step = step;
+                    if step == Step::Name {
+                        c.random_name();
+                    }
                 }
                 settle(&mut h, &state);
                 let name = format!(

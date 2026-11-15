@@ -259,6 +259,9 @@ impl Presentation for SimPresentation {
     fn set_ground_markers(&mut self, markers: &[pyreal_client_contract::overlay::GroundMarker]) {
         self.device.set_ground_markers(markers);
     }
+    fn set_waypoint_ring(&mut self, ring: Option<pyreal_client_contract::overlay::WaypointRing>) {
+        self.device.set_waypoint_ring(ring);
+    }
 
     fn preview_ensure(
         &mut self,

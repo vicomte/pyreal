@@ -34,6 +34,17 @@ switch. A headless client run can stand where an `@report` line says and capture
 text, a report line or its `camera` field, or over Holtburg with none. The world list's Explore
 panel does the same for each era's files. C copies the camera's place and R its report line.
 
+The client keeps the last 30 seconds of frame timings. A frame longer than 100 ms (`--hitch-ms
+<ms>` or `PYREAL_HITCH_MS` sets another, 0 none) is saved a second later as a hitch report in the
+settings folder's `logs/hitches`, `hitch-YYYYMMDD-HHMMSS.txt`, at most one every ten seconds.
+Explore's Save Timings button or F9 saves the last 30 seconds as `frames-YYYYMMDD-HHMMSS.txt`, and
+its Open Folder button opens the folder; in a world the Save Frame Timings and Open Frame Timings
+Folder keys (unbound until chosen) do the same. Each report is a small text file: why it was saved,
+the client and device, the slowest frames taken apart (the frame loop's steps, the streaming and its
+parts, uploads, ray tracing, pipelines, waiting on the device, what was made, the streaming's queues,
+the camera's place and speed), then every frame as a table. `PYREAL_EXPLORE_FLY=<m/s>` flies
+explore's camera straight on, up to 1 km/s, for measuring.
+
 ## Game data
 
 The game's data files are never part of this repository, and no release carries them. Pyreal

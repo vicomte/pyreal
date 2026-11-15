@@ -658,3 +658,58 @@ fn a_2005_world_on_the_later_files_is_sent_only_what_its_server_takes() {
         }
     }
 }
+
+/// Oracle: ACE's `CharacterCreateEx` refuses a name any word of which the shipped taboo table
+/// matches; no generated name is one.
+#[test]
+fn no_generated_name_has_a_word_the_taboo_table_refuses() {
+    use pyreal_assets::TabooTable;
+    use pyreal_chargen::names::{generate, NameRng, SEX_FEMALE, SEX_MALE};
+    let store = RetailDatStore::open_dir(&pyreal_dat::testing::dat_dir()).unwrap();
+    let id = DataId(0x0E00_001E);
+    let table = TabooTable::decode_payload(id, &store.read_portal(id).unwrap()).unwrap();
+    let encoding = pyreal_primitives::text::cp1252::Cp1252;
+    for heritage in 1..=13 {
+        for sex in [SEX_MALE, SEX_FEMALE] {
+            let mut rng = NameRng::new(u64::from(heritage * 2 + sex));
+            for _ in 0..3000 {
+                let name = generate(heritage, sex, &mut rng).unwrap();
+                assert!(
+                    !pyreal_rules::taboo::contains_taboo_word(&table, &encoding, &name),
+                    "{name}"
+                );
+            }
+        }
+    }
+}
+
+/// Oracle: the end-of-retail string table's `ID_CharGen_<Heritage><Sex>Names` rows, and the 1999
+/// and 2005 sex records, which give the same words for the original heritages.
+#[test]
+fn every_world_carries_naming_help_for_each_heritage_and_sex_it_offers() {
+    use pyreal_chargen::CreationTexts;
+    let eor = RetailDatStore::open_dir(&pyreal_dat::testing::dat_dir()).unwrap();
+    let launch = pyreal_dat::testing::open_launch_store_or_fail();
+    let classic = pyreal_dat::testing::open_classic_store_or_fail();
+    for (store, heritages) in [(&eor, 13), (&launch, 3), (&classic, 3)] {
+        let t = CreationTables::read(store).unwrap();
+        let texts = CreationTexts::read(store, &t.chargen);
+        for h in 1..=heritages {
+            for sex in [1, 2] {
+                let record = t.chargen.heritage_groups[&h].sexes[&sex].naming_help;
+                let help = texts.naming_help(record, h, sex).expect("naming help");
+                assert!(help.contains("Examples") || h >= 12, "{h}/{sex}: {help}");
+            }
+        }
+    }
+    let t = CreationTables::read(&eor).unwrap();
+    let texts = CreationTexts::read(&eor, &t.chargen);
+    assert!(texts
+        .naming_help(None, 4, 2)
+        .is_some_and(|s| s.contains("du Bellenesse") && !s.contains("\\n")));
+    assert!(texts
+        .naming_help(None, 8, 1)
+        .is_some_and(|s| s.contains("Nimias")));
+    assert!(texts.refuses_name("Rafuq"));
+    assert!(!texts.refuses_name("Osgeld the Clever"));
+}

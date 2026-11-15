@@ -373,3 +373,135 @@ fn an_administrator_s_arrow_points_straight_down_at_the_place_and_no_one_else_ha
     h.frame(&state);
     assert!(arrow_quad(&h).is_none(), "a player keeps the game's mark");
 }
+
+/// Explore mode over Holtburg, with no world and no server.
+fn exploring() -> GameState {
+    let view = pyreal_client_runtime::explore::ExploreView {
+        map_at: Some((42.1, 33.6)),
+        ..Default::default()
+    };
+    GameState {
+        coords: view.map_at,
+        explore: Some(view),
+        ..GameState::default()
+    }
+}
+
+/// The explore corner's buttons, Map then Settings, at the interface's scale of 1.
+fn corner_buttons(h: &Harness) -> [(f32, f32); 2] {
+    let (sw, sh) = h.screen;
+    let y = sh - 14.0 - 7.0 - 17.0;
+    let right = sw - 14.0 - 6.0 - 17.0;
+    [(right - 36.0, y), (right, y)]
+}
+
+fn explore_click(
+    h: &mut Harness,
+    state: &GameState,
+    at: (f32, f32),
+) -> Vec<pyreal_client_runtime::explore::Ask> {
+    h.move_to(at.0, at.1);
+    h.frame(state);
+    h.press();
+    let mut out = h.frame(state).explore;
+    h.release();
+    out.extend(h.frame(state).explore);
+    out
+}
+
+#[test]
+fn explore_s_corner_opens_the_map_and_settings_and_a_click_on_the_map_goes_there() {
+    use pyreal_client_runtime::explore::Ask;
+    let state = exploring();
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    let [map, settings] = corner_buttons(&h);
+    explore_click(&mut h, &state, settings);
+    assert!(h.ui.windows.is_open(WindowId::Options), "Settings opens");
+    explore_click(&mut h, &state, settings);
+    assert!(!h.ui.windows.is_open(WindowId::Options), "and closes");
+    explore_click(&mut h, &state, map);
+    assert!(h.ui.windows.is_open(WindowId::Map), "the map opens");
+    h.frame(&state);
+    let r = h.ui.windows.map_picture.expect("the map's picture");
+    // A pan sends nothing.
+    h.move_to(r.x + r.w * 0.4, r.y + r.h * 0.4);
+    h.frame(&state);
+    h.press();
+    h.frame(&state);
+    h.move_to(r.x + r.w * 0.5, r.y + r.h * 0.5);
+    h.frame(&state);
+    h.release();
+    assert!(h.frame(&state).explore.is_empty(), "a drag pans");
+    // A still click goes where it was made, once no second click has followed it.
+    let at = (r.x + r.w * 0.3, r.y + r.h * 0.6);
+    let mut asks = explore_click(&mut h, &state, at);
+    assert!(asks.is_empty(), "not at once: {asks:?}");
+    for _ in 0..40 {
+        asks.extend(h.frame(&state).explore);
+    }
+    let [Ask::Go(ns, ew)] = asks.as_slice() else {
+        panic!("one go: {asks:?}");
+    };
+    let shown = h.ui.windows.map_view.shown();
+    let pixel = map_pixel(*ns, *ew);
+    let back = h.ui.windows.map_view.on_screen(r, pixel);
+    assert!(
+        (back.0 - at.0).abs() < 2.0 && (back.1 - at.1).abs() < 2.0,
+        "{back:?} {at:?} in {shown:?}"
+    );
+    // A player's map in the world goes nowhere.
+    let (mut h, middle) = {
+        let state = player();
+        let mut h = Harness::with_built_in_art();
+        h.frame(&state);
+        h.ui.windows.open(WindowId::Map, 0.0);
+        h.frame(&state);
+        let r = h.ui.windows.map_picture.expect("the map's picture");
+        (h, (r.x + r.w / 2.0, r.y + r.h / 2.0))
+    };
+    assert!(explore_click(&mut h, &player(), middle).is_empty());
+}
+
+/// A double click at `at`, the second press a fifth of a second after the first.
+fn double_click(
+    h: &mut Harness,
+    state: &GameState,
+    at: (f32, f32),
+) -> Vec<pyreal_client_runtime::explore::Ask> {
+    h.move_to(at.0, at.1);
+    let mut asks = h.frame(state).explore;
+    for t in [1000, 1200] {
+        h.input.note_left_press(t);
+        h.press();
+        asks.extend(h.frame(state).explore);
+        h.release();
+        asks.extend(h.frame(state).explore);
+    }
+    asks
+}
+
+#[test]
+fn a_double_click_on_the_map_sets_the_waypoint_there_and_explore_mode_goes_nowhere() {
+    for state in [exploring(), player()] {
+        let mut h = Harness::with_built_in_art();
+        h.frame(&state);
+        h.ui.windows.open(WindowId::Map, 0.0);
+        h.frame(&state);
+        let r = h.ui.windows.map_picture.expect("the map's picture");
+        let at = (r.x + r.w * 0.3, r.y + r.h * 0.6);
+        assert!(h.ui.windows.waypoints.active.is_none());
+        let mut asks = double_click(&mut h, &state, at);
+        for _ in 0..40 {
+            asks.extend(h.frame(&state).explore);
+        }
+        assert!(asks.is_empty(), "a double click goes nowhere: {asks:?}");
+        let w = h.ui.windows.waypoints.active.clone().expect("a waypoint");
+        let back = h.ui.windows.map_view.on_screen(r, map_pixel(w.ns, w.ew));
+        assert!(
+            (back.0 - at.0).abs() < 2.0 && (back.1 - at.1).abs() < 2.0,
+            "{back:?} {at:?}"
+        );
+        assert_eq!(w.name, None, "no place under the pointer");
+    }
+}

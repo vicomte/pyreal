@@ -21,6 +21,7 @@ pub mod moon;
 pub mod report;
 pub mod table;
 pub mod tod;
+pub mod waypoint;
 pub mod weather;
 pub mod weenies;
 pub mod world_commands;

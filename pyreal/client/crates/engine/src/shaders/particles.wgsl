@@ -4,7 +4,8 @@
 // black; an additive one adds its light. Each fades where it meets what stands behind it. Smoke
 // is drawn as a soft billow of churning noise, lit by the scene as a small cloud is. Ground mist
 // is a flattened ball of fog turned to the eye, as thick as the ray's run through it before it
-// meets the ground, so grass and stones cut it smoothly.
+// meets the ground, so grass and stones cut it smoothly. A bed of fire's puffs are churning balls
+// of flame, hot while young and cooling to red as they rise and age.
 
 struct Particle {
     m0: vec4<f32>,
@@ -12,11 +13,14 @@ struct Particle {
     m2: vec4<f32>,
     // The material, its turn's mode in the top byte.
     material: u32,
-    // 1 - translucency; a creature's light's colour word (`glow::Glow::word`).
+    // 1 - translucency; a creature's light's colour word (`glow::Glow::word`); a fire puff's
+    // colour (`particles::fire_word`).
     alpha: f32,
     cell: u32,
-    // 1: one sprite standing for a lamp's light; 2: smoke; bits 2-11 its age (of 1023); 4096:
-    // mist; bits 13-29 its seed; bit 30 a creature's light, bit 31 its being a star.
+    // 1: one sprite standing for a lamp's light; 2: smoke; 3: fire; bits 2-11 its age (of
+    // 1023); 4096: mist; bits 13-29 its seed; bit 30 a creature's light, bit 31 its being a star
+    // (alone, a lighthouse beacon's part, in its seed's low two bits: `beacons.wgsl`).
+    // Smoke and mist at once: a mote of dust drawn into a portal.
     flags: u32,
 }
 
@@ -67,9 +71,33 @@ const GLOW_RAY: f32 = 1.0;
 const GLOW_GAIN: f32 = 1.4;
 const GLOW_AGE_DIM: f32 = 0.5;
 
+// A fire puff: its hottest heart's brightness, in multiples of white on screen; how fast flame
+// climbs through it and churns, its noise's units a second.
+const FIRE_GAIN: f32 = 0.6;
+const FIRE_RISE: f32 = 1.4;
+const FIRE_CHURN: f32 = 0.6;
+// How much cooler a puff burns a unit of its scale.
+const FIRE_COOL: f32 = 0.3;
+// Retail's fire puff's colour (its picture's mean, linear, brightest one): fire of this colour
+// takes the ramp as it is.
+const FIRE_PUFF_TINT: vec3<f32> = vec3<f32>(1.0, 0.22, 0.058);
+
 // A lamp's light sprite: its picture's brightness in firelight, at this share.
 const LIGHT_SPRITE: vec3<f32> = vec3<f32>(1.0, 0.5, 0.2);
 const LIGHT_SPRITE_GAIN: f32 = 1.0;
+
+// A mote of dust drawn into a portal (`gates.rs`): the purple it turns as it enters, how bright,
+// and how much brighter as it crosses; the sun it scatters; the fewest pixels across it is drawn,
+// and how strong it is (spread over its pixels and its streak).
+const MOTE: u32 = 4098u;
+const MOTE_PURPLE: vec3<f32> = vec3<f32>(0.42, 0.08, 1.0);
+const MOTE_GLOW: f32 = 3.0;
+const MOTE_FLARE: f32 = 2.5;
+// How much of the sun it scatters, and how much of that ahead.
+const MOTE_SCATTER: f32 = 0.4;
+const MOTE_FORWARD: f32 = 0.6;
+const MOTE_PIXELS: f32 = 2.5;
+const MOTE_STRENGTH: f32 = 1.5;
 
 @vertex
 fn vs_particle(v: VsIn, @builtin(instance_index) i: u32) -> PartOut {
@@ -77,8 +105,21 @@ fn vs_particle(v: VsIn, @builtin(instance_index) i: u32) -> PartOut {
     let m = billboard(array<vec4<f32>, 3>(p.m0, p.m1, p.m2), p.material >> 24u);
     var world = xform(m[0], m[1], m[2], v.position);
     let center = vec3<f32>(p.m0.w, p.m1.w, p.m2.w);
-    if ((p.flags & 4096u) != 0u) {
+    let mote = (p.flags & MOTE) == MOTE;
+    var thinned = 1.0;
+    if (mote) {
+        // Never under a pixel or two across, its strength spread over them.
+        let r = length(p.m0.xyz);
+        let px = distance(center, frame.camera.xyz) * 1.2 / max(frame.params.w, 1.0);
+        let grown = max(r, px * MOTE_PIXELS * 0.5);
+        let streak = vec3<f32>(p.m1.y, p.m2.z, p.m2.x);
+        let long = grown + length(streak) * 0.5;
+        thinned = min(MOTE_STRENGTH * r * r / (grown * sqrt(grown * long)), 1.0);
+        world = mote_card(center, grown, streak, v.uv);
+    } else if ((p.flags & 4096u) != 0u) {
         world = mist_card(center, length(p.m0.xyz), v.uv);
+    } else if ((p.flags >> 30u) == 2u) {
+        world = beacon_card(p, world, v.uv);
     }
     var out: PartOut;
     out.clip = frame.view_proj * vec4<f32>(world, 1.0);
@@ -87,7 +128,13 @@ fn vs_particle(v: VsIn, @builtin(instance_index) i: u32) -> PartOut {
     out.material = p.material & 0xFFFFFFu;
     out.alpha = p.alpha;
     out.glow = vec4<f32>(0.0);
-    if (((p.flags >> 30u) & 1u) != 0u) {
+    if (mote) {
+        // Its look's word: its dust's colour, how purple it is and how much of it shows.
+        let w = bitcast<u32>(p.alpha);
+        out.alpha = f32(w & 255u) / 255.0 * thinned;
+        let g = vec3<f32>(f32(w >> 28u), f32((w >> 24u) & 15u), f32((w >> 20u) & 15u)) / 15.0;
+        out.glow = vec4<f32>(pow(g, vec3<f32>(2.2)), f32((w >> 8u) & 255u) / 255.0);
+    } else if (((p.flags >> 30u) & 1u) != 0u) {
         let w = bitcast<u32>(p.alpha);
         out.alpha = f32(w & 255u) / 255.0;
         let g = vec3<f32>(f32(w >> 28u), f32((w >> 24u) & 15u), f32((w >> 20u) & 15u)) / 15.0;
@@ -99,6 +146,52 @@ fn vs_particle(v: VsIn, @builtin(instance_index) i: u32) -> PartOut {
     out.size = length(p.m0.xyz);
     out.flags = p.flags;
     out.center = center;
+    return out;
+}
+
+// A corner of the card round a mote of reach `r` at `c`, turned to the eye and drawn out behind
+// it along its `streak`.
+fn mote_card(c: vec3<f32>, r: f32, streak: vec3<f32>, uv: vec2<f32>) -> vec3<f32> {
+    let to_eye = normalize(frame.camera.xyz - c);
+    let flat = streak - to_eye * dot(streak, to_eye);
+    let len = length(flat);
+    var along = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), to_eye) + vec3<f32>(1e-4, 0.0, 0.0));
+    if (len > r * 0.1) {
+        along = flat / len;
+    }
+    let side = cross(to_eye, along);
+    return c - flat * 0.5 + along * (uv.x * 2.0 - 1.0) * (r + len * 0.5) + side * (1.0 - uv.y * 2.0) * r;
+}
+
+// A mote of dust: a soft round speck lit as the dust it is, glowing purple as it enters.
+fn mote_seen(in: PartOut, soft: f32) -> Seen {
+    let q = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    let r2 = dot(q, q);
+    if (r2 >= 1.0) {
+        discard;
+    }
+    let dir = normalize(in.world - frame.camera.xyz);
+    let indoor = in.cell != 0u;
+    let bits = G_FOLIAGE | select(0u, G_INDOOR, indoor);
+    // Dust scatters the sun ahead of it: it glints as the eye looks toward the light.
+    let l = frame.sun_dir.xyz;
+    var sun = frame.sun_light.rgb;
+    if (!has(F_PHYSICAL)) {
+        sun = pow(frame.sun.rgb, vec3<f32>(2.2));
+    }
+    var sun_vis = select(1.0, 0.0, indoor);
+    if (!indoor && has(F_SHADOWS)) {
+        sun_vis = sun_shadow(in.world, l, view_depth_at(in.world), in.clip.xy);
+    }
+    let scatter = in.glow.rgb * sun * sun_vis * smokes_phase(dot(dir, l), MOTE_FORWARD) * MOTE_SCATTER;
+    let lit = through_air(forward_light(in.glow.rgb, in.world, -dir, -dir, 0.9, 0.0, 0.0, bits, in.clip.xy)
+                          + scatter, in.world, dir, indoor);
+    // Brightest as it crosses into the portal.
+    let k = in.glow.a;
+    let glow = additive_light(MOTE_PURPLE * MOTE_GLOW * (1.0 + MOTE_FLARE * 4.0 * k * (1.0 - k)), 0.0, in.world);
+    var out: Seen;
+    out.additive = false;
+    out.colour = vec4<f32>(mix(lit, glow, in.glow.a), clamp(in.alpha, 0.0, 1.0) * (1.0 - r2 * r2) * soft);
     return out;
 }
 
@@ -191,6 +284,50 @@ fn smoke_seen(in: PartOut, soft: f32) -> Seen {
     // It swells into being rather than appearing whole.
     let a = smoothstep(0.0, 0.6, d) * smoothstep(0.0, 0.08, age) * in.alpha * SMOKE_OPACITY * soft;
     out.colour = vec4<f32>(through_air(lit, in.world, dir, indoor), a);
+    return out;
+}
+
+// Fire's colour at heat `h` (0 to 1), as a torch's flame's: red embers, orange, yellow, a
+// white-yellow heart; turned to the hue of a fire of another colour than retail's puff.
+fn fire_ramp(h: f32, tint: vec3<f32>) -> vec3<f32> {
+    var c = mix(vec3<f32>(0.35, 0.03, 0.0), vec3<f32>(1.0, 0.3, 0.03), smoothstep(0.0, 0.3, h));
+    c = mix(c, vec3<f32>(1.0, 0.62, 0.16), smoothstep(0.25, 0.6, h));
+    c = mix(c, vec3<f32>(1.0, 0.9, 0.62), smoothstep(0.6, 0.95, h));
+    let turn = sqrt(clamp(tint / FIRE_PUFF_TINT, vec3<f32>(0.02), vec3<f32>(50.0)));
+    let turned = c * turn / max(turn.r, max(turn.g, turn.b));
+    return turned * luma(c) / max(luma(turned), 1e-4);
+}
+
+// A fire puff: a ball of flame torn by noise rising through it, hottest at its heart while it is
+// young, cooling at its rim, its top and as it ages. Retail adds its picture whole, so its
+// translucency does not fade it; it swells in and dies away over its life.
+fn fire_seen(in: PartOut, soft: f32) -> Seen {
+    let q = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    let age = f32((in.flags >> 2u) & 1023u) / 1023.0;
+    let s = fract(f32(in.flags >> 13u) * 0.0137) * 40.0;
+    let w = bitcast<u32>(in.alpha);
+    let tint = vec3<f32>(f32(w & 255u), f32((w >> 8u) & 255u), f32((w >> 16u) & 255u)) / 255.0;
+    let t = frame.sun_light.w;
+    let flow = vec3<f32>(q.x * 1.5 + s, q.y * 1.5 - t * FIRE_RISE, t * FIRE_CHURN + s);
+    let warp = vec2<f32>(smoke_value(flow + 3.1), smoke_value(flow * 1.3 + 8.7)) - 0.5;
+    let n = smoke_fbm(vec3<f32>(q.x * 2.6 + warp.x * 1.2 + s,
+                                q.y * 2.0 + warp.y * 1.2 - t * FIRE_RISE * 1.7, t * FIRE_CHURN * 1.5));
+    // A ball, rounder below, which the noise draws up into licks.
+    let r = length(vec2<f32>(q.x, q.y * select(1.0, 0.75, q.y > 0.0)) + warp * 0.5);
+    let edge = 1.0 - smoothstep(0.7, 1.0, max(abs(q.x), abs(q.y)));
+    let d = clamp((1.0 - r) * 1.7 + (n - 0.5) * 1.6 - 0.2 - 0.3 * age, 0.0, 1.0) * edge;
+    if (d <= 0.0) {
+        discard;
+    }
+    // A large billow burns cooler than a small tongue.
+    let heat = clamp(d * (1.0 - 0.8 * age) / (1.0 + FIRE_COOL * in.size) - 0.15 * max(q.y, 0.0), 0.0,
+                     1.0);
+    let life = smoothstep(0.0, 0.1, age) * (1.0 - smoothstep(0.65, 1.0, age));
+    let light = fire_ramp(heat, tint) * smoothstep(0.0, 0.5, d) * (0.35 + 1.3 * heat * heat) * life
+        * FIRE_GAIN;
+    var out: Seen;
+    out.additive = true;
+    out.colour = vec4<f32>(light * (1.0 - fog_amount(distance(in.world.xy, frame.camera.xy))), soft);
     return out;
 }
 
@@ -287,7 +424,8 @@ fn glow_seen(in: PartOut, soft: f32) -> Seen {
 }
 
 fn particle_seen(in: PartOut) -> Seen {
-    if ((in.flags & 4096u) != 0u) {
+    let mote = (in.flags & MOTE) == MOTE;
+    if ((in.flags & 4096u) != 0u && !mote) {
         return mist_seen(in);
     }
     let smoke = (in.flags & 2u) != 0u;
@@ -312,6 +450,15 @@ fn particle_seen(in: PartOut) -> Seen {
         let behind = view_depth_at(h.xyz / h.w) - view_depth_at(in.world);
         let reach = select(SOFT_DEPTH, SMOKE_SOFT_DEPTH, smoke) * in.size;
         soft = clamp(behind / max(reach, 0.02), 0.0, 1.0);
+    }
+    if ((in.flags & 3u) == 3u) {
+        return fire_seen(in, soft);
+    }
+    if (mote) {
+        return mote_seen(in, soft);
+    }
+    if ((in.flags >> 30u) == 2u) {
+        return beacon_seen(in, c, a, soft);
     }
     if (smoke) {
         return smoke_seen(in, soft);
@@ -351,7 +498,7 @@ const SOFT_REACTIVE: f32 = 0.3;
 fn fs_particle(in: PartOut) -> SortedOut {
     let s = particle_seen(in);
     var out = sorted_out(s.colour, s.additive);
-    if ((in.flags & (2u | 4096u)) != 0u) {
+    if ((in.flags & 3u) == 2u || (in.flags & 4096u) != 0u) {
         out.reactive = vec4<f32>(clamp(out.colour.a * SOFT_REACTIVE, 0.0, 1.0));
     }
     return out;

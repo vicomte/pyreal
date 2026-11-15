@@ -323,6 +323,7 @@ impl RayScene {
         if !stale {
             return self.tlas.is_some();
         }
+        let started = std::time::Instant::now();
         // The instances round the eye, nearest first: the static ones from those gathered while
         // the eye stays within the rebuild distance of where they were, then the dynamic ones, in
         // the scene's slot order as a walk of every instance gives them.
@@ -401,6 +402,7 @@ impl RayScene {
         }
         to_build.sort_unstable();
         to_build.dedup();
+        let built = u32::try_from(to_build.len()).unwrap_or(u32::MAX);
         let entries: Vec<wgpu::BlasBuildEntry<'_>> = to_build
             .iter()
             .filter_map(|id| self.meshes.get(id).and_then(Option::as_ref))
@@ -439,6 +441,12 @@ impl RayScene {
         self.tlas = Some(tlas);
         self.built_at = Some(eye);
         self.built_instances = total;
+        let ms = crate::frame_work::ms_since(started);
+        crate::frame_work::note(|w| {
+            w.blas += built;
+            w.tlas += 1;
+            w.rays_ms += ms;
+        });
         true
     }
 }

@@ -167,6 +167,8 @@ pub struct Creation {
     seeded: bool,
     /// The clothes have been come to: from then on the model wears them.
     attire_seen: bool,
+    /// The names the Name page's Random button draws.
+    name_rng: pyreal_chargen::names::NameRng,
 }
 
 /// A heritage's name as the game shows it to players: the table's own name, but for the two
@@ -339,6 +341,7 @@ impl Creation {
             tod: account_has_tod,
             seeded: false,
             attire_seen: false,
+            name_rng: pyreal_chargen::names::NameRng::new(1),
         }
     }
 
@@ -349,6 +352,9 @@ impl Creation {
             return;
         };
         self.seeded = true;
+        self.name_rng = pyreal_chargen::names::NameRng::new(
+            u64::from(crt) << 32 | u64::from(ran2.cast_unsigned()),
+        );
         let mut state = CharGenState::with_policy(CreationPolicy::Modern);
         state.rng = pyreal_chargen::CharGenRng::new(ran2, crt);
         state.begin_creation(&self.tables, CreationEntry::Normal, self.tod);
@@ -1794,18 +1800,45 @@ impl Creation {
         let _ = state;
     }
 
+    /// The Name page's Random: a name for the heritage and sex chosen, as the world's naming help
+    /// describes, that the world's taboo table does not refuse.
+    pub fn random_name(&mut self) {
+        let texts = Rc::clone(&self.texts);
+        if let Some(name) = pyreal_chargen::names::generate_where(
+            self.state.heritage_group,
+            self.state.gender,
+            &mut self.name_rng,
+            |n| !texts.refuses_name(n),
+        ) {
+            self.name = name;
+            self.status = None;
+        }
+    }
+
     fn name_page(&mut self, p: &mut Painter<'_>, ctx: &mut Ctx<'_>, r: Rect) {
         let k = p.scale;
         let mut y = Self::heading(p, ctx, r, "Name");
         let style = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
-        if let Some(help) = self.sex().and_then(|s| self.texts.get(s.naming_help)) {
+        let (heritage, sex) = (self.state.heritage_group, self.state.gender);
+        if let Some(help) = self
+            .sex()
+            .and_then(|s| self.texts.naming_help(s.naming_help, heritage, sex))
+        {
             let help = help.to_owned();
             y = Self::paragraph(p, ctx, r.x, y, r.w, help.trim_end()) + 16.0 * k;
         }
-        // The box a little taller than the name's face needs.
+        // The box a little taller than the name's face needs, with Random beside it for a
+        // heritage the world's era has.
         p.text(&style, r.x, y + 7.0 * k, "Name");
-        let box_r = Rect::new(r.x + 80.0 * k, y, r.w - 80.0 * k, 34.0 * k);
+        let random = pyreal_chargen::names::offered(self.era, heritage);
+        let button_w = if random { 110.0 * k } else { 0.0 };
+        let gap = if random { 10.0 * k } else { 0.0 };
+        let box_r = Rect::new(r.x + 80.0 * k, y, r.w - 80.0 * k - button_w - gap, 34.0 * k);
         kit::text_box(p, ctx, box_r, &mut self.name, &mut self.name_focus, 1);
+        let button = Rect::new(r.right() - button_w, y + 3.0 * k, button_w, 28.0 * k);
+        if random && kit::button(p, ctx, button, "Random", true) {
+            self.random_name();
+        }
         // The name's length is the model's: at most the buffer the game keeps it in.
         if self.name.chars().count() > 32 {
             self.name = self.name.chars().take(32).collect();
@@ -2220,6 +2253,24 @@ pub(crate) mod tests {
         assert_eq!(sent.slot, 2);
         assert_eq!(sent.name, "Aurelia");
         assert!(c.waiting);
+    }
+
+    #[test]
+    fn random_fills_a_new_name_that_goes_to_the_server_as_drawn() {
+        let mut c = creation();
+        c.random_name();
+        let first = c.name.clone();
+        assert!(pyreal_chargen::names::is_valid(&first));
+        c.random_name();
+        assert_ne!(c.name, first, "each press draws again");
+        let drawn = c.name.clone();
+        let mut out = Outcome::default();
+        c.send(&lobby(), &mut out);
+        let sent = out.requests.iter().find_map(|r| match r {
+            UiRequest::CharGenAction(CharGenAction::SendCharGenResult(r)) => Some(r.clone()),
+            _ => None,
+        });
+        assert_eq!(sent.expect("the character went").name, drawn);
     }
 
     /// A 2005 world: only its skills can be trained, and a custom character goes as the template

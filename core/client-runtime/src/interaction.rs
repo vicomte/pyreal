@@ -359,6 +359,10 @@ pub struct Interaction {
     pending_moons: Vec<(pyreal_client_model::cmd::moon::MoonCommand, u32)>,
     pending_fog: Vec<(pyreal_client_model::cmd::fog::FogCommand, u32)>,
 
+    /// The waypoint commands typed this frame, each with the chat window it came from. The
+    /// interface keeps the waypoint and answers in that window.
+    pending_waypoints: Vec<(pyreal_client_model::cmd::waypoint::WaypointCommand, u32)>,
+
     /// The report commands typed this frame, each the chat window it came from. App has the
     /// world, the camera and the presentation the report describes, and answers in that window.
     pending_reports: Vec<u32>,
@@ -1114,6 +1118,14 @@ impl Interaction {
     /// its answer goes to.
     pub fn take_fog_commands(&mut self) -> Vec<(pyreal_client_model::cmd::fog::FogCommand, u32)> {
         std::mem::take(&mut self.pending_fog)
+    }
+
+    /// The waypoint commands typed since the last call, in command order, each with the chat
+    /// window its answer goes to.
+    pub fn take_waypoint_commands(
+        &mut self,
+    ) -> Vec<(pyreal_client_model::cmd::waypoint::WaypointCommand, u32)> {
+        std::mem::take(&mut self.pending_waypoints)
     }
 
     /// The moon commands typed since the last call, in command order, each with the chat window

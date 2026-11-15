@@ -82,10 +82,14 @@ pub struct Host {
     pub omega: pyreal_primitives::Vec3,
     /// Its fire is drawn as flames ([`crate::flames`]).
     pub flamed: bool,
+    /// Its fire is a bed of retail's fire puffs, drawn as fire ([`Look::Fire`]).
+    pub puffed: bool,
     /// It holds nothing but retail's snowfall ([`is_snowfall`]): no longer stepped.
     pub quiet: bool,
     /// It is a shadow's ([`crate::body::shadow_parts`]): its eyes glow ([`is_eye`]).
     pub shadow: bool,
+    /// Which of a lighthouse beacon's hosts it is, if it is one ([`crate::beacons::is_beacon`]).
+    pub beacon: Option<u8>,
 }
 
 /// The shortest step an animated static takes (the physics quantum's, less its tolerance) and the
@@ -117,6 +121,19 @@ pub enum Look {
     Glow(u8),
     /// A frost elemental's snowflake (0) or glint of ice (1) ([`crate::rime`]), drawn as light.
     Flake(u8),
+    /// A puff of a bed of fire (a brazier's, a pyre's): churning flame rising through it, hot
+    /// while it is young and cooling to red as it ages.
+    Fire,
+    /// A speck of dust drawn into a portal ([`crate::gates`]): its look's word in its seed.
+    Mote,
+    /// A lighthouse beacon's part ([`crate::beacons`]): retail's pictures drawn as white light,
+    /// its heart or its shaft.
+    Beacon(u8),
+}
+
+/// Whether a look is laid over what is behind it whatever its picture: mist and dust.
+fn laid(look: Look) -> bool {
+    matches!(look, Look::Mist | Look::Mote)
 }
 
 /// The sprites drawn as liquid, and which: the water golems' (0) and the blood golems' (1).
@@ -216,6 +233,10 @@ pub struct Particles {
     /// The emitter pictures a flame stands for, left out of a flamed host while flames are drawn.
     // ORDER-OK: looked up by id, never iterated.
     pub flamed: std::collections::HashSet<u32>,
+    /// The emitter pictures a bed of fire burns with, drawn as fire in a puffed host while flames
+    /// are drawn.
+    // ORDER-OK: looked up by id, never iterated.
+    pub puffed: std::collections::HashSet<u32>,
     pub skip_flamed: bool,
     /// Last frame's: the particles drawn, their batches, and the live ones in all.
     pub drawn: Vec<Drawn>,
@@ -231,6 +252,13 @@ pub struct Particles {
     /// smoke (as [`crate::wind::wind`] gives it).
     pub smoke: bool,
     pub wind: Vec3,
+    /// Whether portals are drawn as a vortex with dust drawn into them ([`crate::gates`]); off,
+    /// as retail draws their swirl. And the air the dust is in.
+    pub portals: bool,
+    /// Whether the lighthouses' beacons are drawn as a magical white light ([`crate::beacons`]);
+    /// off, as retail's added pictures.
+    pub beacons: bool,
+    pub air: crate::gates::Air,
     /// What the pictures' reaches are scaled by: Object Detail's share, never under the game's.
     pub detail: f32,
     /// Particles of emitters the engine does not step (the client's own objects'), gathered for
@@ -300,6 +328,7 @@ impl Default for Particles {
             on: true,
             skip_light_sprites: false,
             flamed: std::collections::HashSet::new(),
+            puffed: std::collections::HashSet::new(),
             skip_flamed: false,
             drawn: Vec::new(),
             batches: Vec::new(),
@@ -308,6 +337,9 @@ impl Default for Particles {
             cpu_ms: 0.0,
             smoke: true,
             wind: Vec3::ZERO,
+            portals: true,
+            beacons: true,
+            air: crate::gates::Air::default(),
             detail: 1.0,
             external: Vec::new(),
             gathered: 0,
@@ -470,14 +502,16 @@ fn shape(
     let t = (p.lifetime / p.lifespan.max(1e-3)).clamp(0.0, 1.0) as f32;
     match look {
         Look::Picture => (affine(&p.frame, p.scale), 0.0, Vec3::ZERO),
-        Look::Glow(_) | Look::Flake(_) => (affine(&p.frame, p.scale), t, Vec3::ZERO),
+        Look::Glow(_) | Look::Flake(_) | Look::Fire | Look::Beacon(_) => {
+            (affine(&p.frame, p.scale), t, Vec3::ZERO)
+        }
         Look::Smoke => {
             let (drift, scale, age) = smoke_of(p, wind);
             let mut a = affine(&p.frame, scale);
             a.translation += glam::Vec3A::from(drift);
             (a, age, drift)
         }
-        Look::Mist | Look::Blob(_) | Look::Puff(_) => {
+        Look::Mist | Look::Blob(_) | Look::Puff(_) | Look::Mote => {
             let o = p.frame.origin;
             let reach = if look == Look::Puff(crate::puffs::SNOW) {
                 crate::puffs::SNOW_REACH
@@ -492,6 +526,14 @@ fn shape(
             (a, t, Vec3::ZERO)
         }
     }
+}
+
+/// A fire puff's alpha word: its picture's colour (linear, brightest channel one), a byte each.
+fn fire_word(colour: Vec3) -> u32 {
+    let c = colour.max(Vec3::ZERO) / colour.max_element().max(1e-4);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 255
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    byte(c.x) | byte(c.y) << 8 | byte(c.z) << 16
 }
 
 /// A stable seed for a particle, from what it was dealt at birth (an endless emitter re-bases
@@ -539,7 +581,10 @@ fn anchor(t: &mut Affine3A, at: Vec3) {
 
 /// Where emitter `e` of `driver` stands and the axis its particles turn about (its frame's
 /// forward): the part it hangs from, or the object itself.
-fn whirl(driver: &MotionDriver, e: &pyreal_animation::particles::ParticleEmitter) -> (Vec3, Vec3) {
+pub(crate) fn whirl(
+    driver: &MotionDriver,
+    e: &pyreal_animation::particles::ParticleEmitter,
+) -> (Vec3, Vec3) {
     let parent = driver
         .part_array
         .parts
@@ -606,8 +651,10 @@ impl Particles {
             stepped: None,
             omega: pyreal_primitives::Vec3::ZERO,
             flamed: false,
+            puffed: false,
             quiet: false,
             shadow: false,
+            beacon: None,
         });
         true
     }
@@ -635,8 +682,10 @@ impl Particles {
             stepped: None,
             omega: pyreal_primitives::Vec3::ZERO,
             flamed: false,
+            puffed: false,
             quiet: false,
             shadow: false,
+            beacon: None,
         });
         true
     }
@@ -734,13 +783,15 @@ impl Particles {
         reach_of(&self.sprites, driver, self.detail)
     }
 
-    /// The pictures of `driver`'s emitters that are not ready to draw ([`prepare_sprite`]).
+    /// The pictures of `driver`'s emitters (and a portal's script's) that are not ready to draw
+    /// ([`prepare_sprite`]).
     #[must_use]
     pub fn missing_sprites(&self, driver: &MotionDriver) -> Vec<DataId> {
         let mut out: Vec<DataId> = driver
             .particles
             .iter()
             .map(|e| sprite_of(&e.info))
+            .chain(crate::gates::pictures(driver))
             .filter(|g| !self.sprites.contains_key(&g.0))
             .collect();
         out.sort_by_key(|g| g.0);
@@ -761,6 +812,21 @@ impl Particles {
         shadow: bool,
     ) {
         use crate::roles::Role;
+        // A portal is drawn as a vortex, its swirl's particles left out; else as retail's swirl.
+        let portal = crate::gates::is_portal(driver);
+        if portal && self.portals {
+            if let Some(g) = crate::gates::gate_of(driver, &self.sprites, offset) {
+                let shown = crate::gates::shown(g.centre.distance(eye), self.reach(driver));
+                let (clock, air, group) = (self.clock, self.air, self.gathered);
+                self.external
+                    .extend(crate::gates::drawn(&g, cell, eye, clock, air, shown, group));
+                if shown > 0.0 {
+                    self.glow_lamps.push(crate::gates::lamp(&g, cell, shown));
+                }
+                self.gathered += 1;
+                return;
+            }
+        }
         let roles: Vec<Option<Role>> = driver.particles.iter().map(|e| self.role(e)).collect();
         if self.fire_bodies {
             let burning = driver
@@ -840,7 +906,7 @@ impl Particles {
                 continue;
             }
             let look = match role {
-                _ if !self.smoke => Look::Picture,
+                _ if !self.smoke || portal => Look::Picture,
                 Role::Blob(b) => Look::Blob(b),
                 Role::Volume(k) => Look::Puff(k),
                 Role::Glow(g) if !eyes => Look::Glow(g),
@@ -1012,6 +1078,39 @@ impl Particles {
             if !seen(h.cell) {
                 continue;
             }
+            let gate = crate::gates::gate_of(&h.driver, &self.sprites, Vec3::ZERO);
+            if let Some(g) = gate.filter(|_| self.portals) {
+                let reach = reach_of(&self.sprites, &h.driver, self.detail);
+                let shown = crate::gates::shown(g.centre.distance(eye), reach);
+                let group = 0x8000_0000 | u32::try_from(host).unwrap_or(0);
+                if shown > 0.0 {
+                    self.glow_lamps.push(crate::gates::lamp(&g, h.cell, shown));
+                }
+                for d in crate::gates::drawn(&g, h.cell, eye, self.clock, self.air, shown, group) {
+                    let at = Vec3::from(d.transform.translation);
+                    let r = d.transform.matrix3.x_axis.length() * 2.0;
+                    if planes.iter().all(|q| q.truncate().dot(at) + q.w >= -r) {
+                        self.drawn.push(d);
+                    }
+                }
+                continue;
+            }
+            if self.beacons && h.beacon == Some(crate::beacons::HEART) {
+                let foot = Vec3::new(h.frame.origin.x, h.frame.origin.y, h.frame.origin.z);
+                let sprite = h
+                    .driver
+                    .particles
+                    .iter()
+                    .map(|e| sprite_of(&e.info).0)
+                    .find(|id| matches!(self.sprites.get(id), Some(Some(_))));
+                if let Some(sprite) = sprite {
+                    let group = 0x8000_0000 | u32::try_from(host).unwrap_or(0);
+                    self.glow_lamps.push(crate::beacons::lamp(foot, h.cell));
+                    self.drawn.extend(crate::beacons::drawn(
+                        foot, sprite, h.cell, eye, planes, group,
+                    ));
+                }
+            }
             for e in h.driver.particles.iter() {
                 let id = sprite_of(&e.info).0;
                 let Some(Some(sprite)) = self.sprites.get(&id) else {
@@ -1026,12 +1125,29 @@ impl Particles {
                 if self.skip_light_sprites && light {
                     continue;
                 }
-                if self.skip_flamed && h.flamed && (light || self.flamed.contains(&id)) {
+                let fire = self.skip_flamed
+                    && h.puffed
+                    && !light
+                    && sprite.fire.is_some()
+                    && self.puffed.contains(&id);
+                if self.skip_flamed
+                    && (h.flamed || h.puffed)
+                    && !fire
+                    && (light || self.flamed.contains(&id))
+                {
                     continue;
                 }
-                let look = blob_of(id)
-                    .filter(|_| self.smoke)
-                    .map_or_else(|| look_of(sprite, &e.info, self.smoke), Look::Blob);
+                let look = if fire {
+                    Look::Fire
+                } else if h.beacon.is_some() && self.beacons {
+                    Look::Beacon(crate::beacons::WISP)
+                } else if h.beacon.is_some() {
+                    Look::Picture
+                } else {
+                    blob_of(id)
+                        .filter(|_| self.smoke)
+                        .map_or_else(|| look_of(sprite, &e.info, self.smoke), Look::Blob)
+                };
                 for p in e.live() {
                     self.live += 1;
                     if p.translucency >= 1.0 || p.scale <= 0.0 {
@@ -1082,7 +1198,7 @@ impl Particles {
             b.distance
                 .total_cmp(&a.distance)
                 .then(a.sprite.cmp(&b.sprite))
-                .then((a.look == Look::Mist).cmp(&(b.look == Look::Mist)))
+                .then(laid(a.look).cmp(&laid(b.look)))
         });
         self.drawn.truncate(MAX_PARTICLES);
         self.gathered = 0;
@@ -1149,16 +1265,18 @@ impl Particles {
         let mut k = 0;
         while k < liquid {
             let id = self.drawn[k].sprite;
-            let mist = self.drawn[k].look == Look::Mist;
+            let mist = laid(self.drawn[k].look);
+            // Dust draws no picture: a run of motes is one draw, whatever their pictures.
+            let dust = self.drawn[k].look == Look::Mote;
             let mut end = k + 1;
             while end < liquid
-                && self.drawn[end].sprite == id
-                && (self.drawn[end].look == Look::Mist) == mist
+                && (self.drawn[end].sprite == id || dust && self.drawn[end].look == Look::Mote)
+                && laid(self.drawn[end].look) == mist
             {
                 end += 1;
             }
             if let Some(Some(s)) = self.sprites.get(&id) {
-                for d in &s.draws {
+                for d in s.draws.iter().take(if dust { 1 } else { usize::MAX }) {
                     if self.instances.len() + (end - k) > MAX_PARTICLES {
                         break;
                     }
@@ -1461,9 +1579,9 @@ impl Particles {
             }
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 1023
             let age = (p.age.clamp(0.0, 1.0) * 1023.0) as u32;
-            // The seed's 17 bits, then whether it is a glow and its shape.
-            let mut flags = u32::from(p.light)
-                | u32::from(p.look == Look::Smoke) << 1
+            // The seed's 17 bits, then whether it is a glow and its shape; fire sets bits 0 and 1.
+            let mut flags = u32::from(p.light || p.look == Look::Fire)
+                | u32::from(p.look == Look::Smoke || p.look == Look::Fire) << 1
                 | age << 2
                 | u32::from(p.look == Look::Mist) << 12
                 | (p.seed & 0x1_FFFF) << 13
@@ -1471,17 +1589,30 @@ impl Particles {
                     Look::Glow(kind) | Look::Flake(kind) => 1 << 30 | u32::from(kind) << 31,
                     _ => 0,
                 };
+            // A beacon's part rides in its seed's low two bits, under bit 31 alone.
+            if let Look::Beacon(part) = p.look {
+                flags = 1 << 31 | age << 2 | ((p.seed << 2 | u32::from(part)) & 0x1_FFFF) << 13;
+            }
             // Smoke and dust carry their picture's colour in place of their seed.
             if let (Look::Puff(k), Some(Some(s))) = (p.look, self.sprites.get(&p.sprite)) {
                 if k >= crate::puffs::SMOKE {
                     flags = age << 2 | crate::puffs::tint_bits(s.colour) << 16;
                 }
             }
+            // A portal's colour rides in its seed; a mote is mist and smoke at once, its look's
+            // word its alpha ([`crate::gates`]).
+            match p.look {
+                Look::Puff(crate::puffs::GATE) => flags = p.seed << 16,
+                Look::Mote => flags = 2 | 4096,
+                _ => {}
+            }
             // A glow's alpha word carries its picture's colour and strength ([`crate::glow::Glow::word`]).
             let alpha = match (p.look, self.sprites.get(&p.sprite)) {
+                (Look::Mote, _) => p.seed,
                 (Look::Glow(_), Some(Some(Sprite { glow: Some(g), .. }))) => g.word(p.alpha),
                 (Look::Flake(0), _) => crate::rime::FLAKE_LIGHT.word(p.alpha),
                 (Look::Flake(_), _) => crate::rime::GLINT_LIGHT.word(p.alpha),
+                (Look::Fire, Some(Some(s))) => fire_word(s.fire.unwrap_or(Vec3::ONE)),
                 _ => p.alpha.to_bits(),
             };
             for w in [word, alpha, p.cell, flags] {

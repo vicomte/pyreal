@@ -114,3 +114,28 @@ fn a_portals_swirl_lives_when_stepped_as_a_moving_object() {
     let live: usize = portal.particles.iter().map(|e| e.live().count()).sum();
     assert!(live >= 6, "the swirl's particles: {live}");
 }
+
+/// A brazier's and a tower top's beds of fire (retail's billowing fire puffs) are drawn as their
+/// puffs, not as flame cards, while a street torch keeps its drawn flame; the puff picture is
+/// fire and a lamp's soft glow picture is not, so a glow's emitters keep their retail look.
+#[test]
+fn beds_of_fire_burn_as_puffs_and_torches_as_flames() {
+    use pyreal_engine::flames::examine;
+    let store = pyreal_dat::testing::open_store_or_fail();
+    for bed in [0x0200_0624, 0x0200_0485, 0x0200_05AE] {
+        let flames = examine(&store, DataId(bed));
+        assert!(!flames.is_empty(), "{bed:#X} burns");
+        assert!(
+            flames.iter().all(|f| !f.kind.carded()),
+            "{bed:#X}: {flames:?}"
+        );
+    }
+    let torch = examine(&store, DataId(0x0200_05D8));
+    assert!(
+        !torch.is_empty() && torch.iter().all(|f| f.kind.carded()),
+        "{torch:?}"
+    );
+    let fire = |g: u32| pyreal_engine::body_fire::fire_picture(&store, DataId(g));
+    assert!(fire(0x0100_0FF4).is_some(), "the fire puff is fire");
+    assert!(fire(0x0100_16FD).is_none(), "a lamp's glow is not fire");
+}

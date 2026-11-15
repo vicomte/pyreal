@@ -1,4 +1,5 @@
-//! Flames drawn in code where an object burns: torches, sconces, candles, braziers, fire pits.
+//! Flames drawn in code where an object burns: torches, sconces, candles; braziers' and pyres'
+//! beds of fire drawn as fire puffs.
 //!
 //! An object id is looked at once ([`examine`]): its default script's fire-coloured particle
 //! emitters say where it burns and what kind of fire it is, by how the emitter's particles
@@ -10,6 +11,9 @@
 //! `flames.wgsl`: a view-facing card per flame, its fire made of scrolling noise under a
 //! temperature ramp, drawn additively and bright enough to bloom. The emitters a flame stands for
 //! are left out of the particles while flames are on ([`crate::particles::Particles::flamed`]).
+//! A bed of fire ([`FlameKind::Brazier`]) has no card: retail builds it of large billowing fire
+//! puffs, which keep their emitters and are drawn as fire
+//! ([`crate::particles::Particles::puffed`]).
 
 use std::collections::HashMap;
 
@@ -27,7 +31,7 @@ pub enum FlameKind {
     Candle,
     /// A taller licking flame.
     Torch,
-    /// A wide bed of flames.
+    /// A bed of fire, retail's billowing fire puffs: drawn as its particles' fire, not a card.
     Brazier,
     /// A creature of fire, its points following ([`crate::body_fire`]).
     Body,
@@ -59,13 +63,10 @@ impl FlameKind {
         }
     }
 
-    /// How far over its emitter its base stands, metres: a brazier's fire burns over its coals.
-    fn lift(self) -> f32 {
-        if self == Self::Brazier {
-            0.12
-        } else {
-            0.0
-        }
+    /// Whether it is drawn as a flame card; a bed of fire is drawn as its puffs.
+    #[must_use]
+    pub fn carded(self) -> bool {
+        self != Self::Brazier
     }
 }
 
@@ -192,7 +193,7 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<FlameSource> {
 #[must_use]
 pub fn place(s: &FlameSource, at: &Affine3A, cell: u32, object: u32, lamps: &[Lamp]) -> Flame {
     let (scale, _, _) = at.to_scale_rotation_translation();
-    let base = at.transform_point3(s.offset) + Vec3::Z * s.kind.lift() * scale.z;
+    let base = at.transform_point3(s.offset);
     let lamp = lamps
         .iter()
         .filter(|l| l.flicker == Flicker::Flame)

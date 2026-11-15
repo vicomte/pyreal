@@ -798,6 +798,18 @@ impl<'a, S: Shell> UiContext<'a, S> {
     pub fn explore_view(&self) -> Option<crate::explore::ExploreView> {
         self.app.explore_view()
     }
+
+    /// Where the viewer stands: explore mode's camera, else the player's body as it moves.
+    #[must_use]
+    pub fn viewer_position(&self) -> Option<pyreal_primitives::Position> {
+        self.app.viewer_position()
+    }
+
+    /// Whether the player stands in a dungeon, a room that sees no outside.
+    #[must_use]
+    pub fn viewer_in_dungeon(&self) -> bool {
+        self.app.viewer_in_dungeon()
+    }
 }
 
 /// A UI's answer to one talk-focus notice: handed the current talk focus and the notice, it says

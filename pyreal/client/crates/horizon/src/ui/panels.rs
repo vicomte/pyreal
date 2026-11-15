@@ -495,6 +495,8 @@ pub struct Windows {
     pub map_picture: Option<Rect>,
     /// Which part of the picture the map window shows.
     pub map_view: map::MapView,
+    /// The waypoint followed, which the map, the notebook and the minimap set and clear.
+    pub waypoints: crate::ui::waypoint::Waypoints,
 }
 
 impl Windows {

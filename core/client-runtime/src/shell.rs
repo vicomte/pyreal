@@ -231,6 +231,14 @@ pub trait Shell: Sized {
         commands: Vec<UiLayoutCommand>,
     ) {
     }
+    /// A typed `@way`: set, clear or show the waypoint the interface keeps. The answer to print;
+    /// `None` from a front end that keeps no waypoint.
+    fn waypoint_command(
+        &mut self,
+        command: pyreal_client_model::cmd::waypoint::WaypointCommand,
+    ) -> Option<String> {
+        None
+    }
     /// Close the examination panel.
     fn close_examine_panel(&mut self) {}
     /// The toolbar's split-stack notice for `selected`.

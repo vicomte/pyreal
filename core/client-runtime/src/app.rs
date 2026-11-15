@@ -31,6 +31,7 @@ mod access;
 mod display;
 mod explore;
 mod frame;
+mod hitch;
 mod hook;
 mod hud;
 mod input;
@@ -879,6 +880,11 @@ pub struct App<S: Shell> {
     window_has_no_extent: bool,
     /// The performance capture `@perfcapture` started, while it records.
     pub perf_capture: Option<crate::perf_capture::PerfCapture>,
+    /// The last thirty seconds of frames, and the hitch reports waiting ([`crate::hitch`]).
+    pub hitches: crate::hitch::HitchLog,
+    /// When the hitch log's clock started, and whether there was a world last frame.
+    hitch_epoch: std::time::Instant,
+    hitch_world: bool,
     /// The commit the program was built from, as its host names it, for `@report`.
     pub build_commit: &'static str,
     /// Time when `0x0013` made the session playable, used by `--linger`.

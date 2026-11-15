@@ -91,6 +91,10 @@ struct Frame {
     trail: vec4<f32>,
     // The shadows' pools of darkness: xyz each one's feet, w its radius (0: no more).
     umbrae: array<vec4<f32>, 8>,
+    // The waypoint's ring: xyz its middle (the player's feet), w its radius (0: none).
+    waypoint: vec4<f32>,
+    // xy: the way its arrow points, east and north; z: the object it rings + 1 (u32 bits).
+    waypoint_way: vec4<f32>,
 }
 
 const F_PHYSICAL: u32 = 1u;

@@ -462,6 +462,7 @@ pub struct SceneRenderer {
     first_pixel: bool,
     pub world_marks: Vec<crate::marks::WorldMark>,
     ground_markers: Vec<GroundMarker>,
+    waypoint_ring: Option<pyreal_client_contract::overlay::WaypointRing>,
     pub look: Look,
     /// Thunder on its way: when it is heard (the engine's clock), which peal and how loud.
     thunder_due: Vec<(f64, u32, f32)>,
@@ -484,6 +485,8 @@ pub struct SceneRenderer {
     frame_log: Option<std::io::BufWriter<std::fs::File>>,
     /// Where the eye stood this frame, its block and the loaded world, for the frame log.
     frame_note: String,
+    /// What the frame did besides its passes, for the hitch reports.
+    work: pyreal_client_runtime::report::PresentWork,
     /// `PYREAL_FLY=vx,vy,lift`: the eye carried at a steady speed (metres a second of the
     /// engine's clock) and lifted, for a run's traversal measured offline.
     fly: Option<glam::Vec3>,
@@ -774,6 +777,7 @@ impl SceneRenderer {
             first_pixel: false,
             world_marks: Vec::new(),
             ground_markers: Vec::new(),
+            waypoint_ring: None,
             look: Look::default(),
             thunder_due: Vec::new(),
             last_flash: 0.0,
@@ -789,6 +793,7 @@ impl SceneRenderer {
                 .and_then(|p| std::fs::File::create(p).ok())
                 .map(std::io::BufWriter::new),
             frame_note: String::new(),
+            work: pyreal_client_runtime::report::PresentWork::default(),
             fly: std::env::var("PYREAL_FLY").ok().and_then(|v| {
                 let p: Vec<f32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 (p.len() == 3).then(|| glam::Vec3::new(p[0], p[1], p[2]))
@@ -1183,6 +1188,7 @@ impl SceneRenderer {
             }
         }
         self.frame_started = Some(now);
+        self.work = pyreal_client_runtime::report::PresentWork::default();
     }
 
     pub fn set_game_viewport(&mut self, viewport: Option<Viewport>) {
@@ -1243,6 +1249,7 @@ impl SceneRenderer {
             eye.origin.z += v.z;
         }
         bridge.staged = self.portal_look.is_some();
+        let t = std::time::Instant::now();
         bridge.prepare(
             &mut self.engine,
             &mut self.loader,
@@ -1250,6 +1257,8 @@ impl SceneRenderer {
             fallback,
             glam::Vec2::new(eye.origin.x, eye.origin.y),
         );
+        self.work.stream_ms += pyreal_engine::frame_work::ms_since(t);
+        note_stream(&mut self.work, bridge);
         let offset = bridge.offset();
         #[allow(clippy::cast_precision_loss)]
         let far = (bridge.reach.radius.max(bridge.reach.far) as f32 + 0.5) * 192.0;
@@ -1268,7 +1277,9 @@ impl SceneRenderer {
                 .water_surface_at(camera.position.truncate(), camera.position);
             camera.position += crate::bridge::water_lift(camera.position, surface);
         }
+        let t = std::time::Instant::now();
         bridge.sync(&mut self.engine, &mut self.loader, ws, camera.position);
+        self.work.sync_ms += pyreal_engine::frame_work::ms_since(t);
         let light = crate::bridge::light(&bridge.region, ws);
         let (fall, storm) = crate::bridge::fall(ws);
         hear_weather(
@@ -1354,6 +1365,28 @@ impl SceneRenderer {
             ring,
             colour,
         };
+        // The waypoint's ring round the player's feet, or with no player on the ground under the
+        // camera, its arrow the way to the waypoint.
+        self.engine.renderer.waypoint = self.waypoint_ring.and_then(|w| {
+            let (at, around) = match (&ws.character, w.camera_height) {
+                (Some(c), _) => (
+                    crate::bridge::frame_point(&c.render_frame()) + offset,
+                    ws.player_object.and_then(|id| bridge.number_of(id)),
+                ),
+                (None, Some(h)) => (camera.position - glam::Vec3::Z * h, None),
+                (None, None) => return None,
+            };
+            let (sin, cos) = (
+                pyreal_primitives::num::math::sinf(w.bearing),
+                pyreal_primitives::num::math::cosf(w.bearing),
+            );
+            Some(pyreal_engine::renderer::WaypointMark {
+                at,
+                radius: w.radius,
+                way: glam::Vec2::new(sin, cos),
+                around,
+            })
+        });
         // A camera that jumps (a teleport, a portal, a recentred world) starts the temporal
         // history again rather than smearing the last place into the new one.
         let jumped = self
@@ -1653,13 +1686,17 @@ impl SceneRenderer {
                 self.last_render = Some(std::time::Instant::now());
                 self.engine.renderer.clock += step;
                 self.engine.renderer.ui = ui.clone();
+                let t = std::time::Instant::now();
                 self.engine
                     .render_with(&camera, &light, &view, size, Some(&self.overlay))?;
+                self.work.render_ms += pyreal_engine::frame_work::ms_since(t);
                 // With no window nothing paces the frames: each waits for the device, so a
                 // headless run's frames, and their times, are the device's own one by one.
                 let headless = self.surface.is_none();
                 if headless {
+                    let t = std::time::Instant::now();
                     self.gpu.wait();
+                    self.work.gpu_wait_ms += pyreal_engine::frame_work::ms_since(t);
                 }
                 let _ = self.engine.renderer.collect_timings(&self.gpu, headless);
                 self.times.gpu_ms = self.engine.renderer.frame_span_ms();
@@ -1810,6 +1847,18 @@ impl SceneRenderer {
             );
         }
         self.times.frames += 1;
+        let w = pyreal_engine::frame_work::take();
+        let work = &mut self.work;
+        work.textures = w.textures;
+        work.texture_kb = u32::try_from(w.texture_bytes >> 10).unwrap_or(u32::MAX);
+        work.meshes = w.meshes;
+        work.pipelines = w.pipelines + w.shaders;
+        work.pipeline_ms = w.pipeline_ms;
+        work.blas = w.blas;
+        work.tlas = w.tlas;
+        work.rays_ms = w.rays_ms;
+        work.bind_groups = w.bind_groups;
+        work.upload_ms = w.upload_ms;
         Ok(())
     }
 
@@ -1821,7 +1870,11 @@ impl SceneRenderer {
         let _held = presenting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let frame = match surface.get_current_texture() {
+        let t = std::time::Instant::now();
+        let got = surface.get_current_texture();
+        self.work.gpu_wait_ms += pyreal_engine::frame_work::ms_since(t);
+        let t = std::time::Instant::now();
+        let frame = match got {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -1852,6 +1905,7 @@ impl SceneRenderer {
             self.overlay.blit(&self.gpu, back, &view, self.format);
         }
         self.gpu.queue.present(frame);
+        self.work.present_ms += pyreal_engine::frame_work::ms_since(t);
     }
 
     pub fn window_hidden(&self) -> bool {
@@ -2219,6 +2273,15 @@ impl SceneRenderer {
         self.ground_markers = markers.to_vec();
     }
 
+    /// The waypoint's ring round the player for the frames until the next call; `None` takes it
+    /// away.
+    pub fn set_waypoint_ring(
+        &mut self,
+        ring: Option<pyreal_client_contract::overlay::WaypointRing>,
+    ) {
+        self.waypoint_ring = ring;
+    }
+
     /// Decodes retail surface `id` and shows it over the whole frame while no world is drawn.
     ///
     /// # Errors
@@ -2396,6 +2459,7 @@ impl SceneRenderer {
         #[allow(clippy::cast_possible_truncation)]
         Some(pyreal_client_runtime::report::PresentCosts {
             better_lighting: self.times.cpu_ms as f32,
+            work: Some(self.work),
             ..pyreal_client_runtime::report::PresentCosts::default()
         })
     }
@@ -2550,6 +2614,46 @@ fn hear_weather(
             true
         }
     });
+}
+
+/// The land's streaming as `bridge` has it after this frame's prepare, into `work`.
+fn note_stream(
+    work: &mut pyreal_client_runtime::report::PresentWork,
+    bridge: &crate::bridge::Bridge,
+) {
+    let Some(stream) = bridge.stream.as_ref() else {
+        return;
+    };
+    let s = &stream.stats;
+    let n = |v: usize| u32::try_from(v).unwrap_or(u32::MAX);
+    work.retarget_ms = s.frame_retarget_ms;
+    work.load_ms = s.frame_load_ms;
+    work.load_wait_ms = s.frame_wait_ms;
+    work.place_ms = s.frame_place_ms;
+    work.switch_ms = s.frame_switch_ms;
+    work.evict_ms = s.frame_evict_ms;
+    work.steps = s.frame_steps;
+    work.centre = stream.centre();
+    work.target = stream.target();
+    work.far_centre = stream.far_centre();
+    work.far_asked = stream.far_asked();
+    work.blocks = n(stream.blocks().count());
+    work.pending = n(s.pending);
+    work.asked = n(s.asked);
+    work.planned = n(s.planned);
+    work.queued = n(s.queued);
+    work.trees_asked = n(s.trees_asked);
+    work.full_loads = s.full_loads;
+    work.switches = s.switches;
+    work.rebases = s.rebases;
+    work.evictions = s.evictions;
+    work.blocks_placed = s.blocks_placed;
+    work.blocks_removed = s.blocks_removed;
+    work.last_step = s.last_step();
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        work.worst_step_ms = s.worst_step_ms as f32;
+    }
 }
 
 #[cfg(test)]

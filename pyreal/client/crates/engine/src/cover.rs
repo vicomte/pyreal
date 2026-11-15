@@ -29,7 +29,8 @@
 //!   [`scatter_reach`], placed in the same tiles. Wildflowers grow on grassland in drifts a few
 //!   metres across, each stretch of meadow a few colours of its terrain's palette, and sway in the
 //!   same wind. Stones lie on bare patches, dirt, sand and rock and along the road's edges, the
-//!   ground's colour greyer. Both keep the grass's rules and cast no shadow.
+//!   ground's colour greyer over the land's bare rock picture ([`Cover::set_stone_picture`]).
+//!   Both keep the grass's rules and cast no shadow.
 //! - **Colour**: drawn toward the ground's under it (each terrain type's picture's mean), keeping
 //!   its own light and dark and its vertex colour, so it sits on the ground as its grass.
 //! - **Wind**: the weather's breeze ([`crate::wind`]) leans each plant with it, deeper as gusts
@@ -467,6 +468,8 @@ pub struct Cover {
     /// The terrain types a pack keeps the pebbles off, a bit each, and whether it keeps them off
     /// the road's edges ([`Self::keep_pebbles_off`]).
     bare: [u32; 2],
+    /// The stones' picture's slot and its repeats a metre (as bits) ([`Self::set_stone_picture`]).
+    stone: [u32; 2],
 }
 
 /// The cover pass's pipelines and layouts, made with the renderer.
@@ -538,7 +541,7 @@ impl CoverPipelines {
             entries: &[
                 storage(0, true, S::VERTEX),
                 storage(1, true, S::VERTEX),
-                uniform(2, S::VERTEX),
+                uniform(2, S::VERTEX | S::FRAGMENT),
                 uniform(3, S::VERTEX),
                 storage(4, true, S::VERTEX),
             ],
@@ -683,6 +686,7 @@ impl Cover {
         let kinds = std::mem::take(&mut self.kinds);
         let grounds = self.ground_colours;
         let bare = self.bare;
+        let stone = self.stone;
         let roads = self.roads.clone();
         let clearings = std::mem::replace(&mut self.clearings, Clearings::new(gpu));
         let land = (footprints, roads, clearings);
@@ -690,6 +694,7 @@ impl Cover {
         *self = Self::sized(gpu, pipelines, kinds, (reach, detail), land, grounds);
         self.height = height;
         self.bare = bare;
+        self.stone = stone;
     }
 
     /// The reach's share and the detail scale the lists are sized for.
@@ -926,6 +931,7 @@ impl Cover {
             scatter,
             scatter_tiles,
             bare: [0, 0],
+            stone: [crate::asset::material::NO_TEXTURE, 0],
         }
     }
 
@@ -933,6 +939,18 @@ impl Cover {
     /// road's edges where `road`.
     pub fn keep_pebbles_off(&mut self, types: u32, road: bool) {
         self.bare = [types, u32::from(road)];
+    }
+
+    /// The picture the stones are drawn with: texture `slot`, repeated `per_m` times a metre.
+    pub fn set_stone_picture(&mut self, slot: u32, per_m: f32) {
+        self.stone = [slot, per_m.to_bits()];
+    }
+
+    /// The stones' picture's slot and its repeats a metre, where they have one.
+    #[must_use]
+    pub fn stone_picture(&self) -> Option<(u32, f32)> {
+        (self.stone[0] != crate::asset::material::NO_TEXTURE)
+            .then(|| (self.stone[0], f32::from_bits(self.stone[1])))
     }
 
     /// Terrain type `terrain_type`'s ground colour (linear), which the cover on it is tinted toward.
@@ -1052,7 +1070,12 @@ impl Cover {
         p.extend(words(&[self.bare[0], self.bare[1], 0, 0]));
         gpu.queue.write_buffer(&self.params, 0, &p);
         let n = bodies.len().min(MOST_PUSHERS);
-        let mut b = words(&[u32::try_from(n).unwrap_or(0), self.height.to_bits(), 0, 0]);
+        let mut b = words(&[
+            u32::try_from(n).unwrap_or(0),
+            self.height.to_bits(),
+            self.stone[0],
+            self.stone[1],
+        ]);
         let vec = |b: &mut Vec<u8>, at: glam::Vec3| {
             b.extend(
                 at.extend(0.0)

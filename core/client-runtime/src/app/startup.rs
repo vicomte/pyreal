@@ -280,6 +280,14 @@ impl<S: Shell> App<S> {
         let object_identity = scene_cfg.object_identity_budget.and_then(|budget| {
             ObjectIdentityPrep::start(&store, budget, scene_cfg.object_identity_cache)
         });
+        let hitch_ms = cfg
+            .hitch_ms
+            .or_else(|| {
+                std::env::var("PYREAL_HITCH_MS")
+                    .ok()
+                    .and_then(|v| v.trim().parse().ok())
+            })
+            .unwrap_or(crate::hitch::DEFAULT_THRESHOLD_MS);
         let mut app = Self {
             cfg,
             state: AppState::Startup,
@@ -353,6 +361,9 @@ impl<S: Shell> App<S> {
             perf_font: false,
             window_has_no_extent: false,
             perf_capture: None,
+            hitches: crate::hitch::HitchLog::new(hitch_ms),
+            hitch_epoch: std::time::Instant::now(),
+            hitch_world: false,
             build_commit: "unknown",
             playable_at: None,
             // The reporter seeds `last_sent_position_time` with the clock start, not zero.

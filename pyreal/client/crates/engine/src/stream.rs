@@ -8,21 +8,29 @@
 //! - **Planning** (decoding the landblock, its information and rooms, generating its scenery, the
 //!   far terrain's field and the land field) runs on worker threads, with no device.
 //! - **Placing** (meshes, pictures and instances into the pools) runs on the frame's thread, a
-//!   step at a time (rooms, ground, statics, scenery in runs) within a budget of milliseconds a
-//!   frame, nearest block first.
+//!   step at a time (rooms, ground, statics, scenery in runs a couple of milliseconds long) within
+//!   a budget of milliseconds a frame, nearest block first; more of it as the eye nears the drawn
+//!   square's edge.
 //! - When the eye goes past the centre block (and a cell beyond, so walking along a block line
-//!   does not swing it back and forth), the square round the eye's block is loaded: its new blocks
-//!   are placed while the old square is still drawn (their ground waits), and once they and the
-//!   new far terrain and land field are ready, the switch is made at once: the ground of the new
-//!   square drawn, the blocks left behind taken out, the far terrain and the land field swapped.
+//!   does not swing it back and forth), the square round the eye's block is loaded (a block or two
+//!   further on the way a fast eye flies): its new blocks are placed while the old square is still
+//!   drawn (their ground waits), and once they and the land field are ready, the switch is made
+//!   at once: the ground of the new square drawn, the blocks left behind taken out, the land field
+//!   swapped and the far terrain's hole moved to the new square. A far field takes long to make at
+//!   a long reach, so the drawn one serves the square wherever it goes; a new one is asked for
+//!   (one at a time) once the square has gone a little way, and drawn when it comes. Only a jump
+//!   with no far terrain drawn waits for one.
 //!   Then, past the [`crate::evict::Budget`], what nothing draws any more is freed.
+//! - The far trees are asked for nearest first, [`TREE_JOBS`] at a time, behind the square's own
+//!   work; those for blocks flown past are taken back before a planner starts them.
 //! - **Render space** is metres from an origin block's south-west corner. It stays put while the
 //!   eye travels, until the square's centre is [`REBASE`] blocks from it; then the origin moves to
 //!   the centre and everything placed moves with it (instances, rooms and their cut volumes,
 //!   lamps, particles, the far terrain and the land field), with nothing loaded again, so no
 //!   position is ever more than a few kilometres from the origin and f32 keeps millimetres.
 //! - A jump past the square (a teleport, a portal, a dungeon) loads the square round the new
-//!   place at once, its blocks planned on every worker; the far trees follow over the next frames.
+//!   place at once, its blocks planned on every worker, beside the drawn far terrain (a new one
+//!   drawn when it comes); the far trees follow over the next frames.
 //!   With [`Stream::staged`] set (portal space covers the screen), the jump is placed a step at a
 //!   time instead, nearest block first, and drawn once the whole square is in.
 
@@ -46,11 +54,25 @@ use crate::Engine;
 pub const REBASE: i32 = 8;
 /// How far past the centre block's edge the eye goes before the square follows it, metres.
 pub const MARGIN: f32 = 24.0;
+/// Blocks short of the square's edge the eye may go before a square being placed is given up for
+/// one round the eye.
+const KEEP_SLACK: i32 = 2;
 /// How much nearer than the square's edge the trees reach their cards, metres: the eye stands a
 /// little off the body the square follows.
 const CARD_SLACK: f32 = 16.0;
 /// Scenery objects placed in one step.
 const SCENERY_RUN: usize = 48;
+/// A step of statics, scenery or far trees stops once it has taken this long, ms: one heavy
+/// building or a grove of new trees is a step's worth alone.
+const STEP_MS: f32 = 2.0;
+/// Far blocks' trees asked of the planners at once, nearest first; more as they come back.
+const TREE_JOBS: usize = 64;
+/// Blocks a second the eye flies at before the square is placed ahead of it.
+const LEAD_SPEED: f32 = 1.5;
+/// Metres a second past which the eye jumped rather than flew.
+const MOST_EYE_SPEED: f32 = 4000.0;
+/// Updates in a row the eye must fly fast for before the square leads it: a jump is one.
+const LEAD_UPDATES: u32 = 8;
 /// The least time between evictions asked for by bodies dressed in place.
 pub const DRESSED_EVICT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 /// Worker threads planning blocks.
@@ -90,6 +112,28 @@ pub struct StreamStats {
     /// Far blocks whose trees are asked for and planned, not yet placed.
     pub trees_asked: usize,
     pub trees_planned: usize,
+    /// Blocks asked of the planners and not yet back, plans back and not yet placed, and jobs
+    /// waiting in the planners' queues.
+    pub asked: usize,
+    pub planned: usize,
+    pub queued: usize,
+    /// This frame's work, ms: choosing a new square, a load at once (and the part of it spent
+    /// waiting on the planners), placing, the switch and freeing; and the steps taken.
+    pub frame_retarget_ms: f32,
+    pub frame_load_ms: f32,
+    pub frame_wait_ms: f32,
+    pub frame_place_ms: f32,
+    pub frame_switch_ms: f32,
+    pub frame_evict_ms: f32,
+    pub frame_steps: u32,
+}
+
+impl StreamStats {
+    /// What the last step of placing was.
+    #[must_use]
+    pub fn last_step(&self) -> &'static str {
+        self.step.0
+    }
 }
 
 enum Job {
@@ -105,7 +149,8 @@ enum Job {
 enum Done {
     Block(u64, Box<BlockPlan>),
     Trees(u64, Block, Vec<(DataId, Affine3A)>),
-    Far(u64, Block, Box<FarField>),
+    /// A far field round a block, planned in render space round the origin block given.
+    Far(u64, Block, u16, Box<FarField>),
     Land(u64, Block, Box<LandField>),
 }
 
@@ -159,6 +204,27 @@ impl Workers {
             }
             wake.notify_one();
         }
+    }
+
+    /// Takes the far trees' jobs not yet started whose blocks `keep` no longer wants out of the
+    /// queue; their blocks.
+    fn drop_trees(&self, keep: impl Fn(Block) -> bool) -> Vec<Block> {
+        let mut gone = Vec::new();
+        if let Ok(mut q) = self.queues.0.lock() {
+            q.1.retain(|j| match j {
+                Job::Trees(_, b, _) if !keep(*b) => {
+                    gone.push(*b);
+                    false
+                }
+                _ => true,
+            });
+        }
+        gone
+    }
+
+    /// Jobs waiting to be started.
+    fn queued(&self) -> usize {
+        self.queues.0.lock().map_or(0, |q| q.0.len() + q.1.len())
     }
 
     /// Drops every job not yet started.
@@ -232,7 +298,8 @@ fn work(
             Job::Far(g, area, centre, radius) => {
                 let mut field = world::far_field_round(store, region, area, centre, radius);
                 field.smooth = smoothing > 0;
-                Done::Far(g, centre, Box::new(field))
+                field.prepare();
+                Done::Far(g, centre, area.center, Box::new(field))
             }
             Job::Land(g, lands, first, blocks, origin, centre) => {
                 let refs: Vec<&crate::land::BlockLand> = lands.iter().collect();
@@ -325,8 +392,17 @@ pub struct Stream {
     asked: HashSet<Block>,
     asked_trees: HashSet<Block>,
     loading: Option<Loading>,
+    /// A far field come back and not yet drawn, the one asked for and not back, and the block the
+    /// drawn far terrain was made round.
     far_field: Option<(Block, FarField)>,
     far_asked: Option<Block>,
+    far_centre: Option<Block>,
+    /// The eye's velocity over the ground, metres a second, and where it was last, metres from
+    /// the world's corner, and when.
+    velocity: Vec2,
+    eye_was: Option<(Vec2, Instant)>,
+    /// Updates in a row the eye has flown fast.
+    fast_updates: u32,
     land: Option<(Block, LandField)>,
     land_asked: Option<Block>,
     workers: Workers,
@@ -397,6 +473,10 @@ impl Stream {
             loading: None,
             far_field: None,
             far_asked: None,
+            far_centre: None,
+            velocity: Vec2::ZERO,
+            eye_was: None,
+            fast_updates: 0,
             land: None,
             land_asked: None,
             workers,
@@ -433,6 +513,24 @@ impl Stream {
         self.centre
     }
 
+    /// The block the drawn far terrain was made round.
+    #[must_use]
+    pub fn far_centre(&self) -> Option<Block> {
+        self.far_centre
+    }
+
+    /// The block a far field is being made round, while one is.
+    #[must_use]
+    pub fn far_asked(&self) -> Option<Block> {
+        self.far_asked
+    }
+
+    /// The block the square being placed is round, while one is.
+    #[must_use]
+    pub fn target(&self) -> Option<Block> {
+        self.target
+    }
+
     /// Whether a jump is being placed a step at a time.
     #[must_use]
     pub fn jumping(&self) -> bool {
@@ -442,7 +540,12 @@ impl Stream {
     /// Whether the square drawn is the one wanted, wholly placed.
     #[must_use]
     pub fn settled(&self) -> bool {
-        self.centre.is_some() && self.target.is_none() && self.loading.is_none() && !self.evict_due
+        self.centre.is_some()
+            && self.target.is_none()
+            && self.loading.is_none()
+            && !self.evict_due
+            && self.far_asked.is_none()
+            && self.far_field.is_none()
     }
 
     /// The placed blocks of the square.
@@ -508,6 +611,7 @@ impl Stream {
         self.loading = None;
         self.far_field = None;
         self.far_asked = None;
+        self.far_centre = None;
         self.land = None;
         self.land_asked = None;
         self.tree_run = None;
@@ -525,6 +629,14 @@ impl Stream {
     ) -> Changed {
         let started = Instant::now();
         let mut changed = Changed::default();
+        self.follow_eye(viewer, eye, started);
+        self.stats.frame_retarget_ms = 0.0;
+        self.stats.frame_load_ms = 0.0;
+        self.stats.frame_wait_ms = 0.0;
+        self.stats.frame_place_ms = 0.0;
+        self.stats.frame_switch_ms = 0.0;
+        self.stats.frame_evict_ms = 0.0;
+        self.stats.frame_steps = 0;
         self.receive();
         match self.centre {
             Some(c) if chebyshev(viewer, c) <= self.radius => {
@@ -536,9 +648,16 @@ impl Stream {
                 ) + eye;
                 let outside = p.cmplt(Vec2::splat(-MARGIN)).any()
                     || p.cmpgt(Vec2::splat(192.0 + MARGIN)).any();
-                let want = if outside { viewer } else { c };
-                if want != self.target.unwrap_or(c) {
+                let want = if outside { self.ahead(viewer) } else { c };
+                // A square being placed is kept while the eye stays well inside it: a fast eye
+                // would otherwise start it over at every block and never switch.
+                let placing = self.target.is_some_and(|t| {
+                    want != c && chebyshev(viewer, t) <= (self.radius - KEEP_SLACK).max(0)
+                });
+                if !placing && want != self.target.unwrap_or(c) {
+                    let t = Instant::now();
                     changed.rebased = self.retarget(engine, loader, want, c);
+                    self.stats.frame_retarget_ms += crate::frame_work::ms_since(t);
                 }
             }
             None if self.jumping()
@@ -551,14 +670,17 @@ impl Stream {
                 }
             }
             _ => {
+                let t = Instant::now();
                 if self.staged {
                     self.begin_jump(engine, loader, viewer);
                 } else {
                     self.full_load(engine, loader, viewer);
                 }
+                self.stats.frame_load_ms += crate::frame_work::ms_since(t);
                 changed.loaded = true;
             }
         }
+        self.ask_land();
         self.ask_trees(loader);
         // Short of the square's edge every tree is its card, as the far rings draw it.
         let rings = crate::world::far_tree_rings(self.radius, self.far);
@@ -570,18 +692,31 @@ impl Stream {
             0.0
         };
         self.note_dressing(loader);
-        // Placing, within the budget.
+        // Placing, within the budget: more of it as the eye nears the drawn square's edge, where
+        // the square would be loaded again at once.
+        let behind = self
+            .centre
+            .map_or(0, |c| chebyshev(viewer, c) - (self.radius - KEEP_SLACK));
+        let budget = self.budget_ms * f64::from(1u8 << behind.clamp(0, 2));
         loop {
             let step = Instant::now();
             if !self.step(engine, loader, viewer) {
                 break;
             }
             let ms = step.elapsed().as_secs_f64() * 1e3;
+            #[allow(clippy::cast_possible_truncation)]
+            let shown = ms as f32;
+            match self.stats.step.0 {
+                "switch" => self.stats.frame_switch_ms += shown,
+                "evict" => self.stats.frame_evict_ms += shown,
+                _ => self.stats.frame_place_ms += shown,
+            }
+            self.stats.frame_steps += 1;
             if ms > self.stats.worst_step_ms {
                 self.stats.worst_step_ms = ms;
                 self.stats.worst_step = self.stats.step;
             }
-            if started.elapsed().as_secs_f64() * 1e3 >= self.budget_ms {
+            if started.elapsed().as_secs_f64() * 1e3 >= budget {
                 break;
             }
         }
@@ -594,6 +729,17 @@ impl Stream {
         self.stats.tree_blocks = self.trees.len();
         self.stats.trees_asked = self.asked_trees.len();
         self.stats.trees_planned = self.tree_plans.len();
+        self.stats.asked = self
+            .asked
+            .iter()
+            .filter(|b| !self.plans.contains_key(b))
+            .count();
+        self.stats.planned = self
+            .plans
+            .keys()
+            .filter(|b| !self.near.contains_key(b))
+            .count();
+        self.stats.queued = self.workers.queued();
         self.stats.frame_ms = started.elapsed().as_secs_f64() * 1e3;
         changed
     }
@@ -640,7 +786,20 @@ impl Stream {
                     self.asked_trees.remove(&b);
                     self.tree_plans.insert(b, s);
                 }
-                Done::Far(g, c, f) if g == self.generation && self.far_asked == Some(c) => {
+                Done::Far(g, c, from, mut f)
+                    if g == self.generation && self.far_asked == Some(c) =>
+                {
+                    // Planned before render space moved on: moved with it.
+                    let from = (i32::from(from >> 8), i32::from(from & 0xFF));
+                    #[allow(clippy::cast_precision_loss)]
+                    let d = Vec2::new(
+                        ((from.0 - self.origin.0) * 192) as f32,
+                        ((from.1 - self.origin.1) * 192) as f32,
+                    );
+                    f.origin += d;
+                    f.near_min += d;
+                    f.near_max += d;
+                    self.far_asked = None;
                     self.far_field = Some((c, *f));
                 }
                 Done::Land(g, c, l) if g == self.generation && self.land_asked == Some(c) => {
@@ -685,22 +844,7 @@ impl Stream {
                     self.workers.ask(Job::Block(self.generation, b, true), true);
                 }
             }
-            if self.far > self.radius {
-                self.far_field = None;
-                self.far_asked = Some(want);
-                self.workers.ask(
-                    Job::Far(
-                        self.generation,
-                        Area {
-                            center: block_id(self.origin),
-                            radius: self.radius,
-                        },
-                        want,
-                        self.far,
-                    ),
-                    true,
-                );
-            }
+            self.ask_far(want);
             self.land = None;
             self.land_asked = None;
         }
@@ -735,6 +879,117 @@ impl Stream {
         moved
     }
 
+    /// Keeps the eye's velocity over the ground, smoothed over a few frames: where it is now,
+    /// `eye` metres into block `viewer`, against where it was. A jump is not a velocity.
+    fn follow_eye(&mut self, viewer: Block, eye: Vec2, now: Instant) {
+        #[allow(clippy::cast_precision_loss)]
+        let at = Vec2::new(viewer.0 as f32, viewer.1 as f32) * 192.0 + eye;
+        if let Some((was, then)) = self.eye_was {
+            let dt = now.duration_since(then).as_secs_f32();
+            let v = (at - was) / dt.max(1e-6);
+            if dt > 0.0 && v.length() < MOST_EYE_SPEED {
+                self.velocity = self.velocity.lerp(v, (dt * 8.0).min(1.0));
+            } else {
+                self.velocity = Vec2::ZERO;
+            }
+            self.fast_updates = if v.length() > LEAD_SPEED * 192.0 {
+                self.fast_updates.saturating_add(1)
+            } else {
+                0
+            };
+        }
+        self.eye_was = Some((at, now));
+    }
+
+    /// The block to centre the square on for an eye in `viewer`: further on the way it flies when
+    /// it flies fast, so the square is placed before the eye gets there.
+    fn ahead(&self, viewer: Block) -> Block {
+        let blocks_a_second = self.velocity / 192.0;
+        let speed = blocks_a_second.length();
+        if speed < LEAD_SPEED || self.fast_updates < LEAD_UPDATES {
+            return viewer;
+        }
+        // Half a second on, at most two blocks; a way mostly along one axis leads along it alone.
+        let lead = pyreal_primitives::num::to_i32((speed * 0.5).round().clamp(1.0, 2.0));
+        let step = |v: f32| {
+            if v.abs() < speed * 0.38 {
+                0
+            } else if v > 0.0 {
+                lead
+            } else {
+                -lead
+            }
+        };
+        (
+            viewer.0 + step(blocks_a_second.x),
+            viewer.1 + step(blocks_a_second.y),
+        )
+    }
+
+    /// Blocks the square may move from where the drawn far terrain was made before a new one is
+    /// asked for: a far field takes long to make at a long reach, so the drawn one serves the
+    /// squares near it, its hole moved to each.
+    fn far_refresh(&self) -> i32 {
+        (self.far / 8).max(1)
+    }
+
+    /// Asks for a far field round `want`, unless one is being made, or the drawn one or the one
+    /// waiting is near enough.
+    fn ask_far(&mut self, want: Block) {
+        let near = |c: Option<Block>| c.is_some_and(|c| chebyshev(c, want) < self.far_refresh());
+        if self.far <= self.radius
+            || self.far_asked.is_some()
+            || near(self.far_centre)
+            || near(self.far_field.as_ref().map(|(c, _)| *c))
+        {
+            return;
+        }
+        self.far_asked = Some(want);
+        self.workers
+            .ask(Job::Far(self.generation, self.area(), want, self.far), true);
+    }
+
+    /// Whether the square round `target` has far terrain to draw beside it: one come back, or
+    /// the drawn one, however far it was made from (a late field is never waited on while one is
+    /// drawn).
+    fn far_ready(&self, engine: &Engine) -> bool {
+        self.far <= self.radius || self.far_field.is_some() || engine.far.is_some()
+    }
+
+    /// The square round `centre` in render space, where the far terrain leaves the ground to the
+    /// exact cells.
+    fn near_rect(&self, centre: Block) -> (Vec2, Vec2) {
+        let r = self.radius;
+        (
+            self.block_origin((centre.0 - r, centre.1 - r)).truncate(),
+            self.block_origin((centre.0 + r + 1, centre.1 + r + 1))
+                .truncate(),
+        )
+    }
+
+    /// The far terrain drawn beside the square round `centre`: the field come back when it was
+    /// made nearer than the drawn one, else the drawn one with its hole moved there.
+    fn place_far(&mut self, engine: &mut Engine, loader: &mut AssetLoader, centre: Block) {
+        let (min, max) = self.near_rect(centre);
+        let drawn = self
+            .far_centre
+            .filter(|_| engine.far.is_some())
+            .map_or(i32::MAX, |c| chebyshev(c, centre));
+        match self.far_field.take() {
+            Some((c, mut f)) if chebyshev(c, centre) <= drawn => {
+                f.near_min = min;
+                f.near_max = max;
+                world::set_far(engine, loader, f, self.first_range());
+                self.far_centre = Some(c);
+            }
+            _ => {
+                if let Some(far) = engine.far.as_mut() {
+                    far.set_near(&engine.gpu, min, max);
+                }
+            }
+        }
+    }
+
     /// One step of placing; whether there was one to take.
     fn step(&mut self, engine: &mut Engine, loader: &mut AssetLoader, viewer: Block) -> bool {
         if std::mem::take(&mut self.evict_due) {
@@ -747,6 +1002,12 @@ impl Stream {
             return true;
         }
         let Some(target) = self.target else {
+            // A far field come back while the square stays put is drawn now.
+            if let (Some(c), true) = (self.centre, self.far_field.is_some()) {
+                self.stats.step = ("far", c);
+                self.place_far(engine, loader, c);
+                return true;
+            }
             return self.step_trees(engine, loader);
         };
         // The next block of the wanted square, nearest the eye first.
@@ -775,29 +1036,43 @@ impl Stream {
             return self.step_trees(engine, loader);
         }
         // The whole square is placed: its land field, then the switch.
-        if self.land_asked != Some(target) {
-            let r = self.radius;
-            let lands: Vec<crate::land::BlockLand> = self
-                .square(target, target)
-                .iter()
-                .filter_map(|b| self.plans.get(b)?.land.clone())
-                .collect();
-            let first = (target.0 - r, target.1 - r);
-            let blocks = usize::try_from(2 * r + 1).unwrap_or(1);
-            let origin = self.block_origin(first).truncate();
-            self.land_asked = Some(target);
-            self.workers.ask(
-                Job::Land(self.generation, lands, first, blocks, origin, target),
-                true,
-            );
+        if self.ask_land() {
             return true;
         }
-        let far_ready = self.far <= self.radius || self.far_field.is_some();
-        if far_ready && self.land.is_some() {
+        if self.far_ready(engine) && self.land.is_some() {
             self.switch(engine, loader, target);
             return true;
         }
         self.step_trees(engine, loader)
+    }
+
+    /// Asks for the wanted square's land field once every block of it is planned, so it is made
+    /// while the blocks are placed; whether it was asked now.
+    fn ask_land(&mut self) -> bool {
+        let Some(target) = self.target else {
+            return false;
+        };
+        if self.land_asked == Some(target) {
+            return false;
+        }
+        let square = self.square(target, target);
+        if !square.iter().all(|b| self.plans.contains_key(b)) {
+            return false;
+        }
+        let r = self.radius;
+        let lands: Vec<crate::land::BlockLand> = square
+            .iter()
+            .filter_map(|b| self.plans.get(b)?.land.clone())
+            .collect();
+        let first = (target.0 - r, target.1 - r);
+        let blocks = usize::try_from(2 * r + 1).unwrap_or(1);
+        let origin = self.block_origin(first).truncate();
+        self.land_asked = Some(target);
+        self.workers.ask(
+            Job::Land(self.generation, lands, first, blocks, origin, target),
+            true,
+        );
+        true
     }
 
     /// Advances block `l`'s placing by one stage (or one run of scenery).
@@ -851,16 +1126,24 @@ impl Stream {
                 l.stage = Stage::Statics(0);
             }
             Stage::Statics(from) => {
-                let to = (from + STATIC_RUN).min(l.plan.statics());
-                world::place_statics_run(
-                    engine,
-                    loader,
-                    &self.store,
-                    &l.plan,
-                    origin,
-                    &l.near.rooms,
-                    from..to,
-                );
+                let end = (from + STATIC_RUN).min(l.plan.statics());
+                let started = Instant::now();
+                let mut to = from;
+                while to < end {
+                    world::place_statics_run(
+                        engine,
+                        loader,
+                        &self.store,
+                        &l.plan,
+                        origin,
+                        &l.near.rooms,
+                        to..to + 1,
+                    );
+                    to += 1;
+                    if crate::frame_work::ms_since(started) >= STEP_MS {
+                        break;
+                    }
+                }
                 l.stage = if to < l.plan.statics() {
                     Stage::Statics(to)
                 } else {
@@ -877,7 +1160,17 @@ impl Stream {
                         }
                     }
                 }
-                world::place_scenery(engine, loader, &self.store, &l.plan, origin, from..to);
+                let started = Instant::now();
+                let mut at = from;
+                while at < to {
+                    let next = (at + 8).min(to);
+                    world::place_scenery(engine, loader, &self.store, &l.plan, origin, at..next);
+                    at = next;
+                    if crate::frame_work::ms_since(started) >= STEP_MS {
+                        break;
+                    }
+                }
+                let to = at;
                 if to < l.plan.scenery.len() {
                     l.stage = Stage::Scenery(to);
                 } else {
@@ -982,15 +1275,12 @@ impl Stream {
                 }
             }
         }
-        if let Some((_, f)) = self.far_field.take() {
-            world::set_far(engine, loader, f, self.first_range());
-        }
+        self.place_far(engine, loader, target);
         if let Some((_, l)) = self.land.take() {
             world::set_land(engine, l);
         }
         self.centre = Some(target);
         self.target = None;
-        self.far_asked = None;
         self.land_asked = None;
         if let Some(t) = self.jump_started.take() {
             if engine.renderer.cover.is_none() {
@@ -1059,12 +1349,26 @@ impl Stream {
             return;
         }
         let outer = self.radius + rings;
+        // Blocks flown past are not planned: their jobs are taken back.
+        let r = self.radius;
+        for b in self.workers.drop_trees(|b| {
+            let d = chebyshev(b, c);
+            d > r && d <= outer
+        }) {
+            self.asked_trees.remove(&b);
+        }
+        if self.asked_trees.len() >= TREE_JOBS {
+            return;
+        }
         let mut wanted: Vec<Block> = (c.0 - outer..=c.0 + outer)
             .flat_map(|x| (c.1 - outer..=c.1 + outer).map(move |y| (x, y)))
             .filter(|b| in_world(*b) && !self.within(*b, c))
             .collect();
         wanted.sort_by_key(|b| chebyshev(*b, c));
         for b in wanted {
+            if self.asked_trees.len() >= TREE_JOBS {
+                break;
+            }
             if !self.trees.contains_key(&b)
                 && !self.tree_plans.contains_key(&b)
                 && self.asked_trees.insert(b)
@@ -1138,15 +1442,24 @@ impl Stream {
         let Some((b, scenery, from)) = self.tree_run.take() else {
             return;
         };
-        let to = (from + SCENERY_RUN * 2).min(scenery.len());
+        let end = (from + SCENERY_RUN * 2).min(scenery.len());
         let ring = self.centre.map_or(0, |c| chebyshev(b, c) - self.radius);
-        world::place_far_trees(
-            engine,
-            loader,
-            &scenery[from..to],
-            self.block_origin(b),
-            world::far_tree_keep(ring),
-        );
+        let started = Instant::now();
+        let mut to = from;
+        while to < end {
+            let next = (to + 16).min(end);
+            world::place_far_trees(
+                engine,
+                loader,
+                &scenery[to..next],
+                self.block_origin(b),
+                world::far_tree_keep(ring),
+            );
+            to = next;
+            if crate::frame_work::ms_since(started) >= STEP_MS {
+                break;
+            }
+        }
         let placed = loader.take_placed();
         match self.trees.get_mut(&b) {
             Some(t) => t.instances.extend(placed),
@@ -1196,27 +1509,36 @@ impl Stream {
     /// on the workers, then placed; the far trees follow.
     fn full_load(&mut self, engine: &mut Engine, loader: &mut AssetLoader, viewer: Block) {
         let started = Instant::now();
+        // The far terrain drawn is kept, and a new one asked for if it is far, so the load waits
+        // on its blocks alone.
+        let kept = engine.far.take().zip(self.far_centre);
+        let was = self.origin;
         engine.clear_world(loader);
         self.reset();
         self.origin = viewer;
+        if let Some((mut far, c)) = kept {
+            #[allow(clippy::cast_precision_loss)]
+            let delta = Vec3::new(
+                ((was.0 - viewer.0) * 192) as f32,
+                ((was.1 - viewer.1) * 192) as f32,
+                0.0,
+            );
+            far.translate(&engine.gpu, delta);
+            let (min, max) = self.near_rect(viewer);
+            far.set_near(&engine.gpu, min, max);
+            engine.far = Some(far);
+            self.far_centre = Some(c);
+        }
         let blocks = self.square(viewer, viewer);
         for &b in &blocks {
             self.asked.insert(b);
             self.workers
                 .ask(Job::Block(self.generation, b, false), true);
         }
-        let want_far = self.far > self.radius;
-        if want_far {
-            self.far_asked = Some(viewer);
-            self.workers.ask(
-                Job::Far(self.generation, self.area(), viewer, self.far),
-                true,
-            );
-        }
+        self.ask_far(viewer);
         // Wait for the plans (and the far field) to come back.
-        while blocks.iter().any(|b| !self.plans.contains_key(b))
-            || (want_far && self.far_field.is_none())
-        {
+        let waiting = Instant::now();
+        while blocks.iter().any(|b| !self.plans.contains_key(b)) {
             match self
                 .workers
                 .done
@@ -1226,7 +1548,8 @@ impl Stream {
                     Done::Block(g, plan) if g == self.generation => {
                         self.plans.insert(plan.block, Arc::from(plan));
                     }
-                    Done::Far(g, c, f) if g == self.generation => {
+                    Done::Far(g, c, _, f) if g == self.generation && self.far_asked == Some(c) => {
+                        self.far_asked = None;
                         self.far_field = Some((c, *f));
                     }
                     _ => {}
@@ -1234,6 +1557,7 @@ impl Stream {
                 Err(_) => break,
             }
         }
+        self.stats.frame_wait_ms += crate::frame_work::ms_since(waiting);
         // Placed in the order the whole area is: every block's rooms, then each one's ground,
         // statics and scenery.
         let plans: Vec<Arc<BlockPlan>> = blocks
@@ -1290,10 +1614,9 @@ impl Stream {
         if let Some(m) = loader.terrain_material(engine) {
             engine.renderer.terrain_material = m;
         }
-        if let Some((_, f)) = self.far_field.take() {
-            world::set_far(engine, loader, f, self.first_range());
+        if self.far_field.is_some() {
+            self.place_far(engine, loader, viewer);
         }
-        self.far_asked = None;
         self.centre = Some(viewer);
         self.stats.full_loads += 1;
         self.evict_if_over(engine, loader);
@@ -1321,9 +1644,14 @@ impl Stream {
             }
         }
         engine.renderer.world_origin = self.area().world_origin();
-        // A far field or land field asked for in the old space is asked for again.
-        self.far_field = None;
-        self.far_asked = None;
+        // A far field waiting moves with the rest (one being made is moved when it comes back); a
+        // land field asked for in the old space is asked for again.
+        if let Some((_, f)) = self.far_field.as_mut() {
+            let d = delta.truncate();
+            f.origin += d;
+            f.near_min += d;
+            f.near_max += d;
+        }
         self.land = None;
         self.land_asked = None;
         self.stats.rebases += 1;

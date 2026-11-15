@@ -37,6 +37,7 @@ use pyreal_primitives::num::math;
 use pyreal_primitives::DataId;
 
 pub mod dress;
+pub mod names;
 pub mod palette;
 mod policy;
 pub mod presets;

@@ -34,6 +34,11 @@ pub const VORTEX: u8 = 5;
 /// Snow and ice (a frost elemental's): a cold core, rime at its edges and ice-blue deep, streaked
 /// by the snow whirling round it, with flakes and glints of its own ([`crate::rime`]).
 pub const SNOW: u8 = 6;
+/// A portal in the world ([`crate::gates`]): a glowing disc of its colour about its axis, its arms
+/// spiralling in to its heart. `shaders/gates.wgsl` draws it.
+pub const GATE: u8 = 7;
+/// A ball's reach over its transform's scale (`puffs.wgsl`'s `PUFF_SIZE`).
+pub const PUFF_SIZE: f32 = 0.85;
 /// How much wider a snow ball is than its particle: the few small puffs of a frost elemental's
 /// emitters make one body of snow, as retail's added pictures do.
 pub const SNOW_REACH: f32 = 1.35;

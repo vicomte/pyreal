@@ -190,6 +190,94 @@ fn walking_streams_the_land_with_no_reload() {
     );
 }
 
+/// An eye flying faster than the square is placed: the square being placed is kept while the eye
+/// stays two blocks inside it, rather than started over at every block, and given up for one round
+/// the eye when it goes further. Nothing is loaded again from nothing.
+#[test]
+fn a_fast_eye_keeps_the_square_being_placed_until_it_nears_its_edge() {
+    let (store, region) = setup();
+    let mut engine = super::engine();
+    let mut loader = AssetLoader::default();
+    let mut stream = Stream::new(Arc::clone(&store), Arc::clone(&region), 4, 4, &loader);
+    settle(
+        &mut stream,
+        &mut engine,
+        &mut loader,
+        START,
+        Vec2::new(96.0, 96.0),
+    );
+    let north = |n: i32| (START.0, START.1 + n);
+    let past = Vec2::new(96.0, 40.0);
+    stream.update(&mut engine, &mut loader, north(1), past);
+    assert_eq!(stream.target(), Some(north(1)));
+    for n in 2..=3 {
+        stream.update(&mut engine, &mut loader, north(n), past);
+        assert_eq!(stream.centre(), Some(START), "not switched yet");
+        assert_eq!(stream.target(), Some(north(1)), "kept {n} blocks on");
+    }
+    stream.update(&mut engine, &mut loader, north(4), past);
+    assert_eq!(stream.target(), Some(north(4)), "given up near its edge");
+    settle(&mut stream, &mut engine, &mut loader, north(4), past);
+    assert_eq!(stream.centre(), Some(north(4)));
+    assert_eq!(stream.stats.full_loads, 1, "no reload");
+}
+
+/// A long reach: the square switches beside the far terrain already drawn, its hole moved to the
+/// new square, rather than waiting on a far field each time, and a new far field round the eye
+/// takes its place once the square has gone far enough. Nothing is loaded again from nothing.
+#[test]
+fn a_long_reach_keeps_its_far_terrain_beside_the_square_until_a_new_one_is_made() {
+    let (store, region) = setup();
+    let mut engine = super::engine();
+    let mut loader = AssetLoader::default();
+    let mut stream = Stream::new(Arc::clone(&store), Arc::clone(&region), 1, 24, &loader);
+    settle(
+        &mut stream,
+        &mut engine,
+        &mut loader,
+        START,
+        Vec2::new(96.0, 96.0),
+    );
+    assert_eq!(stream.far_centre(), Some(START));
+    let east = |n: i32| (START.0 + n, START.1);
+    let past = Vec2::new(40.0, 96.0);
+    settle(&mut stream, &mut engine, &mut loader, east(1), past);
+    assert_eq!(stream.centre(), Some(east(1)));
+    assert_eq!(
+        stream.far_centre(),
+        Some(START),
+        "the drawn far terrain is kept"
+    );
+    let field = engine.far.as_ref().expect("far terrain").field();
+    let hole = (
+        stream
+            .block_origin((east(1).0 - 1, east(1).1 - 1))
+            .truncate(),
+        stream
+            .block_origin((east(1).0 + 2, east(1).1 + 2))
+            .truncate(),
+    );
+    assert_eq!(
+        (field.near_min, field.near_max),
+        hole,
+        "its hole is the new square"
+    );
+    for n in 2..=8 {
+        settle(&mut stream, &mut engine, &mut loader, east(n), past);
+    }
+    let started = std::time::Instant::now();
+    while stream.far_centre() == Some(START) && started.elapsed().as_secs() < 30 {
+        stream.update(&mut engine, &mut loader, east(8), past);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let made = stream.far_centre().expect("far terrain");
+    assert!(
+        (made.0 - east(8).0).abs() <= 6,
+        "a far field round the way the eye went: {made:?}"
+    );
+    assert_eq!(stream.stats.full_loads, 1, "no reload");
+}
+
 /// A long walk with the pools' budget at nothing: what the blocks left behind drew is freed at
 /// every switch, so the pools hold about what one square needs however far the walk goes, freed
 /// slots are reused, and the frame at the end is still a fresh load's.

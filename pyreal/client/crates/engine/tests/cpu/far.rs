@@ -29,6 +29,7 @@ fn field() -> FarField {
         near_min: Vec2::splat(-200.0),
         near_max: Vec2::splat(200.0),
         smooth: false,
+        prepared: None,
     }
 }
 

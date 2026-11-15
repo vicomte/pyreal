@@ -514,6 +514,7 @@ impl Scene {
         mesh: &MeshData,
         mut classify: impl FnMut(usize) -> Option<(u32, PipelineKind)>,
     ) -> Result<MeshId, EngineError> {
+        crate::frame_work::note(|w| w.meshes += 1);
         let id = self.next_mesh_id()?;
         let nv = mesh.vertices.len() as u64;
         let ni = mesh.indices.len() as u64;

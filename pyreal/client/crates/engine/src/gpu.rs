@@ -164,7 +164,14 @@ impl Gpu {
         mut desc: wgpu::RenderPipelineDescriptor<'a>,
     ) -> wgpu::RenderPipeline {
         desc.cache = self.cache.as_ref();
-        self.device.create_render_pipeline(&desc)
+        let t = std::time::Instant::now();
+        let p = self.device.create_render_pipeline(&desc);
+        let ms = crate::frame_work::ms_since(t);
+        crate::frame_work::note(|w| {
+            w.pipelines += 1;
+            w.pipeline_ms += ms;
+        });
+        p
     }
 
     /// A compute pipeline from `desc`, made through the pipelines' cache when there is one.
@@ -173,7 +180,14 @@ impl Gpu {
         mut desc: wgpu::ComputePipelineDescriptor<'a>,
     ) -> wgpu::ComputePipeline {
         desc.cache = self.cache.as_ref();
-        self.device.create_compute_pipeline(&desc)
+        let t = std::time::Instant::now();
+        let p = self.device.create_compute_pipeline(&desc);
+        let ms = crate::frame_work::ms_since(t);
+        crate::frame_work::note(|w| {
+            w.pipelines += 1;
+            w.pipeline_ms += ms;
+        });
+        p
     }
 
     /// A device drawing to the window `display`/`window` names, and the window's surface (not
@@ -250,11 +264,19 @@ impl Gpu {
 
     /// A shader module from WGSL text.
     pub fn shader(&self, label: &str, wgsl: &str) -> wgpu::ShaderModule {
-        self.device
+        let t = std::time::Instant::now();
+        let m = self
+            .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(label),
                 source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-            })
+            });
+        let ms = crate::frame_work::ms_since(t);
+        crate::frame_work::note(|w| {
+            w.shaders += 1;
+            w.pipeline_ms += ms;
+        });
+        m
     }
 }
 

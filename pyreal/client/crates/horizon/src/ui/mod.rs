@@ -21,6 +21,7 @@ pub mod paint;
 pub mod panels;
 pub mod plugins;
 pub mod pregame;
+pub mod waypoint;
 pub mod worlds;
 
 use crate::art::AcArt as _;
@@ -190,9 +191,64 @@ pub struct HorizonUi {
     pub front_door_requests: Vec<crate::front_door::FrontDoorRequest>,
     /// The world list's own state.
     pub worlds: worlds::Worlds,
+    /// The waypoint's ring the world is asked to lay round the player this frame.
+    pub waypoint_ring: Option<pyreal_client_contract::overlay::WaypointRing>,
 }
 
 impl HorizonUi {
+    /// The waypoint kept for the character in the world (or explore mode's era), cleared once the
+    /// player arrives, and the ring the world is to lay round them for it.
+    fn follow_waypoint(&mut self, state: &game::GameState, out: &mut Outcome) {
+        let who = match &state.explore {
+            Some(e) => format!("explore|{}", explore::era_name(e.era)),
+            None if state.in_world && !state.name.is_empty() => {
+                format!("{}|{}", state.address, state.name)
+            }
+            None => String::new(),
+        };
+        self.windows.options_page.waypoint_style = self.options.waypoint_style;
+        let waypoints = &mut self.windows.waypoints;
+        waypoints.load_for(self.hud.settings_dir.as_deref(), &who);
+        self.waypoint_ring = None;
+        let Some(here) = state.here.filter(|_| !who.is_empty() && !state.teleporting) else {
+            return;
+        };
+        // The player arrives; explore mode's camera only passes over.
+        if let Some(arrived) = state
+            .explore
+            .is_none()
+            .then(|| waypoints.arrive(here))
+            .flatten()
+        {
+            out.requests.push(UiRequest::DisplayChatText {
+                feedback: pyreal_client_contract::feedback::Feedback::LOCAL,
+                channel: pyreal_client_model::chat::text_type::DEFAULT,
+                text: format!("You have arrived at {}.", arrived.label()),
+            });
+        }
+        let Some(w) = &waypoints.active else {
+            return;
+        };
+        let (bearing, _) = w.way_from(here);
+        // Explore mode has no minimap: its camera always has the ring, under it on the ground,
+        // as wide as it stands high so it shows ahead of the camera.
+        self.waypoint_ring = match &state.explore {
+            Some(e) => Some(pyreal_client_contract::overlay::WaypointRing {
+                bearing,
+                radius: (e.height * 0.8).clamp(4.0, 60.0),
+                camera_height: Some(e.height),
+            }),
+            None if state.in_dungeon => None,
+            None => self.options.waypoint_style.on_character().then_some(
+                pyreal_client_contract::overlay::WaypointRing {
+                    bearing,
+                    radius: waypoint::RING_RADIUS,
+                    camera_height: None,
+                },
+            ),
+        };
+    }
+
     #[must_use]
     pub fn new(art: Arc<Art>, options: HorizonOptions) -> Self {
         let colours = colours::Colours::default();
@@ -227,6 +283,7 @@ impl HorizonUi {
             front_door: None,
             front_door_requests: Vec::new(),
             worlds: worlds::Worlds::default(),
+            waypoint_ring: None,
         }
     }
 
@@ -287,6 +344,7 @@ impl HorizonUi {
             fade: 1.0,
         };
         let mut out = Outcome::default();
+        self.follow_waypoint(state, &mut out);
         // The scripted steps: the first three seconds into the world, then one every two.
         if state.in_world && state.connected {
             let since = *self.in_world_since.get_or_insert(self.time);
@@ -394,6 +452,19 @@ impl HorizonUi {
                 }
             }
             Screen::Explore => {
+                // The overlay and the corner's buttons are under the windows: the pointer over a
+                // window is not over them.
+                let occluders = std::mem::replace(
+                    &mut ctx.input.occluders,
+                    self.windows
+                        .rects(scale)
+                        .into_iter()
+                        .map(|(_, r)| r)
+                        .collect(),
+                );
+                // Escape closes an open window before it ends the mode.
+                let escape =
+                    self.windows.any_open() && ctx.input.take_key(pyreal_ui_kit::input::vk::ESCAPE);
                 if let Some(view) = &state.explore {
                     let back = if self.front_door.is_some() {
                         "Back to the Worlds"
@@ -402,8 +473,40 @@ impl HorizonUi {
                     };
                     explore::frame(&mut p, &mut ctx, view, back, &mut out.explore);
                 }
-                if self.windows.is_open(panels::WindowId::Options) {
+                let open = explore::Corner {
+                    map: self.windows.is_open(panels::WindowId::Map),
+                    settings: self.windows.is_open(panels::WindowId::Options),
+                };
+                let mut asked = explore::corner(&mut p, &mut ctx, open);
+                if let Some(w) = self.windows.waypoints.active.clone() {
+                    if explore::waypoint(&mut p, &mut ctx, &w, state.here) {
+                        self.windows.waypoints.clear();
+                    }
+                }
+                ctx.input.occluders = occluders;
+                // The game's map and Settings keys open them too.
+                for action in std::mem::take(&mut ctx.input.actions) {
+                    match hud::window_for_action(action) {
+                        Some(panels::WindowId::Map) => asked.map = true,
+                        Some(panels::WindowId::Options) => asked.settings = true,
+                        _ => {}
+                    }
+                }
+                if escape {
+                    ctx.input.keys.push(pyreal_ui_kit::input::vk::ESCAPE);
+                }
+                if asked.map {
+                    self.windows.toggle(panels::WindowId::Map, self.time);
+                }
+                if asked.settings {
+                    self.windows.toggle(panels::WindowId::Options, self.time);
+                }
+                if self.windows.any_open() {
+                    self.windows.options_page.scale = self.options.scale;
+                    self.windows.options_page.window = screen;
                     self.windows.frame(&mut p, &mut ctx, state, &mut out);
+                    self.windows
+                        .options_questions(&mut p, &mut ctx, state, &mut out);
                 }
             }
             Screen::Lobby | Screen::Entering | Screen::Creation => {
@@ -538,6 +641,8 @@ impl HorizonUi {
                 self.hud.spell_rows = self.options.spell_rows;
                 self.hud.status_style = self.options.status_style;
                 self.windows.options_page.status_style = self.options.status_style;
+                self.windows.options_page.waypoint_style = self.options.waypoint_style;
+                self.hud.waypoint_style = self.options.waypoint_style;
                 self.windows
                     .options_page
                     .chat_tabs

@@ -430,6 +430,11 @@ pub trait Presentation: std::fmt::Debug {
     fn set_ground_markers(&mut self, markers: &[pyreal_client_contract::overlay::GroundMarker]) {
         let _ = markers;
     }
+    /// Lay the waypoint's ring round the player for the frames until the next call; `None` takes
+    /// it away. A presentation with no world draws nothing.
+    fn set_waypoint_ring(&mut self, ring: Option<pyreal_client_contract::overlay::WaypointRing>) {
+        let _ = ring;
+    }
 
     // ---------------------------------------------------------------------------------------
     // the preview spaces -- small 3D scenes a UI draws into its overlay
@@ -576,6 +581,7 @@ pub struct NullPresentation {
     texture_filtering: u32,
     counts: NullPresentationCounts,
     ground_markers: Vec<pyreal_client_contract::overlay::GroundMarker>,
+    waypoint_ring: Option<pyreal_client_contract::overlay::WaypointRing>,
     /// Told when this presentation is dropped.
     #[cfg(test)]
     pub(crate) drop_log: Option<std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>>,
@@ -599,6 +605,7 @@ impl NullPresentation {
             texture_filtering: 0,
             counts: NullPresentationCounts::default(),
             ground_markers: Vec::new(),
+            waypoint_ring: None,
             #[cfg(test)]
             drop_log: None,
         }
@@ -619,6 +626,12 @@ impl NullPresentation {
     #[must_use]
     pub fn ground_markers(&self) -> &[pyreal_client_contract::overlay::GroundMarker] {
         &self.ground_markers
+    }
+
+    /// The waypoint's ring last asked for, as a world would draw it.
+    #[must_use]
+    pub const fn waypoint_ring(&self) -> Option<pyreal_client_contract::overlay::WaypointRing> {
+        self.waypoint_ring
     }
 }
 
@@ -688,6 +701,9 @@ impl Presentation for NullPresentation {
     }
     fn set_ground_markers(&mut self, markers: &[pyreal_client_contract::overlay::GroundMarker]) {
         self.ground_markers = markers.to_vec();
+    }
+    fn set_waypoint_ring(&mut self, ring: Option<pyreal_client_contract::overlay::WaypointRing>) {
+        self.waypoint_ring = ring;
     }
 
     fn preview_ensure(

@@ -11,7 +11,7 @@ use pyreal_assets::{CellLandblock, Decode, GfxObj, LandblockInfo, Scene as Scene
 use pyreal_codecs::surface::surface_type as st;
 use pyreal_dat::{DbType, RetailDatStore};
 use pyreal_primitives::DataId;
-use pyreal_terrain::consts::ROAD_TERRAIN_TYPE;
+use pyreal_terrain::consts::{CELL_SIZE, ROAD_TERRAIN_TYPE};
 use pyreal_terrain::land::merge::get_terrain_tex;
 use pyreal_terrain::land::mesh::height_table;
 use pyreal_terrain::scenery::{generate_scenery, outside_cell_index, SceneryEnv, WithinBlockShape};
@@ -1072,15 +1072,20 @@ impl AssetLoader {
             .map(|s| crate::lamps::place(s, at, cell, object))
             .collect();
         let flames = engine.flames.sources(store, id).to_vec();
+        let (carded, beds): (Vec<_>, Vec<_>) = flames.iter().partition(|f| f.kind.carded());
         engine.flames.placed.extend(
-            flames
+            carded
                 .iter()
                 .map(|f| crate::flames::place(f, at, cell, object, &placed)),
         );
         engine
             .particles
             .flamed
-            .extend(flames.iter().map(|f| f.sprite));
+            .extend(carded.iter().map(|f| f.sprite));
+        engine
+            .particles
+            .puffed
+            .extend(beds.iter().map(|f| f.sprite));
         engine.lamps.extend(placed);
     }
 
@@ -1150,12 +1155,15 @@ impl AssetLoader {
             },
         );
         let object = self.next_object;
-        let flamed = !engine.flames.sources(store, id).is_empty();
+        let flames = engine.flames.sources(store, id);
+        let flamed = flames.iter().any(|f| f.kind.carded());
+        let puffed = flames.iter().any(|f| !f.kind.carded());
         let k = engine
             .particles
             .spawn(id, frame, scale.x, cell, object)
             .then(|| engine.particles.hosts.len() - 1)?;
         engine.particles.hosts[k].flamed = flamed;
+        engine.particles.hosts[k].puffed = puffed;
         engine.particles.hosts[k].animated.then_some(k)
     }
 
@@ -3125,6 +3133,9 @@ pub fn load_cover(
             .fold(0u32, |m, t| m | 1 << t);
         let road = bare(pyreal_assets::art_pack::Ground::Road, ROAD_TERRAIN_TYPE);
         cover.keep_pebbles_off(types, road);
+        if let Some((slot, per_m)) = stone_picture(engine, loader, store, region) {
+            cover.set_stone_picture(slot, per_m);
+        }
         for (t, c) in (0u32..).zip(&loader.ground_colours) {
             if let Some(c) = c {
                 cover.set_ground(&engine.gpu, t, *c);
@@ -3132,6 +3143,42 @@ pub fn load_cover(
         }
         engine.renderer.set_cover(&engine.gpu, cover);
     }
+}
+
+/// The picture the cover's stones are drawn with: the region's bare rock ground as the land draws
+/// it (the pack's where it has one), pinned with its companions, and its repeats a metre.
+fn stone_picture(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
+) -> Option<(u32, f32)> {
+    let rock = region
+        .terrain_types
+        .iter()
+        .position(|t| t.terrain_name.eq_ignore_ascii_case("BarrenRock"))
+        .unwrap_or(0);
+    let (slot, tiling, _) = Ground {
+        loader,
+        engine: &mut *engine,
+        store,
+        region,
+    }
+    .ground(u32::try_from(rock).ok()?)?;
+    let none = crate::asset::material::NO_TEXTURE;
+    let companions = engine.materials.companions(slot).unwrap_or([none; 8]);
+    for t in [slot, companions[0], companions[1]] {
+        if t != none {
+            engine.materials.pin_texture(t);
+        }
+    }
+    // A layer's tiling: repeats a cell, or (below nought) metres a repeat.
+    let per_m = if tiling >= 0.0 {
+        tiling / CELL_SIZE
+    } else {
+        -1.0 / tiling
+    };
+    Some((slot, per_m))
 }
 
 /// A card of a pack level, drawn from round it with its base colour pictures (`pack`'s).
@@ -3469,8 +3516,14 @@ pub fn place_statics_run(
     let last = range.end >= plan.statics();
     let at_block = Affine3A::from_translation(origin);
     let base = u32::from(block_id(plan.block.0, plan.block.1)) << 16;
+    let buildings: Vec<_> = info
+        .buildings
+        .iter()
+        .map(|b| (b.id.0, b.frame.origin))
+        .collect();
     for i in range {
         if let Some(o) = info.objects.get(i) {
+            let hosts = engine.particles.hosts.len();
             loader.place_object(
                 engine,
                 store,
@@ -3478,6 +3531,11 @@ pub fn place_statics_run(
                 at_block * object_affine(&o.frame, 1.0),
                 false,
             );
+            if let Some(part) = crate::beacons::is_beacon(o.id.0, o.frame.origin, &buildings) {
+                for h in engine.particles.hosts.iter_mut().skip(hosts) {
+                    h.beacon = Some(part);
+                }
+            }
             loader.stats.statics += 1;
             continue;
         }

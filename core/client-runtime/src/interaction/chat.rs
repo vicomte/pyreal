@@ -823,6 +823,25 @@ impl Interaction {
                 }
             },
 
+            // **`@way`**, this client's own, handled as `@fog` is: the interface keeps the
+            // waypoint and answers. Nothing is sent.
+            H::Waypoint => match pyreal_client_model::cmd::waypoint::parse(&joined) {
+                Ok(command) => self
+                    .pending_waypoints
+                    .push((command, self.chat.current_command_source)),
+                Err(refusal) => {
+                    game.scroll.add_feedback_to_scroll(
+                        &refusal,
+                        pyreal_client_model::chat::text_type::LOCAL_ERROR,
+                        true,
+                        self.chat.current_command_source,
+                        pyreal_client_contract::feedback::Feedback::LOCAL,
+                    );
+                    self.stats.chat_command_lines += 1;
+                    self.stats.chat_commands_refused += 1;
+                }
+            },
+
             H::Moon => match pyreal_client_model::cmd::moon::parse(args) {
                 Ok(command) => self
                     .pending_moons

@@ -327,6 +327,13 @@ mod imp {
             self.device.set_ground_markers(markers);
         }
 
+        fn set_waypoint_ring(
+            &mut self,
+            ring: Option<pyreal_client_contract::overlay::WaypointRing>,
+        ) {
+            self.device.set_waypoint_ring(ring);
+        }
+
         fn preview_ensure(
             &mut self,
             id: PreviewId,

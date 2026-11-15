@@ -58,10 +58,10 @@ fn explore_flies_over_the_ground_and_its_end_leaves_the_next_sessions_scene() {
     let start = crate::explore::camera_place(ws).expect("the camera's place");
     assert_eq!(start.cell.0 >> 16, 0xA9B4);
 
-    // North at the fastest speed for a second, then down into the ground.
+    // North at the fastest speed for three seconds, then down into the ground.
     app.explore_ask(Ask::Speed(10));
     app.explore_key(Key::Forward, true);
-    for _ in 0..30 {
+    for _ in 0..90 {
         app.frame(&mut shell);
     }
     app.explore_key(Key::Forward, false);
@@ -70,7 +70,7 @@ fn explore_flies_over_the_ground_and_its_end_leaves_the_next_sessions_scene() {
         app.frame(&mut shell);
     }
     let view = app.explore_view().expect("the overlay's view");
-    assert_eq!(view.speed, 5000.0);
+    assert_eq!(view.speed, 1000.0);
     let ws = app.world.as_ref().expect("a world");
     let there = crate::explore::camera_place(ws).expect("the camera's place");
     assert!(
@@ -89,4 +89,72 @@ fn explore_flies_over_the_ground_and_its_end_leaves_the_next_sessions_scene() {
     assert!(app.world.is_none(), "the world goes");
     assert_eq!(app.scene_config, Some(session_scene));
     assert_eq!(app.pending_scene, Some(session_scene));
+}
+
+/// Behaviour: none (Pyreal's own: explore mode's map)
+/// A place picked on the map moves the camera there at the height it stood over the ground, and
+/// the window follows it; the clouds asked for are the world's.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads retail dats: --features retail-dats"
+)]
+fn a_place_picked_on_the_map_moves_the_camera_there_and_the_clouds_follow_the_overlay() {
+    let store = Arc::new(pyreal_dat::testing::open_store().expect("retail dats"));
+    let dat_dir = pyreal_dat::testing::dat_dir();
+    let mut app = App::<NullShell>::bring_up_with_store(
+        Config {
+            headless: true,
+            connect: false,
+            sound: false,
+            dat_dir: dat_dir.clone(),
+            ..Config::default()
+        },
+        Some(store),
+        |_| Ok(Platform::headless(64, 64)),
+        |_, _, _, _| Ok(Box::new(SimPresentation::new(64, 64))),
+    )
+    .expect("bring-up");
+    let mut shell = NullShell;
+    app.start_shell(&mut shell).expect("the shell starts");
+    app.begin_explore(
+        &mut shell,
+        &ExploreStart {
+            dat_dir,
+            ..ExploreStart::default()
+        },
+    )
+    .expect("explore begins");
+    for _ in 0..3 {
+        app.frame(&mut shell);
+    }
+    let before = app.explore_view().expect("the overlay's view");
+    // Yaraq, 21.5S 1.8W.
+    app.explore_ask(Ask::Go(-21.5, -1.8));
+    for _ in 0..3 {
+        app.frame(&mut shell);
+    }
+    let view = app.explore_view().expect("the overlay's view");
+    let (ns, ew) = view.map_at.expect("on the map");
+    assert!(
+        (ns + 21.5).abs() < 0.01 && (ew + 1.8).abs() < 0.01,
+        "at Yaraq: {ns} {ew}"
+    );
+    assert!(
+        (view.height - before.height.max(crate::explore::EYES)).abs() < 0.5,
+        "as high over the ground: {} then {}",
+        before.height,
+        view.height
+    );
+    let ws = app.world.as_ref().expect("a world");
+    let place = crate::explore::camera_place(ws).expect("the camera's place");
+    assert_eq!(
+        Some(place.cell.landblock().0),
+        ws.viewer_block().map(crate::report::block_id),
+        "the window follows the camera"
+    );
+    app.explore_ask(Ask::Clouds(Some(0.0)));
+    assert_eq!(app.explore_view().unwrap().clouds, Some(0.0));
+    app.explore_ask(Ask::Clouds(None));
+    assert_eq!(app.explore_view().unwrap().clouds, None);
 }

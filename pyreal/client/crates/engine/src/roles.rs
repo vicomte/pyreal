@@ -114,6 +114,11 @@ impl Particles {
     /// carry their own ([`Self::gather`]).
     #[must_use]
     pub fn setup_lamps(&self, driver: &MotionDriver, mut lamps: Vec<Lamp>) -> Vec<Lamp> {
+        // A portal drawn as a vortex carries its own light ([`crate::gates::lamp`]).
+        if self.portals && crate::gates::is_portal(driver) {
+            lamps.clear();
+            return lamps;
+        }
         match self.carries(driver) {
             (true, _) => lamps.clear(),
             (false, true) => lamps.retain(|l| l.kind != LampKind::Glow),

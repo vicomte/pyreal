@@ -2,8 +2,9 @@
 // list. A flower: a stem of two segments bent by the same wind as the grass and pushed aside by
 // bodies, a leaf either side of it and a head of six petals (rays round an eye, a cup, a spike or
 // a flat umbel) in its own colour. A stone: a low faceted rock of two rings and a top, its corners
-// jittered by its seed, laid on the ground's slope and sunk into it, darker underneath. Both are
-// lit as the ground under them is and cast no shadow.
+// jittered by its seed, laid on the ground's slope and sunk into it, darker underneath, the land's
+// bare rock picture laid on each face (`pushers.count.z`). Both are lit as the ground under them
+// is and cast no shadow.
 
 // Their materials in the ids target, which no material takes.
 const FLOWER_ID: u32 = 0xFFFFFF01u;
@@ -11,6 +12,8 @@ const STONE_ID: u32 = 0xFFFFFF02u;
 // A flower's stem and leaves (linear), and the stem's width, metres.
 const FLOWER_STEM: vec3<f32> = vec3<f32>(0.075, 0.1, 0.035);
 const STEM_WIDTH: f32 = 0.009;
+// The fewest repeats a metre of the stones' picture, the ground's being laid metres wide.
+const STONE_REPEATS: f32 = 0.6;
 
 // A colour from the clumps' word (`BLADE_RANGE`).
 fn scatter_unpack(word: u32) -> vec3<f32> {
@@ -252,7 +255,17 @@ fn vs_stone(@builtin(vertex_index) vertex: u32, @builtin(instance_index) i: u32)
     out.clip = frame.view_proj * vec4<f32>(world, 1.0);
     out.world = world;
     out.normal = normalize(mix(n, z_axis, 0.3));
-    out.uv = vec2<f32>(0.0);
+    // Each face's picture laid along its own axis, in metres, a part of it each stone's own.
+    let a = abs(facet);
+    var face = q.xy;
+    if (a.x >= max(a.y, a.z)) {
+        face = q.yz;
+    } else if (a.y >= a.z) {
+        face = q.xz;
+    }
+    let shift = vec2<f32>(cover_unit(cover_mix(cl.seed ^ 0x6A09E667u)),
+                          cover_unit(cover_mix(cl.seed ^ 0xBB67AE85u)));
+    out.uv = face * size * max(bitcast<f32>(pushers.count.w), STONE_REPEATS) + shift * 8.0;
     out.cur = out.clip;
     out.prev = frame.prev_view_proj * vec4<f32>(world, 1.0);
     out.material = STONE_ID;
@@ -271,8 +284,33 @@ fn vs_stone(@builtin(vertex_index) vertex: u32, @builtin(instance_index) i: u32)
 
 @fragment
 fn fs_stone(in: VsOut) -> GOut {
-    let c = scatter_unpack(in.extra) * in.shade;
-    var g = pack(c, normalize(in.normal), 0.75, 0.0, 0.0, 0u, STONE_ID, in.cur, in.prev);
+    var c = scatter_unpack(in.extra) * in.shade;
+    var n = normalize(in.normal);
+    var rough = 0.75;
+    let dx = dpdx(in.uv);
+    let dy = dpdy(in.uv);
+    let wdx = dpdx(in.world);
+    let wdy = dpdy(in.world);
+    let slot = pushers.count.z;
+    if (slot != NO_TEXTURE) {
+        // The picture's light and dark and some of its hue about its mean, over the stone's colour.
+        let t = textureSampleGrad(textures[slot], samp_repeat, in.uv, dx, dy).rgb;
+        let last = f32(textureNumLevels(textures[slot]) - 1u);
+        let mean = max(textureSampleLevel(textures[slot], samp_repeat, vec2<f32>(0.5), last).rgb,
+                       vec3<f32>(1e-3));
+        let k = mix(vec3<f32>(luma(t) / luma(mean)), t / mean, 0.4);
+        c *= mix(vec3<f32>(1.0), clamp(k, vec3<f32>(0.3), vec3<f32>(2.0)), 0.7);
+        let comp = companions[slot];
+        // With depth mapping off the bend is never drawn, as on the ground.
+        if (comp.maps.x != NO_TEXTURE && frame.relief.y > 0.0) {
+            let b = textureSampleGrad(textures[comp.maps.x], samp_repeat, in.uv, dx, dy).rg;
+            n = bend(n, unpack_normal(0.5 + (b - 0.5) * frame.relief.y), wdx, wdy, dx, dy);
+        }
+        if (comp.maps.y != NO_TEXTURE) {
+            rough = textureSampleGrad(textures[comp.maps.y], samp_repeat, in.uv, dx, dy).r;
+        }
+    }
+    var g = pack(c, n, rough, 0.0, 0.0, 0u, STONE_ID, in.cur, in.prev);
     g.object = 0u;
     return g;
 }

@@ -2,8 +2,9 @@
 //! their map, toggle types, classes and names.
 //!
 //! The shipped action map has no row for these actions, so the manager registers them beside
-//! the shipped rows in [`INPUT_MAP`]. They have no default keys. The map is live for the whole
-//! run at the lowest priority, and a focused text box's barrier still stops its bindings.
+//! the shipped rows in [`INPUT_MAP`]. Only the performance panel has a default key
+//! ([`DEFAULT_KEYS`]). The map is live for the whole run at the lowest priority, and a focused
+//! text box's barrier still stops its bindings.
 
 use crate::actionmap::{ActionMap, ActionMapValue, ToggleType};
 use crate::keymap::MasterInputMap;
@@ -52,7 +53,6 @@ pub const ACTIONS: &[DerethAction] = {
         }
     }
     &[
-        // The performance panel has no key of its own: the player binds one, or uses its option.
         one_shot(
             a::TOGGLE_PERFORMANCE_PANEL,
             class::INTERFACE,
@@ -64,6 +64,16 @@ pub const ACTIONS: &[DerethAction] = {
         },
         one_shot(a::TOGGLE_TRADE_PANEL, class::INTERFACE, "Trade Panel"),
         one_shot(a::TOGGLE_ADMIN_WINDOW, class::INTERFACE, "Admin Window"),
+        one_shot(
+            a::SAVE_FRAME_TIMINGS,
+            class::INTERFACE,
+            "Save Frame Timings",
+        ),
+        one_shot(
+            a::OPEN_FRAME_TIMINGS_FOLDER,
+            class::INTERFACE,
+            "Open Frame Timings Folder",
+        ),
         one_shot(
             a::TOGGLE_SPELL_RESEARCH_PANEL,
             class::INTERFACE,
@@ -346,6 +356,28 @@ pub const ACTIONS: &[DerethAction] = {
         ),
     ]
 };
+
+/// Shift and Ctrl together, as a key's modifier mask: the key map's first and second meta keys.
+const CTRL_SHIFT: u32 = 0xC000_0000;
+
+/// The default keys of this client's actions, each a key's scan code, its modifiers and the
+/// action: Ctrl+Shift+P shows or hides the performance panel (Command+Shift+P on a Mac). No
+/// shipped key map binds it.
+pub const DEFAULT_KEYS: &[(u16, u32, ActionId)] = &[(
+    0x19,
+    CTRL_SHIFT,
+    pyreal_client_contract::actions::pyreal::TOGGLE_PERFORMANCE_PANEL,
+)];
+
+/// Bind [`DEFAULT_KEYS`] in `map`'s [`INPUT_MAP`], on the keyboard `map` binds keys on.
+pub fn add_default_keys(map: &mut MasterInputMap) {
+    for (scan, meta, action) in DEFAULT_KEYS {
+        if let Some(c) = keyboard_chord(map, *scan) {
+            let key = ControlChord::new(c.control, *meta, c.activation);
+            map.create_input_map(INPUT_MAP).add_mapping(key, *action);
+        }
+    }
+}
 
 impl ActionMap {
     /// Add this client's actions in [`INPUT_MAP`]. They carry no name in the shipped string

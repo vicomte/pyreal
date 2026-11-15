@@ -60,6 +60,8 @@ pub enum LampKind {
     Flame,
     Pack,
     Glow,
+    /// A portal's light ([`crate::gates::lamp`]): magic, washing the ground round it.
+    Portal,
 }
 
 /// One light of an object, in the object's own space.
@@ -178,7 +180,8 @@ pub fn warm(c: Vec3) -> bool {
 
 /// Whether a lamp is the dats' own light of a colour no lamp burns.
 fn magic(kind: LampKind, colour: Vec3) -> bool {
-    kind == LampKind::Glow || (kind == LampKind::Authored && !warm(colour))
+    matches!(kind, LampKind::Glow | LampKind::Portal)
+        || (kind == LampKind::Authored && !warm(colour))
 }
 
 /// A colour temperature's linear colour, brightest channel one (Helland's fit of the Planckian
@@ -756,7 +759,8 @@ pub fn probe_lamps(mut near: Vec<Lamp>, eye: Vec3) -> Vec<Lamp> {
 }
 
 /// A lamp's bytes: position and range; colour times candela; the client's colour times
-/// intensity; flicker and flags (indoors, shadowed, the dats', a found flame, magic, acid); its shadow
+/// intensity; flicker and flags (indoors, shadowed, the dats', a found flame, magic, acid, a
+/// strike, a portal); its shadow
 /// slot and a seed; its object.
 #[must_use]
 pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
@@ -780,7 +784,8 @@ pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
                     && (l.retail.w - crate::puffs::ACID_GLOW_FALLOFF * RANGE_OF_FALLOFF).abs()
                         < 1e-4,
             ) << 13)
-            | (u32::from(l.flash) << 14),
+            | (u32::from(l.flash) << 14)
+            | (u32::from(l.kind == LampKind::Portal) << 15),
         l.retail.x.to_bits(),
         l.retail.y.to_bits(),
         l.retail.z.to_bits(),

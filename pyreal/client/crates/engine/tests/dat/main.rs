@@ -1,8 +1,10 @@
 //! The engine's conversions over the retail dats ($PYREAL_TEST_DAT_DIR; the pre-Throne-of-Destiny
 //! test also $PYREAL_TEST_PRETOD_DAT_DIR). A missing input fails.
 
+mod beacons;
 mod bodies;
 mod drawn;
+mod gates;
 mod particles;
 
 use glam::Vec3;

@@ -267,6 +267,7 @@ impl<H: Host> ClientShell<H> {
             // the keyboard, and the target map while a use waits for its target.
             let game = ui.in_gameplay();
             input.set_character_session_input_maps(game);
+            input.set_explore_input_maps(ui.exploring());
             input.set_mode_input_maps(if game { &[] } else { &[9] });
             input.set_focused_input_maps(if ui.ui.text_focus {
                 &crate::input::FOCUSED_TEXT_MAP_REGISTRATIONS
@@ -609,6 +610,16 @@ impl<H: Host> Shell for ClientShell<H> {
         }
     }
 
+    fn waypoint_command(
+        &mut self,
+        command: pyreal_client_model::cmd::waypoint::WaypointCommand,
+    ) -> Option<String> {
+        self.horizon
+            .ui
+            .as_mut()
+            .map(|ui| ui.waypoint_command(command))
+    }
+
     fn open_vendor_buying(&mut self, _hud: &mut crate::hud::Hud) {
         if let Some(ui) = self.horizon.ui.as_mut() {
             ui.open_vendor_buying();
@@ -833,7 +844,7 @@ fn explore_event<H: Host>(
 }
 
 /// The explore key a virtual key is: WASD or the arrows fly, E or Space rise, Q sinks, plus and
-/// minus step the speed, C copies the place and R the report line.
+/// minus step the speed, C copies the place and R the report line, F9 saves the frame timings.
 fn explore_key_of(virtual_key: usize) -> Option<pyreal_client_runtime::explore::Key> {
     use pyreal_client_runtime::explore::Key;
     Some(match virtual_key {
@@ -847,6 +858,7 @@ fn explore_key_of(virtual_key: usize) -> Option<pyreal_client_runtime::explore::
         0xBD | 0x6D => Key::Slower,
         0x43 => Key::CopyPlace,
         0x52 => Key::CopyReport,
+        0x78 => Key::SaveTimings,
         _ => return None,
     })
 }

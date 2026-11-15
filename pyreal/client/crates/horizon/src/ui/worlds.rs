@@ -8,7 +8,9 @@
 
 use crate::art::Family;
 use crate::draw::Rect;
-use crate::front_door::{DatsFolder, FrontDoorRequest, FrontDoorView, ListedRow, WorldRow};
+use crate::front_door::{
+    DatsFolder, DatsView, FrontDoorRequest, FrontDoorView, ListedRow, WorldRow,
+};
 use crate::ui::kit::{self, Ctx};
 use crate::ui::paint::{Align, Painter, TextStyle};
 use crate::ui::pregame::message_box;
@@ -97,6 +99,25 @@ const PACK_ROW: f32 = 30.0;
 pub struct Asked {
     /// Open the Settings window.
     pub settings: bool,
+}
+
+/// The Explore panel's buttons, by the data files the player has: none without the End of
+/// Retail files, Explore for those alone, else one for each era's.
+fn explore_eras(dats: &DatsView) -> Vec<(&'static str, DatsFolder)> {
+    if !dats.ready {
+        return Vec::new();
+    }
+    let mut eras = vec![("End of Retail", DatsFolder::Modern)];
+    if dats.classic.is_some() {
+        eras.push(("2005", DatsFolder::Classic));
+    }
+    if dats.original.is_some() {
+        eras.push(("1999", DatsFolder::Original));
+    }
+    if eras.len() == 1 {
+        eras[0].0 = "Explore";
+    }
+    eras
 }
 
 impl Worlds {
@@ -345,7 +366,7 @@ impl Worlds {
             sign.y
         };
         let explore = Rect::new(sign.x, top, sign.w, 132.0 * k);
-        if explore.bottom() + gap <= quit.y {
+        if explore.bottom() + gap <= quit.y && !explore_eras(&view.dats).is_empty() {
             self.explore(p, ctx, view, requests, explore, modal);
         }
         // Signing in to the selected world.
@@ -403,7 +424,8 @@ impl Worlds {
         }
     }
 
-    /// The Explore panel across `r`: a button for each era's files the player has.
+    /// The Explore panel across `r`: one Explore button for the End of Retail files alone, else a
+    /// button for each era's files the player has.
     fn explore(
         &mut self,
         p: &mut Painter<'_>,
@@ -420,39 +442,24 @@ impl Worlds {
         let x = r.x + 16.0 * k;
         p.text(&head, x, r.y + 10.0 * k, "Explore");
         p.text(&dim, x, r.y + 42.0 * k, "Fly over Dereth with no server.");
+        let eras = explore_eras(&view.dats);
         let gap = 10.0 * k;
-        let span = r.w - 32.0 * k - 2.0 * gap;
+        #[allow(clippy::cast_precision_loss)]
+        let n = eras.len() as f32;
+        let span = r.w - 32.0 * k - (n - 1.0) * gap;
         // The first button's name is the longest.
-        let widths = [span * 0.4, span * 0.3, span * 0.3];
-        let eras = [
-            (
-                "End of Retail",
-                view.dats.ready,
-                DatsFolder::Modern,
-                "Fly over the End of Retail files.",
-            ),
-            (
-                "2005",
-                view.dats.ready && view.dats.classic.is_some(),
-                DatsFolder::Classic,
-                "Fly over the February 2005 files. Choose their folder in Data Files first.",
-            ),
-            (
-                "1999",
-                view.dats.ready && view.dats.original.is_some(),
-                DatsFolder::Original,
-                "Fly over the 1999 Retail CD files. Choose their folder in Data Files first.",
-            ),
-        ];
+        let widths: &[f32] = match eras.len() {
+            1 => &[1.0],
+            2 => &[0.55, 0.45],
+            _ => &[0.4, 0.3, 0.3],
+        };
         let mut bx = x;
-        for ((label, can, folder, tip), bw) in eras.into_iter().zip(widths) {
+        for ((label, folder), share) in eras.into_iter().zip(widths) {
+            let bw = span * share;
             let b = Rect::new(bx, r.bottom() - 48.0 * k, bw, 32.0 * k);
             bx += bw + gap;
-            if kit::button(p, ctx, b, label, can && !modal) {
+            if kit::button(p, ctx, b, label, !modal) {
                 requests.push(FrontDoorRequest::Explore { folder });
-            }
-            if !modal && ctx.input.hover(&b) {
-                kit::tooltip(p, ctx, tip, &[]);
             }
         }
     }
@@ -1318,6 +1325,30 @@ fn world_line(w: &WorldRow) -> String {
     match &w.account {
         Some(a) => format!("{}:{}   {a}", w.host, w.port),
         None => format!("{}:{}", w.host, w.port),
+    }
+}
+
+#[cfg(test)]
+mod explore_tests {
+    use super::*;
+
+    /// Behaviour: none (Pyreal's own: the front door's Explore panel)
+    #[test]
+    fn the_explore_panel_has_a_button_for_each_era_installed_and_one_for_end_of_retail_alone() {
+        let names = |dats: &DatsView| -> Vec<&str> {
+            explore_eras(dats).into_iter().map(|(n, _)| n).collect()
+        };
+        let mut dats = DatsView::default();
+        assert!(names(&dats).is_empty(), "no files, no panel");
+        dats.original = Some("1999".into());
+        assert!(names(&dats).is_empty(), "nothing without the later files");
+        dats.original = None;
+        dats.ready = true;
+        assert_eq!(names(&dats), ["Explore"]);
+        dats.original = Some("1999".into());
+        assert_eq!(names(&dats), ["End of Retail", "1999"]);
+        dats.classic = Some("2005".into());
+        assert_eq!(names(&dats), ["End of Retail", "2005", "1999"]);
     }
 }
 

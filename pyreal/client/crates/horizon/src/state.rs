@@ -259,6 +259,15 @@ pub fn snapshot<S: Shell>(
     g.map_places.clone_from(&pregame.map_places);
     g.new_chat = chat.into_iter().map(ChatLine::from_message).collect();
     g.explore = cx.explore_view();
+    g.here = cx
+        .viewer_position()
+        .map(|at| crate::ui::panels::map::spot(&at));
+    g.in_dungeon = cx.viewer_in_dungeon();
+    // The map shows the explored era's places and the camera where the player would be.
+    if let Some(e) = &g.explore {
+        g.era_id = e.era;
+        g.coords = e.map_at;
+    }
     chat_entry_state(cx, &mut g);
     if !g.in_world {
         return g;

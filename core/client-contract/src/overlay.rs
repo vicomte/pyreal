@@ -154,3 +154,17 @@ pub struct GroundMarker {
     /// How far it is turned about the object, in radians.
     pub turn: f32,
 }
+
+/// The waypoint's ring, laid on the ground round the player with an arrow on its rim pointing the
+/// way to the waypoint: on the terrain or the floor, as the target ring is. With no player (explore
+/// mode) it lies on the ground under the camera. A front end that wants it asks for it each frame;
+/// asking for none takes it away.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaypointRing {
+    /// The way to the waypoint, in radians clockwise from north.
+    pub bearing: f32,
+    /// How wide the ring is, metres from its middle to its rim.
+    pub radius: f32,
+    /// How far over the ground the camera stands, metres, when there is no player to ring.
+    pub camera_height: Option<f32>,
+}

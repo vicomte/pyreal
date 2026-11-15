@@ -29,6 +29,25 @@ impl<S: Shell> App<S> {
             }
             false
         });
+        // The frame timings' keys, the same: they belong to no interface.
+        let (mut save, mut open) = (false, false);
+        actions.retain(|a| {
+            use pyreal_client_contract::actions::pyreal::{
+                OPEN_FRAME_TIMINGS_FOLDER, SAVE_FRAME_TIMINGS,
+            };
+            let mine = a.id == SAVE_FRAME_TIMINGS || a.id == OPEN_FRAME_TIMINGS_FOLDER;
+            if mine && a.is_start() {
+                save |= a.id == SAVE_FRAME_TIMINGS;
+                open |= a.id == OPEN_FRAME_TIMINGS_FOLDER;
+            }
+            !mine
+        });
+        if save {
+            self.save_frame_timings();
+        }
+        if open {
+            self.open_hitch_folder();
+        }
         // The action handler's `0x1000002B` arm asks whether element
         // `0x100005F7` (`<EXAM>`) is visible before examining anything, and shuts it instead when
         // it is. The client
@@ -205,6 +224,25 @@ impl<S: Shell> App<S> {
             self.objects.world.scroll.add_feedback_to_scroll(
                 &pyreal_client_model::cmd::fog::describe(density, &level),
                 pyreal_client_model::chat::text_type::DEFAULT,
+                true,
+                window,
+                pyreal_client_contract::feedback::Feedback::LOCAL,
+            );
+        }
+        // The waypoint command goes to the interface, which keeps the waypoint, and answers in
+        // the window it was typed in. Nothing is sent.
+        for (command, window) in self.interaction.take_waypoint_commands() {
+            use pyreal_client_model::chat::text_type;
+            let (answer, ty) = match shell.waypoint_command(command) {
+                Some(answer) => (answer, text_type::DEFAULT),
+                None => (
+                    pyreal_client_model::cmd::waypoint::NO_INTERFACE.to_owned(),
+                    text_type::LOCAL_ERROR,
+                ),
+            };
+            self.objects.world.scroll.add_feedback_to_scroll(
+                &answer,
+                ty,
                 true,
                 window,
                 pyreal_client_contract::feedback::Feedback::LOCAL,

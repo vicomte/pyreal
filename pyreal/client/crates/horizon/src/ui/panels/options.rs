@@ -80,6 +80,11 @@ const SCALE_NOTE: &str =
 const STATUS_STYLE_CAPTION: &str = "Status Bar Style";
 const STATUS_STYLE_NOTE: &str = "Sets what the health, stamina and mana bars show.";
 
+/// The caption of the waypoints' row, under the status bar style, and what it does.
+const WAYPOINTS_CAPTION: &str = "Waypoints";
+const WAYPOINTS_NOTE: &str =
+    "Sets where the arrow to a waypoint is shown. On Character lays a ring with an arrow on the ground around your character. Neither is shown in dungeons.";
+
 /// The interface scale's first choice: the largest scale the window offers, up to 200%.
 pub const AUTOMATIC_SCALE: &str = "Auto";
 
@@ -117,6 +122,8 @@ pub struct OptionsState {
     pub minimap_rotates: bool,
     /// What the vitals' bars read.
     pub status_style: crate::ui::hud::StatusStyle,
+    /// Where the way to a waypoint is shown.
+    pub waypoint_style: crate::ui::waypoint::WaypointStyle,
     /// The log window's tab names as they stand.
     pub chat_tabs: crate::options::TabNames,
     /// The log window's opacities as they stand.
@@ -411,6 +418,7 @@ Press Escape to leave it as it is.",
                     | Line::Scale
                     | Line::ScaleNote
                     | Line::StatusStyle
+                    | Line::WaypointStyle
                     | Line::ArtPack => {}
                     Line::Notice(_) | Line::EffectsStatus | Line::Preset => {}
                     Line::Row(row) => match row.value {
@@ -706,6 +714,33 @@ Press Escape to leave it as it is.",
                                 "status-bar-style".into(),
                                 StatusStyle::ALL[i].word().into(),
                             ));
+                        }
+                    }
+                    Line::WaypointStyle => {
+                        use crate::ui::waypoint::WaypointStyle;
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            WAYPOINTS_CAPTION,
+                            Some(WAYPOINTS_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(WAYPOINTS_CAPTION, control);
+                        let names = WaypointStyle::ALL.map(WaypointStyle::name);
+                        let at = WaypointStyle::ALL
+                            .iter()
+                            .position(|s| *s == self.options_page.waypoint_style)
+                            .unwrap_or(0);
+                        if let Some(i) =
+                            self.dropdown(p, ctx, WAYPOINTS_CAPTION, control, &names, at)
+                        {
+                            out.settings
+                                .push(("waypoints".into(), WaypointStyle::ALL[i].word().into()));
                         }
                     }
                     Line::ScaleNote => {
@@ -1266,6 +1301,8 @@ enum Line {
     Scale,
     /// What the vitals' bars read.
     StatusStyle,
+    /// Where the way to a waypoint is shown.
+    WaypointStyle,
     /// Under the scale, which scales a larger window would offer, or why the one chosen is not
     /// the one drawn.
     ScaleNote,
@@ -1432,7 +1469,12 @@ fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
             // This interface's scale and the window's size, which its own edges set, before Full
             // Screen.
             if screen && row.caption == FULL_SCREEN {
-                out.extend([Line::Scale, Line::WindowSize, Line::StatusStyle]);
+                out.extend([
+                    Line::Scale,
+                    Line::WindowSize,
+                    Line::StatusStyle,
+                    Line::WaypointStyle,
+                ]);
                 screen = false;
             }
             out.push(Line::Row(row));
@@ -1444,7 +1486,12 @@ fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
             }
         }
         if screen {
-            out.extend([Line::Scale, Line::WindowSize, Line::StatusStyle]);
+            out.extend([
+                Line::Scale,
+                Line::WindowSize,
+                Line::StatusStyle,
+                Line::WaypointStyle,
+            ]);
         }
     }
     out

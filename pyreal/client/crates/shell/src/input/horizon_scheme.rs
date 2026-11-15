@@ -42,7 +42,7 @@ const EARLIER_SHIFT: u32 = 1;
 /// with Ctrl they are the shortcuts', as Ctrl with 1 to 9 is. The spell bar's later rows take the
 /// number row with Alt (the second), Shift (the third), Ctrl+Alt (the fourth) and Alt+Shift (the
 /// fifth); on a Mac, Ctrl is Command and Alt is Option.
-/// F12 takes a screenshot.
+/// F12 takes a screenshot, and Ctrl+Shift+P shows or hides the performance panel.
 pub const HORIZON_KEYS: &[(u16, u32, &str)] = &[
     (0x11, 0, "MovementForward"),
     (0x1F, 0, "MovementBackup"),
@@ -93,6 +93,7 @@ pub const HORIZON_KEYS: &[(u16, u32, &str)] = &[
     (0x58, 0, "CaptureScreenshot"),
     (0x18, 0, "ToggleSocialPanel"),
     (0x1E, CTRL | SHIFT, "ToggleAdminWindow"),
+    (0x19, CTRL | SHIFT, "TogglePerformancePanel"),
     (0x02, ALT, "UseSpellSlot_13"),
     (0x03, ALT, "UseSpellSlot_14"),
     (0x04, ALT, "UseSpellSlot_15"),

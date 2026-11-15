@@ -85,6 +85,72 @@ pub struct PresentCosts {
     pub encode: Vec<(&'static str, f32)>,
     /// Each pass's time on the GPU, where the device has timestamps; a few frames late.
     pub gpu: Vec<(&'static str, f32)>,
+    /// What the presentation did besides its passes, for the hitch reports.
+    pub work: Option<PresentWork>,
+}
+
+/// What the presentation did in a frame besides drawing its passes: its parts on the processor,
+/// what it made, and what the land's streaming was doing, for the hitch reports
+/// ([`crate::hitch`]). Milliseconds, counts this frame, and the streaming's totals so far.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PresentWork {
+    /// The land's streaming as a whole, and its parts: choosing a new square, loading one at once
+    /// (and the part of that spent waiting on the planners), placing, the switch and freeing.
+    pub stream_ms: f32,
+    pub retarget_ms: f32,
+    pub load_ms: f32,
+    pub load_wait_ms: f32,
+    pub place_ms: f32,
+    pub switch_ms: f32,
+    pub evict_ms: f32,
+    /// The objects made to say what the world says.
+    pub sync_ms: f32,
+    /// Writing the changed instances, materials and pictures to the device.
+    pub upload_ms: f32,
+    /// The ray-tracing structures' upkeep, and making pipelines and shader modules.
+    pub rays_ms: f32,
+    pub pipeline_ms: f32,
+    /// Recording and submitting the frame's passes, uploads and rays included.
+    pub render_ms: f32,
+    /// Waiting on the device: for the frame to finish (no window) or for a picture to draw into.
+    pub gpu_wait_ms: f32,
+    /// Handing the picture to the window.
+    pub present_ms: f32,
+    /// Made this frame: pictures and their kilobytes, meshes, pipelines and shader modules,
+    /// bottom and top ray-tracing levels, bindless groups; and the streaming's placing steps.
+    pub textures: u32,
+    pub texture_kb: u32,
+    pub meshes: u32,
+    pub pipelines: u32,
+    pub blas: u32,
+    pub tlas: u32,
+    pub bind_groups: u32,
+    pub steps: u32,
+    /// The square drawn round its centre block, and the one being placed.
+    pub centre: Option<(i32, i32)>,
+    pub target: Option<(i32, i32)>,
+    /// The block the drawn far terrain was made round, and the one a far field is being made
+    /// round.
+    pub far_centre: Option<(i32, i32)>,
+    pub far_asked: Option<(i32, i32)>,
+    /// Blocks placed, still to place, asked of the planners and not back, planned and not placed;
+    /// jobs in the planners' queues; far blocks whose trees are asked for.
+    pub blocks: u32,
+    pub pending: u32,
+    pub asked: u32,
+    pub planned: u32,
+    pub queued: u32,
+    pub trees_asked: u32,
+    /// The streaming's totals since the world was made.
+    pub full_loads: u64,
+    pub switches: u64,
+    pub rebases: u64,
+    pub evictions: u64,
+    pub blocks_placed: u64,
+    pub blocks_removed: u64,
+    /// The streaming's last step, and its longest so far.
+    pub last_step: &'static str,
+    pub worst_step_ms: f32,
 }
 
 /// A short hash of some content: the first eight bytes of its BLAKE3 hash, in hex.

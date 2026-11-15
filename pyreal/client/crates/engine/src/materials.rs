@@ -296,6 +296,10 @@ impl MaterialTable {
         }
         let bytes = pixels.byte_size() as u64;
         self.texture_bytes += bytes;
+        crate::frame_work::note(|w| {
+            w.textures += 1;
+            w.texture_bytes += bytes;
+        });
         let view = texture.create_view(&Default::default());
         let none = [NO_TEXTURE, NO_TEXTURE, NO_TEXTURE, 0, 0, 0, 0, 0];
         if reused.is_some() {
@@ -410,6 +414,7 @@ impl MaterialTable {
             self.companions_dirty = false;
         }
         if self.group.is_none() {
+            crate::frame_work::note(|w| w.bind_groups += 1);
             let views: Vec<&wgpu::TextureView> = self.views.iter().collect();
             self.group = Some(gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("material table"),

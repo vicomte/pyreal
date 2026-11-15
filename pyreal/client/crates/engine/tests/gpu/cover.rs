@@ -239,3 +239,41 @@ fn cover_grows_up_to_a_buildings_walls() {
         .count();
     assert!(in_home > 0, "the building's own cell grows plants");
 }
+
+/// The stones among the grass are drawn with a real picture, the land's bare rock: a live texture
+/// other than white, kept through a sweep that frees what nothing draws.
+#[test]
+fn cover_stones_bind_the_land_s_rock_picture() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::engine();
+    let mut loader =
+        AssetLoader::with_pack(pyreal_engine::pack::EnginePack::new(Arc::new(grass_pack())));
+    load_area(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        Area {
+            center: MEADOW,
+            radius: 1,
+        },
+    );
+    let cover = engine.renderer.cover.as_ref().expect("the pack's cover");
+    let (slot, per_m) = cover.stone_picture().expect("the stones' picture");
+    assert_ne!(
+        slot,
+        pyreal_engine::materials::WHITE,
+        "a picture, not white"
+    );
+    assert!(per_m > 0.0, "{per_m} repeats a metre");
+    assert!(
+        engine.materials.texture_live(slot),
+        "slot {slot} holds a picture"
+    );
+    pyreal_engine::evict::evict(&mut engine, &mut loader, []);
+    assert!(
+        engine.materials.texture_live(slot),
+        "slot {slot} kept when nothing draws it"
+    );
+}

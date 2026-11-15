@@ -47,6 +47,7 @@
 pub mod air;
 pub mod asset;
 pub mod atmosphere;
+pub mod beacons;
 pub mod body;
 pub mod body_fire;
 pub mod bolts;
@@ -59,6 +60,8 @@ pub mod drift;
 pub mod evict;
 pub mod far;
 pub mod flames;
+pub mod frame_work;
+pub mod gates;
 pub mod glow;
 pub mod gpu;
 pub mod graph;
@@ -346,7 +349,10 @@ impl Engine {
         size: (u32, u32),
         overlay: Option<&overlay::Overlay>,
     ) -> Result<(), EngineError> {
+        let t = std::time::Instant::now();
         self.upload()?;
+        let ms = frame_work::ms_since(t);
+        frame_work::note(|w| w.upload_ms += ms);
         #[allow(clippy::cast_precision_loss)]
         let aspect = size.0 as f32 / size.1.max(1) as f32;
         self.visibility = self.cells.visibility(
@@ -471,6 +477,12 @@ impl Engine {
         frame_flames.extend(fire_flames);
         self.particles.skip_flamed = self.flames.on && self.renderer.lamps;
         self.particles.wind = crate::wind::wind(light.time, self.renderer.clock);
+        let w = &self.renderer.weather;
+        self.particles.air = crate::gates::Air {
+            rain: if w.on { w.rain } else { 0.0 },
+            snow: if w.on { w.snow } else { 0.0 },
+            snowy: w.snow_share,
+        };
         self.particles.detail = self.renderer.effect_detail();
         let heavens = self
             .heavens

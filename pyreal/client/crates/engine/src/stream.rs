@@ -1289,6 +1289,7 @@ impl Stream {
             if let Some(m) = loader.terrain_material(engine) {
                 engine.renderer.terrain_material = m;
             }
+            world::set_bed_picture(engine, loader, &self.store, &self.region);
             self.stats.full_loads += 1;
             self.stats.full_load_ms = t.elapsed().as_secs_f64() * 1e3;
         } else {
@@ -1600,6 +1601,7 @@ impl Stream {
         if engine.renderer.cover.is_none() {
             world::load_cover(engine, loader, &self.store, &self.region);
         }
+        world::set_bed_picture(engine, loader, &self.store, &self.region);
         let r = self.radius;
         let lands: Vec<&crate::land::BlockLand> =
             plans.iter().filter_map(|p| p.land.as_ref()).collect();

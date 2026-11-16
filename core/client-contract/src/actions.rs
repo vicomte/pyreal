@@ -259,6 +259,8 @@ pub mod pyreal {
     /// Retired: hotbar slots 13 to 48 of an earlier Horizon layout, kept by name so a key map
     /// that saved them still reads.
     pub const RETIRED_HOTBAR_SLOT_13: super::ActionId = super::ActionId(0x2000_0010);
+    /// Move everything in the open chest or corpse to the pack, or stop doing so.
+    pub const LOOT_ALL: super::ActionId = super::ActionId(0x2000_0034);
     /// Cast spell slot 13, the first of the Horizon spell bar's rows past the first; slots 14 to
     /// 60 follow it in order, twelve to a row.
     pub const USE_SPELL_SLOT_13: super::ActionId = super::ActionId(0x2000_0040);
@@ -883,6 +885,7 @@ pub mod names {
             super::pyreal::RETIRED_HOTBAR_SLOT_13.0 + 35,
             "UseHotbarSlot_48",
         ),
+        (super::pyreal::LOOT_ALL.0, "LootAll"),
         (super::pyreal::USE_SPELL_SLOT_13.0, "UseSpellSlot_13"),
         (super::pyreal::USE_SPELL_SLOT_13.0 + 1, "UseSpellSlot_14"),
         (super::pyreal::USE_SPELL_SLOT_13.0 + 2, "UseSpellSlot_15"),

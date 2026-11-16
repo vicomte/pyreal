@@ -94,3 +94,24 @@ fn each_portals_glow_is_its_own_colour() {
     let white = glow(0x0200_06F4);
     assert!(white.max_element() - white.min_element() < 0.05, "{white}");
 }
+
+/// A portal's colour as drawn is found again by its setup, for the portal space it leads into.
+#[test]
+fn a_portals_colour_is_found_by_its_setup() {
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let mut particles = pyreal_engine::particles::Particles {
+        assets: Some(Arc::new(DatAnimAssets::new(store))),
+        ..Default::default()
+    };
+    for (i, &(script, _, _)) in SCRIPTS.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let c = glam::Vec3::new(i as f32, 0.5, 1.0);
+        particles.portal_colours.insert(script, c);
+    }
+    for (i, &(_, setup, name)) in SCRIPTS.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let want = glam::Vec3::new(i as f32, 0.5, 1.0);
+        assert_eq!(particles.portal_colour(setup), Some(want), "{name}");
+    }
+    assert_eq!(particles.portal_colour(0x0200_0FEF), None);
+}

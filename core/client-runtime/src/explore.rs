@@ -53,8 +53,6 @@ pub enum Key {
     CopyPlace,
     /// Copy the frame's report line.
     CopyReport,
-    /// Save the last thirty seconds of frame timings.
-    SaveTimings,
 }
 
 /// What the overlay asks of the mode.
@@ -69,9 +67,6 @@ pub enum Ask {
     Go(f64, f64),
     /// One step faster (above zero) or slower.
     Speed(i32),
-    /// Save the last thirty seconds of frame timings, and open the folder they are saved in.
-    SaveTimings,
-    OpenTimings,
     /// End the mode.
     Leave,
 }

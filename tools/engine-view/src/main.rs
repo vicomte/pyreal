@@ -25,7 +25,7 @@
 //!             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
 //!             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0]
 //!             [--budget MS] [--ui overlay.png] [--select X,Y] [--hover X,Y]
-//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--retail-beacons] [--no-wind] [--stride VX,VY]
+//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--no-wind] [--stride VX,VY]
 //!             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
 //! ```
 //!
@@ -188,6 +188,8 @@ struct Args {
     retail_portals: bool,
     /// The lighthouses' beacons drawn as retail's added pictures, not a magical white light.
     retail_beacons: bool,
+    /// Retail's waterfall cards, not the falling sheets.
+    retail_falls: bool,
     /// No wind: the grass, shrubs and trees stand still.
     no_wind: bool,
     /// Every body walked at this velocity, metres a second east and north.
@@ -197,6 +199,8 @@ struct Args {
     /// The camera carried round the first body this many degrees a frame, anticlockwise, turning
     /// as it goes so the body stays where it was in view.
     orbit: f32,
+    /// Seconds into portal space to draw in place of the view, in the first portal's colour.
+    tunnel: Option<f32>,
     /// How much of Rez'arel's and Alb'arel's faces are lit, 0 new to 1 full.
     moon_phase: Option<(f32, f32)>,
     /// Every this many frames written beside `--out`, numbered.
@@ -304,10 +308,12 @@ impl Default for Args {
             no_volumes: false,
             retail_portals: false,
             retail_beacons: false,
+            retail_falls: false,
             no_wind: false,
             stride: None,
             turn: 0.0,
             orbit: 0.0,
+            tunnel: None,
             moon_phase: None,
             save_every: 0,
             set_time: None,
@@ -418,7 +424,7 @@ const USAGE: &str =
             [--far BLOCKS] [--fog-end METRES]
             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0] [--budget MS]
             [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--oit]
-            [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--retail-beacons] [--no-wind] [--stride VX,VY]
+            [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--no-wind] [--stride VX,VY]
             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]";
 
 fn parse() -> Result<Args, String> {
@@ -547,6 +553,7 @@ fn parse() -> Result<Args, String> {
             "--no-volumes" => a.no_volumes = true,
             "--retail-portals" => a.retail_portals = true,
             "--retail-beacons" => a.retail_beacons = true,
+            "--retail-falls" => a.retail_falls = true,
             "--no-wind" => a.no_wind = true,
             "--stride" => {
                 let v = val()?;
@@ -555,6 +562,7 @@ fn parse() -> Result<Args, String> {
             }
             "--turn" => a.turn = num(&val()?)?,
             "--orbit" => a.orbit = num(&val()?)?,
+            "--tunnel" => a.tunnel = Some(num(&val()?)?),
             "--moon-phase" => {
                 let v = val()?;
                 let (r, l) = v.split_once(',').ok_or("--moon-phase takes REZ,ALB")?;
@@ -707,8 +715,8 @@ fn view(a: &Args) -> Result<View, String> {
         camera.fov_y.to_degrees()
     );
     println!(
-        "time {time:.3} of a {:.0} s day, day group {group}: sun toward {:.2} at {:.2}, ambient {:.2}, fog {:.2} from {:.0} to {:.0} m",
-        region.game_time.day_length, light.sun_dir, light.sun, light.ambient, light.fog, light.fog_start, light.fog_end
+        "time {time:.3} of a {:.0} s day, day group {group} ({:?}): sun toward {:.2} at {:.2}, ambient {:.2}, fog {:.2} from {:.0} to {:.0} m",
+        region.game_time.day_length, light.weather, light.sun_dir, light.sun, light.ambient, light.fog, light.fog_start, light.fog_end
     );
     Ok(View {
         store,
@@ -1138,6 +1146,7 @@ fn headless(a: &Args) -> Result<(), String> {
     engine.particles.smoke &= !a.no_volumes;
     engine.particles.portals &= !a.retail_portals;
     engine.particles.beacons &= !a.retail_beacons;
+    engine.particles.falls &= !a.retail_falls;
     if a.no_wind {
         engine.renderer.foliage_wind = 0.0;
     }
@@ -1355,11 +1364,58 @@ fn headless(a: &Args) -> Result<(), String> {
             );
         }
     }
+    if let Some(t) = a.tunnel {
+        pixels = tunnel(&engine, a, t);
+    }
     if let Some(out) = &a.out {
         write_png(out, a.size, &pixels)?;
         println!("wrote {}", out.display());
     }
     Ok(())
+}
+
+/// Portal space `seconds` in, in the colour of the first placed portal as the engine drew it.
+fn tunnel(engine: &Engine, a: &Args, seconds: f32) -> Vec<u8> {
+    use pyreal_engine::portal::{Leg, Palette, PortalFrame, PortalSpace};
+    let colour = a.bodies.iter().find_map(|b| match b.kind {
+        bodies::Kind::Setup(setup, _) => engine.particles.portal_colour(setup),
+        bodies::Kind::Character(_) => None,
+    });
+    println!("tunnel colour {colour:?}");
+    let target = engine.gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("tunnel"),
+        size: wgpu::Extent3d {
+            width: a.size.0,
+            height: a.size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: engine.renderer.output_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let mut space = PortalSpace::new(&engine.gpu);
+    let f = PortalFrame {
+        leg: Leg::Tunnel,
+        phase: seconds,
+        travelled: seconds,
+        seed: 7,
+        palette: colour.map_or(Palette::PORTAL, |c| Palette::PORTAL.toward(c)),
+        from_world: false,
+    };
+    space.render(
+        &engine.gpu,
+        &f,
+        None,
+        None,
+        &view,
+        engine.renderer.output_format,
+        a.size,
+    );
+    pyreal_engine::read_texture(&engine.gpu, &target, 4)
 }
 
 /// The light's options: its calibration, exposure, bloom and tone curve.

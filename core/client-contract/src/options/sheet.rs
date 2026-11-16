@@ -1052,15 +1052,26 @@ const CLIENT: [Heading; 7] = [
     Heading {
         title: INFORMATION_HEADING,
         text: Text::literal(INFORMATION_HEADING),
-        rows: &[tip(
-            "Shows the frame rate and frame times in a small panel on screen.",
-            Impact::Information,
-            pref(
-                "Performance Panel",
-                Value::Check(crate::options::performance::PERFORMANCE_PANEL),
-                Bool(false),
+        rows: &[
+            tip(
+                "Shows the frame rate and frame times in a small panel on screen.",
+                Impact::Information,
+                pref(
+                    "Performance Panel",
+                    Value::Check(crate::options::performance::PERFORMANCE_PANEL),
+                    Bool(false),
+                ),
             ),
-        )],
+            tip(
+                super::update_check::NOTE,
+                Impact::Information,
+                pref(
+                    super::update_check::CAPTION,
+                    Value::Check(crate::options::update_check::CHECK_FOR_UPDATES),
+                    Bool(true),
+                ),
+            ),
+        ],
     },
     CAMERA,
 ];

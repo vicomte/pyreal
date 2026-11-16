@@ -95,6 +95,9 @@ struct Frame {
     waypoint: vec4<f32>,
     // xy: the way its arrow points, east and north; z: the object it rings + 1 (u32 bits).
     waypoint_way: vec4<f32>,
+    // The bed's mud picture under water drawn as water: x its slot (u32 bits; 0: none), y its
+    // repeats a metre.
+    bed: vec4<f32>,
 }
 
 const F_PHYSICAL: u32 = 1u;

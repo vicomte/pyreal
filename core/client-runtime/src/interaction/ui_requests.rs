@@ -235,6 +235,12 @@ feedback,channel: 0x1A, text},
                         id,
                     );
                 }
+                UiRequest::LootAll(id) => {
+                    if !game.start_loot_all(id) {
+                        self.stats.requests_refused += 1;
+                    }
+                }
+                UiRequest::StopLootAll => game.stop_loot_all(),
                 UiRequest::UnregisterSlumlordRange => game.unregister_slumlord_range_checks(),
                 UiRequest::UnregisterBookRange => game.unregister_book_range_checks(),
                 // The toolbar's Examine button: the complete examination operation.
@@ -1577,6 +1583,8 @@ feedback,channel: 0x1A, text},
             }
             self.stats.ui_requests_handled += 1;
         }
+        // The Loot All run sends its next move once the last one is answered.
+        game.loot_all_step(&mut req, &mut out, now);
         self.absorb(game, out, req);
         unowned
     }

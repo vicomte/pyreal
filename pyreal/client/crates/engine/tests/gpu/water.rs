@@ -172,11 +172,76 @@ fn the_shore_meets_the_river_without_a_seam() {
                 .render_to_rgba(&camera, &noon, size)
                 .expect("a frame");
         }
-        // The band of the frame where the shore runs up it, the river to its left.
-        let line = darkest_line(&rgba, size.0, 200..250, 60..330, 8);
+        // The band of the frame where the shore runs up it, the river to its left; out on the
+        // water the bed's grain and the waves' glints vary of their own.
+        let line = darkest_line(&rgba, size.0, 200..250, 160..330, 8);
         assert!(
             line < 8.0,
             "at {clock} s a line {line:.1} darker than either side runs along the shore"
         );
     }
+}
+
+/// Terraced pools: an upper pool at 110 m whose falls drop 30 m to pools at 80 m.
+const FALLS: u16 = 0x22E6;
+
+/// From the upper pool's beach (the owner's waterfall report), the lower pools behind and below
+/// the beach are not drawn over it: the beach is the bed of the water over it, not of water 30 m
+/// down beyond the falls.
+#[test]
+fn a_lower_pool_is_not_drawn_through_the_upper_pools_beach() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::light::loaded(
+        &store,
+        &region,
+        Area {
+            center: FALLS,
+            radius: 1,
+        },
+    );
+    let camera = Camera {
+        position: Vec3::new(107.16, 24.45, 113.82),
+        yaw: -5.51,
+        pitch: -0.415,
+        fov_y: 79.07f32.to_radians(),
+        far: 400.0,
+        ..Camera::default()
+    };
+    let noon = SkyLight::at(&region, 0, 0.5);
+    let size = (280, 226);
+    let rgba = engine
+        .render_to_rgba(&camera, &noon, size)
+        .expect("a frame");
+    // The beach between the eye and the falls.
+    let px = rgba.as_chunks::<4>().0;
+    let (mut blue, mut n) = (0, 0);
+    for y in 66..96 {
+        for x in 40..140 {
+            let p = px[y * size.0 as usize + x];
+            n += 1;
+            if p[2] > p[0].saturating_add(8) {
+                blue += 1;
+            }
+        }
+    }
+    assert!(blue * 10 < n, "{blue} of {n} beach pixels show water");
+}
+
+/// Under water drawn as water the bed is drawn with the land's mud picture, so it shows a grain
+/// and bend of its own rather than one flat colour.
+#[test]
+fn the_bed_is_drawn_with_the_lands_mud() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let engine = super::light::loaded(
+        &store,
+        &region,
+        Area {
+            center: LAKE,
+            radius: 0,
+        },
+    );
+    let (slot, per_m) = engine.renderer.bed.expect("the bed's picture");
+    assert!(slot != 0 && per_m > 0.0, "{slot} {per_m}");
 }

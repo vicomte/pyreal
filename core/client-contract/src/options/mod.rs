@@ -26,6 +26,7 @@ pub mod shadow_distance;
 pub mod sheet;
 pub mod sound_style;
 pub mod store;
+pub mod update_check;
 pub mod water_detail;
 pub mod weather_sound;
 

@@ -194,6 +194,8 @@ pub struct Examined {
     pub profession: Option<String>,
     pub pk: Option<String>,
     pub allegiance: Option<String>,
+    /// Another player's name, for the Tell button; `None` for anything else and for oneself.
+    pub tell: Option<String>,
 }
 
 /// A chat line, as the log window shows it.
@@ -539,6 +541,8 @@ pub struct GameState {
     pub main_pack: Option<Item>,
     /// The chest or corpse open on the ground: its id, its name and its contents.
     pub loot: Option<(ObjectId, String, Vec<Item>)>,
+    /// A Loot All run is moving the loot's items to the pack.
+    pub looting_all: bool,
     /// The vendor the player is dealing with, while its window is open.
     pub shop: Option<pyreal_client_contract::view::ShopView>,
     /// The game asked for the vendor's buying tab (filling spell components).

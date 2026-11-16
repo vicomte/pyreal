@@ -7,6 +7,31 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-15
+
+### Added
+
+- When Pyreal opens, it checks GitHub for a newer release, at most once a day. The world list then shows a line such as "Pyreal 0.1.4 is available." at the foot of the screen between the list and Quit, with a Download button that opens the release page. Check for Updates under Settings' Information heading turns it off. The check sends a plain request naming only Pyreal and its version, and a build made from a checkout never checks.
+- The Loot window over a corpse or chest has a Loot All button that moves everything in it to your pack, one item at a time as the server takes each. It passes over anything you may not take, stops with a line in chat when your pack is full or you are carrying too much, and stops when the container closes. Pressing it again while it works stops it. A Loot All key, unbound until chosen in the keys list, does the same.
+- Examining another player shows a Tell button at the top right of the Examine window. It opens the chat line with `@tell <name>, ` typed in, ready for your message, and sends nothing until you press Enter.
+- Every package's NOTICE.txt names the four typefaces Horizon's text is drawn from (Noto Sans, Saira, Pathway Gothic One and Cormorant SC) and carries each one's SIL Open Font License.
+
+### Changed
+
+- Waterfalls are drawn as sheets of falling water. The water leaves the lip clear and glassy, streams down in ropes that whiten as it falls, runs down the rock to the pool, spreads foam where it lands and sends up soft mist. On a clear sunny day a faint rainbow shows in the mist, and where the pool above stops short of the edge the water runs from it to the edge. They were drawn as a mass of blue flecks over a cloud of snow, and they now cost a small share of what they did to draw, most of all up close.
+- The icon's coin carries a pyreal's mark, a C with a stroke above and below, in place of the compass rose.
+- Portals in the world have a see-through body in their own colour under their turning arms, shaded darker down the funnel's throat and lighter on its rim. The funnel is twice as deep, it leans a little off your line of sight and slowly goes round so its shape shows, and its arms and dust move about a third faster.
+- Enhanced portal space is tinted toward the colour of the portal you stepped through, so a green portal gives a green tunnel and a blue one a blue tunnel. Recalls, the lifestone, houses, logging in and logging off keep their own colours.
+- The sign-in and world list screens speak plainly, with short status lines such as "Checking the world...", "Preparing shaders..." and "Loading characters...", and sign-in problems as sentences that say what to do.
+- The Explore panel no longer has the Save Timings and Open Folder buttons, and F9 does nothing there. Slow frames are still saved to `logs/hitches`, without a note on screen or in chat. The Save Frame Timings and Open Frame Timings Folder keys, unbound until chosen in the keys list, save the last 30 seconds and open the folder.
+
+### Fixed
+
+- Ponds that the original game paints on dry ground are drawn as water, such as the round pond at 95.9S 91.1W and the pools at the top of the waterfalls near 82S 94E. They were drawn as bare grey silt. You still walk across them, as in the original game.
+- At a waterfall with a pool above another, the lower pool no longer shows through the upper pool's beach, and the upper pool stays level at the top of the fall.
+- The silt along shores and under water has the land's mud texture, with its grain and shading, in place of one flat brown.
+- On a Mac, the arrow, Home, End and forward Delete keys in the chat line and other text boxes move the cursor or delete as they should, rather than typing odd characters. Option with Left, Right or Delete moves or deletes a word at a time, as Control does.
+
 ## [0.1.2] - 2026-11-15
 
 ### Added
@@ -282,6 +307,7 @@ work.
 - Far terrain pipelines are made once, and the ray scene gathers nearby statics once a frame.
 - Startup makes its pipelines side by side on several threads, warms up the ray-tracing builders in the background, and keeps a Vulkan pipeline cache in the settings folder, so a first launch on Windows reaches the world about twice as fast and later launches sooner still. The front door says when shaders are being prepared.
 
-[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.3
 [0.1.2]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.2
 [0.1.1]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.1

@@ -1,5 +1,6 @@
 //! The hitch log carried out ([`crate::hitch`]): each frame kept as it finishes, and a report
-//! written to the settings folder's `logs/hitches` when one is due, with a note saying so.
+//! written to the settings folder's `logs/hitches` when one is due. A save the player asked for
+//! says where it went.
 
 use super::*;
 
@@ -167,23 +168,17 @@ impl<S: Shell> App<S> {
                 let file = path
                     .file_name()
                     .map_or_else(|| name.clone(), |n| n.to_string_lossy().into_owned());
-                match due.kind {
-                    Kind::Hitch => {
-                        let slow = self
-                            .hitches
-                            .frames()
-                            .find(|f| (f.at - due.at).abs() < 1e-9)
-                            .map_or(0.0, |f| f.ms);
-                        format!("A slow frame of {slow:.0} ms was saved to {file}.")
-                    }
-                    Kind::Asked => format!("The last 30 seconds of frames were saved to {file}."),
-                }
+                format!("The last 30 seconds of frames were saved to {file}.")
             }
             Err(e) => {
                 tracing::warn!("hitch report not saved to {}: {e}", dir.display());
                 format!("The frame timings could not be saved: {e}.")
             }
         };
+        // A slow frame's report is only logged; a save the player asked for says where it went.
+        if due.kind == Kind::Hitch {
+            return;
+        }
         let now = self.timer.cur_time;
         if let Some(e) = self.explore.as_mut() {
             e.note_copied(&note, now);

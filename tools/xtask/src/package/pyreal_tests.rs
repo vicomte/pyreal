@@ -395,3 +395,20 @@ fn a_disk_image_is_checked_against_its_manifest_line() {
     assert!(!super::dmg::recorded(part, "P.dmg", 12, "ffff"));
     assert!(!super::dmg::recorded(part, "Q.dmg", 12, "abcd"));
 }
+
+#[test]
+fn every_horizon_typeface_has_its_open_font_licence_beside_the_glyph_pages() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for (name, file) in pyreal::HORIZON_FONTS {
+        let path = root.join(pyreal::HORIZON_FONT_LICENCES).join(file);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            text.starts_with("Copyright"),
+            "{name}: its copyright line first"
+        );
+        assert!(
+            text.contains("SIL OPEN FONT LICENSE Version 1.1"),
+            "{name}: the OFL"
+        );
+    }
+}

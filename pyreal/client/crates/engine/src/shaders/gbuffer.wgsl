@@ -607,6 +607,10 @@ const TRIPLANAR_WHOLE: f32 = 0.6;
 // How far a layer's height carries it past its plain share, and how much sharper it makes the
 // edge per unit of height between the two.
 const HEIGHT_REACH: f32 = 0.6;
+// How much of the mud picture's grain the bed's silt takes, and how much wider than a pixel its
+// blur reads.
+const BED_GRAIN: f32 = 0.8;
+const BED_BLUR: f32 = 32.0;
 const HEIGHT_SHARPEN: f32 = 3.0;
 // The second placement's patches and the tint's two scales, metres.
 const MACRO_PATCH: f32 = 31.0;
@@ -801,6 +805,32 @@ fn ground_layer(l: vec4<u32>, lay: Lay, up: f32) -> GroundSample {
         g.has = max(g.has, s.has);
         g.heat = mix(g.heat, s.heat, steep);
     }
+    return g;
+}
+
+// The silt the bed is drawn with over retail's water picture `water`: its colour, the water
+// picture's light and dark, and the mud picture's (`frame.bed`) about its mean, with its bend.
+fn bed_layer(water: GroundSample, lay: Lay) -> GroundSample {
+    let silt = vec3<f32>(0.15, 0.13, 0.09) * clamp(luma(water.colour) / 0.12, 0.6, 1.5);
+    let slot = bitcast<u32>(frame.bed.x);
+    if (slot == 0u) {
+        var g = water;
+        g.colour = silt;
+        g.rough = 0.85;
+        return g;
+    }
+    var g = ground_picture(slot, frame.bed.y, lay, 0.85, false);
+    // The picture's fine grain about its own blur there, so the silt keeps its brightness and
+    // no broad patch of the picture shows.
+    var blur = lay;
+    blur.wdx *= BED_BLUR;
+    blur.wdy *= BED_BLUR;
+    let grain = luma(ground_read(slot, frame.bed.y, lay).rgb)
+        / max(luma(ground_read(slot, frame.bed.y, blur).rgb), 1e-3);
+    g.colour = silt * clamp(mix(1.0, grain, BED_GRAIN), 0.3, 2.0);
+    // Its height stays the water picture's, so the shore blends and stands as before.
+    g.height = water.height;
+    g.has = water.has;
     return g;
 }
 
@@ -1051,10 +1081,9 @@ fn fs_terrain(in: VsOut) -> GOut {
         let kind = min((l.z >> 8u) & 0xFFu, 9u);
         var g = ground_layer(l, lay, n0.z);
         // Under water drawn as water, retail's water picture is the bed: silt, the picture's own
-        // light and dark kept.
+        // light and dark kept, and the land's mud picture's grain and bend where it has one.
         if (water_drawn && kind == 7u) {
-            g.colour = vec3<f32>(0.15, 0.13, 0.09) * clamp(luma(g.colour) / 0.12, 0.6, 1.5);
-            g.rough = 0.85;
+            g = bed_layer(g, lay);
         }
         if (k == 0u || l.y == NO_TEXTURE) {
             c = g.colour;

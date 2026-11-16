@@ -135,6 +135,8 @@ jobs:
           # The Linux release is held to Ubuntu 22.04's glibc (targets::PYREAL_GLIBC_FLOOR).
           - os: ubuntu-22.04
     runs-on: ${{ matrix.os }}
+    # A tag's run reads the signing secrets from the `release` environment, which only `v*` tags may use.
+    environment: ${{ github.ref_type == 'tag' && 'release' || '' }}
     timeout-minutes: 180
     defaults:
       run:
@@ -185,7 +187,7 @@ jobs:
         with:
           name: base-pack
           path: ${{ runner.temp }}/base-pack
-      # The Developer ID and the notarizing key, from the repository's secrets. A version tag
+      # The Developer ID and the notarizing key, from the `release` environment. A version tag
       # needs them; a manual run without them packages an ad hoc signed, unnotarized app.
       - name: Load the Mac signing identity and notarizing key
         if: runner.os == 'macOS'

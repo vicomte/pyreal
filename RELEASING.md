@@ -1,7 +1,10 @@
 # Releasing Pyreal
 
-Nothing builds on an ordinary push or pull request. A version tag builds and publishes a release,
-and either workflow can be run by hand from the Actions tab.
+Pyreal is developed in a private repository. Each release is committed to the public repository,
+[jacobjohnston/pyreal](https://github.com/jacobjohnston/pyreal), as one snapshot commit, and its
+version tag builds and publishes the release there. Actions are turned off in the private
+repository. Nothing builds on an ordinary push or pull request, and either workflow can be run by
+hand from the public repository's Actions tab.
 
 ## Versions
 
@@ -26,22 +29,32 @@ names. The tag is the version with a `v` in front: `v0.1.0`.
 4. Commit both on `main` as `Pyreal 0.2.0`.
 5. Run `cargo xtask ci prepush` on the Mac, if the pre-push hook will not (see
    [CONTRIBUTING.md](CONTRIBUTING.md)). Nothing on CI checks the Mac.
-6. Push `main` and run CI by hand on it (Actions, CI, Run workflow). It uses no Mac minutes,
-   shows what fails only on Linux or Windows before the tag does, and leaves `main`'s caches
-   warm for the tag's run.
+6. Push `main` to the private repository and tag it there, as the record of what was released.
+   Nothing builds in the private repository.
 
    ```bash
-   git push origin main
+   git push origin main && git tag -a v0.2.0 -m "Pyreal 0.2.0" && git push origin v0.2.0
    ```
 
-7. Tag and push the tag:
+7. Commit the release to the public repository: one commit holding `main`'s tree, on top of the
+   public `main`, titled `Features and fixes for v0.2.0` with the version's CHANGELOG section as
+   its body. Make it in a scratch bare repository so no private history goes with it, then tag it
+   and push both.
 
    ```bash
-   git tag -a v0.2.0 -m "Pyreal 0.2.0"
+   git init --bare /tmp/pyreal-public && git push /tmp/pyreal-public main:refs/private/tip
    ```
 
    ```bash
-   git push origin v0.2.0
+   cd /tmp/pyreal-public && git fetch https://github.com/jacobjohnston/pyreal.git main:refs/heads/main
+   ```
+
+   ```bash
+   c=$(git commit-tree 'refs/private/tip^{tree}' -p main -F message.txt) && git update-ref refs/heads/main $c && git update-ref -d refs/private/tip && git tag -a v0.2.0 -m "Pyreal 0.2.0" main
+   ```
+
+   ```bash
+   git push https://github.com/jacobjohnston/pyreal.git main v0.2.0
    ```
 
 The Release workflow then:
@@ -56,10 +69,19 @@ The Release workflow then:
 - publishes a GitHub Release named `Pyreal 0.2.0` with every file, `SHA256SUMS`, `MANIFEST.txt`,
   `release.json`, and the version's CHANGELOG.md section as its notes.
 
+Each client checks for a newer release when it opens by reading `release.json` from
+`releases/latest/download/` in the repository its build names (`PYREAL_BUILD_SOURCE_URL`). It reads
+the `product`, `version`, `tag` and `prerelease` fields, so those stay in the index. GitHub's latest
+release is never a pre-release, and a stable client is never told of one. A client built without
+the source URL never checks. To see the notice from a checkout, build with both
+`PYREAL_BUILD_SOURCE_URL=https://github.com/jacobjohnston/pyreal` and an older
+`PYREAL_CHECK_AS_VERSION`, such as `0.1.1`.
+
 ## What runs where
 
-A release checks each thing once, on the cheapest system that can show it fails. On this private
-repository a Mac minute costs about ten Linux minutes and a Windows minute about two.
+A release checks each thing once, on the cheapest system that can show it fails. The public
+repository's Actions minutes are free, but the Mac's runners are the scarcest, so the Mac's own
+checks run before the push.
 
 | Check | Where | Why there |
 |---|---|---|
@@ -108,8 +130,9 @@ repository a Mac minute costs about ten Linux minutes and a Windows minute about
 
 ## Mac signing secrets
 
-A version tag fails without these repository secrets. A run by hand without them packages an ad
-hoc signed app that is not notarized.
+These live in the public repository's `release` environment, which only `v*` tags may use, so no
+other run can read them. A version tag fails without them. A run by hand on a branch packages an
+ad hoc signed app that is not notarized.
 
 | Secret | What it holds |
 |---|---|

@@ -99,12 +99,6 @@ impl<S: Shell> App<S> {
 
     /// A key of explore mode's, held (`down`) or let go.
     pub fn explore_key(&mut self, key: Key, down: bool) {
-        if key == Key::SaveTimings {
-            if down && self.exploring() {
-                self.save_frame_timings();
-            }
-            return;
-        }
         let Some(e) = self.explore.as_mut() else {
             return;
         };
@@ -125,11 +119,6 @@ impl<S: Shell> App<S> {
 
     /// Carry out what explore mode's overlay asked. Leaving is the front end's: it ends the mode.
     pub fn explore_ask(&mut self, ask: Ask) {
-        match ask {
-            Ask::SaveTimings => return self.save_frame_timings(),
-            Ask::OpenTimings => return self.open_hitch_folder(),
-            _ => {}
-        }
         let Some(e) = self.explore.as_mut() else {
             return;
         };
@@ -162,7 +151,7 @@ impl<S: Shell> App<S> {
                     e.go(ws, &self.store, north, east);
                 }
             }
-            Ask::Leave | Ask::SaveTimings | Ask::OpenTimings => {}
+            Ask::Leave => {}
         }
     }
 

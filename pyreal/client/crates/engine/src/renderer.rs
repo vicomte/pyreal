@@ -112,7 +112,7 @@ pub mod source {
     #[must_use]
     pub fn forward() -> String {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             gbuffer(),
             include_str!("shaders/sun_shadow.wgsl"),
             include_str!("shaders/lamp_types.wgsl"),
@@ -123,6 +123,7 @@ pub mod source {
             include_str!("shaders/particles.wgsl"),
             include_str!("shaders/webs.wgsl"),
             include_str!("shaders/flames.wgsl"),
+            include_str!("shaders/falls.wgsl"),
             include_str!("shaders/body_fire.wgsl"),
             include_str!("shaders/blobs.wgsl"),
             include_str!("shaders/puffs.wgsl"),
@@ -560,6 +561,8 @@ pub struct View<'a> {
     pub probe_lamps: &'a [crate::lamps::Lamp],
     /// The flames seen, nearest first ([`crate::flames::frame_flames`]).
     pub flames: &'a [crate::flames::Flame],
+    /// The waterfalls' pieces seen, as `falls.wgsl` reads them ([`crate::falls::frame_falls`]).
+    pub falls: &'a [u8],
     /// Where the bodies near the eye stand (their feet): they stir the water.
     pub bodies: &'a [glam::Vec3],
     /// How far the waves lift the water over its level where each of `bodies` stands.
@@ -624,7 +627,7 @@ pub fn indoor_physical(light: &SkyLight, open_to_sky: bool, lamps_lit: bool) -> 
 }
 
 /// The frame uniform's bytes.
-pub const FRAME_SIZE: u64 = 1248;
+pub const FRAME_SIZE: u64 = 1264;
 /// Where the waypoint's ring lies in the frame uniform: after the shadows' pools of darkness.
 const WAYPOINT_AT: usize = 1216;
 /// The most shadows' pools of darkness a frame lays.
@@ -978,6 +981,9 @@ pub struct Renderer {
     /// This frame's flames, and how many.
     flame_buffer: wgpu::Buffer,
     flames_drawn: u32,
+    /// This frame's waterfalls' pieces, and how many.
+    fall_buffer: wgpu::Buffer,
+    falls_drawn: u32,
     cluster_counts: wgpu::Buffer,
     cluster_lamps: wgpu::Buffer,
     cluster_layout: wgpu::BindGroupLayout,
@@ -1108,6 +1114,9 @@ pub struct Renderer {
     pub selection: Selection,
     /// The waypoint's ring round the player, when a waypoint is followed.
     pub waypoint: Option<WaypointMark>,
+    /// The mud picture the bed is drawn with under water drawn as water: its slot and repeats a
+    /// metre ([`crate::world::set_bed_picture`]).
+    pub bed: Option<(u32, f32)>,
     /// Translucent surfaces and particles drawn order-independently (weighted, blended) rather
     /// than sorted.
     pub oit: bool,
@@ -1122,6 +1131,8 @@ pub struct Renderer {
     web_pipelines: [wgpu::RenderPipeline; 2],
     /// Flames, sorted and order-independent.
     flame_pipelines: [wgpu::RenderPipeline; 2],
+    /// Waterfalls ([`crate::falls`]), sorted and order-independent.
+    fall_pipelines: [wgpu::RenderPipeline; 2],
     /// Lightning's channels in a creature's cloud ([`crate::bolts`]), added.
     bolt_pipelines: [wgpu::RenderPipeline; 2],
     /// Liquid balls ([`crate::particles::Look::Blob`]).
@@ -1876,6 +1887,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let fall_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame falls"),
+            size: crate::falls::FALL_SIZE * crate::falls::MAX_FRAME_FALLS as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let cluster_capacity = CLUSTER_TILES.0 * CLUSTER_TILES.1;
         let (cluster_counts, cluster_lamps) = cluster_buffers(device, cluster_capacity);
         let cluster_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2034,6 +2051,7 @@ impl Renderer {
                 storage(12, true, S::VERTEX_FRAGMENT),
                 texture(13, wgpu::TextureSampleType::Float { filterable: true }),
                 texture(14, wgpu::TextureSampleType::Float { filterable: true }),
+                storage(15, true, S::VERTEX_FRAGMENT),
             ],
         });
         // The translucent surfaces' and particles' pipelines: lit as the opaque world is, their
@@ -2195,6 +2213,10 @@ impl Renderer {
         let flame_pipelines = [
             forward("flames", "vs_flame", "fs_flame", true, false),
             forward("flames oit", "vs_flame", "fs_flame_oit", true, true),
+        ];
+        let fall_pipelines = [
+            forward("falls", "vs_fall", "fs_fall", false, false),
+            forward("falls oit", "vs_fall", "fs_fall_oit", false, true),
         ];
         let bolt_pipelines = [
             forward("bolts", "vs_bolt", "fs_bolt", true, false),
@@ -2989,6 +3011,7 @@ impl Renderer {
         let particle_oit_pipelines = particle_oit_pipelines.map(crate::jobs::Pending::wait);
         let web_pipelines = web_pipelines.map(crate::jobs::Pending::wait);
         let flame_pipelines = flame_pipelines.map(crate::jobs::Pending::wait);
+        let fall_pipelines = fall_pipelines.map(crate::jobs::Pending::wait);
         let bolt_pipelines = bolt_pipelines.map(crate::jobs::Pending::wait);
         let probe_pipeline = probe_pipeline.map(|(p, l)| (p.wait(), l));
         let ray_pipeline = ray_pipeline.map(|(p, l)| (p.wait(), l));
@@ -3043,6 +3066,8 @@ impl Renderer {
             lamp_buffer,
             flame_buffer,
             flames_drawn: 0,
+            fall_buffer,
+            falls_drawn: 0,
             cluster_counts,
             cluster_lamps,
             cluster_layout,
@@ -3127,6 +3152,7 @@ impl Renderer {
             output_size: (0, 0),
             selection: Selection::default(),
             waypoint: None,
+            bed: None,
             oit: false,
             particles_drawn: 0,
             particle_draws: 0,
@@ -3135,6 +3161,7 @@ impl Renderer {
             particle_oit_pipelines,
             web_pipelines,
             flame_pipelines,
+            fall_pipelines,
             bolt_pipelines,
             ice_pipeline: ice_pipeline.wait(),
             blob_pipeline: blob_pipeline.wait(),
@@ -3544,6 +3571,7 @@ impl Renderer {
                         entire(12, &self.flame_buffer),
                         view(13, &scene_view),
                         view(14, self.trails.view()),
+                        entire(15, &self.fall_buffer),
                     ],
                 })
             });
@@ -3933,6 +3961,12 @@ impl Renderer {
             self.flames_drawn =
                 u32::try_from(bytes.len() as u64 / crate::flames::FLAME_SIZE).unwrap_or(0);
         }
+        self.falls_drawn = 0;
+        if !view.falls.is_empty() {
+            gpu.queue.write_buffer(&self.fall_buffer, 0, view.falls);
+            self.falls_drawn =
+                u32::try_from(view.falls.len() as u64 / crate::falls::FALL_SIZE).unwrap_or(0);
+        }
         if self.webs.on {
             features |= flags::WEBS;
             self.webs
@@ -4205,6 +4239,9 @@ impl Renderer {
         });
         f32s(&mut frame, &ring);
         f32s(&mut frame, &way);
+        // The bed's mud picture: its slot and repeats a metre.
+        let (bed_slot, bed_per_m) = self.bed.unwrap_or((0, 0.0));
+        f32s(&mut frame, &[f32::from_bits(bed_slot), bed_per_m, 0.0, 0.0]);
         frame.resize(usize::try_from(FRAME_SIZE).unwrap_or(0), 0);
         gpu.queue.write_buffer(&self.frame_buffer, 0, &frame);
 
@@ -5199,6 +5236,11 @@ impl Renderer {
                     }
                 }
                 pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, instances);
+            }
+            // The waterfalls: their foam, their sheets, their mist.
+            if self.falls_drawn > 0 {
+                pass.set_pipeline(&self.fall_pipelines[usize::from(oit)]);
+                pass.draw(0..6, 0..self.falls_drawn);
             }
             // The flames, added over all of it.
             if self.flames_drawn > 0 {

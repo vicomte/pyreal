@@ -443,6 +443,8 @@ pub struct SceneRenderer {
     pub view_distance: Option<f32>,
     /// The teleport's moment while it runs.
     portal_look: Option<pyreal_client_contract::teleport::PortalLook>,
+    /// The colour of the portal stepped through, taken as the trip began.
+    portal_colour: Option<glam::Vec3>,
     /// Portal space drawn by the engine (the tunnel flown through) in place of the swirl.
     pub portal_enhanced: bool,
     portal: Arc<std::sync::Mutex<pyreal_engine::portal::PortalSpace>>,
@@ -765,6 +767,7 @@ impl SceneRenderer {
             world_hidden: false,
             view_distance: None,
             portal_look: None,
+            portal_colour: None,
             portal_enhanced: true,
             portal,
             portal_from_world: false,
@@ -2120,6 +2123,9 @@ impl SceneRenderer {
         self.sim.stream_budget = (look.is_some() && self.windowed()).then_some(4.0);
         if look.is_some() && self.portal_look.is_none() {
             self.portal_from_world = self.world_drawn_last;
+            self.portal_colour = look
+                .and_then(|l| l.portal_setup)
+                .and_then(|setup| self.engine.particles.portal_colour(setup));
         }
         self.portal_look = look;
     }
@@ -2191,7 +2197,9 @@ impl SceneRenderer {
             palette: {
                 use pyreal_client_contract::teleport::PortalSource as Src;
                 match look.source {
-                    Src::Portal => Palette::PORTAL,
+                    Src::Portal => self
+                        .portal_colour
+                        .map_or(Palette::PORTAL, |c| Palette::PORTAL.toward(c)),
                     Src::Login => Palette::LOGIN,
                     Src::Lifestone => Palette::LIFESTONE,
                     Src::House => Palette::HOUSE,

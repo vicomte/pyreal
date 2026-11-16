@@ -18,7 +18,7 @@ use glam::{Vec2, Vec3, Vec4, Vec4Swizzles};
 use pyreal_assets::{CellLandblock, Region};
 use pyreal_dat::{DbType, RetailDatStore};
 use pyreal_primitives::DataId;
-use pyreal_terrain::land::water::{SurfChar, TERRAIN_SURF_CHAR};
+use pyreal_terrain::land::water::{drawn_words, SurfChar, TERRAIN_SURF_CHAR};
 use pyreal_world_data::landblock::landblock_did;
 
 use crate::gpu::Gpu;
@@ -110,10 +110,11 @@ impl FarField {
                 continue;
             }
             let id = u16::try_from((bx << 8) | by).unwrap_or(0);
-            let Some(lb) = decode::<CellLandblock>(store, DbType::LandBlock, landblock_did(id))
+            let Some(mut lb) = decode::<CellLandblock>(store, DbType::LandBlock, landblock_did(id))
             else {
                 continue;
             };
+            lb.terrain = drawn_words(&lb.terrain, &lb.height);
             land.add_block(&BlockLand {
                 block: (bx, by),
                 heights: std::array::from_fn(|i| table[usize::from(lb.height[i])]),

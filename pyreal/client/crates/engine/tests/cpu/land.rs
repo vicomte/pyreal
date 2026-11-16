@@ -56,6 +56,39 @@ fn the_edge_runs_halfway_to_the_land_and_the_water_lies_level() {
     assert_eq!(f.bodies.len(), 1);
 }
 
+/// A bank between a pool at 0 and one at 30 above it keeps the upper pool level at the top of the
+/// fall, rather than dipping into the ground toward the lower one.
+#[test]
+fn the_upper_pool_stays_level_at_the_top_of_a_fall() {
+    let mut heights = [32.0; 81];
+    let mut terrain = [1u16 << 2; 81];
+    for x in 0..9 {
+        for y in 0..=5 {
+            let k = x * 9 + y;
+            terrain[k] = 17 << 2;
+            heights[k] = if x <= 2 { 0.0 } else { 30.0 };
+        }
+    }
+    let mut f = LandField::new((10, 10), (1, 1), Vec2::ZERO);
+    f.add_block(&BlockLand {
+        block: (10, 10),
+        heights,
+        terrain,
+        buildings: Vec::new(),
+        footprints: Vec::new(),
+        clearings: Vec::new(),
+        drawn: None,
+    });
+    f.finish(&WaterTable::default());
+    let (level, inside) = f
+        .water_at(Vec2::new(3.2 * 24.0, 5.45 * 24.0))
+        .expect("in the field");
+    assert!(
+        inside > 0.0 && (level - 30.0).abs() < 1e-4,
+        "{level} {inside}"
+    );
+}
+
 /// A body's look comes from its water's terrain type and its shore: the same pond is a clear lake
 /// in grass and a swamp in a marsh.
 #[test]

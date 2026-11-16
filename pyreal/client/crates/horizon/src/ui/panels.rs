@@ -26,6 +26,7 @@ mod commerce;
 mod examine;
 pub mod info;
 mod items;
+pub use items::loot_all_request;
 mod journal;
 pub mod map;
 mod notebook;

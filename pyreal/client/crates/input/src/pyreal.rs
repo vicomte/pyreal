@@ -118,6 +118,7 @@ pub const ACTIONS: &[DerethAction] = {
                 "Look At Your Front (Horizon interface)",
             )
         },
+        one_shot(a::LOOT_ALL, class::INTERFACE, "Loot All"),
         one_shot(a::USE_SPELL_SLOT_13, class::INTERFACE, "Spell Slot 13"),
         one_shot(
             ActionId(a::USE_SPELL_SLOT_13.0 + 1),

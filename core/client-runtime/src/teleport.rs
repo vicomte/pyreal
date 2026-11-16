@@ -141,6 +141,9 @@ pub struct Teleport {
     /// The tunnel's shape and colour for this trip, chosen as it began.
     pub look_seed: u32,
     pub look_source: pyreal_client_contract::teleport::PortalSource,
+    pub look_portal: Option<u32>,
+    /// The setup of the portal the player stood at as the server's teleport began.
+    pub look_walked: Option<u32>,
     /// The animation began this frame: the host chooses its seed and source now.
     pub look_began: bool,
     /// A tunnel has brought the player into the world this session.
@@ -182,6 +185,8 @@ impl Teleport {
             look_since: None,
             look_seed: 0,
             look_source: pyreal_client_contract::teleport::PortalSource::Portal,
+            look_portal: None,
+            look_walked: None,
             look_began: false,
             entered: false,
         }
@@ -407,6 +412,7 @@ impl Teleport {
             travelled: (now - since).max(0.0),
             seed: self.look_seed,
             source: self.look_source,
+            portal_setup: self.look_portal,
         })
     }
 

@@ -234,6 +234,10 @@ impl GameView for HudView<'_> {
         self.world.inventory(id).map_or(&[][..], |i| &i.items)
     }
 
+    fn loot_all_running(&self) -> bool {
+        self.world.loot_all_running()
+    }
+
     /// The contained side packs.
     fn contained_containers(&self, id: ObjectId) -> &[ObjectId] {
         self.world.inventory(id).map_or(&[][..], |i| &i.containers)

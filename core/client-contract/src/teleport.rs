@@ -163,6 +163,8 @@ pub struct PortalLook {
     /// The tunnel's shape: the same for the same way through.
     pub seed: u32,
     pub source: PortalSource,
+    /// The setup of the portal stepped through, whose colour the tunnel takes.
+    pub portal_setup: Option<u32>,
 }
 
 /// The client's random-double helper.

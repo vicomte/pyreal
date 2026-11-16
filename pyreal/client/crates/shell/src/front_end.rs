@@ -858,7 +858,6 @@ fn explore_key_of(virtual_key: usize) -> Option<pyreal_client_runtime::explore::
         0xBD | 0x6D => Key::Slower,
         0x43 => Key::CopyPlace,
         0x52 => Key::CopyReport,
-        0x78 => Key::SaveTimings,
         _ => return None,
     })
 }

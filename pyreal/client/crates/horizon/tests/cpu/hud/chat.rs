@@ -169,6 +169,33 @@ fn the_line_s_caret_moves_with_the_arrows_and_typing_goes_in_at_it() {
 }
 
 #[test]
+fn a_mac_arrow_key_reaches_the_line_as_a_key_and_types_nothing() {
+    use pyreal_input::host::HostEvent;
+    use pyreal_input::keys::Key;
+    let mut front = pyreal_horizon::runtime::HorizonFrontEnd::new(
+        std::sync::Arc::new(pyreal_horizon::art::Art::empty()),
+        Default::default(),
+        None,
+    );
+    // macOS sends Left and Right with private-use text, U+F702 and U+F703.
+    for (key, text) in [
+        (Key::new(0x25, 0xE04B), "\u{F702}"),
+        (Key::new(0x27, 0xE04D), "\u{F703}"),
+    ] {
+        front.host_event(
+            &HostEvent::KeyboardInput {
+                key,
+                pressed: true,
+                text: Some(text.into()),
+            },
+            0,
+        );
+    }
+    assert_eq!(front.frame_input.keys, [vk::LEFT, vk::RIGHT]);
+    assert!(front.frame_input.chars.is_empty());
+}
+
+#[test]
 fn control_a_then_c_copies_the_whole_line_and_control_v_pastes_over_it() {
     let state = in_world();
     let mut h = Harness::new(Default::default());

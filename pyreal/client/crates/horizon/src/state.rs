@@ -894,6 +894,11 @@ pub fn examined(
         profession: None,
         pk: None,
         allegiance: None,
+        tell: view
+            .selection_query_facts(id)
+            .is_some_and(|f| f.is_player)
+            .then(|| name.clone())
+            .filter(|_| view.player() != Some(id)),
     };
     match pane {
         ExaminePane::Item => {

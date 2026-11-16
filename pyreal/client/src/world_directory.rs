@@ -143,11 +143,11 @@ impl WorldDirectory {
                 "the community list"
             };
             let mut note = format!(
-                "Read from {from} {}.",
+                "Updated from {from} {}.",
                 ago(now.saturating_sub(c.fetched_at))
             );
             if self.failed {
-                note.push_str(" It could not be read again just now.");
+                note.push_str(" The last refresh failed.");
             }
             note
         });
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(v.worlds[0].emulator, "ACE");
         assert_eq!(
             v.note.as_deref(),
-            Some("Read from the community list 1 minute ago.")
+            Some("Updated from the community list 1 minute ago.")
         );
         // The copy is fresh, so opening the screen does not read again.
         dir.read_using(false, 200, |_| panic!("not read while the copy is fresh"));
@@ -256,10 +256,7 @@ mod tests {
         dir.wait();
         let v = dir.view(&[], 200);
         assert_eq!(v.worlds.len(), 2);
-        assert!(v
-            .note
-            .unwrap()
-            .ends_with("It could not be read again just now."));
+        assert!(v.note.unwrap().ends_with("The last refresh failed."));
         // The copy was saved, and a later run starts from it.
         let again = WorldDirectory::open(&d);
         assert_eq!(again.view(&[], 200).worlds.len(), 2);

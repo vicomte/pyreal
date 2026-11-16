@@ -40,6 +40,8 @@ pub mod plugin_shelf;
 pub mod front_door;
 // The list of known worlds: its copy, read off the frame thread.
 pub mod world_directory;
+// Whether a newer Pyreal is out, read off the frame thread once a day.
+pub mod update_check;
 // The Linux desktop's entry.
 #[cfg(any(test, target_os = "linux"))]
 pub mod desktop_entry;

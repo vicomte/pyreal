@@ -66,6 +66,8 @@ pyreal-launch.workspace = true
 pyreal-horizon.workspace = true
 # The status ping, which tells the front door the era of a world added by hand.
 pyreal-transport.workspace = true
+# The Check for Updates setting the front door reads.
+pyreal-client-contract.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Passwords in the login Keychain.
@@ -85,8 +87,6 @@ rfd = { version = "0.16", default-features = false }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
 
 [dev-dependencies]
-# The contract's views, chat lines and options, which the tests read.
-pyreal-client-contract.workspace = true
 pyreal-terrain.workspace = true
 pyreal-rules.workspace = true
 pyreal-client-shell = { workspace = true, features = ["test-support"] }

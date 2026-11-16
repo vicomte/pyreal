@@ -681,7 +681,7 @@ impl Pregame {
             } else if let Some(f) = &state.failure {
                 f.as_str()
             } else {
-                "Obtaining the character list..."
+                "Loading characters..."
             };
             let text = TextStyle::new(Family::Body, 14.0, 0xFFFF_FFFF).edge(0xFF00_0000);
             for (i, line) in p.wrap(&text, msg, area.w).iter().enumerate() {

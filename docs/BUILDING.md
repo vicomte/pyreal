@@ -37,9 +37,9 @@ panel does the same for each era's files. C copies the camera's place and R its 
 The client keeps the last 30 seconds of frame timings. A frame longer than 100 ms (`--hitch-ms
 <ms>` or `PYREAL_HITCH_MS` sets another, 0 none) is saved a second later as a hitch report in the
 settings folder's `logs/hitches`, `hitch-YYYYMMDD-HHMMSS.txt`, at most one every ten seconds.
-Explore's Save Timings button or F9 saves the last 30 seconds as `frames-YYYYMMDD-HHMMSS.txt`, and
-its Open Folder button opens the folder; in a world the Save Frame Timings and Open Frame Timings
-Folder keys (unbound until chosen) do the same. Each report is a small text file: why it was saved,
+The Save Frame Timings key saves the last 30 seconds as `frames-YYYYMMDD-HHMMSS.txt` and the Open
+Frame Timings Folder key opens the folder, on any screen; both are unbound until chosen in the keys
+list. A slow frame's report is only logged; a save made with the key says where it went. Each report is a small text file: why it was saved,
 the client and device, the slowest frames taken apart (the frame loop's steps, the streaming and its
 parts, uploads, ray tracing, pipelines, waiting on the device, what was made, the streaming's queues,
 the camera's place and speed), then every frame as a table. `PYREAL_EXPLORE_FLY=<m/s>` flies

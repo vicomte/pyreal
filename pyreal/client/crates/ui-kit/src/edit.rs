@@ -101,6 +101,8 @@ fn keys_in(input: &mut InputFrame, text: &mut String, max: usize, lines: bool) -
         insert(&mut input.edit, &mut chars, &typed, max, lines);
     }
     let (shift, ctrl) = (input.shift, input.ctrl);
+    // Control's word moves are Option's on a Mac.
+    let word = ctrl || input.alt;
     let pending = std::mem::take(&mut input.keys);
     for k in pending {
         let e = &mut input.edit;
@@ -113,8 +115,8 @@ fn keys_in(input: &mut InputFrame, text: &mut String, max: usize, lines: bool) -
                     vk::END => len,
                     vk::LEFT if !shift && !sel.is_empty() => sel.start,
                     vk::RIGHT if !shift && !sel.is_empty() => sel.end,
-                    vk::LEFT if ctrl => word_left(&chars, e.caret),
-                    vk::RIGHT if ctrl => word_right(&chars, e.caret),
+                    vk::LEFT if word => word_left(&chars, e.caret),
+                    vk::RIGHT if word => word_right(&chars, e.caret),
                     vk::LEFT => e.caret.saturating_sub(1),
                     _ => (e.caret + 1).min(len),
                 };
@@ -133,14 +135,14 @@ fn keys_in(input: &mut InputFrame, text: &mut String, max: usize, lines: bool) -
                 let range = if !sel.is_empty() {
                     sel
                 } else if k == vk::BACK {
-                    let from = if ctrl {
+                    let from = if word {
                         word_left(&chars, e.caret)
                     } else {
                         e.caret.saturating_sub(1)
                     };
                     from..e.caret
                 } else {
-                    let to = if ctrl {
+                    let to = if word {
                         word_right(&chars, e.caret)
                     } else {
                         (e.caret + 1).min(chars.len())
@@ -328,7 +330,7 @@ fn insert(e: &mut EditState, chars: &mut Vec<char>, s: &str, max: usize, lines: 
             '\n' | '\t' => ' ',
             c => c,
         })
-        .filter(|c| *c == '\n' || !c.is_control())
+        .filter(|c| *c == '\n' || crate::input::is_typed(*c))
         .take(room)
         .collect();
     let n = new.len();
@@ -672,6 +674,24 @@ mod tests {
         assert_eq!(text, "hello!");
         press(&mut input, &mut text, &[vk::END, vk::BACK], false, false);
         assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn mac_arrow_key_text_is_not_typed_and_option_arrows_move_by_word() {
+        let mut input = InputFrame::default();
+        let mut text = String::new();
+        typed(&mut input, &mut text, "good day");
+        // macOS gives Left its own private-use character as text along with the key.
+        input.chars = vec!['\u{F702}'];
+        press(&mut input, &mut text, &[vk::LEFT], false, false);
+        assert_eq!((text.as_str(), input.edit.caret), ("good day", 7));
+        input.alt = true;
+        press(&mut input, &mut text, &[vk::LEFT], false, false);
+        assert_eq!(input.edit.caret, 5);
+        press(&mut input, &mut text, &[vk::BACK], false, false);
+        assert_eq!(text, "day");
+        input.alt = false;
+        assert!(!crate::input::is_typed('\u{F703}') && crate::input::is_typed('é'));
     }
 
     #[test]

@@ -130,10 +130,12 @@ impl<S: Shell> App<S> {
             })
         }
         /// The item type of a portal.
-        const PORTAL: u32 = 0x1000_0000;
+        const PORTAL: u32 = 0x0001_0000;
         let world = &mut self.objects.world;
         let me = world.player.map_or(0, |p| p.0);
         let departure = world.departure.take();
+        // The portal stepped through, for its colour.
+        let mut portal = None;
         let (source, seed) =
             if self.teleport.anim.state == crate::teleport::TeleportAnimState::WorldFadeOut {
                 (Src::LogOff, fold(me, b"leaving"))
@@ -143,6 +145,7 @@ impl<S: Shell> App<S> {
                 match departure {
                     Some(Departure::Used(id)) => match world.weenie(id) {
                         Some(w) if w.pwd.obj_type & PORTAL != 0 => {
+                            portal = world.physics(id).map(|p| p.setup_id);
                             (Src::Portal, fold(w.pwd.wcid, w.pwd.name.as_bytes()))
                         }
                         _ => (Src::Portal, fold(id.0, b"portal")),
@@ -189,8 +192,20 @@ impl<S: Shell> App<S> {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(seed);
+        // A portal walked into names no use: the one the player stood at.
+        if source == Src::Portal && portal.is_none() {
+            portal = self.teleport.look_walked;
+        }
+        self.teleport.look_walked = None;
+        tracing::debug!("portal space from {source:?}, portal setup {portal:#X?}");
+        // `PYREAL_PORTAL_SETUP` the portal's, for captures.
+        let portal = std::env::var("PYREAL_PORTAL_SETUP")
+            .ok()
+            .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+            .or(portal);
         self.teleport.look_source = source;
         self.teleport.look_seed = seed;
+        self.teleport.look_portal = portal.filter(|_| source == Src::Portal);
     }
 
     /// The teleport tunnel's swirl, stepped once a frame straight after the teleport tick.
@@ -483,4 +498,36 @@ impl<S: Shell> App<S> {
                 .on_display_string_info(pyreal_client_model::scroll::LOCAL_ERROR_TYPE, text);
         }
     }
+}
+
+/// The setup of the portal nearest `character`, as close as a body that walked into it stands.
+pub(super) fn portal_at(
+    world: &pyreal_client_model::world::World,
+    character: &crate::character::Character,
+) -> Option<u32> {
+    /// `ObjectDescriptionFlag` bit 18: the object is a portal.
+    const PORTAL: u32 = 0x0004_0000;
+    /// How far from a portal's foot such a body stands at most, metres (seen at 7 as the
+    /// server's teleport arrives).
+    const REACH: f32 = 10.0;
+    let at = character.position();
+    world
+        .tables
+        .physics
+        .iter()
+        .filter(|(id, _)| {
+            world
+                .weenie(*id)
+                .is_some_and(|w| w.pwd.bitfield & PORTAL != 0)
+        })
+        .filter_map(|(id, p)| {
+            let o = character
+                .world
+                .by_object_id(id)
+                .and_then(|h| character.world.get(h))?;
+            let d = pyreal_primitives::position::distance(&at, &o.position);
+            (d <= REACH).then_some((d, p.setup_id))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, setup)| setup)
 }

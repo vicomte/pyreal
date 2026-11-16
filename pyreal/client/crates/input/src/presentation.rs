@@ -388,6 +388,7 @@ pub const ROWS: &[Row] = &[
     row(M::MAGIC, "CombatLastSpellTab", G::Combat, "Last Spell Tab"),
     row(M::ITEM_SELECTION, "SelectionSelf", G::Selection, "Select Self"),
     row(M::ITEM_SELECTION, "SelectionPickUp", G::Selection, "Move Selected to Backpack"),
+    row(M::OWN, "LootAll", G::Selection, "Loot All"),
     row(M::ITEM_SELECTION, "SelectionSplitStack", G::Selection, "Split Selected"),
     row(M::ITEM_SELECTION, "SelectionPreviousSelection", G::Selection, "Previous Selection"),
     row(M::ITEM_SELECTION, "SelectionClosestCompassItem", G::Selection, "Closest Compass Item"),
@@ -811,7 +812,7 @@ mod tests {
             );
             assert!(!r.label.is_empty(), "{}", r.action_name);
         }
-        assert_eq!(ROWS.len(), 360);
+        assert_eq!(ROWS.len(), 361);
     }
 
     #[test]

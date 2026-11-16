@@ -469,6 +469,10 @@ impl Hud {
                 if let Some(id) = tab_target(state, action == ACTION_NEXT_MONSTER) {
                     out.requests.push(UiRequest::Select(id));
                 }
+            } else if action == pyreal_client_contract::actions::pyreal::LOOT_ALL.0 {
+                if let Some(r) = crate::ui::panels::loot_all_request(state) {
+                    out.requests.push(r);
+                }
             } else if action == ACTION_USE {
                 Self::use_key(state, out);
             } else if action == ACTION_LOG_OUT {

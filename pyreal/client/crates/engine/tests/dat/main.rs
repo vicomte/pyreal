@@ -4,6 +4,7 @@
 mod beacons;
 mod bodies;
 mod drawn;
+mod falls;
 mod gates;
 mod particles;
 

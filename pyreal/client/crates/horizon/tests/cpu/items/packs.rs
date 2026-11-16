@@ -822,3 +822,72 @@ fn the_loot_window_closed_stays_closed_until_the_game_closes_the_chest() {
     h.frame(&state);
     assert!(h.ui.windows.is_open(WindowId::Loot), "opened again later");
 }
+
+/// Where the Loot window's Loot All button is: the point near its foot whose tooltip names it.
+fn loot_all_button(h: &mut Harness, state: &GameState) -> (f32, f32) {
+    let r = window(h, WindowId::Loot);
+    let x = r.right() - 60.0;
+    let mut y = r.bottom();
+    while y > r.bottom() - 80.0 {
+        h.move_to(x, y);
+        h.frame(state);
+        if h.ui
+            .windows
+            .tip()
+            .is_some_and(|(title, _)| title == "Loot All")
+        {
+            return (x, y);
+        }
+        y -= 2.0;
+    }
+    panic!("no Loot All button at the Loot window's foot");
+}
+
+/// The Loot window's Loot All button asks for every item in the corpse, and stops a run.
+#[test]
+fn the_loot_all_button_takes_everything_and_stops_a_run() {
+    let mut state = carrying(0);
+    state.loot = Some((
+        CORPSE,
+        "Corpse of a Drudge".into(),
+        vec![item(GEM, "Gem"), item(HELM, "Helm")],
+    ));
+    let mut h = open(&state, &[]);
+    let at = loot_all_button(&mut h, &state);
+    let (_, lines) = h.ui.windows.tip().unwrap();
+    assert_eq!(lines, &["Move everything in this container to your pack."]);
+    assert!(click(&mut h, &state, at).contains(&UiRequest::LootAll(CORPSE)));
+    state.looting_all = true;
+    h.frame(&state);
+    assert!(click(&mut h, &state, at).contains(&UiRequest::StopLootAll));
+    state.looting_all = false;
+    state.loot = Some((CORPSE, "Corpse of a Drudge".into(), Vec::new()));
+    h.frame(&state);
+    let asked = click(&mut h, &state, at);
+    assert!(
+        !asked.iter().any(|r| matches!(r, UiRequest::LootAll(_))),
+        "an empty corpse has nothing to take: {asked:?}"
+    );
+}
+
+/// The Loot All key asks what the button does.
+#[test]
+fn the_loot_all_key_takes_everything_in_the_open_corpse() {
+    use pyreal_client_contract::actions::pyreal::LOOT_ALL;
+    let mut state = carrying(0);
+    state.loot = Some((CORPSE, "Corpse of a Drudge".into(), vec![item(GEM, "Gem")]));
+    let mut h = open(&state, &[]);
+    h.input.actions.push(LOOT_ALL.0);
+    assert!(h
+        .frame(&state)
+        .requests
+        .contains(&UiRequest::LootAll(CORPSE)));
+    state.loot = None;
+    h.frame(&state);
+    h.input.actions.push(LOOT_ALL.0);
+    let asked = h.frame(&state).requests;
+    assert!(
+        !asked.iter().any(|r| matches!(r, UiRequest::LootAll(_))),
+        "{asked:?}"
+    );
+}

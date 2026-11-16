@@ -188,11 +188,20 @@ pub fn key_text_messages(
         msg::WM_CHAR
     };
     text_with_all_modifiers.map_or_else(Vec::new, |text| {
+        // macOS gives its arrow, Home, End and Delete keys private-use text (U+F700 up), which
+        // Windows never translates: none of it is a character.
+        let text: String = text.chars().filter(|c| !is_private_use(*c)).collect();
         // A Unicode window's WM_CHAR is one UTF-16 unit: past U+FFFF, a surrogate pair.
         text.encode_utf16()
             .map(|unit| Win32Message::new(message, usize::from(unit), 0, time_ms))
             .collect()
     })
+}
+
+/// Whether `c` is in one of Unicode's private-use areas.
+#[must_use]
+pub fn is_private_use(c: char) -> bool {
+    matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
 }
 
 /// The `lParam` of a `WM_KEYDOWN` / `WM_KEYUP` / `WM_SYSKEY*`, as `winuser.h` defines its fields.
@@ -851,5 +860,15 @@ mod tests {
         assert!(messages
             .map_device_event(&HostEvent::Focused(false), 6)
             .is_empty());
+    }
+
+    #[test]
+    fn a_mac_arrow_key_s_private_use_text_makes_no_character() {
+        // U+F702 and U+F703 are what macOS gives Left and Right as text.
+        assert!(key_text_messages(true, false, Some("\u{F702}"), 1).is_empty());
+        assert!(key_text_messages(true, false, Some("\u{F703}"), 1).is_empty());
+        let a = key_text_messages(true, false, Some("a\u{F729}"), 1);
+        assert_eq!(a.iter().map(|m| m.wparam).collect::<Vec<_>>(), [0x61]);
+        assert!(is_private_use('\u{F702}') && !is_private_use('é'));
     }
 }

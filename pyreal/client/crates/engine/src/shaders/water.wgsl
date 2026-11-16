@@ -162,15 +162,20 @@ fn is_bed(ip: vec2<i32>, q: vec3<f32>) -> bool {
         && q.z <= plain.y + 0.02 + up + distance(q, frame.camera.xyz) * 1e-4;
 }
 
-// Whether the world drawn before the water hides it at its fragment `clip`: anything nearer, but
-// for the bed the water lies on (retail draws its water cells as ground at the level).
-fn water_hidden(clip: vec4<f32>) -> bool {
+// How far under its bed the water may lie and still be the water over it: a trough's depth.
+const BED_OVER: f32 = 2.0;
+
+// Whether the world drawn before the water hides its fragment `clip`, at `at`: anything nearer,
+// but for the bed the water lies on (retail draws its water cells as ground at the level); not a
+// pool's bed over lower water behind it.
+fn water_hidden(clip: vec4<f32>, at: vec3<f32>) -> bool {
     let ip = vec2<i32>(clip.xy);
     let d = textureLoad(g_depth, ip, 0);
     if (d <= clip.z) {
         return false;
     }
-    return !is_bed(ip, water_unproject(clip.xy, d));
+    let q = water_unproject(clip.xy, d);
+    return !is_bed(ip, q) || at.z < q.z - BED_OVER;
 }
 
 // The water's depth and motion: where it is drawn and not hidden by the world.
@@ -185,7 +190,7 @@ fn fs_water_depth(in: WaterOut) -> @location(0) vec2<f32> {
             discard;
         }
     }
-    if (water_hidden(in.clip)) {
+    if (water_hidden(in.clip, in.world)) {
         discard;
     }
     return motion_of(in.cur, in.prev);

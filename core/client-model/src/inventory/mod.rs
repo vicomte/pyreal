@@ -2,6 +2,8 @@
 
 pub mod burden;
 pub mod equip;
+/// Loot All over the open ground container.
+pub mod loot_all;
 pub mod requests;
 pub mod salvage;
 /// `INVENTORY_LOC` and the slot tables. Lives in [`pyreal_rules::slots`].

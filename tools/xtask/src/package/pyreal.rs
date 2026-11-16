@@ -109,6 +109,15 @@ pub(super) fn about_page(
 const ABOUT_CONFIG: &str = "pyreal/about.toml";
 const ABOUT_TEMPLATE: &str = "pyreal/about.hbs";
 
+/// The typefaces Horizon's glyph pages are drawn from, and their licence files (`fonts/README.md`).
+pub const HORIZON_FONTS: [(&str, &str); 4] = [
+    ("Noto Sans", "NotoSans-OFL.txt"),
+    ("Saira", "Saira-OFL.txt"),
+    ("Pathway Gothic One", "PathwayGothicOne-OFL.txt"),
+    ("Cormorant SC", "CormorantSC-OFL.txt"),
+];
+pub const HORIZON_FONT_LICENCES: &str = "pyreal/client/crates/horizon/fonts/licences";
+
 /// The notices every package carries beside its programs.
 pub const NOTICES: &[&str] = &["LICENSE", "NOTICE.txt", "THIRD-PARTY-LICENSES.html"];
 
@@ -805,6 +814,17 @@ impl Job<'_> {
         let tool_page = page(TOOL_MANIFEST, TOOL)?;
         let dir = self.stage.join("notices");
         mkdir(&dir)?;
+        let fonts = HORIZON_FONTS
+            .iter()
+            .map(|(name, file)| {
+                let text = read(&self.ws.join(HORIZON_FONT_LICENCES).join(file))?;
+                Ok((
+                    *name,
+                    "The interface's text is drawn from pictures of its glyphs",
+                    String::from_utf8_lossy(&text).into_owned(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let text = notice::pyreal_notice(&notice::PyrealFacts {
             version: self.version,
             target: t.triple,
@@ -812,7 +832,7 @@ impl Job<'_> {
             source_url: &self.facts.source_url,
             crates: &all_crates,
             mit_licence: &mit,
-            fonts: &[],
+            fonts: &fonts,
         });
         write(&dir.join("NOTICE.txt"), text.as_bytes())?;
         write(&dir.join("LICENSE"), mit.as_bytes())?;

@@ -78,6 +78,10 @@ pub enum UiRequest {
     },
     /// Close the external container after use, then unregister its range handler.
     CloseExternalContainer(ObjectId),
+    /// Move everything in the open ground container to the player's pack, one item at a time.
+    LootAll(ObjectId),
+    /// Stop the Loot All run.
+    StopLootAll,
     /// Hiding the slumlord panel retires every range registration
     /// owned by this panel, including a manual close before the one-shot exit fires.
     UnregisterSlumlordRange,

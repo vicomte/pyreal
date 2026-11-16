@@ -152,6 +152,12 @@ server running Dereth's Empyrean or ACE will do. Sign in, pick a character, and 
 If you'd like to build Pyreal yourself or tinker with it, [docs/BUILDING.md](docs/BUILDING.md) will
 walk you through it.
 
+### Updates
+
+When Pyreal opens, it checks GitHub for a newer release, at most once a day, and the world list
+tells you when one is out. The check is a plain request to this repository's latest release and
+sends nothing about you or your computer. Turn off **Check for Updates** in Settings to stop it.
+
 ## License
 
 Pyreal is under Dereth's MIT license, inherited from Dereth along with its code. You can read it in

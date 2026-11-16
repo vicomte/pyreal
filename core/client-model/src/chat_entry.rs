@@ -268,4 +268,31 @@ mod tests {
         assert_eq!(update.cursor, update.text.chars().count());
         assert!(e.history().is_empty());
     }
+
+    #[test]
+    fn a_started_tell_with_a_message_typed_after_it_is_a_tell_to_that_player() {
+        use crate::chat::{ChatState, TellOutcome};
+        for (name, wire) in [("+Sir Alba", "Sir Alba"), ("Lark", "Lark")] {
+            let mut e = ChatEntry::default();
+            let update = e
+                .apply(
+                    8,
+                    String::new(),
+                    EntryAction::StartTell { name: name.into() },
+                    &targets(),
+                )
+                .unwrap();
+            assert_eq!(update.text, format!("@tell {name}, "));
+            let typed = format!("{}well met", update.text);
+            let args = typed.strip_prefix("@tell ").unwrap();
+            assert_eq!(
+                ChatState::new().do_tell(args),
+                TellOutcome::ByName {
+                    message: "well met".into(),
+                    target_name: wire.into(),
+                },
+                "{name}"
+            );
+        }
+    }
 }

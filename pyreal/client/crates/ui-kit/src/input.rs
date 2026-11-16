@@ -19,6 +19,14 @@ pub mod vk {
     pub const SLASH: usize = 0xBF;
 }
 
+/// Whether a character from the keyboard is text: not a control character, and not a private-use
+/// one, which is how macOS spells its arrow, Home, End and Delete keys (U+F700 to U+F8FF).
+#[must_use]
+pub fn is_typed(c: char) -> bool {
+    !c.is_control()
+        && !matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
+}
+
 /// The input of one frame.
 #[derive(Debug, Clone, Default)]
 pub struct InputFrame {

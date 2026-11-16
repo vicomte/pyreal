@@ -352,10 +352,11 @@ impl LandField {
                     best
                 };
                 self.inside[i] = if water { d - half } else { half - d };
-                // A water vertex's level is its height; a land vertex's, the lowest water about it.
+                // A water vertex's level is its height; a land vertex's, the highest water about it
+                // not over its ground (the upper pool at a fall's top), else the lowest.
                 self.level[i] = self.height[i];
                 if !water {
-                    let mut low = f32::MAX;
+                    let (mut low, mut under) = (f32::MAX, f32::MIN);
                     for dy in -1..=1 {
                         for dx in -1..=1 {
                             let (Ok(xi), Ok(yi)) = (i32::try_from(x), i32::try_from(y)) else {
@@ -363,10 +364,15 @@ impl LandField {
                             };
                             if let Some(j) = at(xi + dx, yi + dy).filter(|&j| self.is_water(j)) {
                                 low = low.min(self.height[j]);
+                                if self.height[j] <= self.height[i] {
+                                    under = under.max(self.height[j]);
+                                }
                             }
                         }
                     }
-                    if low < f32::MAX {
+                    if under > f32::MIN {
+                        self.level[i] = under;
+                    } else if low < f32::MAX {
                         self.level[i] = low;
                     }
                 }

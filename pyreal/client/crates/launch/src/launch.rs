@@ -89,9 +89,9 @@ pub enum PlanError {
 impl core::fmt::Display for PlanError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            PlanError::NoEndpoint => write!(f, "this world has no address to connect to"),
-            PlanError::NoDats => write!(f, "choose the data files first"),
-            PlanError::NoAccount => write!(f, "enter an account name"),
+            PlanError::NoEndpoint => write!(f, "This world has no address."),
+            PlanError::NoDats => write!(f, "Choose the data files first."),
+            PlanError::NoAccount => write!(f, "Enter an account name."),
         }
     }
 }

@@ -9,7 +9,7 @@
 use crate::art::Family;
 use crate::draw::Rect;
 use crate::front_door::{
-    DatsFolder, DatsView, FrontDoorRequest, FrontDoorView, ListedRow, WorldRow,
+    DatsFolder, DatsView, FrontDoorRequest, FrontDoorView, ListedRow, UpdateNotice, WorldRow,
 };
 use crate::ui::kit::{self, Ctx};
 use crate::ui::paint::{Align, Painter, TextStyle};
@@ -212,7 +212,13 @@ impl Worlds {
         // The list on the left with its own buttons; the sign-in pinned to the right with the
         // client's buttons in a row above it.
         let gap = 10.0 * k;
-        let ListLayout { row, sign, list } = ListLayout::new(p.screen, k, logo);
+        let ListLayout {
+            row,
+            sign,
+            list,
+            quit,
+            notice,
+        } = ListLayout::new(p.screen, k, logo);
         kit::grounded_panel(p, list, 0.85, 2);
         let head = TextStyle::new(Family::Heading, 22.0, ctx.colours.heading()).edge(0xFF00_0000);
         p.text(&head, list.x + 16.0 * k, list.y + 10.0 * k, "Worlds");
@@ -354,7 +360,6 @@ impl Worlds {
         ) {
             self.plugins_open = true;
         }
-        let quit = Rect::new(sign.right() - cw, list.bottom() - 32.0 * k, cw, 32.0 * k);
         ctx.input.nav.cancel(quit);
         if kit::button(p, ctx, quit, "Quit", !modal) {
             out.quit = true;
@@ -365,9 +370,18 @@ impl Worlds {
         } else {
             sign.y
         };
+        // A newer release at the foot, between the list and Quit; Explore stays above it.
+        let notice = view.update.as_ref().zip(notice);
+        let floor = match notice {
+            Some((_, r)) if r.right() > sign.x => quit.y.min(r.y),
+            _ => quit.y,
+        };
         let explore = Rect::new(sign.x, top, sign.w, 132.0 * k);
-        if explore.bottom() + gap <= quit.y && !explore_eras(&view.dats).is_empty() {
+        if explore.bottom() + gap <= floor && !explore_eras(&view.dats).is_empty() {
             self.explore(p, ctx, view, requests, explore, modal);
+        }
+        if let Some((u, r)) = notice {
+            update_notice(p, ctx, u, r, modal, requests);
         }
         // Signing in to the selected world.
         let Some(w) = selected else {
@@ -625,7 +639,7 @@ impl Worlds {
             &dim,
             r.x + 180.0 * k,
             r.y + 16.0 * k,
-            "The worlds the Dereth Network lists. Add one to play there.",
+            "Worlds listed on the Dereth Network. Add one to play there.",
         );
         // The search, and reading the list again.
         let x = r.x + 16.0 * k;
@@ -647,11 +661,11 @@ impl Worlds {
             .collect();
         if shown.is_empty() {
             let text = if d.reading {
-                "Reading the list..."
+                "Loading worlds..."
             } else if d.worlds.is_empty() {
-                "The list could not be read. Refresh to try again."
+                "The world list did not load. Press Refresh to try again."
             } else {
-                "No known world matches the search."
+                "No worlds match the search."
             };
             p.text(&dim, area.x + 8.0 * k, area.y + 8.0 * k, text);
         }
@@ -1288,11 +1302,63 @@ fn logo(p: &mut Painter<'_>) -> Rect {
     )
 }
 
-/// The world list's places: the client's button row, the sign-in under it and the list.
+/// How tall the newer release's notice is, unscaled.
+const NOTICE_H: f32 = 52.0;
+
+/// The narrowest the notice is drawn, unscaled.
+const NOTICE_MIN_W: f32 = 220.0;
+
+/// The newer release's notice across `r`: what is out, and its Download button.
+fn update_notice(
+    p: &mut Painter<'_>,
+    ctx: &mut Ctx<'_>,
+    u: &UpdateNotice,
+    r: Rect,
+    modal: bool,
+    requests: &mut Vec<FrontDoorRequest>,
+) {
+    let k = p.scale;
+    kit::grounded_panel(p, r, 0.85, 2);
+    let open = notice_button(p, r);
+    let style = TextStyle::new(Family::Body, 14.0, ctx.colours.heading()).edge(0xFF00_0000);
+    let room = open.x - r.x - 20.0 * k;
+    let whole = format!("Pyreal {} is available.", u.version);
+    // Too long for one line, it breaks after the version.
+    let lines = if p.measure(&style, &whole) <= room {
+        vec![whole]
+    } else {
+        vec![format!("Pyreal {}", u.version), "is available.".to_owned()]
+    };
+    let line_h = p.line_height(&style);
+    #[allow(clippy::cast_precision_loss)]
+    let mut y = r.y + (r.h - line_h * lines.len() as f32) / 2.0;
+    for line in &lines {
+        p.text(&style, r.x + 12.0 * k, y, line);
+        y += line_h;
+    }
+    if kit::button(p, ctx, open, "Download", !modal) {
+        requests.push(FrontDoorRequest::OpenUpdate);
+    }
+    if !modal && ctx.input.hover(&open) {
+        kit::tooltip(p, ctx, "Opens the release page in your browser.", &[]);
+    }
+}
+
+/// The notice's Download button in `r`, at its right end.
+fn notice_button(p: &Painter<'_>, r: Rect) -> Rect {
+    let k = p.scale;
+    let (w, h) = (kit::button_label_width(p, "Download") + 32.0 * k, 30.0 * k);
+    Rect::new(r.right() - 14.0 * k - w, r.y + (r.h - h) / 2.0, w, h)
+}
+
+/// The world list's places: the client's button row, the sign-in under it, the list, Quit at the
+/// column's foot, and the newer release's notice between the list and Quit where it fits.
 struct ListLayout {
     row: Rect,
     sign: Rect,
     list: Rect,
+    quit: Rect,
+    notice: Option<Rect>,
 }
 
 impl ListLayout {
@@ -1312,10 +1378,26 @@ impl ListLayout {
         let sign = Rect::new(sign_x, top, 380.0 * k, 300.0 * k);
         let list_w = (sw * 0.45).max(360.0 * k).min(sign.x - 70.0 * k);
         let bottom = sh - 60.0 * k;
+        let list = Rect::new(40.0 * k, top, list_w, bottom - top);
+        let cw = (sign.w - 2.0 * gap) / 3.0;
+        let quit = Rect::new(sign.right() - cw, bottom - 32.0 * k, cw, 32.0 * k);
+        // Bottom-aligned with the list and Quit, centred between them.
+        let span = quit.x - list.right();
+        let w = (380.0 * k).min(span - 2.0 * gap);
+        let notice = (w >= NOTICE_MIN_W * k).then(|| {
+            Rect::new(
+                list.right() + (span - w) / 2.0,
+                bottom - NOTICE_H * k,
+                w,
+                NOTICE_H * k,
+            )
+        });
         Self {
             row: Rect::new(sign_x, row_y, sign.w, row_h),
             sign,
-            list: Rect::new(40.0 * k, top, list_w, bottom - top),
+            list,
+            quit,
+            notice,
         }
     }
 }
@@ -1677,9 +1759,147 @@ mod list_layout_tests {
                     kit::button_label_width(&p, "Data Files") < cw,
                     "{case}: the labels fit"
                 );
+                if let Some(n) = at.notice {
+                    assert!(
+                        !meet(n, at.list) && !meet(n, at.quit) && !meet(n, at.sign),
+                        "{case}: the update notice meets a panel or Quit"
+                    );
+                    assert!(
+                        (n.bottom() - at.quit.bottom()).abs() < 0.01
+                            && (n.bottom() - at.list.bottom()).abs() < 0.01,
+                        "{case}: the update notice is not on the foot"
+                    );
+                    let (left, right) = (n.x - at.list.right(), at.quit.x - n.right());
+                    assert!((left - right).abs() < 0.01, "{case}: off centre");
+                }
                 lowered |= at.row.y > logo.bottom();
             }
         }
         assert!(lowered, "a narrow window lowers the row below the logo");
+    }
+}
+
+#[cfg(test)]
+mod update_notice_tests {
+    use super::*;
+
+    /// The world list drawn once on a `screen` at `k` with the pointer pressed at `click`: what
+    /// the player asked, and where the notice and the panels stood.
+    fn frame(
+        screen: (f32, f32),
+        k: f32,
+        update: Option<&str>,
+        click: Option<(f32, f32)>,
+    ) -> (Vec<FrontDoorRequest>, ListLayout, Rect) {
+        let art = crate::art::Art::new(std::sync::Arc::new(crate::pieces::Pieces::built_in()));
+        let colours = crate::ui::colours::Colours::default();
+        let mut list = crate::draw::DrawList::default();
+        let mut p = Painter {
+            list: &mut list,
+            art: &art,
+            scale: k,
+            screen,
+            fade: 1.0,
+        };
+        let mut input = crate::ui::input::InputFrame::default();
+        if let Some(at) = click {
+            input.mouse = at;
+            input.pressed[0] = true;
+        }
+        let mut drag = None;
+        let mut ctx = Ctx {
+            kit: pyreal_ui_kit::widgets::Ctx {
+                time: 0.0,
+                dt: 1.0 / 60.0,
+                input: &mut input,
+                colours: &colours,
+                hot: false,
+            },
+            drag: &mut drag,
+            drops: Vec::new(),
+            magic: Vec::new(),
+            airborne: false,
+        };
+        let view = FrontDoorView {
+            worlds: vec![WorldRow {
+                slug: "w".into(),
+                name: "World".into(),
+                host: "localhost".into(),
+                port: 9000,
+                ..WorldRow::default()
+            }],
+            dats: DatsView {
+                ready: true,
+                ..DatsView::default()
+            },
+            update: update.map(|v| UpdateNotice { version: v.into() }),
+            ..FrontDoorView::default()
+        };
+        let mut requests = Vec::new();
+        let mut w = Worlds::default();
+        w.frame(
+            &mut p,
+            &mut ctx,
+            &view,
+            &mut requests,
+            &mut crate::ui::Outcome::default(),
+        );
+        let logo = logo(&mut p);
+        (requests, ListLayout::new(screen, k, logo), logo)
+    }
+
+    /// The notice's button on a `screen` at `k`, where the layout puts it.
+    fn button(screen: (f32, f32), k: f32, r: Rect) -> Rect {
+        let art = crate::art::Art::new(std::sync::Arc::new(crate::pieces::Pieces::built_in()));
+        let mut list = crate::draw::DrawList::default();
+        let p = Painter {
+            list: &mut list,
+            art: &art,
+            scale: k,
+            screen,
+            fade: 1.0,
+        };
+        notice_button(&p, r)
+    }
+
+    fn centre(r: Rect) -> (f32, f32) {
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    /// The notice sits at the foot between the list and Quit, and its button asks the host to
+    /// open the release page.
+    #[test]
+    fn the_notice_is_drawn_on_the_front_door_and_its_button_asks_the_host() {
+        let (screen, k) = ((1280.0, 800.0), 800.0 / 1080.0);
+        let (none, at, logo) = frame(screen, k, Some("0.1.3"), None);
+        assert!(none.is_empty());
+        let r = at.notice.expect("room between the list and Quit");
+        for other in [logo, at.row, at.sign, at.list, at.quit] {
+            assert!(
+                r.right() <= other.x
+                    || other.right() <= r.x
+                    || r.bottom() <= other.y
+                    || other.bottom() <= r.y,
+                "the notice at {r:?} meets {other:?}"
+            );
+        }
+        let open = button(screen, k, r);
+        assert!(open.x > r.x + 150.0 * k && open.right() <= r.right());
+        let (asked, ..) = frame(screen, k, Some("0.1.3"), Some(centre(open)));
+        assert_eq!(asked, [FrontDoorRequest::OpenUpdate]);
+        // With nothing newer there is no notice to press.
+        let (asked, ..) = frame(screen, k, None, Some(centre(open)));
+        assert!(asked.is_empty());
+    }
+
+    /// On the smallest window, 800 by 600, the notice still fits between the list and Quit.
+    #[test]
+    fn the_notice_fits_the_smallest_window() {
+        let (screen, k) = ((800.0, 600.0), 600.0 / 1080.0);
+        let (_, at, _) = frame(screen, k, None, None);
+        let r = at.notice.expect("room between the list and Quit");
+        let open = button(screen, k, r);
+        let (asked, ..) = frame(screen, k, Some("0.1.3"), Some(centre(open)));
+        assert_eq!(asked, [FrontDoorRequest::OpenUpdate]);
     }
 }

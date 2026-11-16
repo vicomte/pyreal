@@ -1593,6 +1593,12 @@ impl<S: Shell> App<S> {
             if self.objects.stats.player_positions_accepted > positions_accepted {
                 self.teleport.player_position_accepted();
             }
+            // A teleport just began: the portal the player stands at, for one walked into.
+            if !teleporting && self.teleport.teleport_in_progress() {
+                let character = self.world.as_ref().and_then(|w| w.character.as_ref());
+                self.teleport.look_walked =
+                    character.and_then(|c| super::teleport::portal_at(&self.objects.world, c));
+            }
             // A teleport just began: what follows waits until portal space is on screen.
             if !teleporting && self.teleport.teleport_in_progress() && self.paces_teleport() {
                 self.teleport_hold = Some((self.frames_drawn(), std::time::Instant::now()));

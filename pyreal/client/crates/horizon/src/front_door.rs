@@ -61,6 +61,12 @@ pub struct DatsView {
     pub problem: Option<String>,
 }
 
+/// A newer Pyreal the host found, shown on the world list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpdateNotice {
+    pub version: String,
+}
+
 /// What the host hands the screens before any world, each frame.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FrontDoorView {
@@ -74,6 +80,8 @@ pub struct FrontDoorView {
     pub can_browse: bool,
     /// The list of known worlds.
     pub directory: DirectoryView,
+    /// A newer release to tell the player about.
+    pub update: Option<UpdateNotice>,
 }
 
 /// What the player asked of the screens before any world.
@@ -134,6 +142,8 @@ pub enum FrontDoorRequest {
     },
     /// End explore mode and go back to the world list.
     EndExplore,
+    /// Open the newer release's page in the browser.
+    OpenUpdate,
 }
 
 /// One of the data files' folders.

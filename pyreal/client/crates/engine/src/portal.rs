@@ -99,7 +99,25 @@ impl Palette {
         glow: Vec3::new(0.8, 0.8, 0.9),
         spin: -1.0,
     };
+
+    /// These colours leant toward a portal's `colour` (linear), each keeping its brightest
+    /// channel: the walls and wisps most, the lights less.
+    #[must_use]
+    pub fn toward(self, colour: Vec3) -> Self {
+        let hue = colour / colour.max_element().max(1e-4);
+        let lean = |c: Vec3, by: f32| c.lerp(hue * c.max_element(), by);
+        Self {
+            deep: lean(self.deep, LEAN[0]),
+            streak: lean(self.streak, LEAN[0]),
+            spark: lean(self.spark, LEAN[1]),
+            glow: lean(self.glow, LEAN[1]),
+            spin: self.spin,
+        }
+    }
 }
+
+/// How far a portal's colour takes the tunnel's walls and wisps, and its lights.
+const LEAN: [f32; 2] = [0.6, 0.4];
 
 /// One moment of the teleport.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1208,6 +1226,24 @@ mod tests {
             palette: Palette::PORTAL,
             from_world: true,
         }
+    }
+
+    #[test]
+    fn a_portals_colour_leans_the_tunnel_toward_it_without_brightening_it() {
+        let p = Palette::PORTAL;
+        let green = p.toward(Vec3::new(0.03, 0.78, 0.02));
+        assert!(green.streak.y > green.streak.z && green.streak.y > green.streak.x);
+        assert!(green.deep.y > p.deep.y && green.deep.z < p.deep.z);
+        // Not all the way: the walls keep some of the tunnel's own blue.
+        assert!(green.streak.z > 0.05);
+        for (a, b) in [
+            (p.deep, green.deep),
+            (p.streak, green.streak),
+            (p.spark, green.spark),
+        ] {
+            assert!(b.max_element() <= a.max_element() + 1e-6);
+        }
+        assert!((green.spin - p.spin).abs() < 1e-6);
     }
 
     #[test]

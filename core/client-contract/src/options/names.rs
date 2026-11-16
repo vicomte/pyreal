@@ -34,6 +34,8 @@ pub const MOUSE_LOOK_SMOOTHING_AMOUNT: &str = "Input.MouseLookSmoothingAmount";
 pub const USE_MOUSE_TURNING: &str = "Input.UseMouseTurning";
 /// `International.UseIME`.
 pub const USE_IME: &str = "International.UseIME";
+/// `Misc.CheckForUpdates`: this client's own, not retail's; `True` is on.
+pub const CHECK_FOR_UPDATES: &str = "Misc.CheckForUpdates";
 /// `Misc.TooltipDelay`.
 pub const TOOLTIP_DELAY: &str = "Misc.TooltipDelay";
 /// `Misc.TooltipEnable`.

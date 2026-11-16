@@ -281,6 +281,7 @@ pub fn init() -> usize {
         n += usize::from(register_preference(p.name, v, t));
     }
     super::performance::register();
+    super::update_check::register();
     super::portal_style::register();
     super::ground_coloring::register();
     super::sound_style::register();
@@ -1181,11 +1182,12 @@ mod tests {
     #[test]
     fn loading_a_preferences_file_overwrites_only_the_registered_names() {
         assert_eq!(init(), 27, "the 27 attached preferences all register");
-        // ...beside this client's performance panel, portal style, ground coloring and sound
-        // style, the high-fidelity presentation's boxes and menus, and the weather sound's two.
+        // ...beside this client's performance panel, update check, portal style, ground coloring
+        // and sound style, the high-fidelity presentation's boxes and menus, and the weather
+        // sound's two.
         assert_eq!(
             len(),
-            31 + super::super::fidelity::OPTIONS.len() + super::super::fidelity::MENUS.len() + 2
+            32 + super::super::fidelity::OPTIONS.len() + super::super::fidelity::MENUS.len() + 2
         );
         // The registration defaults are in force before any file is read.
         assert_eq!(

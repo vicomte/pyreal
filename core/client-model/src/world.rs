@@ -67,6 +67,8 @@ pub struct World {
     /// The corpse, chest, or other ground container currently open. Items inside it are exempt
     /// from the normal double-click restriction so they can be moved into the player's pack.
     pub ground_object: Option<ObjectId>,
+    /// The Loot All run over the ground container, while one is going.
+    pub loot_all: Option<crate::inventory::loot_all::LootAll>,
     /// The ground container whose contents were most recently requested.
     ///
     /// Separate from [`Self::ground_object`] in the client and here, because the *panel* does not
@@ -303,6 +305,7 @@ impl World {
             open_container: None,
             pending_row: None,
             ground_object: None,
+            loot_all: None,
             requested_ground_object: None,
             opened_corpses: std::collections::BTreeSet::new(),
             last_used: None,

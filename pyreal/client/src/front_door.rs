@@ -60,11 +60,14 @@ pub struct FrontDoor {
     directory: crate::world_directory::WorldDirectory,
     /// The device is still preparing its shaders: the screens say so while nothing else is said.
     preparing: bool,
+    /// Whether a newer Pyreal is out, and whether the player lets the client check.
+    updates: crate::update_check::UpdateCheck,
+    check_updates: bool,
 }
 
 /// What the screens say while the device is still preparing its shaders (a driver whose cache is
 /// cold, the first run on a card or after its driver is updated).
-pub const PREPARING_SHADERS: &str = "Preparing shaders for this graphics card...";
+pub const PREPARING_SHADERS: &str = "Preparing shaders...";
 
 /// A password typed to sign in, which the secret store keeps once the server takes it.
 struct Typed {
@@ -155,6 +158,12 @@ impl FrontDoor {
             keep_file,
             preparing: false,
             directory: crate::world_directory::WorldDirectory::open(dir),
+            updates: crate::update_check::UpdateCheck::open(
+                dir,
+                crate::update_check::SOURCE_URL,
+                crate::update_check::VERSION,
+            ),
+            check_updates: false,
         };
         if save {
             me.save();
@@ -277,6 +286,7 @@ impl FrontDoor {
                 .or_else(|| self.preparing.then(|| PREPARING_SHADERS.to_owned())),
             can_browse: cfg!(any(target_os = "macos", windows)),
             directory: self.directory.view(&self.state.worlds, now()),
+            update: self.updates.notice(self.check_updates),
         }
     }
 
@@ -292,6 +302,9 @@ impl FrontDoor {
         let taken = app.host_state().received_set;
         self.follow_session(ended, up, taken);
         self.directory.poll();
+        self.check_updates = pyreal_client_contract::options::update_check::enabled();
+        self.updates.start(self.check_updates, now());
+        self.updates.poll();
         self.collect_pings();
         self.preparing = app.preparing_shaders();
         if let Some((slug, account, typed, remember)) = self.waiting.take() {
@@ -446,6 +459,13 @@ impl FrontDoor {
                 app.begin_explore(&start).map_err(|e| e.to_string())?;
             }
             FrontDoorRequest::EndExplore => app.end_explore(),
+            FrontDoorRequest::OpenUpdate => {
+                if let Some(url) = self.updates.page() {
+                    if !pyreal_client_runtime::app::open_in_browser(url) {
+                        return Err("The release page could not be opened.".to_owned());
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -605,7 +625,7 @@ impl FrontDoor {
         let imported = self.imported(slug);
         pyreal_launch::vault::password(self.vault.as_mut(), slug, account, imported)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| "Enter the account's password.".to_owned())
+            .ok_or_else(|| "Enter the password.".to_owned())
     }
 
     /// Log in to `slug` as `account`: the password `typed`, else the one kept; kept for next time
@@ -631,7 +651,7 @@ impl FrontDoor {
                 typed.to_owned(),
                 remember,
             ));
-            self.message = Some("Asking the world which era it plays...".to_owned());
+            self.message = Some("Checking the world...".to_owned());
             return Ok(());
         }
         self.message = None;
@@ -727,11 +747,10 @@ fn missing_set_text(missing: MissingSet) -> String {
     match missing {
         MissingSet::Modern => "Choose the End of Retail folder in Data Files.",
         MissingSet::Classic => {
-            "This world plays an era before Throne of Destiny. Choose the February 2005 folder in \
-             Data Files."
+            "This world needs the February 2005 files. Choose that folder in Data Files."
         }
         MissingSet::Original => {
-            "This world plays the 1999 launch. Choose the 1999 Retail CD folder in Data Files."
+            "This world needs the 1999 Retail CD files. Choose that folder in Data Files."
         }
     }
     .to_owned()
@@ -1182,10 +1201,10 @@ mod tests {
         door.set_dats(&m, "", "").unwrap();
         w.era = Some("launch".into());
         let e = second(&door, &w).unwrap_err();
-        assert!(e.contains("the 1999 Retail CD folder in Data Files"), "{e}");
+        assert!(e.contains("needs the 1999 Retail CD files"), "{e}");
         w.era = Some("infiltration".into());
         let e = second(&door, &w).unwrap_err();
-        assert!(e.contains("the February 2005 folder in Data Files"), "{e}");
+        assert!(e.contains("needs the February 2005 files"), "{e}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1324,7 +1343,7 @@ mod tests {
         assert_eq!(slug, "custom-1");
         assert_eq!(
             door.password_for(&slug, "lark", ""),
-            Err("Enter the account's password.".to_owned()),
+            Err("Enter the password.".to_owned()),
             "a new world never takes an old world's password"
         );
         let _ = std::fs::remove_dir_all(&dir);

@@ -70,7 +70,7 @@ pub fn frame(
     let line = p.line_height(&dim);
     #[allow(clippy::cast_precision_loss)]
     let keys_h = line * keys.len() as f32;
-    // A note (a copy made, frame timings saved) over the keys, as many lines as it takes.
+    // A note (a copy made, or frame timings saved by their key) over the keys, as many lines as it takes.
     let noted = view
         .copied
         .as_deref()
@@ -78,7 +78,7 @@ pub fn frame(
         .unwrap_or_default();
     #[allow(clippy::cast_precision_loss)]
     let note_h = line * noted.len().saturating_sub(1) as f32;
-    let h = 378.0 * k + keys_h + note_h;
+    let h = 338.0 * k + keys_h + note_h;
     let r = Rect::new(24.0 * k, sh - 24.0 * k - h, w, h);
     kit::grounded_panel(p, r, 0.85, 2);
     let x = r.x + 16.0 * k;
@@ -162,16 +162,6 @@ pub fn frame(
     for (i, l) in keys.iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]
         p.text(&dim, x, y + line * i as f32, l);
-    }
-    // The frame timings: saved now, and their folder.
-    let half = (inner - 10.0 * k) / 2.0;
-    let save = Rect::new(x, r.bottom() - 88.0 * k, half, 32.0 * k);
-    if kit::button(p, ctx, save, "Save Timings", true) {
-        asks.push(Ask::SaveTimings);
-    }
-    let folder = Rect::new(save.right() + 10.0 * k, save.y, half, 32.0 * k);
-    if kit::button(p, ctx, folder, "Open Folder", true) {
-        asks.push(Ask::OpenTimings);
     }
     let b = Rect::new(x, r.bottom() - 48.0 * k, inner, 32.0 * k);
     ctx.input.nav.cancel(b);

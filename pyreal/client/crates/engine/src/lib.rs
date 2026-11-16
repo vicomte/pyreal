@@ -37,6 +37,7 @@
 //! | [`webs`] | cobweb cards traced into fine silk, stirred by the bodies moving near |
 //! | [`cover`] | the pack's ground cover, placed on the GPU round the eye and drawn by a few draws |
 //! | [`particles`] | scripted objects' emitters, stepped by the client's own code, drawn as instanced cards |
+//! | [`falls`] | waterfalls: their emitters' water drawn as sheets down to the pool, with foam and mist |
 //! | [`bolts`] | lightning in a creature's cloud: grown channels, their lines of light and lamps |
 //! | [`glow`] | creatures' light: their balls of light and lens stars drawn as light, and the lamp each carries |
 //! | [`temporal`], [`metalfx`] | the render scale (fixed or dynamic), the jitter, the temporal resolve and upscalers, the UI composite |
@@ -58,6 +59,7 @@ pub mod cover;
 pub mod drawn;
 pub mod drift;
 pub mod evict;
+pub mod falls;
 pub mod far;
 pub mod flames;
 pub mod frame_work;
@@ -152,6 +154,8 @@ pub struct Engine {
     pub particles: particles::Particles,
     /// The flames drawn where objects burn.
     pub flames: flames::Flames,
+    /// The waterfalls' paths down, walked once ([`falls::Paths`]).
+    fall_paths: falls::Paths,
 }
 
 impl Engine {
@@ -184,6 +188,7 @@ impl Engine {
             snow_share_at: None,
             particles: particles::Particles::default(),
             flames: flames::Flames::default(),
+            fall_paths: falls::Paths::default(),
         })
     }
 
@@ -503,6 +508,36 @@ impl Engine {
             self.particles.blobs = (0, 0);
             self.particles.puffs = (0, 0);
         }
+        // The waterfalls, down to the land or the water under them.
+        let ground = |p: glam::Vec2| {
+            let l = self.land.as_ref()?;
+            let h = l.height_at(p)?;
+            Some(
+                l.water_at(p)
+                    .filter(|w| w.1 > 0.5)
+                    .map_or((h, false), |w| (w.0.max(h), true)),
+            )
+        };
+        let frame_falls = if self.particles.on {
+            crate::falls::frame_falls(
+                &mut self.fall_paths,
+                &self.particles,
+                camera.position,
+                &camera.frustum(aspect),
+                seen,
+                &ground,
+                crate::falls::bow_of(light, {
+                    let w = &self.renderer.weather;
+                    if w.on {
+                        w.rain.max(w.snow)
+                    } else {
+                        0.0
+                    }
+                }),
+            )
+        } else {
+            Vec::new()
+        };
         let body_water = self.water_lifts(camera.position);
         // The snowy land round the eye, worked out again as the eye moves; the bodies' prints.
         let w = &mut self.renderer.weather;
@@ -534,6 +569,7 @@ impl Engine {
                 lamps: &frame_lamps,
                 probe_lamps: &probe_lamps,
                 flames: &frame_flames,
+                falls: &frame_falls,
                 bodies: &self.bodies,
                 body_water: &body_water,
                 umbrae: &self.umbrae,

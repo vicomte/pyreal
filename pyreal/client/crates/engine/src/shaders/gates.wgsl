@@ -1,8 +1,9 @@
-// Portals in the world (`gates.rs`, `puffs::GATE`): a smoke whirl's disc (`smoke.wgsl`'s, Dark
-// Vapor's) turned to face the eye, its arms winding in to a dense heart, its noise drawn in
-// along them so it turns faster the nearer it comes. It glows in the portal's colour, brightest in
-// a ring round its darker eye, and hides what is behind it as smoke does. The light is its own, so
-// it reads alike by day and by night.
+// Portals in the world (`gates.rs`, `puffs::GATE`): a smoke whirl's arms (`smoke.wgsl`'s, Dark
+// Vapor's) on a funnel turned to face the eye, leaning a little off it and going round, the arms
+// winding in to a dense heart, their noise drawn in along them so they turn faster the nearer they
+// come. They glow in the portal's colour, brightest in a ring round its darker eye, over the
+// funnel's see-through body, shaded by its own light from above and darker down its throat. The
+// light is its own, so it reads alike by day and by night.
 
 const GATE_KIND: u32 = 7u;
 // As a smoke whirl's: how much its arms wind (radians over its radius), how fast they turn
@@ -45,9 +46,25 @@ const GATE_WHITE: f32 = 0.15;
 // The colours (their brightest channel) under which its glow dims, to the share it keeps.
 const GATE_DIM: vec3<f32> = vec3<f32>(0.45, 0.7, 0.2);
 // How deep its funnel is (over its radius): how far its heart lies behind its rim.
-const GATE_FUNNEL: f32 = 0.5;
+const GATE_FUNNEL: f32 = 1.0;
+// How much faster than its clock it turns; how far its axis leans off the eye (a tangent) and how
+// fast the lean goes round (radians a second), so its shape shows.
+const GATE_PACE: f32 = 1.3;
+const GATE_SWAY: vec2<f32> = vec2<f32>(0.3, 0.45);
 // Where in its thickness (over the half thickness) its smoke is read, in front and behind.
 const GATE_DEPTH: f32 = 0.6;
+// Its body, the funnel's face under the arms, lit from above by its own light: how much of what is
+// behind it it hides and its glow (in multiples of its colour); the share its unlit walls keep and
+// how much darker its throat is; its bright lip (where over its radius, width, gain); where it fades
+// out (over its radius, from and to).
+const GATE_BODY: vec2<f32> = vec2<f32>(0.55, 0.6);
+const GATE_SHADE: vec2<f32> = vec2<f32>(0.1, 0.9);
+const GATE_LIP: vec3<f32> = vec3<f32>(0.68, 0.12, 0.4);
+const GATE_SKIN: vec2<f32> = vec2<f32>(0.55, 0.86);
+// How much of the body's shading the arms take.
+const GATE_SELF: f32 = 0.8;
+// How much of the daylight its body gives back.
+const GATE_DAY: f32 = 0.6;
 
 // How far its funnel's face lies behind its rim at `out` (over its radius) from its middle: its
 // heart sunk back away from the eye, so its arms run down into it.
@@ -110,6 +127,15 @@ fn gate_at(q: vec3<f32>, axis: vec3<f32>, u: vec3<f32>, v: vec3<f32>, radius: f3
     return vec2<f32>(dense, (0.35 + 0.9 * n) * (1.0 + rim) * eye * arms * tip);
 }
 
+// The sun's and sky's light outdoors.
+fn gate_daylight() -> vec3<f32> {
+    if (has(F_PHYSICAL)) {
+        return frame.sun_light.rgb * max(frame.sun_dir.z, 0.0) + frame.sky_light.rgb;
+    }
+    return pow(frame.sun.rgb, vec3<f32>(2.2)) * max(frame.sun_dir.z, 0.0)
+        + pow(min(frame.ambient.rgb, vec3<f32>(1.0)), vec3<f32>(2.2));
+}
+
 // The portal of the run `in` draws: its light, pre-exposed and premultiplied, and how much of
 // what is behind it shows through.
 fn gate_volume(in: PuffOut) -> vec4<f32> {
@@ -117,14 +143,19 @@ fn gate_volume(in: PuffOut) -> vec4<f32> {
     let g = particles[p.material & 0x7FFFu];
     let c = vec3<f32>(g.m0.w, g.m1.w, g.m2.w);
     let radius = max(g.m2.y, 0.1);
-    // Always turned to face the eye, whichever side it is seen from.
+    let seed = g.m1.x * 97.0;
+    let time = frame.wind.w * GATE_PACE;
+    // Turned to face the eye, whichever side it is seen from, its axis leaning a little off it and
+    // going round.
     var axis = normalize(vec3<f32>(g.m1.y, g.m2.z, g.m2.x));
     if (distance(frame.camera.xyz, c) > 1e-3) {
-        axis = normalize(frame.camera.xyz - c);
+        let e = normalize(frame.camera.xyz - c);
+        let side = normalize(cross(e, vec3<f32>(0.0, 0.0, 1.0)) + vec3<f32>(1e-4, 1e-4, 0.0));
+        let w = time * GATE_SWAY.y + seed;
+        axis = normalize(e + GATE_SWAY.x * (cos(w) * side + sin(w) * cross(side, e)));
     }
     let tint = puff_tint(g.flags);
     let heart_tint = vec3<f32>(g.m0.y, g.m0.z, g.m1.z);
-    let seed = g.m1.x * 97.0;
     let strength = clamp(g.alpha, 0.0, 1.0);
     // A dark portal's (a shadow's) smoke barely glows.
     let lit = mix(GATE_DIM.z, 1.0, smoothstep(GATE_DIM.x, GATE_DIM.y, max(max(tint.r, tint.g), tint.b)));
@@ -139,7 +170,7 @@ fn gate_volume(in: PuffOut) -> vec4<f32> {
     }
     let to = dot(c - eye, axis);
     var t = to / dn;
-    for (var k = 0; k < 3; k++) {
+    for (var k = 0; k < 5; k++) {
         let r = eye + dir * t - c;
         t = (to + gate_sunk(length(r - axis * dot(r, axis)) / radius, radius)) / dn;
     }
@@ -154,17 +185,31 @@ fn gate_volume(in: PuffOut) -> vec4<f32> {
     // thickness (a Gaussian's integral), as much of it as stands before what is behind it.
     let thick = radius * mix(GATE_THICK.x, GATE_THICK.y, s);
     let step = dir * (thick * GATE_DEPTH / abs(dn));
-    let a = gate_at(q - step, axis, u, v, radius, seed, frame.wind.w);
-    let b = gate_at(q + step, axis, u, v, radius, seed, frame.wind.w);
+    let a = gate_at(q - step, axis, u, v, radius, seed, time);
+    let b = gate_at(q + step, axis, u, v, radius, seed, time);
     let fade = exp(GATE_DEPTH * GATE_DEPTH);
     let here = vec2<f32>((a.x + b.x) * 0.5 * fade, (a.y + b.y) * 0.5);
     let span = thick / abs(dn);
     let before = smoothstep(-span, span, wall - t);
     let through = exp(-here.x * span * 1.7724539 * before);
+    // Its body: darker where its walls turn away from the eye and from the light above, and down
+    // its throat; brighter on its lip. The arms lie over it, shaded alike in part.
+    let flat = q - axis * dot(q, axis);
+    let n = normalize(axis - flat / max(s * radius, 1e-4) * (2.0 * GATE_FUNNEL * (1.0 - s)));
+    let key = smoothstep(-0.45, 0.45, dot(n, vec3<f32>(0.0, 0.0, 1.0)));
+    let deep = (1.0 - s) * (1.0 - s);
+    let shade = mix(GATE_SHADE.x, 1.0, pow(max(dot(n, -dir), 0.0), 2.0) * key) * (1.0 - GATE_SHADE.y * deep);
+    let lip = exp(-pow((s - GATE_LIP.x) / GATE_LIP.y, 2.0)) * GATE_LIP.z;
     let hue = mix(heart_tint, tint, smoothstep(0.15, 0.6, s));
     let rim = exp(-pow((s - GATE_RIM.x) / GATE_RIM.y, 2.0));
-    let glow = mix(hue, vec3<f32>(max(max(hue.r, hue.g), hue.b)), GATE_WHITE * rim * lit) * here.y * GATE_GLOW * lit;
-    let light = glow * (1.0 - through);
-    let shown = additive_light(light, 0.0, c) * strength;
-    return vec4<f32>(shown, mix(1.0, through, strength));
+    let glow = mix(hue, vec3<f32>(max(max(hue.r, hue.g), hue.b)), GATE_WHITE * rim * lit) * here.y * GATE_GLOW * lit
+        * mix(1.0, shade, GATE_SELF);
+    let ragged = 0.03 * sin(5.0 * atan2(dot(flat, v), dot(flat, u)) + seed);
+    let cover = GATE_BODY.x * smoothstep(GATE_SKIN.y, GATE_SKIN.x, s + ragged) * before;
+    let body = tint * (shade + lip) * GATE_BODY.y * lit * cover;
+    let light = glow * (1.0 - through) + body * through;
+    let clear = 1.0 - fog_amount(distance(c.xy, frame.camera.xy));
+    let day = min(tint * gate_daylight() * GATE_DAY * (shade + lip) * cover * clear * pre_exposure(), vec3<f32>(HDR_MOST)) * through;
+    let shown = (additive_light(light, 0.0, c) + day) * strength;
+    return vec4<f32>(shown, mix(1.0, through * (1.0 - cover), strength));
 }

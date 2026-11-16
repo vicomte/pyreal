@@ -29,6 +29,7 @@
 //! | [`vault`] | the seam to the operating system's secret store, where passwords live and nowhere else |
 //! | [`plugins`] | the plugins it installs for the client: the sources it reads them from, installing and updating them |
 //! | [`join`] | a join link (`pyreal://join?...`): a world to add |
+//! | [`update`] | whether a newer Pyreal is out: the latest release's index, compared and kept a day |
 
 #![forbid(unsafe_code)]
 
@@ -45,6 +46,7 @@ pub mod launch;
 pub mod plugins;
 pub mod serverlist;
 pub mod state;
+pub mod update;
 pub mod vault;
 pub mod world;
 

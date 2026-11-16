@@ -430,7 +430,41 @@ impl Windows {
             body.bottom() - 20.0 * k,
             &format!("{n} item{}", if n == 1 { "" } else { "s" }),
         );
+        let bw = 88.0 * k;
+        let button = Rect::new(
+            body.right() - 8.0 * k - bw,
+            body.bottom() - 24.0 * k,
+            bw,
+            22.0 * k,
+        );
+        let request = loot_all_request(state);
+        let label = if state.looting_all {
+            "Stop"
+        } else {
+            "Loot All"
+        };
+        if kit::button(p, ctx, button, label, request.is_some()) {
+            out.requests.extend(request);
+        }
+        if ctx.input.hover(&button) {
+            let line = if state.looting_all {
+                "Stop moving items to your pack."
+            } else {
+                "Move everything in this container to your pack."
+            };
+            self.tip = Some(("Loot All".into(), vec![line.into()]));
+        }
     }
+}
+
+/// What the Loot All button or key asks: a run over the open chest or corpse, or the end of one.
+#[must_use]
+pub fn loot_all_request(state: &GameState) -> Option<UiRequest> {
+    if state.looting_all {
+        return Some(UiRequest::StopLootAll);
+    }
+    let (id, _, items) = state.loot.as_ref()?;
+    (!items.is_empty()).then_some(UiRequest::LootAll(*id))
 }
 
 #[cfg(test)]

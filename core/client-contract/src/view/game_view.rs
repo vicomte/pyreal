@@ -55,6 +55,10 @@ pub trait GameView: std::fmt::Debug {
     fn container_contents(&self, _id: ObjectId) -> &[ObjectId] {
         &[]
     }
+    /// Whether a Loot All run is moving the ground container's items.
+    fn loot_all_running(&self) -> bool {
+        false
+    }
     /// The contained-containers list — the **side packs**, which are a
     /// separate ordered list from [`Self::container_contents`] and are what a
     /// `UI_ItemList_IsContainer` list shows.

@@ -32,6 +32,43 @@ pub const TERRAIN_SURF_CHAR: [SurfChar; 32] = {
     t
 };
 
+/// Terrain type 22, `FauxWaterRunning`: painted with running water's picture but walked as ground.
+pub const FAUX_WATER_RUNNING: u16 = 22;
+
+/// A block's terrain words `terrain` (`x * 9 + y`, heights `height` as table indices) as drawn:
+/// painted running water made running water where it lies level, so it is drawn as water; where
+/// water or painted water beside it lies more than a step higher, it runs down a slope (a fall's
+/// face) and stays the ground it is.
+#[must_use]
+pub fn drawn_words(
+    terrain: &[u16; VERTEX_COUNT],
+    height: &[u8; VERTEX_COUNT],
+) -> [u16; VERTEX_COUNT] {
+    let side = SIDE_VERTEX_COUNT;
+    let wet = |i: usize| {
+        let t = terrain_type(terrain[i]);
+        TERRAIN_SURF_CHAR[t] == SurfChar::Water || t == usize::from(FAUX_WATER_RUNNING)
+    };
+    let mut out = *terrain;
+    for x in 0..side {
+        for y in 0..side {
+            let i = x * side + y;
+            if terrain_type(terrain[i]) != usize::from(FAUX_WATER_RUNNING) {
+                continue;
+            }
+            let above = (x.saturating_sub(1)..=(x + 1).min(side - 1))
+                .flat_map(|a| {
+                    (y.saturating_sub(1)..=(y + 1).min(side - 1)).map(move |b| a * side + b)
+                })
+                .any(|j| wet(j) && height[j] > height[i].saturating_add(1));
+            if !above {
+                out[i] = (terrain[i] & !0x007C) | (16 << 2);
+            }
+        }
+    }
+    out
+}
+
 /// `WaterType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WaterType {
@@ -165,6 +202,42 @@ mod tests {
     #![allow(clippy::cast_possible_truncation)]
 
     use super::*;
+
+    /// Painted running water on level ground is drawn as running water; down a fall's face it
+    /// stays itself, and the walked words are untouched.
+    #[test]
+    fn painted_water_is_drawn_as_water_only_where_it_lies_level() {
+        let faux = FAUX_WATER_RUNNING << 2;
+        let mut terrain = [4u16 << 2; VERTEX_COUNT];
+        let mut height = [10u8; VERTEX_COUNT];
+        // A level pool of painted water at (2..=4, 2..=4), a road through its middle.
+        for x in 2..=4 {
+            for y in 2..=4 {
+                terrain[x * 9 + y] = faux;
+            }
+        }
+        terrain[3 * 9 + 3] = faux | 1;
+        // Painted water down a face from a pool at 80 to one at 50: (7, 6) high, (7, 5) low.
+        terrain[7 * 9 + 6] = faux;
+        height[7 * 9 + 6] = 80;
+        terrain[7 * 9 + 5] = faux;
+        height[7 * 9 + 5] = 50;
+        let drawn = drawn_words(&terrain, &height);
+        assert_eq!(terrain_type(drawn[2 * 9 + 2]), 16);
+        assert_eq!(drawn[3 * 9 + 3], (16 << 2) | 1, "the road bits are kept");
+        assert_eq!(
+            terrain_type(drawn[7 * 9 + 6]),
+            16,
+            "the top of the face is level with its pool"
+        );
+        assert_eq!(
+            terrain_type(drawn[7 * 9 + 5]),
+            22,
+            "below the face it stays painted"
+        );
+        assert_eq!(terrain_type(drawn[0]), 4);
+        assert_eq!(surf_char(drawn[7 * 9 + 5]), SurfChar::Solid);
+    }
 
     /// Oracle: exactly terrain types 16..=20 are water.
     #[test]

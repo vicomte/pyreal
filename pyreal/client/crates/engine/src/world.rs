@@ -14,6 +14,7 @@ use pyreal_primitives::DataId;
 use pyreal_terrain::consts::{CELL_SIZE, ROAD_TERRAIN_TYPE};
 use pyreal_terrain::land::merge::get_terrain_tex;
 use pyreal_terrain::land::mesh::height_table;
+use pyreal_terrain::land::water::drawn_words;
 use pyreal_terrain::scenery::{generate_scenery, outside_cell_index, SceneryEnv, WithinBlockShape};
 use pyreal_world_data::env_cells::{DecodedCell, EnvCellLoader};
 use pyreal_world_data::landblock::{landblock_did, lbi_did};
@@ -2600,6 +2601,22 @@ impl std::fmt::Debug for Planner {
     }
 }
 
+/// Records `around` with their terrain words as drawn ([`drawn_words`]).
+fn drawn_around(
+    around: &[((i32, i32), Option<CellLandblock>)],
+) -> Vec<((i32, i32), Option<CellLandblock>)> {
+    around
+        .iter()
+        .map(|(b, r)| {
+            let r = r.as_ref().map(|lb| CellLandblock {
+                terrain: drawn_words(&lb.terrain, &lb.height),
+                ..lb.clone()
+            });
+            (*b, r)
+        })
+        .collect()
+}
+
 /// One block's records, decoded and worked out with no device: what placing it takes.
 #[derive(Debug, Clone)]
 pub struct BlockPlan {
@@ -2743,7 +2760,7 @@ impl Planner {
             .collect();
         let drawn = record
             .as_ref()
-            .and_then(|_| self.drawn_field(store, (bx, by), &around, info.as_ref()))
+            .and_then(|_| self.drawn_field(store, (bx, by), &drawn_around(&around), info.as_ref()))
             .map(Arc::new);
         if let (Some(field), Some(knobs)) = (drawn.as_ref(), self.smooth.as_ref()) {
             let src = crate::drawn::Around {
@@ -2778,7 +2795,7 @@ impl Planner {
             clearings,
             block: (bx, by),
             heights: std::array::from_fn(|i| self.table[usize::from(lb.height[i])]),
-            terrain: lb.terrain,
+            terrain: drawn_words(&lb.terrain, &lb.height),
             buildings: info
                 .iter()
                 .flat_map(|i| &i.buildings)
@@ -3153,18 +3170,44 @@ fn stone_picture(
     store: &RetailDatStore,
     region: &Region,
 ) -> Option<(u32, f32)> {
-    let rock = region
+    pinned_ground(engine, loader, store, region, "BarrenRock", 0)
+}
+
+/// Gives the bed under water drawn as water the region's mud ground as the land draws it (the
+/// pack's where it has one), once.
+pub fn set_bed_picture(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
+) {
+    if engine.renderer.bed.is_none() {
+        engine.renderer.bed = pinned_ground(engine, loader, store, region, "MudRichDirt", 5);
+    }
+}
+
+/// The region's ground named `name` (terrain type `fallback` where it names none) as the land
+/// draws it, pinned with its companions so eviction never frees it, and its repeats a metre.
+fn pinned_ground(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
+    name: &str,
+    fallback: usize,
+) -> Option<(u32, f32)> {
+    let terrain_type = region
         .terrain_types
         .iter()
-        .position(|t| t.terrain_name.eq_ignore_ascii_case("BarrenRock"))
-        .unwrap_or(0);
+        .position(|t| t.terrain_name.eq_ignore_ascii_case(name))
+        .unwrap_or(fallback);
     let (slot, tiling, _) = Ground {
         loader,
         engine: &mut *engine,
         store,
         region,
     }
-    .ground(u32::try_from(rock).ok()?)?;
+    .ground(u32::try_from(terrain_type).ok()?)?;
     let none = crate::asset::material::NO_TEXTURE;
     let companions = engine.materials.companions(slot).unwrap_or([none; 8]);
     for t in [slot, companions[0], companions[1]] {
@@ -3661,6 +3704,7 @@ pub fn load_area(
     if let Some(m) = loader.terrain_material(engine) {
         engine.renderer.terrain_material = m;
     }
+    set_bed_picture(engine, loader, store, region);
 }
 
 #[cfg(test)]

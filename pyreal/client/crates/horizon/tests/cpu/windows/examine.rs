@@ -273,3 +273,110 @@ fn a_committed_inscription_gives_way_to_what_the_game_says_next() {
         "{again:?}"
     );
 }
+
+/// The examined player as the window shows them, with the Tell button's name.
+fn examining_a_player(name: &str) -> GameState {
+    use pyreal_horizon::ui::game::{ExaminePane, Examined};
+    let mut state = selecting(0x5000_0002);
+    state.examine_opened = true;
+    state.examined = Some(Examined {
+        id: ObjectId(0x5000_0002),
+        pane: ExaminePane::Character,
+        title: name.into(),
+        tell: Some(name.into()),
+        ..Examined::default()
+    });
+    state
+}
+
+#[test]
+fn the_tell_button_starts_a_tell_to_the_examined_player_without_sending_it() {
+    use pyreal_client_contract::chat::entry::EntryAction;
+    let mut h = Harness::new(Default::default());
+    let state = examining_a_player("+Sir Alba");
+    h.frame(&state);
+    let w =
+        h.ui.windows
+            .rects(1.0)
+            .into_iter()
+            .find(|(id, _)| *id == WindowId::Examine)
+            .map(|(_, r)| r)
+            .expect("the examine window is open");
+    // The button sits at the top right of the window's body; sweep down the right edge for it.
+    let mut found = None;
+    for dy in (20..90).step_by(4) {
+        h.move_to(w.right() - 30.0, w.y + dy as f32);
+        h.press();
+        let sent = h.frame(&state).requests;
+        h.release();
+        h.frame(&state);
+        if !sent.is_empty() {
+            found = Some(sent);
+            break;
+        }
+    }
+    let sent = found.expect("the Tell button was clicked");
+    assert!(
+        sent.contains(&UiRequest::ChatEntry {
+            window: pyreal_client_contract::chat::interface::window::MAIN,
+            text: String::new(),
+            action: EntryAction::StartTell {
+                name: "+Sir Alba".into()
+            },
+        }),
+        "{sent:?}"
+    );
+    assert!(
+        !sent.iter().any(|r| matches!(r, UiRequest::ChatLine { .. })),
+        "{sent:?}"
+    );
+}
+
+#[test]
+fn only_another_player_is_examined_with_a_tell() {
+    use pyreal_client_contract::snapshot::{GameSnapshot, ObjectSnapshot};
+    use pyreal_client_contract::view::{AppraisalView, SelectionQueryFacts};
+    let (me, other, golem, sword) = (
+        ObjectId(0x5000_0001),
+        ObjectId(0x5000_0002),
+        ObjectId(0x8000_09D9),
+        ObjectId(0x8000_0001),
+    );
+    let person = |name: &str, is_player: bool| ObjectSnapshot {
+        name: Some(name.into()),
+        appraisal: Some(AppraisalView {
+            creature: true,
+            template: is_player,
+            ..AppraisalView::default()
+        }),
+        selection_query_facts: Some(SelectionQueryFacts {
+            is_player,
+            ..SelectionQueryFacts::default()
+        }),
+        ..ObjectSnapshot::default()
+    };
+    let mut view = GameSnapshot {
+        player: Some(me),
+        ..GameSnapshot::default()
+    };
+    view.objects.insert(me, person("Tester", true));
+    view.objects.insert(other, person("+Sir Alba", true));
+    view.objects.insert(golem, person("Sparring Golem", false));
+    view.objects.insert(
+        sword,
+        ObjectSnapshot {
+            name: Some("Sword".into()),
+            appraisal: Some(AppraisalView::default()),
+            ..ObjectSnapshot::default()
+        },
+    );
+    let tell = |id| {
+        pyreal_horizon::state::examined(&view, id)
+            .expect("an appraisal")
+            .tell
+    };
+    assert_eq!(tell(other).as_deref(), Some("+Sir Alba"));
+    assert_eq!(tell(golem), None, "a creature");
+    assert_eq!(tell(sword), None, "an item");
+    assert_eq!(tell(me), None, "oneself");
+}

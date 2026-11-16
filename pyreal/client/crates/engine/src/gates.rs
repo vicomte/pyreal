@@ -2,12 +2,14 @@
 //!
 //! A portal's swirl is its setup's default script: a turning emitter whose pictures shrink as
 //! they show, and a glow of the portal's colour. In place of those particles the portal is drawn
-//! as one ball of the puffs' volume ([`crate::puffs::GATE`]): a disc turned to face the eye, so it
-//! is seen face on from wherever it is seen, its arms spiralling in to a dark heart and turning
-//! faster the nearer they come, as a smoke whirl's do ([`crate::puffs::VORTEX`]), glowing in the
-//! colour of the portal's own glow picture. `shaders/gates.wgsl` draws it.
+//! as one ball of the puffs' volume ([`crate::puffs::GATE`]): a funnel turned to face the eye,
+//! leaning a little off it and going round so its depth shows, its arms spiralling in to a dark
+//! heart and turning faster the nearer they come, as a smoke whirl's do ([`crate::puffs::VORTEX`]),
+//! glowing in the colour of the portal's own glow picture over the funnel's see-through, shaded
+//! body. `shaders/gates.wgsl` draws it.
 //!
-//! It lights its surroundings in its own colour ([`lamp`]), in place of its setup's own light.
+//! It lights its surroundings in its own colour ([`lamp`]), in place of its setup's own light, and
+//! the portal space it leads into leans toward that colour ([`crate::portal::Palette::toward`]).
 //!
 //! Dust from round it drifts in and spirals into it, faster as it nears, lit as the dust it is
 //! and turning purple as it enters ([`motes`]). A few dozen motes a portal at most, fewer with
@@ -53,7 +55,7 @@ const SWIRL_MEAN: f32 = 0.22;
 /// greys.
 const HUE: f32 = 1.6;
 /// How deep the funnel is (over the radius), as `shaders/gates.wgsl`'s `GATE_FUNNEL`.
-const FUNNEL: f32 = 0.5;
+const FUNNEL: f32 = 1.0;
 /// The ball's reach over the disc's radius: its arms' thickness kept inside the card.
 const BALL_REACH: f32 = 1.15;
 /// Where a portal fades out, a share of its swirl's reach.
@@ -84,12 +86,14 @@ pub fn is_portal_script(script: DataId) -> bool {
 /// Whether `driver` is a portal's.
 #[must_use]
 pub fn is_portal(driver: &MotionDriver) -> bool {
-    driver
-        .part_array
-        .setup
-        .as_ref()
-        .and_then(|s| s.default_script)
-        .is_some_and(is_portal_script)
+    script_of(driver).is_some()
+}
+
+/// The default script of portal `driver`, if it is one.
+#[must_use]
+pub fn script_of(driver: &MotionDriver) -> Option<u32> {
+    let script = driver.part_array.setup.as_ref()?.default_script?;
+    is_portal_script(script).then_some(script.0)
 }
 
 /// The portal `driver` is, moved by `offset` into render space, once its pictures are ready
@@ -316,7 +320,7 @@ const MOTE_SIZE: [f32; 2] = [0.035, 0.06];
 /// How long a mote takes to be drawn in (seconds, least and most), how far out (metres) and how
 /// high (over the ground) it starts, how many turns it makes as it closes in, and the share of a
 /// trip it takes to show.
-const MOTE_TRIP: [f32; 2] = [6.0, 10.0];
+const MOTE_TRIP: [f32; 2] = [4.6, 7.7];
 const MOTE_FROM: [f32; 2] = [2.2, 7.0];
 const MOTE_HIGH: f32 = 2.2;
 const MOTE_SPIN: f32 = 1.3;

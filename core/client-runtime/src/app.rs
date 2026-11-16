@@ -292,6 +292,13 @@ pub(crate) fn launch_link(url: &str) -> i32 {
     shell_execute_open(url)
 }
 
+/// Open `url` in the system's browser, through the seam the support buttons use: whether the
+/// browser was started.
+#[must_use]
+pub fn open_in_browser(url: &str) -> bool {
+    shell_execute_open(url) > 32
+}
+
 /// The application phases, deliberately smaller than the client's UI flow to begin with.
 ///
 /// The UI flow has eight modes, which live in the front end; this is the outer shell they live

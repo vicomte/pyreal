@@ -86,6 +86,9 @@ pub struct Host {
     pub puffed: bool,
     /// It holds nothing but retail's snowfall ([`is_snowfall`]): no longer stepped.
     pub quiet: bool,
+    /// Its emitters are a waterfall's ([`crate::falls::is_fall`]): not stepped or drawn while falls
+    /// are drawn.
+    pub fall: bool,
     /// It is a shadow's ([`crate::body::shadow_parts`]): its eyes glow ([`is_eye`]).
     pub shadow: bool,
     /// Which of a lighthouse beacon's hosts it is, if it is one ([`crate::beacons::is_beacon`]).
@@ -258,7 +261,13 @@ pub struct Particles {
     /// Whether the lighthouses' beacons are drawn as a magical white light ([`crate::beacons`]);
     /// off, as retail's added pictures.
     pub beacons: bool,
+    /// Whether waterfalls are drawn as falling sheets of water ([`crate::falls`]); off, as
+    /// retail's cards.
+    pub falls: bool,
     pub air: crate::gates::Air,
+    /// Each portal's colour as last drawn, by its default script, for the tunnel it leads into.
+    // ORDER-OK: looked up by script, never iterated.
+    pub portal_colours: HashMap<u32, Vec3>,
     /// What the pictures' reaches are scaled by: Object Detail's share, never under the game's.
     pub detail: f32,
     /// Particles of emitters the engine does not step (the client's own objects'), gathered for
@@ -339,7 +348,9 @@ impl Default for Particles {
             wind: Vec3::ZERO,
             portals: true,
             beacons: true,
+            falls: true,
             air: crate::gates::Air::default(),
+            portal_colours: HashMap::new(),
             detail: 1.0,
             external: Vec::new(),
             gathered: 0,
@@ -653,6 +664,7 @@ impl Particles {
             flamed: false,
             puffed: false,
             quiet: false,
+            fall: false,
             shadow: false,
             beacon: None,
         });
@@ -684,6 +696,7 @@ impl Particles {
             flamed: false,
             puffed: false,
             quiet: false,
+            fall: false,
             shadow: false,
             beacon: None,
         });
@@ -711,7 +724,7 @@ impl Particles {
         self.clock = now;
         self.blood.now = now;
         for h in &mut self.hosts {
-            if h.quiet {
+            if h.quiet || self.falls && h.fall {
                 continue;
             }
             h.driver.cur_time = ServerTime(now);
@@ -753,6 +766,7 @@ impl Particles {
             h.quiet = !h.animated
                 && !h.driver.particles.is_empty()
                 && h.driver.particles.iter().all(|e| is_snowfall(&e.info));
+            h.fall = !h.animated && h.beacon.is_none() && crate::falls::is_fall(&h.driver);
         }
         self.cpu_ms = started.elapsed().as_secs_f64() * 1e3;
     }
@@ -781,6 +795,20 @@ impl Particles {
     #[must_use]
     pub fn reach(&self, driver: &MotionDriver) -> f32 {
         reach_of(&self.sprites, driver, self.detail)
+    }
+
+    /// Notes portal `g`'s colour, `driver`'s.
+    fn note_portal(&mut self, driver: &MotionDriver, g: &crate::gates::Gate) {
+        if let Some(script) = crate::gates::script_of(driver) {
+            self.portal_colours.insert(script, g.colour);
+        }
+    }
+
+    /// The colour of a portal of `setup` as last drawn, if one has been.
+    #[must_use]
+    pub fn portal_colour(&self, setup: u32) -> Option<Vec3> {
+        let setup = self.assets.as_ref()?.setup(DataId(setup))?;
+        self.portal_colours.get(&setup.default_script?.0).copied()
     }
 
     /// The pictures of `driver`'s emitters (and a portal's script's) that are not ready to draw
@@ -814,8 +842,12 @@ impl Particles {
         use crate::roles::Role;
         // A portal is drawn as a vortex, its swirl's particles left out; else as retail's swirl.
         let portal = crate::gates::is_portal(driver);
-        if portal && self.portals {
-            if let Some(g) = crate::gates::gate_of(driver, &self.sprites, offset) {
+        let gate = portal
+            .then(|| crate::gates::gate_of(driver, &self.sprites, offset))
+            .flatten();
+        if let Some(g) = gate {
+            self.note_portal(driver, &g);
+            if self.portals {
                 let shown = crate::gates::shown(g.centre.distance(eye), self.reach(driver));
                 let (clock, air, group) = (self.clock, self.air, self.gathered);
                 self.external
@@ -1079,6 +1111,11 @@ impl Particles {
                 continue;
             }
             let gate = crate::gates::gate_of(&h.driver, &self.sprites, Vec3::ZERO);
+            if let Some(g) = &gate {
+                if let Some(script) = crate::gates::script_of(&h.driver) {
+                    self.portal_colours.insert(script, g.colour);
+                }
+            }
             if let Some(g) = gate.filter(|_| self.portals) {
                 let reach = reach_of(&self.sprites, &h.driver, self.detail);
                 let shown = crate::gates::shown(g.centre.distance(eye), reach);
@@ -1093,6 +1130,9 @@ impl Particles {
                         self.drawn.push(d);
                     }
                 }
+                continue;
+            }
+            if self.falls && h.fall {
                 continue;
             }
             if self.beacons && h.beacon == Some(crate::beacons::HEART) {

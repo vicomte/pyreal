@@ -26,6 +26,9 @@ const INSCRIPTION_SINK: f32 = 12.0;
 const INSCRIPTION_LABEL: f32 = 18.0;
 const INSCRIPTION_SIGNATURE: f32 = 18.0;
 
+/// How tall the Tell button is, in layout units.
+const TELL_H: f32 = 28.0;
+
 /// The most characters an inscription holds, as the game's inscription box takes them. Its
 /// lines are not counted: Enter starts a new one while there is room for the character.
 const INSCRIPTION_MAX: usize = 300;
@@ -118,7 +121,16 @@ impl Windows {
         let title = TextStyle::new(Family::Body, 16.0, 0xFFFF_FFFF).edge(ctx.colours.edge());
         let sub = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
         let tx = icon_r.right() + 10.0 * k;
-        let tw = head.right() - tx;
+        let mut tw = head.right() - tx;
+        // Another player keeps a Tell button at the top right, clear of their name.
+        if let Some(name) = &e.tell {
+            let bw = kit::button_label_width(p, "Tell") + 36.0 * k;
+            let r = Rect::new(head.right() - bw, head.y, bw, TELL_H * k);
+            tw -= bw + 8.0 * k;
+            if kit::button(p, ctx, r, "Tell", true) {
+                out.requests.push(start_tell(name));
+            }
+        }
         let title_lines = p.wrap(&title, &e.title, tw);
         let mut ty = head.y + 2.0 * k;
         for l in title_lines.iter().take(2) {
@@ -455,6 +467,17 @@ pub(super) struct Inscribed {
     scribe: String,
     was_value: String,
     was_scribe: String,
+}
+
+/// The Tell button's request: the chat line opened on `@tell <name>, `, nothing sent.
+fn start_tell(name: &str) -> UiRequest {
+    UiRequest::ChatEntry {
+        window: pyreal_client_contract::chat::interface::window::MAIN,
+        text: String::new(),
+        action: pyreal_client_contract::chat::entry::EntryAction::StartTell {
+            name: name.to_owned(),
+        },
+    }
 }
 
 /// The invitation shown in an empty box the player may write in.

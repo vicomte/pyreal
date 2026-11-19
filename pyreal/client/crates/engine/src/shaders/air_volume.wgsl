@@ -10,7 +10,8 @@ struct AirParams {
     density: vec4<f32>,
     // x: the first slice's distance; y: the last's; z: slices; w: how forward the sun scatters (g).
     slices: vec4<f32>,
-    // x: the near plane; y: the slices' jitter this frame (0..1); z: the sky's share; w: unused.
+    // x: the near plane; y: the slices' jitter this frame (0..1); z: the sky's share; w: how much of
+    // the air the apply pass lays over the picture.
     more: vec4<f32>,
     // By day: x how much more the sun scatters with it on the horizon, y with the eye in shade,
     // z near the eye, w how far that reaches, metres.

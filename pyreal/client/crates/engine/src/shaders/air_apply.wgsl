@@ -4,7 +4,8 @@ struct AirParams {
     density: vec4<f32>,
     // x: the first slice's distance; y: the last's; z: slices; w: how forward the sun scatters (g).
     slices: vec4<f32>,
-    // x: the near plane; y: the slices' jitter this frame (0..1); z: the sky's share; w: unused.
+    // x: the near plane; y: the slices' jitter this frame (0..1); z: the sky's share; w: how much of
+    // the air the apply pass lays over the picture.
     more: vec4<f32>,
     // By day: x how much more the sun scatters with it on the horizon, y with the eye in shade,
     // z near the eye, w how far that reaches, metres.
@@ -87,9 +88,11 @@ fn fs_air(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     let w = (clamp(k, 0.0, a.z - 1.0) + 0.5) / a.z;
     let uv = p.xy / vec2<f32>(textureDimensions(air_depth));
     var s = textureSampleLevel(air_sum, air_linear, vec3<f32>(uv, w), 0.0);
-    // Nearer than the first slice, its share by distance.
     let near = clamp(d / a.x, 0.0, 1.0);
-    s = vec4<f32>(s.rgb * near, mix(1.0, s.a, near));
+    // Nearer than the first slice, its share by distance; then the share laid over the picture.
+    let laid = near * air_apply.more.w;
+    s = vec4<f32>(s.rgb * laid, mix(1.0, s.a, laid));
+    let shafts = streaks(p.xy) * air_apply.more.w;
     // Added in the frame's exposure: the HDR target is drawn pre-exposed.
-    return vec4<f32>(min((s.rgb + streaks(p.xy)) * pre_exposure(), vec3<f32>(HDR_MOST)), s.a);
+    return vec4<f32>(min((s.rgb + shafts) * pre_exposure(), vec3<f32>(HDR_MOST)), s.a);
 }

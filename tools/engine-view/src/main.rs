@@ -10,12 +10,12 @@
 //! **Must never** be depended on by the client: it is a development viewer.
 //!
 //! ```text
-//! engine-view --dat-dir <dir> [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
+//! engine-view --dat-dir <dir> [--later-dat-dir <dir>] [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
 //!             [--report "<report line>" | --library <file> --name <place>]
 //!             [--objects SETUP,BLOCK,X,Y;...]
 //!             [--time 0.5] [--size 1280x720] [--radius 4] [--fov DEG] [--exposure 1.0]
 //!             [--ev STOPS] [--retail] [--no-bloom] [--rain] [--storm] [--snow] [--blizzard] [--no-shadows] [--shadow-distance M] [--no-lamps] [--no-ao] [--clouds 0-3]
-//!             [--no-bounce] [--no-lamp-rays] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx]
+//!             [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx]
 //!             [--no-surfaces] [--no-relief] [--relief 0-3] [--no-height-blend] [--no-triplanar] [--no-detail]
 //!             [--no-macro]
 //!             [--day-group N] [--clock SECONDS] [--frames 8] [--out place.png] [--window]
@@ -25,7 +25,7 @@
 //!             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
 //!             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0]
 //!             [--budget MS] [--ui overlay.png] [--select X,Y] [--hover X,Y]
-//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--no-wind] [--stride VX,VY]
+//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--retail-fountains] [--no-wind] [--stride VX,VY]
 //!             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
 //! ```
 //!
@@ -78,6 +78,8 @@ type Place = (f32, f32, Option<f32>);
 #[derive(Debug, Clone)]
 struct Args {
     dat_dir: PathBuf,
+    /// End of retail's files beside an older world's `dat_dir`, as the client opens them.
+    later_dat_dir: Option<PathBuf>,
     /// A world's overlay folder laid over the dats.
     overlay: Option<PathBuf>,
     block: u16,
@@ -121,6 +123,8 @@ struct Args {
     no_bounce: bool,
     /// The nearest lamps' shadows left untraced.
     no_lamp_rays: bool,
+    /// The God Rays level, 0 (off) to 3.
+    god_rays: u32,
     tone: ToneCurve,
     frames: usize,
     out: Option<PathBuf>,
@@ -190,6 +194,8 @@ struct Args {
     retail_beacons: bool,
     /// Retail's waterfall cards, not the falling sheets.
     retail_falls: bool,
+    /// Retail's fountains: their basins' picture and their bubbles.
+    retail_fountains: bool,
     /// No wind: the grass, shrubs and trees stand still.
     no_wind: bool,
     /// Every body walked at this velocity, metres a second east and north.
@@ -242,6 +248,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             dat_dir: PathBuf::new(),
+            later_dat_dir: None,
             overlay: None,
             block: 0xA9B4,
             at: (96.0, 96.0, None),
@@ -271,6 +278,7 @@ impl Default for Args {
             clouds: 2,
             no_bounce: false,
             no_lamp_rays: false,
+            god_rays: 0,
             tone: ToneCurve::Neutral,
             frames: 8,
             out: None,
@@ -309,6 +317,7 @@ impl Default for Args {
             retail_portals: false,
             retail_beacons: false,
             retail_falls: false,
+            retail_fountains: false,
             no_wind: false,
             stride: None,
             turn: 0.0,
@@ -410,7 +419,7 @@ fn apply_report(a: &mut Args, line: &str) -> Result<(), String> {
 
 /// What `--help` prints.
 const USAGE: &str =
-    "engine-view --dat-dir <dir> [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
+    "engine-view --dat-dir <dir> [--later-dat-dir <dir>] [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
             [--report \"<report line>\" | --library <file> --name <place>]
             [--objects SETUP,BLOCK,X,Y;...] [--art-pack <file>] [--base-pack <file>]
             [--object SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]]] [--character male|female[@X,Y[,Z]]]
@@ -418,7 +427,7 @@ const USAGE: &str =
             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
             [--time 0.5] [--size 1280x720] [--radius 4] [--fov DEG] [--exposure 1.0]
             [--ev STOPS] [--retail] [--no-bloom] [--rain] [--storm] [--snow] [--blizzard] [--no-shadows] [--shadow-distance M] [--no-lamps] [--no-ao] [--clouds 0-3]
-            [--no-bounce] [--no-lamp-rays] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx] [--day-group N] [--clock SECONDS] [--frames 8]
+            [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx] [--day-group N] [--clock SECONDS] [--frames 8]
             [--no-surfaces] [--no-relief] [--relief 0-3] [--no-height-blend] [--no-triplanar] [--no-detail] [--no-macro]
             [--out place.png] [--window] [--walk] [--no-cut] [--no-hiz] [--no-high-res] [--ground-coloring classic|tod] [--lod-bias 1.0] [--cards-from 1.0]
             [--far BLOCKS] [--fog-end METRES]
@@ -438,6 +447,7 @@ fn parse() -> Result<Args, String> {
         match arg.as_str() {
             "--help" | "-h" => return Err(USAGE.to_owned()),
             "--dat-dir" => a.dat_dir = PathBuf::from(val()?),
+            "--later-dat-dir" => a.later_dat_dir = Some(PathBuf::from(val()?)),
             "--overlay" => a.overlay = Some(PathBuf::from(val()?)),
             "--block" => a.block = hex_u16(&val()?)?,
             "--at" => {
@@ -501,6 +511,7 @@ fn parse() -> Result<Args, String> {
             "--clouds" => a.clouds = val()?.parse().map_err(|_| "--clouds")?,
             "--no-bounce" => a.no_bounce = true,
             "--no-lamp-rays" => a.no_lamp_rays = true,
+            "--god-rays" => a.god_rays = val()?.parse().map_err(|_| "--god-rays")?,
             "--tone" => {
                 a.tone = match val()?.as_str() {
                     "neutral" => ToneCurve::Neutral,
@@ -554,6 +565,7 @@ fn parse() -> Result<Args, String> {
             "--retail-portals" => a.retail_portals = true,
             "--retail-beacons" => a.retail_beacons = true,
             "--retail-falls" => a.retail_falls = true,
+            "--retail-fountains" => a.retail_fountains = true,
             "--no-wind" => a.no_wind = true,
             "--stride" => {
                 let v = val()?;
@@ -649,10 +661,16 @@ fn parse() -> Result<Args, String> {
     Ok(a)
 }
 
-fn open_store(dir: &std::path::Path) -> Result<RetailDatStore, String> {
+fn open_store(
+    dir: &std::path::Path,
+    later: Option<&std::path::Path>,
+) -> Result<RetailDatStore, String> {
     if !pyreal_dat::holds_modern_dats(dir) {
-        return RetailDatStore::open_classic_dir(dir)
-            .map_err(|e| format!("{}: {e}", dir.display()));
+        return match later {
+            Some(later) => RetailDatStore::open_classic_with_modern(dir, later),
+            None => RetailDatStore::open_classic_dir(dir),
+        }
+        .map_err(|e| format!("{}: {e}", dir.display()));
     }
     let store = RetailDatStore::open_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // As the client opens it: whenever it is installed.
@@ -671,7 +689,7 @@ struct View {
 }
 
 fn view(a: &Args) -> Result<View, String> {
-    let mut store = open_store(&a.dat_dir)?;
+    let mut store = open_store(&a.dat_dir, a.later_dat_dir.as_deref())?;
     if let Some(dir) = &a.overlay {
         let overlay = pyreal_dat::overlay::OverlayDir::new(dir).map_err(|e| e.to_string())?;
         store = store
@@ -914,7 +932,7 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
             Err(e) => println!("body: {e}"),
         }
     }
-    bodies::place_all(engine, &mut loader, &v.store, &mut made, named);
+    bodies::place_all(engine, &mut loader, &v.store, &mut made, named, a.block);
     // A character has no setup lamps; a creature's are placed each frame ([`bodies::gather`]).
     for (b, s) in made.iter_mut().zip(&made_setups) {
         if s.is_none() {
@@ -991,7 +1009,7 @@ fn report(engine: &mut Engine, timings: &[(String, Vec<f64>)], spans: &[f64]) {
         vis.eye_cell
             .and_then(|s| engine.cells.cell(s))
             .map_or_else(|| "the outdoors".to_owned(), |c| format!("{:#010X}", c.id)),
-        vis.cells_seen(),
+        engine.cells.rooms_seen(vis),
         engine.cells.cells().len(),
         if vis.outside() { "seen" } else { "not seen" }
     );
@@ -1147,6 +1165,7 @@ fn headless(a: &Args) -> Result<(), String> {
     engine.particles.portals &= !a.retail_portals;
     engine.particles.beacons &= !a.retail_beacons;
     engine.particles.falls &= !a.retail_falls;
+    engine.renderer.fountains_on = !a.retail_fountains;
     if a.no_wind {
         engine.renderer.foliage_wind = 0.0;
     }
@@ -1547,6 +1566,7 @@ fn apply_light(engine: &mut Engine, a: &Args) {
     r.atmosphere.cloud_detail = a.clouds.min(3);
     r.bounce = !a.no_bounce;
     r.lamp_rays = !a.no_lamp_rays;
+    r.air.level = a.god_rays.min(3);
     r.tone = a.tone;
     r.anti_aliasing = !a.no_aa;
     r.oit = a.oit;

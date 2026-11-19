@@ -37,6 +37,12 @@ pub const SNOW: u8 = 6;
 /// A portal in the world ([`crate::gates`]): a glowing disc of its colour about its axis, its arms
 /// spiralling in to its heart. `shaders/gates.wgsl` draws it.
 pub const GATE: u8 = 7;
+/// A dungeon room's haze ([`haze_of`]): a soft glow of its picture's colour that fills the room,
+/// drifting and churning slowly, adding its light and hiding little.
+pub const HAZE: u8 = 8;
+/// A vent's gas ([`gas_of`]): a cloud of its picture's colour blown out and swelling, laid over
+/// what is behind it, lit by the room's lamps.
+pub const GAS: u8 = 9;
 /// A ball's reach over its transform's scale (`puffs.wgsl`'s `PUFF_SIZE`).
 pub const PUFF_SIZE: f32 = 0.85;
 /// How much wider a snow ball is than its particle: the few small puffs of a frost elemental's
@@ -84,6 +90,108 @@ pub fn kind_of(sprite: &Sprite, e: &pyreal_animation::data::ParticleEmitterInfo)
     )
     .then_some(ACID)
     .or_else(|| steam_of(sprite.tone, sprite.additive(), &Stream::of(e)))
+    .or_else(|| haze_of(sprite.tone, sprite.additive(), sprite.half, e))
+    .or_else(|| gas_of(sprite.tone, sprite.additive(), e))
+}
+
+/// The least a haze's picture grows to across, metres.
+const HAZE_WIDEST: f32 = 8.0;
+/// Which of a haze's puffs its volume keeps: one in this many ([`stride_reach`] grows them).
+pub const HAZE_STRIDE: u32 = 3;
+
+/// A room's haze: an endless stream of flat additive pictures, coloured, that neither rise nor
+/// fall and swell from a speck to many metres across over seconds (the dungeons' purple, blue and
+/// warm hazes, 0x0100192C to 0x01001931). `half` is its picture's half width a unit of scale.
+#[must_use]
+pub fn haze_of(
+    tone: Tone,
+    additive: bool,
+    half: f32,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> Option<u8> {
+    use pyreal_animation::data::ParticleType;
+    let still = matches!(
+        e.particle_type,
+        ParticleType::Still | ParticleType::LocalVelocity | ParticleType::GlobalVelocity
+    );
+    let rise = Stream::of(e).rise;
+    (additive
+        && tone.flat
+        && !tone.grey
+        && still
+        && rise.abs() <= 0.05
+        && e.total_particles <= 0
+        && e.total_seconds <= 0.0
+        && e.max_particles >= 10
+        && e.lifespan >= 4.0
+        && e.start_scale <= 0.5
+        && e.final_scale * half * 2.0 >= HAZE_WIDEST)
+        .then_some(HAZE)
+}
+
+/// A vent's gas: an endless stream of laid-over (not added) puffs of a green, rounded picture that
+/// swell over a second and a half or more and do not fall (the dungeons' gas vents 0x02000AB3,
+/// 0x02000AB4, 0x0200028D and their kin, all of picture 0x01000FF9).
+#[must_use]
+pub fn gas_of(
+    tone: Tone,
+    additive: bool,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> Option<u8> {
+    let s = Stream::of(e);
+    let swells = s.final_scale >= s.start_scale * 1.4 && s.start_scale.max(s.final_scale) >= 0.8;
+    (!additive
+        && tone.green
+        && !tone.flat
+        && s.endless
+        && !s.light
+        && swells
+        && s.lifespan >= 1.5
+        && s.rise > -1.0
+        && e.max_particles >= 4)
+        .then_some(GAS)
+}
+
+/// The most of one gas emitter's puffs its volume keeps whole: a larger one keeps one in two.
+const GAS_MOST: i32 = 12;
+
+/// Which of a gas emitter's puffs its volume keeps: one in this many ([`stride_reach`] grows them).
+#[must_use]
+pub fn gas_stride(e: &pyreal_animation::data::ParticleEmitterInfo) -> u32 {
+    if e.max_particles > GAS_MOST {
+        2
+    } else {
+        1
+    }
+}
+
+/// How fast (metres a second) a gas emitter's puffs must fall to pour down and pool.
+const GAS_POOLS_UNDER: f32 = -0.05;
+
+/// Whether a gas emitter's puffs are heavy gas that pours down and spreads low as it ages (a
+/// vent's falling jet), not its rising haze or a pit's cloud.
+#[must_use]
+pub fn gas_pools(e: &pyreal_animation::data::ParticleEmitterInfo) -> bool {
+    Stream::of(e).rise < GAS_POOLS_UNDER
+}
+
+/// The volume a placed object's emitter of picture `gfx` makes, if any, as [`kind_of`] reads its
+/// sprite: steam, frost, snow, haze or gas.
+#[must_use]
+pub fn placed_kind(
+    store: &RetailDatStore,
+    gfx: DataId,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> Option<u8> {
+    let g = decode::<pyreal_assets::GfxObj>(store, DbType::GfxObj, gfx)?;
+    let additive = g.surfaces.iter().any(|s| {
+        decode::<pyreal_assets::Surface>(store, DbType::Surface, *s)
+            .is_some_and(|s| s.surface_type & 0x1_0000 != 0)
+    });
+    let tone = crate::lamps::tone(store, gfx);
+    steam_of(tone, additive, &Stream::of(e))
+        .or_else(|| haze_of(tone, additive, picture_half(store, gfx), e))
+        .or_else(|| gas_of(tone, additive, e))
 }
 
 /// The steam picture's half width (0x01000FC3's), metres a unit of scale, which the shader's
@@ -150,8 +258,23 @@ impl Stream {
             start_scale: e.start_scale,
             final_scale: e.final_scale,
             light: is_light_sprite(e),
-            rise: e.a.z * e.max_a + e.b.z * e.max_b + e.c.z * e.max_c,
+            rise: rise(
+                e.particle_type,
+                [e.a.z * e.max_a, e.b.z * e.max_b, e.c.z * e.max_c],
+            ),
         }
+    }
+}
+
+/// How fast an emitter's particles rise from its `a`, `b` and `c` (each times its most): a
+/// swarm's `b` and `c` only swing it about its path, and a still one never moves.
+#[must_use]
+pub fn rise(ty: pyreal_animation::data::ParticleType, [a, b, c]: [f32; 3]) -> f32 {
+    use pyreal_animation::data::ParticleType;
+    match ty {
+        ParticleType::Unknown | ParticleType::Still => 0.0,
+        ParticleType::Swarm => a,
+        _ => a + b + c,
     }
 }
 
@@ -173,6 +296,94 @@ pub fn steam_of(tone: Tone, additive: bool, e: &Stream) -> Option<u8> {
     } else {
         STEAM
     })
+}
+
+/// What a placed vent's steam puffs' alpha is multiplied by: retail's opacity at their most. A
+/// vent's puffs born three quarters clear make a veil half as thick (a ball's strength is the root
+/// of its alpha), a creature's born whole a body.
+#[must_use]
+pub fn vent_strength(e: &pyreal_animation::data::ParticleEmitterInfo) -> f32 {
+    (1.0 - e.start_trans.min(e.final_trans)).clamp(0.0, 1.0)
+}
+
+/// How fast a placed steam emitter's puffs rise at the least to be a jet (a geyser's), metres a
+/// second.
+pub const JET_RISE: f32 = 4.0;
+/// How thick a jet's puff is beside a vent's of the same strength once it has spread: a veil the
+/// light passes, its churn and shape a vent's (`puffs.wgsl` reads it from a ball's empty entry).
+pub const JET_SHARE: f32 = 0.2;
+/// The share of a jet puff's life over which it thins to [`JET_SHARE`]: whole at the vent, as
+/// retail's are born.
+const JET_THINS: f32 = 0.4;
+/// The share of a jet puff's life it takes to swell into being: born small at the vent, it shows
+/// at once, as retail's do.
+const JET_SWELL: f32 = 0.02;
+
+/// Whether a placed steam emitter is a jet: its puffs thrown up fast from its foot (retail's
+/// explode type), a geyser's.
+#[must_use]
+pub fn is_jet(e: &pyreal_animation::data::ParticleEmitterInfo) -> bool {
+    e.particle_type == pyreal_animation::data::ParticleType::Explode
+        && Stream::of(e).rise >= JET_RISE
+}
+
+/// How thick a jet puff is beside its strength at `age` (0 to 1 of its life): whole at the vent,
+/// a veil as it spreads.
+#[must_use]
+pub fn jet_share(age: f32) -> f32 {
+    JET_SHARE + (1.0 - JET_SHARE) * (1.0 - ease(age / JET_THINS))
+}
+
+/// Whether a jet's host's emitter is its spray: an endless stream of the grey additive puffs
+/// round its foot, which rise slowly or not at all (retail's flat pictures), drawn in its volume.
+#[must_use]
+pub fn is_spray(
+    tone: Tone,
+    additive: bool,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> bool {
+    tone.grey
+        && additive
+        && !tone.flat
+        && e.total_particles <= 0
+        && e.total_seconds <= 0.0
+        && e.max_particles >= 4
+        && e.lifespan >= 1.5
+        && !is_jet(e)
+}
+
+/// How much stronger a jet's spray is than its pictures' opacity: retail's overlap, added, in a
+/// bank round its foot.
+pub const SPRAY_STRENGTH: f32 = 1.2;
+/// How thick a jet's spray is beside its strength: shaped as a vent's, a veil.
+pub const SPRAY_SHARE: f32 = 0.3;
+/// How much wider a jet's ball is than a vent's of its scale: as wide as retail's picture shows.
+pub const JET_REACH: f32 = 1.3;
+
+/// A placed steam puff's alpha as the volume takes it from retail's opacity `alpha`, `age`
+/// through its life: a vent's is [`vent_strength`] and [`swell`] as any steam's; a jet's spray
+/// its own opacity, swelled; a jet's shows as soon as it is born and falls as the square of
+/// retail's, so its stem is whole and its spreading top frays.
+#[must_use]
+pub fn placed_alpha(
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+    alpha: f32,
+    age: f32,
+    spray: bool,
+) -> f32 {
+    if spray {
+        return (alpha * SPRAY_STRENGTH).min(1.0) * swell(age);
+    }
+    if !is_jet(e) {
+        return alpha * vent_strength(e) * swell(age);
+    }
+    alpha * alpha * ease(age / JET_SWELL) * ease((1.0 - age) / STEAM_SWELL[1])
+}
+
+/// Smoothstep over 0 to 1.
+fn ease(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// The least reach (metres) of a creature's puff drawn as smoke or dust, at its largest.

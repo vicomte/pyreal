@@ -29,7 +29,8 @@ use crate::scene::{Draw, MeshId, PipelineKind};
 /// The most particles drawn a frame.
 pub const MAX_PARTICLES: usize = 16 << 10;
 /// One particle's bytes on the GPU: its transform's rows, its material word (the turn's mode in
-/// the top byte), its alpha (a glow's colour word), its cell and its flags (1: a lamp's light sprite).
+/// the top byte), its alpha (a glow's colour word), its cell and its flags (1: a lamp's light sprite,
+/// its seed 1 when warm).
 pub const PARTICLE_SIZE: u64 = 64;
 /// How far from the eye a host is stepped with its particles drawn, metres (the client's
 /// particle degrade distance when its picture names none).
@@ -84,6 +85,9 @@ pub struct Host {
     pub flamed: bool,
     /// Its fire is a bed of retail's fire puffs, drawn as fire ([`Look::Fire`]).
     pub puffed: bool,
+    /// Its bed of fire is a hearth's or a wreath's, drawn as a body of fire
+    /// ([`crate::body_fire::hearth`], [`crate::body_fire::wreath`]) while flames are.
+    pub hearth: bool,
     /// It holds nothing but retail's snowfall ([`is_snowfall`]): no longer stepped.
     pub quiet: bool,
     /// Its emitters are a waterfall's ([`crate::falls::is_fall`]): not stepped or drawn while falls
@@ -91,6 +95,11 @@ pub struct Host {
     pub fall: bool,
     /// It is a shadow's ([`crate::body::shadow_parts`]): its eyes glow ([`is_eye`]).
     pub shadow: bool,
+    /// The level faces of a basin's water on its parts ([`crate::fountains::pool_faces`]), where
+    /// its jets land.
+    pub pools: Vec<crate::fountains::PoolFace>,
+    /// Where its own streams meet that water ([`crate::fountains::spills`]): rung there.
+    pub spills: Vec<crate::fountains::Spill>,
     /// Which of a lighthouse beacon's hosts it is, if it is one ([`crate::beacons::is_beacon`]).
     pub beacon: Option<u8>,
 }
@@ -191,6 +200,9 @@ pub fn blob_of(id: u32) -> Option<u8> {
     BLOB_SPRITES.iter().find(|b| b.0 == id).map(|b| b.1)
 }
 
+/// A run of vapour balls in the instance list: the first, how many, and its balls' mean distance.
+pub type PuffRun = (u32, u32, f32);
+
 /// One drawn particle, before it goes to the GPU.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Drawn {
@@ -264,6 +276,9 @@ pub struct Particles {
     /// Whether waterfalls are drawn as falling sheets of water ([`crate::falls`]); off, as
     /// retail's cards.
     pub falls: bool,
+    /// Whether fountains' jets are drawn as streams of water ([`crate::fountains`]); off, as
+    /// retail's bubbles.
+    pub fountains: bool,
     pub air: crate::gates::Air,
     /// Each portal's colour as last drawn, by its default script, for the tunnel it leads into.
     // ORDER-OK: looked up by script, never iterated.
@@ -279,6 +294,9 @@ pub struct Particles {
     pub blobs: (u32, u32),
     /// The vapour balls, after the liquid ([`Look::Puff`]).
     pub puffs: (u32, u32),
+    /// Each run of vapour balls in `puffs` (first, how many) and how far its balls are on the
+    /// whole, far to near, so it is drawn among the translucent in order.
+    pub puff_runs: Vec<PuffRun>,
     /// Lightning in a body's volume ([`crate::bolts`]): each strike by its particle's seed, kept
     /// for its own life, the strikes gathered since the last frame (body, where it stands, seed,
     /// brightness, cell, its lamp's share), the records that are no particle's (a strike's
@@ -349,6 +367,7 @@ impl Default for Particles {
             portals: true,
             beacons: true,
             falls: true,
+            fountains: false,
             air: crate::gates::Air::default(),
             portal_colours: HashMap::new(),
             detail: 1.0,
@@ -356,6 +375,7 @@ impl Default for Particles {
             gathered: 0,
             blobs: (0, 0),
             puffs: (0, 0),
+            puff_runs: Vec::new(),
             strikes: HashMap::new(),
             struck: Vec::new(),
             records: Vec::new(),
@@ -626,6 +646,31 @@ impl Particles {
         cell: u32,
         object: u32,
     ) -> bool {
+        self.host(setup, frame, scale, cell, object, false)
+    }
+
+    /// [`Self::spawn`] for a setup with no script or animation too, its parts placed once and
+    /// never stepped: a wall fountain whose stream rings its basin.
+    pub fn hold(
+        &mut self,
+        setup: DataId,
+        frame: Frame,
+        scale: f32,
+        cell: u32,
+        object: u32,
+    ) -> bool {
+        self.host(setup, frame, scale, cell, object, true)
+    }
+
+    fn host(
+        &mut self,
+        setup: DataId,
+        frame: Frame,
+        scale: f32,
+        cell: u32,
+        object: u32,
+        bare: bool,
+    ) -> bool {
         let Some(assets) = self.assets.clone() else {
             return false;
         };
@@ -636,7 +681,8 @@ impl Particles {
             return false;
         };
         let animated = data.default_animation.is_some();
-        if data.default_script.is_none() && !animated {
+        let still = data.default_script.is_none() && !animated;
+        if still && !bare {
             return false;
         }
         let mut driver = MotionDriver::new(assets);
@@ -663,9 +709,12 @@ impl Particles {
             omega: pyreal_primitives::Vec3::ZERO,
             flamed: false,
             puffed: false,
-            quiet: false,
+            hearth: false,
+            quiet: still,
             fall: false,
             shadow: false,
+            pools: Vec::new(),
+            spills: Vec::new(),
             beacon: None,
         });
         true
@@ -695,9 +744,12 @@ impl Particles {
             omega: pyreal_primitives::Vec3::ZERO,
             flamed: false,
             puffed: false,
+            hearth: false,
             quiet: false,
             fall: false,
             shadow: false,
+            pools: Vec::new(),
+            spills: Vec::new(),
             beacon: None,
         });
         true
@@ -830,7 +882,8 @@ impl Particles {
     /// Adds the live particles of `driver`'s emitters, which the client steps, to the next
     /// frame's: each moved by `offset` into render space and seen through cell slot `cell`; a
     /// `shadow`'s eyes glow. Each emitter is drawn as its role says ([`crate::roles`]): its fire
-    /// with the body's fire, its lightning as strikes in the body's volume.
+    /// with the body's fire, its lightning as strikes in the body's volume. A `held` thing's light
+    /// carries a held thing's lamp ([`crate::glow::HELD_INTENSITY`]).
     pub fn gather(
         &mut self,
         driver: &MotionDriver,
@@ -838,6 +891,7 @@ impl Particles {
         offset: Vec3,
         eye: Vec3,
         shadow: bool,
+        held: bool,
     ) {
         use crate::roles::Role;
         // A portal is drawn as a vortex, its swirl's particles left out; else as retail's swirl.
@@ -945,7 +999,7 @@ impl Particles {
                 _ => look_of(sprite, &e.info, self.smoke),
             };
             // A creature's smoke or dust ([`crate::puffs::smoke_of`]) is thinned and swelled.
-            let smoke = matches!(look, Look::Puff(k) if k >= crate::puffs::SMOKE);
+            let smoke = matches!(look, Look::Puff(k) if (crate::puffs::SMOKE..crate::puffs::HAZE).contains(&k));
             let stride = crate::puffs::stride(&e.info);
             let carried = match look {
                 Look::Glow(_) if !snowy => sprite.glow.map(|g| (0, g.colour)),
@@ -1068,26 +1122,21 @@ impl Particles {
             if weight <= 0.0 {
                 continue;
             }
-            let (intensity, falloff) = if k == 0 {
-                (crate::glow::LAMP_INTENSITY, crate::glow::LAMP_FALLOFF)
+            let source = if k == 0 {
+                crate::glow::carried_source(colour, held)
             } else {
-                (
-                    crate::puffs::ACID_GLOW_INTENSITY,
-                    crate::puffs::ACID_GLOW_FALLOFF,
-                )
-            };
-            let source = crate::lamps::LampSource {
-                kind: crate::lamps::LampKind::Glow,
-                offset: Vec3::ZERO,
-                colour: colour / colour.max_element().max(1e-6),
-                intensity,
-                falloff,
-                flicker: crate::lamps::Flicker::Steady,
-                shadows: false,
+                crate::lamps::LampSource {
+                    intensity: crate::puffs::ACID_GLOW_INTENSITY,
+                    falloff: crate::puffs::ACID_GLOW_FALLOFF,
+                    ..crate::glow::carried_source(colour, false)
+                }
             };
             let at = Affine3A::from_translation(at / weight + offset);
-            self.glow_lamps
-                .push(crate::lamps::place(&source, &at, cell, u32::MAX));
+            let mut lamp = crate::lamps::place(&source, &at, cell, u32::MAX);
+            if held && k == 0 {
+                lamp = crate::glow::held_lamp(lamp, source.colour);
+            }
+            self.glow_lamps.push(lamp);
         }
         if driver
             .particles
@@ -1151,18 +1200,35 @@ impl Particles {
                     ));
                 }
             }
+            // A geyser's jet: its spray round its foot is drawn in its volume.
+            let jet = self.smoke
+                && h.driver.particles.iter().any(|e| {
+                    crate::puffs::is_jet(&e.info)
+                        && matches!(self.sprites.get(&sprite_of(&e.info).0), Some(Some(s))
+                            if crate::puffs::kind_of(s, &e.info) == Some(crate::puffs::STEAM))
+                });
             for e in h.driver.particles.iter() {
                 let id = sprite_of(&e.info).0;
                 let Some(Some(sprite)) = self.sprites.get(&id) else {
                     continue;
                 };
-                if is_snowfall(&e.info) {
+                if is_snowfall(&e.info)
+                    || self.fountains && crate::fountains::drawn_for(&h.driver, &e.info)
+                {
                     continue;
                 }
                 let eyes = h.shadow && is_eye(e, sprite.additive());
                 let light = sprite.additive() && is_light_sprite(&e.info) && !eyes;
                 let glow = if eyes { EYE_GLOW } else { 1.0 };
                 if self.skip_light_sprites && light {
+                    continue;
+                }
+                // A hearth's fire is drawn as a body of fire ([`crate::flames::Flames::hearths`]).
+                if self.skip_flamed
+                    && h.hearth
+                    && sprite.fire.is_some()
+                    && self.puffed.contains(&id)
+                {
                     continue;
                 }
                 let fire = self.skip_flamed
@@ -1188,6 +1254,15 @@ impl Particles {
                         .filter(|_| self.smoke)
                         .map_or_else(|| look_of(sprite, &e.info, self.smoke), Look::Blob)
                 };
+                let spray = jet
+                    && look == Look::Picture
+                    && crate::puffs::is_spray(sprite.tone, sprite.additive(), &e.info);
+                let look = if spray {
+                    Look::Puff(crate::puffs::STEAM)
+                } else {
+                    look
+                };
+                let jet_puff = crate::puffs::is_jet(&e.info);
                 for p in e.live() {
                     self.live += 1;
                     if p.translucency >= 1.0 || p.scale <= 0.0 {
@@ -1195,6 +1270,22 @@ impl Particles {
                     }
                     let o = p.frame.origin;
                     let (mut transform, age, drift) = shape(look, p, self.wind);
+                    // A haze, and a big vent's gas, keep one ball in a few, each grown to hold their
+                    // volume.
+                    let stride = match look {
+                        Look::Puff(crate::puffs::HAZE) => crate::puffs::HAZE_STRIDE,
+                        Look::Puff(crate::puffs::GAS) => crate::puffs::gas_stride(&e.info),
+                        _ => 1,
+                    };
+                    if stride > 1 {
+                        if !seed_of(p).is_multiple_of(stride) {
+                            continue;
+                        }
+                        let k = crate::puffs::stride_reach(stride);
+                        transform.matrix3.x_axis.x *= k;
+                        transform.matrix3.y_axis.y *= k;
+                        transform.matrix3.z_axis.z *= k;
+                    }
                     if let Look::Puff(_) = look {
                         let b = h.driver.particle_parent_frame().origin;
                         anchor(&mut transform, Vec3::new(b.x, b.y, b.z));
@@ -1209,10 +1300,29 @@ impl Particles {
                     if planes.iter().any(|q| q.truncate().dot(at) + q.w < -r) {
                         continue;
                     }
+                    let mut alpha = (1.0 - p.translucency).clamp(0.0, 1.0) * glow;
+                    // A placed vent's or jet's steam is as thick as retail draws its puffs.
+                    if look == Look::Puff(crate::puffs::STEAM) {
+                        alpha = crate::puffs::placed_alpha(&e.info, alpha, age, spray);
+                        // A jet's and its spray's balls are wider, and how thick each is beside
+                        // its strength rides in its last empty entry.
+                        if jet_puff || spray {
+                            transform.matrix3.x_axis.x *= crate::puffs::JET_REACH;
+                        }
+                        if jet_puff {
+                            transform.matrix3.y_axis.z = crate::puffs::jet_share(age);
+                        } else if spray {
+                            transform.matrix3.y_axis.z = crate::puffs::SPRAY_SHARE;
+                        }
+                    }
+                    // Heavy gas pools as it ages: its mark rides in the same entry.
+                    if look == Look::Puff(crate::puffs::GAS) && crate::puffs::gas_pools(&e.info) {
+                        transform.matrix3.y_axis.z = 1.0;
+                    }
                     self.drawn.push(Drawn {
                         sprite: id,
                         transform,
-                        alpha: (1.0 - p.translucency).clamp(0.0, 1.0) * glow,
+                        alpha,
                         cell: h.cell,
                         distance,
                         light,
@@ -1277,9 +1387,10 @@ impl Particles {
                         .total_cmp(&a.transform.matrix3.x_axis.length()),
                 )
         });
-        // Steam's seed is its picture's material (its colour); its ball is as wide as its picture.
+        // Steam's, haze's and gas's seed is its picture's material (its colour); its ball is as wide as
+        // its picture.
         for d in &mut puffs {
-            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW)
+            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW || k == crate::puffs::HAZE || k == crate::puffs::GAS)
             {
                 if let Some(Some(s)) = self.sprites.get(&d.sprite) {
                     d.seed = s.draws.first().map_or(0, |m| m.material & 0x7_FFFF);
@@ -1290,7 +1401,13 @@ impl Particles {
                     m.y_axis.y *= k;
                     m.z_axis.z *= k;
                     m.x_axis.y *= k;
-                    d.alpha *= crate::puffs::swell(d.age);
+                    // Gas is born small and dense, retail's lumps: it swells by its size alone.
+                    // A placed static's steam swelled as it was gathered.
+                    if d.look != Look::Puff(crate::puffs::GAS)
+                        && (d.group & 0x8000_0000 == 0 || d.look != Look::Puff(crate::puffs::STEAM))
+                    {
+                        d.alpha *= crate::puffs::swell(d.age);
+                    }
                 }
             }
         }
@@ -1336,18 +1453,23 @@ impl Particles {
             }
             k = end;
         }
-        self.blobs = self.runs(liquid, vapour);
+        self.blobs = self.runs(liquid, vapour).0;
         self.records.clear();
         self.run_words.clear();
-        self.puffs = self.runs(vapour, self.drawn.len());
+        let (puffs, mut runs) = self.runs(vapour, self.drawn.len());
+        runs.sort_by(|a, b| b.2.total_cmp(&a.2));
+        self.puffs = puffs;
+        self.puff_runs = runs;
         self.strike_segments();
         self.cpu_ms += started.elapsed().as_secs_f64() * 1e3;
     }
 
     /// The balls `from..to` of `drawn` as instances, each body's run together: their material
-    /// word the run's first instance, its length and its kind. Where they are in the list.
-    fn runs(&mut self, from: usize, to: usize) -> (u32, u32) {
+    /// word the run's first instance, its length and its kind. Where they are in the list, and
+    /// each run (first, how many, its balls' mean distance).
+    fn runs(&mut self, from: usize, to: usize) -> ((u32, u32), Vec<PuffRun>) {
         let first = u32::try_from(self.instances.len()).unwrap_or(0);
+        let mut runs = Vec::new();
         let mut lit = std::collections::HashSet::new();
         let mut k = from;
         while k < to && self.instances.len() < MAX_PARTICLES {
@@ -1377,13 +1499,19 @@ impl Particles {
             self.instances
                 .extend((k..end).chain(lines).take(n).map(|i| (i, word)));
             self.run_words.insert(group, word);
+            #[allow(clippy::cast_precision_loss)]
+            let distance =
+                self.drawn[k..end].iter().map(|d| d.distance).sum::<f32>() / (end - k) as f32;
+            runs.push((start, count, distance));
             k = end;
         }
         self.instances.truncate(MAX_PARTICLES);
-        (
-            first,
-            u32::try_from(self.instances.len()).unwrap_or(0) - first,
-        )
+        let last = u32::try_from(self.instances.len()).unwrap_or(0);
+        runs.retain_mut(|r| {
+            r.1 = r.1.min(last.saturating_sub(r.0));
+            r.1 > 0
+        });
+        ((first, last - first), runs)
     }
 
     /// Body `group`'s strikes this frame as lines of light: records (their chords, their colour by
@@ -1619,12 +1747,20 @@ impl Particles {
             }
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 1023
             let age = (p.age.clamp(0.0, 1.0) * 1023.0) as u32;
+            // A light sprite's seed is whether its picture is warm (firelight) or a magic lamp's.
+            let seed = if p.light {
+                u32::from(
+                    matches!(self.sprites.get(&p.sprite), Some(Some(s)) if crate::lamps::warm(s.colour)),
+                )
+            } else {
+                p.seed
+            };
             // The seed's 17 bits, then whether it is a glow and its shape; fire sets bits 0 and 1.
             let mut flags = u32::from(p.light || p.look == Look::Fire)
                 | u32::from(p.look == Look::Smoke || p.look == Look::Fire) << 1
                 | age << 2
                 | u32::from(p.look == Look::Mist) << 12
-                | (p.seed & 0x1_FFFF) << 13
+                | (seed & 0x1_FFFF) << 13
                 | match p.look {
                     Look::Glow(kind) | Look::Flake(kind) => 1 << 30 | u32::from(kind) << 31,
                     _ => 0,
@@ -1635,7 +1771,7 @@ impl Particles {
             }
             // Smoke and dust carry their picture's colour in place of their seed.
             if let (Look::Puff(k), Some(Some(s))) = (p.look, self.sprites.get(&p.sprite)) {
-                if k >= crate::puffs::SMOKE {
+                if (crate::puffs::SMOKE..crate::puffs::HAZE).contains(&k) {
                     flags = age << 2 | crate::puffs::tint_bits(s.colour) << 16;
                 }
             }

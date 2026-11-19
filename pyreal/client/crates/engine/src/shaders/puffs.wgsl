@@ -29,6 +29,48 @@ const PUFF_KINDS: u32 = 31u;
 const PUFF_SMOKE: u32 = 3u;
 // A frost elemental's snow (`puffs::SNOW`), marched with steam.
 const PUFF_SNOW: u32 = 6u;
+// A room's haze (`puffs::HAZE`), marched with steam: a glow of its picture's colour.
+const PUFF_HAZE: u32 = 8u;
+// Haze: how thick a ball is through its heart at full strength, how much a step of it hides of
+// what is behind it for the light it gives, and how brightly it glows (a share of a light).
+const HAZE_THICKNESS: f32 = 0.6;
+const HAZE_HIDES: f32 = 0.15;
+const HAZE_GLOW: f32 = 0.008;
+// Haze is soft and even: a few steps of it, and one octave of churn.
+const HAZE_STEPS: i32 = 6;
+// A vent's gas (`puffs::GAS`), marched with steam: a cloud of its picture's colour, lit by the
+// room. How much of the light on it it gives back, how far its colour is kept from grey, how
+// thick it is beside steam, and how fast it rises through its churn.
+const PUFF_GAS: u32 = 9u;
+const GAS_ALBEDO: f32 = 0.35;
+const GAS_COLOUR: f32 = 0.85;
+const GAS_THICKNESS: f32 = 1.0;
+const GAS_RISE: f32 = 0.12;
+// Its churn is laid at most this much larger with its puffs, so its billows show close by; and
+// how hard its billows' edges are, however many of its puffs overlap; how wide (metres) a puff
+// grows before it is as thick as its strength; and how deep the gas over a place shades it from
+// the room's light.
+const GAS_SCALE_MOST: f32 = 1.6;
+const GAS_BILLOW: vec2<f32> = vec2<f32>(0.42, 0.62);
+const GAS_SWELL: f32 = 0.08;
+// How fast a fading puff thins: past its alpha, as a wide clear picture covers little of its disc.
+const GAS_FADE: f32 = 1.2;
+const GAS_SHADE: f32 = 0.8;
+// Heavy gas (a vent's falling jet, marked in its transform's last empty entry) slumps as it ages:
+// how flat and how wide it is at its death, how slowly it and the haze over it thin, how much
+// light its body gives back and how far its colour is kept from grey (beside its vent's lamp), and
+// how fast it sinks through its churn.
+const GAS_POOL_FLAT: f32 = 0.45;
+const GAS_POOL_WIDE: f32 = 1.6;
+const GAS_POOL_FADE: f32 = 0.6;
+const GAS_POOL_HAZE_FADE: f32 = 0.8;
+const GAS_POOL_ALBEDO: f32 = 0.17;
+const GAS_POOL_COLOUR: f32 = 0.45;
+const GAS_POOL_THICKNESS: f32 = 0.5;
+// How long (metres) a step through heavy gas may be, and its most steps.
+const GAS_POOL_STEP: f32 = 0.3;
+const GAS_POOL_STEPS: i32 = 24;
+const GAS_SINK: f32 = 0.15;
 
 // Acid: how thick a ball is through its heart at full strength (optical depth), the light it
 // scatters of what falls on it, and its own glow: the colour at its edge and at its heart, and how
@@ -106,6 +148,8 @@ const SNOW_CUT: f32 = 1.6;
 const SNOW_WHIRL: f32 = 0.9;
 const SNOW_SINK: f32 = 0.25;
 const SNOW_GRAIN: f32 = 0.35;
+// How much of the sky's hue steam takes (a dawn's blue would turn it lilac).
+const STEAM_SKY_HUE: f32 = 0.5;
 // The heights over its body the lamps' light is found at.
 const STEAM_LAMP_POINTS: u32 = 3u;
 // How far past its reach a ball off the view still shades it, metres.
@@ -147,6 +191,11 @@ fn puff_weight(i: u32) -> f32 {
         // Snow holds its body as its pictures fade: they fade as the next ones come.
         return pow(clamp(particles[i].alpha, 0.0, 1.0), 0.3) * smoothstep(0.0, STEAM_SWELL, puff_ball(i).w);
     }
+    // Gas is as strong as retail draws its puff: its young lumps stand out of its old haze.
+    if (kind == PUFF_GAS) {
+        let fade = select(select(GAS_FADE, GAS_POOL_HAZE_FADE, gas_sinks), GAS_POOL_FADE, gas_pools(i));
+        return pow(clamp(particles[i].alpha, 0.0, 1.0), fade) * smoothstep(0.0, GAS_SWELL, puff_ball(i).w);
+    }
     if (kind != 0u) {
         return sqrt(clamp(particles[i].alpha, 0.0, 1.0)) * smoothstep(0.0, STEAM_SWELL, puff_ball(i).w);
     }
@@ -154,10 +203,33 @@ fn puff_weight(i: u32) -> f32 {
         * (1.0 - smoothstep(PUFF_DEATH, 1.0, age));
 }
 
+// Whether gas ball `i` is heavy gas that pools.
+fn gas_pools(i: u32) -> bool {
+    return particles[i].m2.y > 0.0;
+}
+
+// How much wider than round heavy gas ball `i` has spread.
+fn gas_wide(i: u32) -> f32 {
+    return mix(1.0, GAS_POOL_WIDE, puff_age(i));
+}
+
+// How thick steam's ball `i` is beside its strength (a geyser's jet is a veil): its transform's
+// last empty entry, none for whole.
+fn puff_share(i: u32, kind: u32) -> f32 {
+    let s = particles[i].m2.y;
+    return select(1.0, s, kind == 1u && s > 0.0);
+}
+
 // How thick a kind's ball is through its heart at full strength.
 fn puff_thickness(kind: u32) -> f32 {
     if (kind == PUFF_SNOW) {
         return STEAM_THICKNESS * SNOW_THICKNESS;
+    }
+    if (kind == PUFF_HAZE) {
+        return HAZE_THICKNESS;
+    }
+    if (kind == PUFF_GAS) {
+        return STEAM_THICKNESS * GAS_THICKNESS;
     }
     return select(ACID_THICKNESS, STEAM_THICKNESS, kind != 0u);
 }
@@ -168,7 +240,7 @@ fn steam_tint(kind: u32, material: u32) -> vec4<f32> {
     if (kind == PUFF_SNOW) {
         return vec4<f32>(SNOW_RIME, SNOW_GLOW);
     }
-    if (kind != 2u) {
+    if (kind != 2u && kind != PUFF_HAZE && kind != PUFF_GAS) {
         return vec4<f32>(0.97, 0.98, 1.0, 0.0);
     }
     let m = materials[material];
@@ -177,6 +249,14 @@ fn steam_tint(kind: u32, material: u32) -> vec4<f32> {
         c *= textureSampleLevel(textures[m.tex_base], samp_repeat, vec2<f32>(0.5), 16.0).rgb;
     }
     let top = max(max(c.r, max(c.g, c.b)), 1e-4);
+    if (kind == PUFF_HAZE) {
+        return vec4<f32>(c / top, HAZE_GLOW);
+    }
+    if (kind == PUFF_GAS) {
+        let hue = c / top;
+        let keep = select(GAS_COLOUR, GAS_POOL_COLOUR, gas_sinks);
+        return vec4<f32>(mix(vec3<f32>(luma(hue)), hue, keep) * select(GAS_ALBEDO, GAS_POOL_ALBEDO, gas_sinks), 0.0);
+    }
     let strong = smoothstep(0.25, 0.6, 1.0 - min(c.r, min(c.g, c.b)) / top);
     return vec4<f32>(mix(vec3<f32>(0.86, 0.93, 1.0), c / top, 0.8 * strong),
                      FROST_GLOW + STEAM_MAGIC_GLOW * strong);
@@ -189,12 +269,29 @@ fn steam_shape(at: vec3<f32>, rho: f32, kind: u32) -> vec3<f32> {
     if (kind == PUFF_SNOW) {
         return snow_shape(at, rho, time);
     }
-    let rise = select(STEAM_RISE, -FROST_SINK, kind == 2u);
+    var rise = select(STEAM_RISE, -FROST_SINK, kind == 2u);
+    var churn = STEAM_CHURN;
+    if (kind == PUFF_GAS) {
+        rise = select(GAS_RISE, -GAS_SINK, gas_sinks);
+        churn = select(STEAM_CHURN, -STEAM_CHURN, gas_sinks);
+    }
+    if (kind == PUFF_HAZE) {
+        // Haze drifts and churns slowly, lit by nothing but itself: its churn alone.
+        let h = (at - puff_from - vec3<f32>(frame.wind.xy * 0.1, 0.0) * time) / puff_scale * STEAM_CELLS;
+        let n = clamp((puff_fbm3(h + vec3<f32>(0.0, 0.0, -time * STEAM_CHURN)) - 0.5) * 2.2 + 0.5, 0.0, 1.0);
+        return vec3<f32>(mix(0.4, 1.4, n), 1.0, 1.0);
+    }
     var q = (at - puff_from - vec3<f32>(frame.wind.xy * 0.25, rise) * time) / puff_scale * STEAM_CELLS;
-    q.z -= time * STEAM_CHURN;
+    q.z -= time * churn;
     let n = clamp((puff_fbm3(q) - 0.5) * 2.2 + 0.5, 0.0, 1.0);
-    // The noise eats the volume where it is thin: its edge billows, its heart stays whole.
-    let keep = max(rho - (1.0 - n) * STEAM_EROSION, 0.0) / max(rho, 1e-4) * mix(0.6, 1.4, n);
+    // The noise eats the volume where it is thin: its edge billows, its heart stays whole. Gas
+    // billows all through, its edge most.
+    var keep = max(rho - (1.0 - n) * STEAM_EROSION, 0.0) / max(rho, 1e-4) * mix(0.6, 1.4, n);
+    if (kind == PUFF_GAS) {
+        // Lit by the room, not the sun: no lobe toward it to look for.
+        let k = smoothstep(GAS_BILLOW.x, GAS_BILLOW.y, n + (min(rho, 1.0) - 0.6) * 0.5) * 2.0;
+        return vec3<f32>(k, 1.0, mix(0.8, 1.1, n));
+    }
     // The noise a little toward the sun: a lobe facing the light is lit, its folds shaded (from
     // the sky too, half as much).
     let toward = clamp((puff_fbm3(q + frame.sun_dir.xyz * STEAM_LOBE) - 0.5) * 2.2 + 0.5, 0.0, 1.0);
@@ -240,6 +337,9 @@ fn puff_reach(i: u32, kind: u32) -> vec4<f32> {
     }
     if (kind == PUFF_SNOW) {
         return vec4<f32>(b.xyz, b.w * SNOW_CUT);
+    }
+    if (kind == PUFF_GAS && gas_pools(i)) {
+        return vec4<f32>(b.xyz, b.w * gas_wide(i));
     }
     if (kind != 0u || puff_seed(i) % ACID_DRIP_EVERY != 0u) {
         return b;
@@ -334,6 +434,8 @@ var<private> puff_scale: f32;
 var<private> puff_from: vec3<f32>;
 // A steam body's emitters' largest puff's reach, metres.
 var<private> steam_reach: f32;
+// Whether a gas body is heavy gas, sinking through its churn.
+var<private> gas_sinks: bool;
 
 // How much of the light from `l` the gathered balls let reach `x` (their analytic thickness), and
 // from `l2`.
@@ -479,7 +581,7 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
         return gate_volume(in);
     }
     // Smoke and dust march their own way (`smoke.wgsl`).
-    if (kind >= PUFF_SMOKE && kind != PUFF_SNOW) {
+    if (kind >= PUFF_SMOKE && kind != PUFF_SNOW && kind != PUFF_HAZE && kind != PUFF_GAS) {
         return smokes_volume(in);
     }
     let eye = frame.camera.xyz;
@@ -503,7 +605,11 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
             largest = max(largest, particles[first + k].m1.x);
         }
         steam_reach = largest * PUFF_SIZE;
-        puff_scale = clamp(steam_reach / STEAM_SCALE_FROM, 1.0, 12.0);
+        gas_sinks = false;
+        for (var k = 0u; k < count && kind == PUFF_GAS; k++) {
+            gas_sinks = gas_sinks || gas_pools(first + k);
+        }
+        puff_scale = clamp(steam_reach / STEAM_SCALE_FROM, 1.0, select(12.0, GAS_SCALE_MOST, kind == PUFF_GAS));
     }
     var t0 = 1e9;
     var t1 = 0.0;
@@ -530,12 +636,21 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
         for (var e = 0u; e < 2u; e++) {
             var c = vec4<f32>(b.xyz, s);
             var sz = s;
-            var thick = w * puff_thickness(kind) / (s * 2.5066283);
+            var thick = w * puff_thickness(kind) * puff_share(j, kind) / (s * 2.5066283);
             if (kind == 0u) {
                 thick = min(thick, ACID_DENSEST);
             }
             var strength = w * select(ACID_STRENGTH, 1.0, kind != 0u);
             var r = select(b.w, b.w * SNOW_CUT, kind == PUFF_SNOW);
+            // Heavy gas slumps lower and wider as it ages, its foot where it was, as thick in all.
+            if (kind == PUFF_GAS && gas_pools(j)) {
+                let flat = mix(1.0, GAS_POOL_FLAT, puff_age(j));
+                let wide = gas_wide(j);
+                c = vec4<f32>(b.xy, b.z - 2.0 * s * (1.0 - flat), s * wide);
+                sz = s * flat;
+                thick *= GAS_POOL_THICKNESS / (wide * wide * flat);
+                r = b.w * wide;
+            }
             if (e == 1u) {
                 let d = puff_drop(j, kind);
                 if (d.w < 0.0) {
@@ -590,7 +705,7 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     }
     // Steam is shaded by its body's balls near the view too (those over it, toward the sun), never
     // marched through.
-    if (kind != 0u) {
+    if (kind != 0u && kind != PUFF_HAZE) {
         for (var k = 0u; k < count && puff_n < PUFF_NEAR; k++) {
             let b = puff_ball(first + k);
             let w = puff_weight(first + k);
@@ -604,7 +719,7 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
             }
             let sp = b.w * PUFF_SPREAD;
             puff_at[puff_n] = vec4<f32>(b.xyz, sp);
-            puff_span[puff_n] = vec4<f32>(w * STEAM_THICKNESS / (sp * 2.5066283), sp, 1e9, -1e9);
+            puff_span[puff_n] = vec4<f32>(w * STEAM_THICKNESS * puff_share(first + k, kind) / (sp * 2.5066283), sp, 1e9, -1e9);
             puff_w[puff_n] = w;
             puff_n++;
         }
@@ -640,11 +755,25 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     // pixels and from frame to frame, blended by nearness as it is marched.
     var lamp_at: array<vec4<f32>, STEAM_LAMP_POINTS>;
     var lamp_of: array<vec3<f32>, STEAM_LAMP_POINTS>;
-    let lamp_balls = select(0u, STEAM_LAMP_POINTS, steam && has(F_LAMPS));
-    let lamp_span = max(steam_reach, 0.5);
+    // Gas, low over its vent, takes them at one, halfway up.
+    var lamp_balls = select(0u, STEAM_LAMP_POINTS, steam && kind != PUFF_HAZE && has(F_LAMPS));
+    if (kind == PUFF_GAS) {
+        lamp_balls = min(lamp_balls, 1u);
+    }
+    // As high as its balls stand over its body, no higher: a vent's steam takes no lamp from the
+    // shaft over it.
+    var top = 0.0;
+    for (var k = 0u; k < count; k++) {
+        let b = puff_ball(first + k);
+        if (b.w > 0.0) {
+            top = max(top, b.z - puff_from.z);
+        }
+    }
+    let lamp_span = clamp(top * 0.5, 0.25, max(steam_reach, 0.5));
     let heights = array<f32, STEAM_LAMP_POINTS>(0.3, 1.0, 2.0);
     for (var k = 0u; k < lamp_balls; k++) {
-        let b = vec4<f32>(puff_from + vec3<f32>(0.0, 0.0, heights[k] * lamp_span), lamp_span);
+        let h = select(heights[k], 1.0, kind == PUFF_GAS);
+        let b = vec4<f32>(puff_from + vec3<f32>(0.0, 0.0, h * lamp_span), lamp_span);
         lamp_at[k] = b;
         let c = frame.view_proj * vec4<f32>(b.xyz, 1.0);
         var at = px;
@@ -661,8 +790,11 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     var steam_glow = vec3<f32>(0.0);
     if (steam) {
         tint = steam_tint(kind, puff_seed(first));
-        // The eye holds steam white: the sun's hue is taken only a little.
+        // The eye holds steam white: the sun's hue is taken only a little, and the sky's half.
         steam_sun = mix(vec3<f32>(luma(steam_sun)), steam_sun, 0.3);
+        if (kind == 1u) {
+            sky = mix(vec3<f32>(luma(sky)), sky, STEAM_SKY_HUE);
+        }
         // Droplets scatter forward, a little back: relative to an even spread.
         let mu = dot(dir, frame.sun_dir.xyz);
         let g1 = 1.0 + 0.3025 - 1.1 * mu;
@@ -677,7 +809,11 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     let sun_in = sun * sun_vis * phase * smoothstep(-0.1, 0.1, frame.sun_dir.z);
 
     // March it front to back.
-    let steps = i32(in.steps);
+    var steps = select(i32(in.steps), min(i32(in.steps), HAZE_STEPS), kind == PUFF_HAZE);
+    if (kind == PUFF_GAS && gas_sinks) {
+        // Heavy gas's tongue is thin: a step no longer than it, to a most.
+        steps = clamp(i32(ceil((t1 - t0) / GAS_POOL_STEP)), steps, GAS_POOL_STEPS);
+    }
     let dt = (t1 - t0) / f32(steps);
     var t = t0 + dt * fract(ign(px) + frame.wind.w * 7.31);
     var through = 1.0;
@@ -685,9 +821,15 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     var seen_at = t1;
     // The balls' shade from the sun and the sky at the near end, the middle and the far end.
     let up = vec3<f32>(0.0, 0.0, 1.0);
-    let shade0 = puff_through(eye + dir * t0, frame.sun_dir.xyz, up);
-    let shade1 = puff_through(mid, frame.sun_dir.xyz, up);
-    let shade2 = puff_through(eye + dir * t1, frame.sun_dir.xyz, up);
+    // Haze is lit by nothing but itself: no shade.
+    var shade0 = vec2<f32>(1.0);
+    var shade1 = vec2<f32>(1.0);
+    var shade2 = vec2<f32>(1.0);
+    if (kind != PUFF_HAZE) {
+        shade0 = puff_through(eye + dir * t0, frame.sun_dir.xyz, up);
+        shade1 = puff_through(mid, frame.sun_dir.xyz, up);
+        shade2 = puff_through(eye + dir * t1, frame.sun_dir.xyz, up);
+    }
     for (var s = 0; s < steps; s++) {
         let x = eye + dir * t;
         let f = puff_field(x, t);
@@ -710,7 +852,9 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
                 lamp += lamp_of[k] * wk;
                 near += wk;
             }
-            lamp *= mix(0.4, 1.0, exp(-over_depth * 0.3)) / near;
+            let lamp_shade = select(mix(0.4, 1.0, exp(-over_depth * 0.3)),
+                                    mix(0.2, 1.0, exp(-over_depth * GAS_SHADE)), kind == PUFF_GAS);
+            lamp *= lamp_shade / near;
             // Snow is rime where it is thin and ice where it is deep, light inside it bluer.
             var colour = tint.rgb;
             if (kind == PUFF_SNOW) {
@@ -718,14 +862,21 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
                 colour = mix(SNOW_RIME, SNOW_ICE, deep);
             }
             // Its glow, too, shows its lobes and is deeper in its folds.
-            let lit = (steam_sun * sunlit + sky * skylit + lamp) * colour * STEAM_ALBEDO
+            var lit = (steam_sun * sunlit + sky * skylit + lamp) * colour * STEAM_ALBEDO
                 + steam_glow * skylit * 1.5;
+            var hides = 1.0;
+            if (kind == PUFF_HAZE) {
+                // Haze is its own glow, as retail adds its pictures, and hides little of what is
+                // behind it.
+                lit = steam_glow * shape.z;
+                hides = HAZE_HIDES;
+            }
             let a = 1.0 - exp(-sigma * dt);
             light += through * a * lit;
-            if (through > 0.5 && through * (1.0 - a) <= 0.5) {
+            if (through > 0.5 && through * (1.0 - a * hides) <= 0.5) {
                 seen_at = t;
             }
-            through *= 1.0 - a;
+            through *= 1.0 - a * hides;
             if (through < 0.01) {
                 break;
             }

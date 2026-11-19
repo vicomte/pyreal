@@ -94,7 +94,7 @@ fn vs_bolt(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> B
         let n = puff_count(first, (r.material >> 15u) & 0xFFu);
         let kind = (r.material >> 23u) & PUFF_KINDS;
         var thick = 1.5;
-        if (kind >= PUFF_SMOKE && kind != PUFF_SNOW) {
+        if (kind >= PUFF_SMOKE && kind != PUFF_SNOW && kind != PUFF_HAZE) {
             thick = smokes_kind(kind).thick;
         }
         let tau = smokes_depth(mid, normalize(frame.camera.xyz - mid), first, n) * thick * 0.5;

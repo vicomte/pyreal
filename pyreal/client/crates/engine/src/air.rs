@@ -8,7 +8,8 @@
 //! lies behind that still shows. A full-screen pass then lays that over the lit picture at each
 //! pixel's distance. The slices' samples are jittered frame to frame, which the temporal resolve
 //! smooths. Off in a sealed room or with the retail calibration; the level ([`Air::level`], the
-//! God Rays menu) scales how much of the sun the air scatters, and the weather thickens it. By day,
+//! God Rays menu) scales how much of the sun the air scatters, and the weather thickens it; the
+//! apply pass lays half of it over the picture. By day,
 //! as render-hifi drew them, the air near the eye sends on more of a low sun and more in shade, and
 //! the apply pass streaks the open sky's light from the sun on screen past leaves and roofs.
 
@@ -38,6 +39,8 @@ const STREAKS: [f32; 3] = [0.6, 1.2, 2.0];
 /// How much thinner the air is with the sun low by day, so its forward light does not veil the
 /// land toward it.
 const LOW_SUN_CLEAR: f32 = 0.8;
+/// How much of the air's light and veil is laid over the picture, at every level.
+const STRENGTH: f32 = 0.5;
 /// How fast the air thins with height, metres.
 const THINS: f32 = 60.0;
 /// How forward the sun's light scatters.
@@ -283,7 +286,7 @@ impl Air {
             near,
             jitter,
             1.0,
-            0.0,
+            STRENGTH,
             LOW_SUN[k],
             IN_SHADE[k],
             DAY_SCATTER[k],

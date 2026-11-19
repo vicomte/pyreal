@@ -174,7 +174,7 @@ fn run_with(
     let terrain_blending = cfg.terrain_blending;
     let cfg_connect = cfg.will_connect();
     let host = cfg.host.clone();
-    let account = cfg.account.clone();
+    let account = cfg.account_name().to_owned();
     // The plugins the player installs, offered with the run's own: before any world only.
     let mut shelf = door.is_some().then(|| {
         pyreal_client::plugin_shelf::PluginShelf::open(

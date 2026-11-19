@@ -36,7 +36,7 @@ fn cloud_covers() -> [(Option<f32>, &'static str); 4] {
 /// What the keys do, under the panel's controls.
 const KEYS: &str = "Fly with W, A, S and D, rise with E and sink with Q. Hold a mouse button to \
                     look round. The wheel changes the speed. C copies the place and R copies the \
-                    report line. F9 saves the last 30 seconds of frame timings.";
+                    report line.";
 
 /// The name of the files an era draws.
 #[must_use]

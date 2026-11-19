@@ -3,11 +3,16 @@
 //!
 //! The address is the world's status address (`--world-status`) with `/weenies` for its path. A
 //! world on this machine with no status address given is asked at its game port plus 100, where
-//! a local Empyrean world's status endpoint sits.
+//! a local Empyrean world's status endpoint sits. A list that couldn't be had is asked for again
+//! after [`ASK_AGAIN`], so a world that starts publishing is found without a restart.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use pyreal_client_model::cmd::weenies::WeenieList;
+
+/// How long a failed list is kept before it is asked for again.
+pub const ASK_AGAIN: Duration = Duration::from_secs(20);
 
 /// A way to fetch a URL's text, given by the host (the desktop client's HTTP client).
 pub type FetchText = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
@@ -27,6 +32,7 @@ pub struct WeenieLists {
     /// The host's fetcher; with none, every list fails.
     pub fetch: Option<FetchText>,
     url: Option<String>,
+    asked: Option<Instant>,
     slot: Arc<Mutex<Option<WeenieListState>>>,
 }
 
@@ -46,8 +52,11 @@ impl WeenieLists {
             Ok(url) => url,
             Err(why) => return WeenieListState::Failed(why),
         };
-        if self.url.as_deref() != Some(url.as_str()) {
+        let stale = matches!(self.state(), WeenieListState::Failed(_))
+            && self.asked.is_some_and(|t| t.elapsed() >= ASK_AGAIN);
+        if self.url.as_deref() != Some(url.as_str()) || stale {
             self.url = Some(url.clone());
+            self.asked = Some(Instant::now());
             self.slot = Arc::new(Mutex::new(Some(WeenieListState::Fetching)));
             let Some(fetch) = self.fetch.clone() else {
                 self.put(WeenieListState::Failed(
@@ -64,7 +73,7 @@ impl WeenieLists {
                         Err(e) => {
                             tracing::warn!("weenie list from {url}: {e}");
                             WeenieListState::Failed(
-                                "This world doesn't publish its list.".to_owned(),
+                                "This world doesn't publish its list of things to make.".to_owned(),
                             )
                         }
                     };
@@ -208,6 +217,16 @@ mod tests {
             WeenieListState::Failed(_)
         ));
         assert_eq!(asked.lock().unwrap().len(), 2, "each world once");
+        lists.asked = Instant::now().checked_sub(ASK_AGAIN);
+        assert!(matches!(
+            ready(&mut lists, "http://127.0.0.1:9200/weenies"),
+            WeenieListState::Failed(_)
+        ));
+        assert_eq!(
+            asked.lock().unwrap().len(),
+            3,
+            "a failed list is asked for again after a while"
+        );
         assert!(matches!(
             lists.want(Err("unknown".to_owned())),
             WeenieListState::Failed(w) if w == "unknown"

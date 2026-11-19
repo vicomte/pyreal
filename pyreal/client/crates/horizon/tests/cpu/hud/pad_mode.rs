@@ -97,6 +97,7 @@ fn a_modal_box_leaves_only_its_buttons_in_reach() {
         question: true,
         modal: true,
         waiting: 0,
+        offer: None,
         text: "Really?".into(),
     }];
     let mut h = Harness::new(Default::default());
@@ -555,8 +556,46 @@ fn cancel_on_character_select_brings_the_focus_to_exit_without_pressing_it() {
 }
 
 #[test]
-fn the_spellbook_offers_the_stance_s_controls_beside_its_level_filters_to_the_cross_hotbars() {
+fn the_character_window_offers_the_stance_s_controls_under_what_is_held_to_the_cross_hotbars() {
     use pyreal_horizon::ui::hud::cross::{CrossBind, PowerAct};
+    let state = in_world();
+    let mut h = Harness::new(Default::default());
+    h.input.pad.mode = Some(PadHints::Cursor);
+    h.ui.windows.open(WindowId::Character, -1.0);
+    h.frame(&state);
+    h.frame(&state);
+    let snap = h.input.nav.last.clone();
+    let window = snap
+        .layers
+        .iter()
+        .position(|l| l.name == "Character")
+        .unwrap()
+        + 1;
+    // The gamepad shortcuts are the lowest row of square stops in the window, five of them.
+    let squares: Vec<Rect> = snap
+        .targets
+        .iter()
+        .filter(|t| t.layer == window && (t.rect.w - t.rect.h).abs() < 1.0)
+        .map(|t| t.rect)
+        .collect();
+    let lowest = squares.iter().map(|r| r.y).fold(f32::MIN, f32::max);
+    let mut tiles: Vec<Rect> = squares
+        .into_iter()
+        .filter(|r| (r.y - lowest).abs() < 1.0)
+        .collect();
+    tiles.sort_by(|a, b| a.x.total_cmp(&b.x));
+    assert_eq!(tiles.len(), 5, "a stop for each of the five: {tiles:?}");
+    // Confirming the third (attack low) brings up the bind-to-hotbar notice with it.
+    click_at(&mut h, &state, centre(tiles[2]));
+    assert_eq!(
+        h.ui.hud.cross.binding,
+        Some(CrossBind::Power(PowerAct::Low))
+    );
+}
+
+/// The Spellbook keeps none of them now.
+#[test]
+fn the_spellbook_no_longer_offers_the_stance_s_controls() {
     let state = in_world();
     let mut h = Harness::new(Default::default());
     h.input.pad.mode = Some(PadHints::Cursor);
@@ -570,27 +609,14 @@ fn the_spellbook_offers_the_stance_s_controls_beside_its_level_filters_to_the_cr
         .position(|l| l.name == "Spellbook")
         .unwrap()
         + 1;
-    // Five tiles of 36 in a row under the details, low in the window.
-    let mut tiles: Vec<Rect> = snap
+    let tiles = snap
         .targets
         .iter()
         .filter(|t| {
             t.layer == book && (t.rect.w - 36.0).abs() < 1.0 && (t.rect.h - 36.0).abs() < 1.0
         })
-        .map(|t| t.rect)
-        .collect();
-    tiles.sort_by(|a, b| a.x.total_cmp(&b.x));
-    assert_eq!(tiles.len(), 5, "a stop for each of the five: {tiles:?}");
-    assert!(
-        tiles.iter().all(|t| (t.y - tiles[0].y).abs() < 1.0),
-        "one row"
-    );
-    // Confirming the third (attack low) brings up the bind-to-hotbar notice with it.
-    click_at(&mut h, &state, centre(tiles[2]));
-    assert_eq!(
-        h.ui.hud.cross.binding,
-        Some(CrossBind::Power(PowerAct::Low))
-    );
+        .count();
+    assert_eq!(tiles, 0);
 }
 
 /// A character with two attributes, one it can raise and one it cannot afford.
@@ -970,10 +996,10 @@ fn the_spellbook_s_plugins_page_offers_each_plugin_command_to_the_cross_hotbars(
     );
 }
 
-/// A world with neither the journal nor contracts has no Journal entry on the pad's menu, and the
-/// entries under it still open their own windows.
+/// The journal is the client's own, so even a world with neither the journal nor contracts in its
+/// era keeps the Journal entry on the pad's menu, and it opens the Journal.
 #[test]
-fn the_pad_s_menu_leaves_out_the_journal_on_a_world_without_it() {
+fn the_pad_s_menu_keeps_the_journal_on_every_world() {
     let mut state = in_world();
     state.world_services.features.journal = false;
     state.world_services.features.contracts = false;
@@ -990,11 +1016,10 @@ fn the_pad_s_menu_leaves_out_the_journal_on_a_world_without_it() {
         .map(|t| t.rect)
         .collect();
     buttons.sort_by(|a, b| a.y.total_cmp(&b.y));
-    assert_eq!(buttons.len(), 9, "one entry fewer");
-    // The sixth entry is now the Map.
+    assert_eq!(buttons.len(), 10, "every entry");
+    // The sixth entry is the Journal.
     click_at(&mut h, &state, centre(buttons[5]));
-    assert!(h.ui.windows.is_open(WindowId::Map));
-    assert!(!h.ui.windows.is_open(WindowId::Journal));
+    assert!(h.ui.windows.is_open(WindowId::Journal));
 }
 
 /// The pad's split box follows the stack it splits: a stack that shrank caps the amount at its

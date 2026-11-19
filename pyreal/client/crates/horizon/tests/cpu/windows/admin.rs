@@ -624,7 +624,7 @@ fn find_and_spawn_makes_what_is_typed_by_its_id_a_creature_beside_and_an_item_in
 fn find_and_spawn_says_why_when_the_world_has_no_list() {
     let mut state = player(true);
     state.weenies = Some(pyreal_client_runtime::weenie_list::WeenieListState::Failed(
-        "This world doesn't publish its list.".to_owned(),
+        "This world doesn't publish its list of things to make.".to_owned(),
     ));
     let mut h = opened(&state, 0);
     h.ui.windows.admin.set_field(field::FIND, "drudge");

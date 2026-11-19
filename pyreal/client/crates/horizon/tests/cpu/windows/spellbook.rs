@@ -58,10 +58,10 @@ fn body(h: &Harness) -> Rect {
     Rect::new(x + 12.0, y + BODY_TOP, w - 24.0, wh - BODY_TOP - 10.0)
 }
 
-/// The spell list's area, under the tabs and the search box.
+/// The spell list's area, under the tabs and the search box and over the row of level filters.
 fn list(h: &Harness) -> Rect {
     let b = body(h);
-    Rect::new(b.x, b.y + 74.0, b.w * 0.47, b.h - 120.0)
+    Rect::new(b.x, b.y + 74.0, b.w * 0.47, b.h - 104.0)
 }
 
 /// The spellbook open on the War tab with its spell chosen.

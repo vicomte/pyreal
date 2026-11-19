@@ -33,6 +33,12 @@ const TURN_DEGREES_PER_POINT: f32 = 0.6;
 /// and bottom frame.
 const WINDOW: (f32, f32) = (760.0, kit::BODY_TOP + 594.0);
 
+/// The room a list row keeps beside its name: 10 before it and 6 after.
+const ROW_PAD: f32 = 16.0;
+
+/// The gap between a list's rows and its scroll bar.
+const BAR_GAP: f32 = 8.0;
+
 /// The string table the creation wizard's refusals are words of.
 pub const CREATION_STRING_TABLE: u32 = 0x1000_0002;
 
@@ -146,6 +152,8 @@ pub struct Creation {
     profession_scroll: f32,
     detail_scroll: f32,
     detail_h: f32,
+    /// Where the Profession list was drawn this frame.
+    profession_area: Option<Rect>,
     /// A preset this heritage cannot take, shown on the Profession page without being applied.
     blocked_view: Option<&'static Preset>,
     /// The world's era and systems, which choose its presets.
@@ -178,6 +186,28 @@ fn heritage_title(key: u32, name: &str) -> String {
         6 => "Gear Knight".to_owned(),
         13 => "Olthoi Spitter".to_owned(),
         _ => name.to_owned(),
+    }
+}
+
+/// `name` in lines no wider than `w`, two at most, the second cut with an ellipsis if need be.
+fn name_lines(p: &Painter<'_>, style: &TextStyle, name: &str, w: f32) -> Vec<String> {
+    let mut lines = p.wrap(style, name, w);
+    if lines.len() > 2 {
+        let rest = lines.split_off(1).join(" ");
+        lines.push(p.fit(style, &rest, w));
+    }
+    lines
+}
+
+/// Draws `lines` of `style` from `x`, each `lh` tall, centred down a block `h` tall at `y`.
+fn draw_lines(p: &mut Painter<'_>, style: &TextStyle, x: f32, y: f32, h: f32, lines: &[String]) {
+    let lh = p.line_height(style);
+    #[allow(clippy::cast_precision_loss)]
+    let top = y + (h - lh * lines.len() as f32) / 2.0;
+    for (i, line) in lines.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let slot = Rect::new(x, top + lh * i as f32, 0.0, lh);
+        p.text_in(style, slot, Align::Left, line);
     }
 }
 
@@ -330,6 +360,7 @@ impl Creation {
             profession_scroll: 0.0,
             detail_scroll: 0.0,
             detail_h: 0.0,
+            profession_area: None,
             blocked_view: None,
             era: EraId::default(),
             features: EraFeatures::ALL,
@@ -717,15 +748,19 @@ impl Creation {
         let k = p.scale;
         let row_h = 28.0 * k;
         let style = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let lh = p.line_height(&style);
         let mut chosen = None;
+        let mut y = r.y;
         for (i, n) in names.iter().enumerate() {
+            let lines = name_lines(p, &style, n, r.w - ROW_PAD * k);
             #[allow(clippy::cast_precision_loss)]
-            let row = Rect::new(r.x, r.y + row_h * i as f32, r.w, row_h);
+            let row = Rect::new(r.x, y, r.w, row_h + lh * (lines.len().max(1) - 1) as f32);
+            y = row.bottom();
             if row.bottom() > r.bottom() {
                 break;
             }
             crate::ui::pregame::list_highlight(p, row, Some(i) == at);
-            p.text_in(&style, row.offset(10.0 * k, 0.0), Align::Left, n);
+            draw_lines(p, &style, row.x + 10.0 * k, row.y, row.h, &lines);
             if ctx.over(&row) && ctx.input.clicked(&row) {
                 chosen = Some(i);
             }
@@ -1220,52 +1255,89 @@ impl Creation {
         ctx: &mut Ctx<'_>,
         area: Rect,
     ) -> Option<Profession> {
+        self.profession_area = Some(area);
         let k = p.scale;
-        let (row_h, note_h, heading_h, gap_h) = (28.0 * k, 14.0 * k, 26.0 * k, 10.0 * k);
-        let lines = self.profession_lines();
-        let height = |l: &ProfessionLine| match l {
-            ProfessionLine::Heading(_) => heading_h,
-            ProfessionLine::Gap => gap_h,
-            ProfessionLine::Row(_, _, needs, _) if !needs.is_empty() => row_h + note_h,
-            ProfessionLine::Row(..) => row_h,
-        };
-        let content: f32 = lines.iter().map(height).sum();
-        let offset = kit::scroll(p, ctx, area, content, &mut self.profession_scroll);
-        let bar = if content > area.h {
-            (kit::scrollbar_width(p).unwrap_or(4.0) + 4.0) * k
-        } else {
-            0.0
-        };
-        let shown = self.shown_profession();
+        let (row_h, heading_h, gap_h) = (28.0 * k, 26.0 * k, 10.0 * k);
         let item = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
         let dim = item.colour(ctx.colours.dim());
         let note = TextStyle::new(Family::Body, 11.0, ctx.colours.dim()).edge(ctx.colours.edge());
         let heading =
             TextStyle::new(Family::Body, 12.0, ctx.colours.heading()).edge(ctx.colours.edge());
+        let (lh, note_h) = (p.line_height(&item), 14.0 * k);
+        let lines = self.profession_lines();
+        // Each row's name and note in the room its row leaves them, beside the bar if it scrolls.
+        let wrap = |p: &Painter<'_>, bar: f32| {
+            let w = area.w - bar - ROW_PAD * k;
+            let rows: Vec<(Vec<String>, Vec<String>)> = lines
+                .iter()
+                .map(|l| match l {
+                    ProfessionLine::Row(_, name, needs, _) => (
+                        name_lines(p, &item, name, w),
+                        if needs.is_empty() {
+                            Vec::new()
+                        } else {
+                            name_lines(p, &note, &format!("Needs {needs}"), w - 8.0 * k)
+                        },
+                    ),
+                    _ => (Vec::new(), Vec::new()),
+                })
+                .collect();
+            rows
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let height = |l: &ProfessionLine, (name, needs): &(Vec<String>, Vec<String>)| match l {
+            ProfessionLine::Heading(_) => heading_h,
+            ProfessionLine::Gap => gap_h,
+            ProfessionLine::Row(..) => {
+                row_h + lh * (name.len().max(1) - 1) as f32 + note_h * needs.len() as f32
+            }
+        };
+        let total = |rows: &[(Vec<String>, Vec<String>)]| -> f32 {
+            lines.iter().zip(rows).map(|(l, r)| height(l, r)).sum()
+        };
+        let mut rows = wrap(p, 0.0);
+        let mut content = total(&rows);
+        let bar = if content > area.h {
+            let bar = (kit::scrollbar_width(p).unwrap_or(4.0) + BAR_GAP) * k;
+            rows = wrap(p, bar);
+            content = total(&rows);
+            bar
+        } else {
+            0.0
+        };
+        let offset = kit::scroll(p, ctx, area, content, &mut self.profession_scroll);
+        let shown = self.shown_profession();
         let mut chosen = None;
         let mut y = area.y - offset;
         p.list.push_clip(area);
-        for line in &lines {
+        for (line, wrapped) in lines.iter().zip(&rows) {
             match line {
                 ProfessionLine::Heading(word) => {
                     p.text(&heading, area.x, y + 9.0 * k, word);
                     y += heading_h;
                 }
                 ProfessionLine::Gap => y += gap_h,
-                ProfessionLine::Row(row, name, needs, usable) => {
-                    let r = Rect::new(area.x, y, area.w - bar, height(line));
+                ProfessionLine::Row(row, _, _, usable) => {
+                    let (name, needs) = wrapped;
+                    let r = Rect::new(area.x, y, area.w - bar, height(line, wrapped));
                     y += r.h;
                     if r.bottom() < area.y || r.y > area.bottom() {
                         continue;
                     }
                     crate::ui::pregame::list_highlight(p, r, *row == shown);
                     let style = if *usable { &item } else { &dim };
-                    let top = Rect::new(r.x + 10.0 * k, r.y, r.w - 10.0 * k, row_h);
-                    p.text_in(style, top, Align::Left, name);
-                    if !needs.is_empty() {
-                        let under =
-                            Rect::new(top.x + 8.0 * k, r.y + row_h - 6.0 * k, top.w, note_h);
-                        p.text_in(&note, under, Align::Left, &format!("Needs {needs}"));
+                    #[allow(clippy::cast_precision_loss)]
+                    let block = row_h + lh * (name.len().max(1) - 1) as f32;
+                    draw_lines(p, style, r.x + 10.0 * k, r.y, block, name);
+                    for (i, l) in needs.iter().enumerate() {
+                        #[allow(clippy::cast_precision_loss)]
+                        let under = Rect::new(
+                            r.x + 18.0 * k,
+                            r.y + block - 6.0 * k + note_h * i as f32,
+                            0.0,
+                            note_h,
+                        );
+                        p.text_in(&note, under, Align::Left, l);
                     }
                     let hit = r.intersect(&area).unwrap_or(r);
                     if ctx.over(&hit) && ctx.input.clicked(&hit) {
@@ -1384,8 +1456,13 @@ impl Creation {
         };
         let th = p.line_height(&title);
         p.text_in(&small, Rect::new(x, y, w, th), Align::Right, kind);
-        p.text(&title, x, y, &name);
-        y += th + 2.0 * k;
+        // The name wraps short of the kind beside it.
+        let room = w - p.measure(&small, kind) - 12.0 * k;
+        for line in p.wrap(&title, &name, room) {
+            p.text(&title, x, y, &line);
+            y += th;
+        }
+        y += 2.0 * k;
         para(p, &mut y, &text, tag, 8.0);
         if let Some(pr) = self.blocked_view {
             let lines = p.wrap(&text, pr.needs, w - 16.0 * k);
@@ -2184,6 +2261,102 @@ pub(crate) mod tests {
                 );
                 assert!(window.x >= 0.0 && window.y >= 0.0, "{what}: {window:?}");
             }
+        }
+    }
+
+    #[test]
+    fn no_profession_row_reaches_the_list_s_scroll_bar_and_a_long_name_reads_whole() {
+        let long = "Covenant Warrior, Two Handed, Sword and Board";
+        let mut tables = tables();
+        let heritage = tables.chargen.heritage_groups.get_mut(&1).expect("Aluvian");
+        let template = heritage.templates[0].clone();
+        heritage
+            .templates
+            .extend((0..20).map(|i| pyreal_assets::tables::CharGenTemplate {
+                name: if i == 6 {
+                    long.into()
+                } else {
+                    format!("Template {i}")
+                },
+                ..template.clone()
+            }));
+        let pieces = crate::pieces::Pieces::built_in();
+        let art = std::sync::Arc::new(crate::art::Art::new(std::sync::Arc::new(pieces)));
+        let tables = Rc::new(tables);
+        for scale in [1.0, 1.5, 2.0] {
+            let mut ui = crate::ui::HorizonUi::new(
+                std::sync::Arc::clone(&art),
+                crate::options::HorizonOptions {
+                    scale: Some(scale),
+                    ..crate::options::HorizonOptions::default()
+                },
+            );
+            let mut c = Creation::new(
+                Rc::clone(&tables),
+                Rc::new(pyreal_chargen::CreationTexts::default()),
+                false,
+                0,
+            );
+            c.step = Step::Profession;
+            c.state.template = 7;
+            ui.screen = crate::ui::Screen::Creation;
+            ui.pregame.creation = Some(c);
+            let state = GameState {
+                full_screen: Some(false),
+                era_id: EraId::Eor,
+                ..lobby()
+            };
+            let screen = (3840.0, 2160.0);
+            let mut list = crate::draw::DrawList::default();
+            let mut input = crate::ui::input::InputFrame::default();
+            for _ in 0..2 {
+                let _ = ui.frame(&mut list, screen, 1.0 / 60.0, &state, &mut input);
+                input.next_frame();
+            }
+            let c = ui.pregame.creation.as_ref().expect("creating");
+            let area = c.profession_area.expect("the Profession list");
+            let k = ui.layout_scale(screen);
+            let bar = art
+                .piece("scroll.track-top", 1.0)
+                .expect("the built-in scroll bar")
+                .w
+                * k;
+            let rows: Vec<Rect> = list
+                .quads
+                .iter()
+                .filter(|q| q.clip == Some(area))
+                .map(|q| q.dst)
+                .collect();
+            assert!(!rows.is_empty(), "at {scale}: nothing drawn in the list");
+            let drawn_bar = list.quads.iter().any(|q| {
+                q.clip != Some(area)
+                    && (q.dst.x - (area.right() - bar)).abs() < 1.0
+                    && q.dst.y >= area.y - 1.0
+                    && q.dst.bottom() <= area.bottom() + 1.0
+            });
+            assert!(
+                drawn_bar,
+                "at {scale}: the list scrolls, so its bar is drawn"
+            );
+            let over: Vec<&Rect> = rows
+                .iter()
+                .filter(|r| r.right() > area.right() - bar - 4.0 * k)
+                .collect();
+            assert!(
+                over.is_empty(),
+                "at {scale}: rows reach the bar at {}: {over:?}",
+                area.right() - bar
+            );
+            // The chosen row's highlight is tall enough for the long name's two lines.
+            let lines = c.profession_lines();
+            assert!(lines
+                .iter()
+                .any(|l| matches!(l, ProfessionLine::Row(_, n, ..) if n == long)));
+            let tall = rows.iter().any(|r| r.h > 40.0 * k && r.w > area.w / 4.0);
+            assert!(
+                tall,
+                "at {scale}: the long name's row is not two lines tall"
+            );
         }
     }
 

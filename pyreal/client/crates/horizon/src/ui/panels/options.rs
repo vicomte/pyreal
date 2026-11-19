@@ -3,9 +3,11 @@
 //! own controls and the key bindings.
 //!
 //! * **Character**: the character's own options, which the server keeps.
-//! * **Chat**: the log window's opacity, active and inactive; then each tab's name and, but for
-//!   the main tab, its opacity popped out, kept with this interface's settings, and its chat
-//!   window's message filter, which the server keeps: the same filter the tab's own menu sets.
+//! * **Chat**: the chat input's style and the log window's opacity, active and inactive, across
+//!   the top; under them the five tabs listed on the left, and on the right the chosen tab's name,
+//!   whether it shows its unread count, whether it is popped out and (but for the main tab) its
+//!   opacity so, kept with this interface's settings, then its chat window's channels, which the
+//!   server keeps: the same filter the tab's own menu sets.
 //! * **Client**: the profile's settings: display, graphics, sound, camera and the interface choice,
 //!   with this interface's scale beside the interface choice (Auto, or one of the steps the window
 //!   offers, with a note naming the window a larger one needs) and its smooth animation and smooth
@@ -85,6 +87,11 @@ const WAYPOINTS_CAPTION: &str = "Waypoints";
 const WAYPOINTS_NOTE: &str =
     "Sets where the arrow to a waypoint is shown. On Character lays a ring with an arrow on the ground around your character. Neither is shown in dungeons.";
 
+/// The caption of the chat input's row, at the top of the Chat page, and what it does.
+const CHAT_INPUT_CAPTION: &str = "Chat Input";
+const CHAT_INPUT_NOTE: &str =
+    "Modern shows who a tell goes to in a box before the message and keeps it for the next line. Classic works as the original game did.";
+
 /// The interface scale's first choice: the largest scale the window offers, up to 200%.
 pub const AUTOMATIC_SCALE: &str = "Auto";
 
@@ -124,10 +131,20 @@ pub struct OptionsState {
     pub status_style: crate::ui::hud::StatusStyle,
     /// Where the way to a waypoint is shown.
     pub waypoint_style: crate::ui::waypoint::WaypointStyle,
+    /// How the chat input line works.
+    pub chat_style: crate::ui::chat::ChatStyle,
     /// The log window's tab names as they stand.
     pub chat_tabs: crate::options::TabNames,
     /// The log window's opacities as they stand.
     pub chat_opacity: crate::options::ChatOpacity,
+    /// Which tabs show their unread count.
+    pub chat_unread: [bool; 5],
+    /// The tab the Chat page shows the settings of.
+    pub chat_tab: usize,
+    /// Which tabs are popped out of the dock now.
+    pub chat_popped_out: [bool; 5],
+    /// A tab the Chat page popped out (`true`) or docked this frame, for the log window.
+    pub pop_out: Option<(usize, bool)>,
     /// The quality preset last chosen, shown while the settings still hold it: presets that set
     /// the same values all match them.
     pub preset: Option<usize>,
@@ -333,138 +350,76 @@ Press Escape to leave it as it is.",
         out: &mut Outcome,
     ) {
         let k = p.scale;
-        let rows = chat_lines(state);
-        let row_h = 30.0 * k;
-        let label = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
         let heading =
             TextStyle::new(Family::Heading, 18.4, ctx.colours.heading()).edge(ctx.colours.edge());
-        let list = Rect::new(area.x, area.y, area.w, area.h - 40.0 * k);
-        #[allow(clippy::cast_precision_loss)]
-        let content = row_h * rows.len() as f32;
-        self.mark("list", list);
-        let offset = kit::scroll(
+        let label = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let left = area.x + 8.0 * k;
+        let width = area.w - 16.0 * k;
+        p.text_in(
+            &heading,
+            Rect::new(left, area.y, width, 28.0 * k),
+            Align::Left,
+            "Chat Window",
+        );
+        // The whole window's settings in a strip of three: the input's style, then the docked
+        // window's two opacities.
+        let gap = 16.0 * k;
+        let column = (width - 2.0 * gap) / 3.0;
+        let caption_y = area.y + 28.0 * k;
+        let control_y = caption_y + 22.0 * k;
+        let at = |i: f32| left + i * (column + gap);
+        self.caption(
             p,
             ctx,
-            list,
-            content,
-            &mut self.options_page.scroll[tab::CHAT],
+            Rect::new(at(0.0), caption_y, column, 22.0 * k),
+            area,
+            CHAT_INPUT_CAPTION,
+            Some(CHAT_INPUT_NOTE),
+            None,
+            Some(Impact::None),
         );
-        p.list.push_clip(list);
-        let mut y = list.y - offset;
-        for line in &rows {
-            if y + row_h >= list.y && y <= list.bottom() {
-                match line {
-                    Line::Heading(title) => {
-                        p.text_in(
-                            &heading,
-                            Rect::new(list.x + 8.0 * k, y, list.w * 0.5, row_h),
-                            Align::Left,
-                            title,
-                        );
-                    }
-                    Line::TabHeading(slot) => {
-                        p.text_in(
-                            &heading,
-                            Rect::new(list.x + 8.0 * k, y, list.w * 0.5, row_h),
-                            Align::Left,
-                            TAB_HEADINGS[*slot],
-                        );
-                    }
-                    Line::TabName(slot) => {
-                        let slot = *slot;
-                        p.text_in(
-                            &label,
-                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
-                            Align::Left,
-                            "Name",
-                        );
-                        let field =
-                            Rect::new(list.x + list.w * 0.55, y + 2.0 * k, list.w * 0.42, 26.0 * k);
-                        self.mark(&format!("Name {}", slot + 1), field);
-                        let id = TAB_NAME_FIELD + u32::try_from(slot).unwrap_or(0);
-                        let kept = self.options_page.chat_tabs.0[slot].clone();
-                        let mut text = kept.clone();
-                        kit::text_box(p, ctx, field, &mut text, &mut self.typing_field, id);
-                        let key = crate::options::TabNames::key(slot);
-                        if text != kept {
-                            out.settings.push((key, text));
-                        } else if self.typing_field != id && kept.trim().is_empty() {
-                            // A name left blank is the tab's own again once the box lets go.
-                            out.settings
-                                .push((key, crate::options::DEFAULT_TAB_NAMES[slot].to_owned()));
-                        }
-                    }
-                    Line::Opacity(slot, active) => {
-                        let caption = opacity_caption(*slot, *active);
-                        p.text_in(
-                            &label,
-                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
-                            Align::Left,
-                            caption,
-                        );
-                        let control =
-                            Rect::new(list.x + list.w * 0.55, y + 2.0 * k, list.w * 0.42, 26.0 * k);
-                        self.mark(&opacity_mark(*slot, *active), control);
-                        // Shown in percent.
-                        let value = self.options_page.chat_opacity.get(*slot, *active) * 100.0;
-                        if let Some(v) = kit::slider(p, ctx, control, value, 0.0, 100.0) {
-                            out.settings.push((
-                                crate::options::ChatOpacity::key(*slot, *active),
-                                (v / 100.0).to_string(),
-                            ));
-                        }
-                    }
-                    Line::WindowSize
-                    | Line::Scale
-                    | Line::ScaleNote
-                    | Line::StatusStyle
-                    | Line::WaypointStyle
-                    | Line::ArtPack => {}
-                    Line::Notice(_) | Line::EffectsStatus | Line::Preset => {}
-                    Line::Row(row) => match row.value {
-                        Value::Opacity(property) => {
-                            p.text_in(
-                                &label,
-                                Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
-                                Align::Left,
-                                row.caption,
-                            );
-                            let control = Rect::new(
-                                list.x + list.w * 0.55,
-                                y + 2.0 * k,
-                                list.w * 0.42,
-                                26.0 * k,
-                            );
-                            self.mark(row.caption, control);
-                            let at = usize::from(property == 0x1000_0081);
-                            let value = state.chat_opacity[at].unwrap_or(1.0);
-                            if let Some(v) = kit::slider(p, ctx, control, value, 0.0, 1.0) {
-                                out.requests
-                                    .push(UiRequest::SetChatOpacity { property, value: v });
-                            }
-                        }
-                        Value::Filter { window, mask } => {
-                            let filter = crate::ui::chat::window_filter(state, window);
-                            let cb = Rect::new(list.x + 16.0 * k, y, list.w - 32.0 * k, row_h);
-                            self.mark(
-                                &format!("{}@{window:x}", row.caption),
-                                Rect::new(cb.x, cb.y, 20.0 * k, cb.h),
-                            );
-                            let on = filter & mask == mask;
-                            if let Some(on) = kit::check_row(p, ctx, cb, on, &label, row.caption) {
-                                out.requests.push(UiRequest::SetChatWindowFilter {
-                                    window,
-                                    mask: if on { filter | mask } else { filter & !mask },
-                                });
-                            }
-                        }
-                        _ => {}
-                    },
-                }
+        let input = Rect::new(at(0.0), control_y, column, 26.0 * k);
+        self.mark(CHAT_INPUT_CAPTION, input);
+        {
+            use crate::ui::chat::ChatStyle;
+            let names = ChatStyle::ALL.map(ChatStyle::name);
+            let shown = ChatStyle::ALL
+                .iter()
+                .position(|s| *s == self.options_page.chat_style)
+                .unwrap_or(0);
+            if let Some(i) = self.dropdown(p, ctx, CHAT_INPUT_CAPTION, input, &names, shown) {
+                out.settings
+                    .push(("chat-input".into(), ChatStyle::ALL[i].word().into()));
             }
-            y += row_h;
         }
-        p.list.pop_clip();
+        for (i, active) in [(1.0, true), (2.0, false)] {
+            p.text_in(
+                &label,
+                Rect::new(at(i), caption_y, column, 22.0 * k),
+                Align::Left,
+                opacity_caption(None, active),
+            );
+            let control = Rect::new(at(i), control_y, column, 26.0 * k);
+            self.opacity_slider(p, ctx, control, None, active, out);
+        }
+        // The tabs listed on the left; what the chosen one shows and how, on the right.
+        let top = control_y + 38.0 * k;
+        let split = Rect::new(
+            left,
+            top,
+            width,
+            (area.bottom() - 42.0 * k - top).max(60.0 * k),
+        );
+        let list_w = (190.0 * k).min(split.w * 0.4);
+        let tabs = Rect::new(split.x, split.y, list_w, split.h);
+        let panel = Rect::new(
+            tabs.right() + 12.0 * k,
+            split.y,
+            split.w - list_w - 12.0 * k,
+            split.h,
+        );
+        self.chat_tab_list(p, ctx, tabs);
+        self.chat_tab_panel(p, ctx, state, panel, out);
         let defaults = Rect::new(
             area.x + 12.0 * k,
             area.bottom() - 34.0 * k,
@@ -472,7 +427,7 @@ Press Escape to leave it as it is.",
             30.0 * k,
         );
         // Every window's filter back to the one this interface starts a character with, and the
-        // tabs' names and the opacities to their first.
+        // tabs' names, unread counts and the opacities to their first.
         if self.button(p, ctx, defaults, "Defaults", true) {
             for window in crate::ui::chat::WINDOWS {
                 out.requests.push(UiRequest::SetChatWindowFilter {
@@ -484,14 +439,252 @@ Press Escape to leave it as it is.",
                 out.settings
                     .push((crate::options::TabNames::key(slot), (*name).to_owned()));
             }
-            for line in chat_lines(state) {
-                if let Line::Opacity(slot, active) = line {
+            for slot in 0..CHAT_TABS {
+                out.settings
+                    .push((crate::options::unread_key(slot), "true".to_owned()));
+            }
+            let popped = (1..CHAT_TABS).map(Some);
+            for slot in std::iter::once(None).chain(popped) {
+                for active in [true, false] {
                     out.settings.push((
                         crate::options::ChatOpacity::key(slot, active),
                         crate::options::DEFAULT_CHAT_OPACITY.to_string(),
                     ));
                 }
             }
+        }
+    }
+
+    /// The Chat page's list of the five tabs, the chosen one lit and a popped-out one saying so.
+    fn chat_tab_list(&mut self, p: &mut Painter<'_>, ctx: &mut Ctx<'_>, r: Rect) {
+        let k = p.scale;
+        kit::well(p, r);
+        let inner = r.inset(kit::well_rim(p) + 2.0 * k);
+        let heading =
+            TextStyle::new(Family::Heading, 16.0, ctx.colours.heading()).edge(ctx.colours.edge());
+        let label = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
+        p.list.push_clip(inner);
+        p.text_in(
+            &heading,
+            Rect::new(inner.x + 8.0 * k, inner.y, inner.w - 8.0 * k, 26.0 * k),
+            Align::Left,
+            "Tabs",
+        );
+        let rule = 1.0_f32.max(k);
+        p.fill(
+            Rect::new(inner.x, inner.y + 27.0 * k, inner.w, rule),
+            0x60C8_A050,
+        );
+        let mut y = inner.y + 32.0 * k;
+        for slot in 0..CHAT_TABS {
+            let row = Rect::new(inner.x, y, inner.w, 28.0 * k);
+            let page = &self.options_page;
+            kit::list_highlight(p, row, slot == page.chat_tab);
+            let name = page.chat_tabs.0[slot].trim();
+            let name = if name.is_empty() {
+                crate::options::DEFAULT_TAB_NAMES[slot]
+            } else {
+                name
+            };
+            let text = Rect::new(row.x + 10.0 * k, row.y, row.w - 14.0 * k, row.h);
+            // An undocked tab has a window mark at the right, its name shortened to leave room.
+            let undocked = page.chat_popped_out[slot];
+            let mark = Rect::new(
+                text.right() - 14.0 * k,
+                row.y + (row.h - 12.0 * k) / 2.0,
+                14.0 * k,
+                12.0 * k,
+            );
+            let room = if undocked {
+                text.w - mark.w - 8.0 * k
+            } else {
+                text.w
+            };
+            let name = kit::middle_ellipsis(p, &label, name, room);
+            p.text_in(&label, text, Align::Left, &name);
+            if undocked {
+                undocked_mark(p, mark, ctx.colours.heading());
+                self.mark(&format!("Undocked Mark {}", slot + 1), mark);
+                if ctx.over_quiet(&mark) {
+                    self.tip = Some((
+                        UNDOCKED.to_owned(),
+                        vec!["This tab is in a window of its own.".to_owned()],
+                    ));
+                }
+            }
+            self.mark(&format!("Tab {}", slot + 1), row);
+            if ctx.over(&row) && ctx.input.clicked(&row) && slot != self.options_page.chat_tab {
+                self.options_page.chat_tab = slot;
+                self.options_page.scroll[tab::CHAT] = 0.0;
+                self.options_page.menu = None;
+            }
+            y += 30.0 * k;
+        }
+        p.list.pop_clip();
+    }
+
+    /// The chosen tab's settings, scrolled where they are taller than `r`: its name, its unread
+    /// count, whether it is popped out and its opacities so, then the channels its chat window
+    /// shows.
+    fn chat_tab_panel(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        r: Rect,
+        out: &mut Outcome,
+    ) {
+        let k = p.scale;
+        kit::well(p, r);
+        let inner = r.inset(kit::well_rim(p) + 2.0 * k);
+        let heading =
+            TextStyle::new(Family::Heading, 18.4, ctx.colours.heading()).edge(ctx.colours.edge());
+        let label = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let dim = label.colour(ctx.colours.dim());
+        let slot = self.options_page.chat_tab.min(CHAT_TABS - 1);
+        let window = crate::ui::chat::WINDOWS[slot];
+        let groups = crate::ui::chat::filter_groups(window, state.era.as_ref());
+        let columns = if inner.w >= 330.0 * k { 3 } else { 2 };
+        let row_h = 30.0 * k;
+        let lines = if slot == 0 { 6 } else { 7 } + groups.len().div_ceil(columns);
+        #[allow(clippy::cast_precision_loss)]
+        let content = row_h * lines as f32 + 8.0 * k;
+        self.mark("list", inner);
+        let offset = kit::scroll(
+            p,
+            ctx,
+            inner,
+            content,
+            &mut self.options_page.scroll[tab::CHAT],
+        );
+        let x = inner.x + 10.0 * k;
+        let w = inner.w - 20.0 * k - kit::scrollbar_width(p).unwrap_or(4.0) * k;
+        let control_x = x + w * 0.5;
+        let control_w = w * 0.5;
+        p.list.push_clip(inner);
+        let mut y = inner.y + 4.0 * k - offset;
+        let title = self.options_page.chat_tabs.0[slot].trim().to_owned();
+        let title = if title.is_empty() {
+            crate::options::DEFAULT_TAB_NAMES[slot].to_owned()
+        } else {
+            title
+        };
+        let title = kit::middle_ellipsis(p, &heading, &title, w);
+        p.text_in(&heading, Rect::new(x, y, w, row_h), Align::Left, &title);
+        y += row_h;
+        // Its name, in a text box.
+        p.text_in(&label, Rect::new(x, y, w * 0.4, row_h), Align::Left, "Name");
+        let field = Rect::new(control_x, y + 2.0 * k, control_w, 26.0 * k);
+        self.mark(&format!("Name {}", slot + 1), field);
+        let id = TAB_NAME_FIELD + u32::try_from(slot).unwrap_or(0);
+        let kept = self.options_page.chat_tabs.0[slot].clone();
+        let mut text = kept.clone();
+        kit::text_box(p, ctx, field, &mut text, &mut self.typing_field, id);
+        let key = crate::options::TabNames::key(slot);
+        if text != kept {
+            out.settings.push((key, text));
+        } else if self.typing_field != id && kept.trim().is_empty() {
+            // A name left blank is the tab's own again once the box lets go.
+            out.settings
+                .push((key, crate::options::DEFAULT_TAB_NAMES[slot].to_owned()));
+        }
+        y += row_h;
+        let check = |y: f32| Rect::new(x, y, w, row_h);
+        self.mark(
+            &format!("Unread Count {}", slot + 1),
+            Rect::new(x, y, 20.0 * k, row_h),
+        );
+        let on = self.options_page.chat_unread[slot];
+        if let Some(on) = kit::check_row(p, ctx, check(y), on, &label, "Unread Count") {
+            out.settings
+                .push((crate::options::unread_key(slot), on.to_string()));
+        }
+        y += row_h;
+        if slot == 0 {
+            // The main tab stays docked.
+            kit::checkbox_greyed(p, Rect::new(x, y, 20.0 * k, row_h), false);
+            p.text_in(
+                &dim,
+                Rect::new(x + 28.0 * k, y, w - 28.0 * k, row_h),
+                Align::Left,
+                UNDOCKED,
+            );
+            y += row_h;
+            p.text_in(
+                &dim,
+                Rect::new(x, y, w, row_h),
+                Align::Left,
+                "The main tab stays docked.",
+            );
+            y += row_h;
+        } else {
+            self.mark(
+                &format!("{UNDOCKED} {}", slot + 1),
+                Rect::new(x, y, 20.0 * k, row_h),
+            );
+            let out_now = self.options_page.chat_popped_out[slot];
+            if let Some(on) = kit::check_row(p, ctx, check(y), out_now, &label, UNDOCKED) {
+                self.options_page.pop_out = Some((slot, on));
+            }
+            y += row_h;
+            for active in [true, false] {
+                p.text_in(
+                    &label,
+                    Rect::new(x, y, w * 0.5, row_h),
+                    Align::Left,
+                    opacity_caption(Some(slot), active),
+                );
+                let control = Rect::new(control_x, y + 2.0 * k, control_w, 26.0 * k);
+                self.opacity_slider(p, ctx, control, Some(slot), active, out);
+                y += row_h;
+            }
+        }
+        // The channels its chat window shows, which the server keeps: the same filter the tab's
+        // own menu sets.
+        p.text_in(&heading, Rect::new(x, y, w, row_h), Align::Left, "Channels");
+        y += row_h;
+        let filter = crate::ui::chat::window_filter(state, window);
+        #[allow(clippy::cast_precision_loss)]
+        let cell = w / columns as f32;
+        for (i, (caption, mask)) in groups.iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let cx = x + cell * (i % columns) as f32;
+            #[allow(clippy::cast_precision_loss)]
+            let cy = y + row_h * (i / columns) as f32;
+            let cb = Rect::new(cx, cy, cell - 6.0 * k, row_h);
+            self.mark(
+                &format!("{caption}@{window:x}"),
+                Rect::new(cb.x, cb.y, 20.0 * k, cb.h),
+            );
+            let on = filter & mask == *mask;
+            if let Some(on) = kit::check_row(p, ctx, cb, on, &label, caption) {
+                out.requests.push(UiRequest::SetChatWindowFilter {
+                    window,
+                    mask: if on { filter | mask } else { filter & !mask },
+                });
+            }
+        }
+        p.list.pop_clip();
+    }
+
+    /// An opacity's slider over `control`, shown in percent: the docked window's (`None`) or a
+    /// tab's popped out.
+    fn opacity_slider(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        control: Rect,
+        slot: Option<usize>,
+        active: bool,
+        out: &mut Outcome,
+    ) {
+        self.mark(&opacity_mark(slot, active), control);
+        let value = self.options_page.chat_opacity.get(slot, active) * 100.0;
+        if let Some(v) = kit::slider(p, ctx, control, value, 0.0, 100.0) {
+            out.settings.push((
+                crate::options::ChatOpacity::key(slot, active),
+                (v / 100.0).to_string(),
+            ));
         }
     }
 
@@ -587,7 +780,6 @@ Press Escape to leave it as it is.",
                             self.mark(&shown, at);
                         }
                     }
-                    Line::TabHeading(_) | Line::TabName(_) | Line::Opacity(..) => {}
                     Line::ArtPack => {
                         self.art_pack_choice(p, ctx, Rect::new(list.x, y, list.w, row_h), list);
                     }
@@ -1306,13 +1498,6 @@ enum Line {
     /// Under the scale, which scales a larger window would offer, or why the one chosen is not
     /// the one drawn.
     ScaleNote,
-    /// The heading over a log window tab's name and its chat window's filter, by tab.
-    TabHeading(usize),
-    /// A log window tab's name, in a text box.
-    TabName(usize),
-    /// An opacity of the log window, active or inactive: the docked window's (`None`) or a tab's
-    /// popped out.
-    Opacity(Option<usize>, bool),
     /// The pack drawn, first on the Display page while the library holds one.
     ArtPack,
 }
@@ -1333,45 +1518,28 @@ fn opacity_mark(slot: Option<usize>, active: bool) -> String {
     slot.map_or_else(|| caption.to_owned(), |s| format!("{caption} {}", s + 1))
 }
 
-/// The headings of the Chat page's tabs, in the log window's order.
-const TAB_HEADINGS: [&str; 5] = ["Main Tab", "Tab #2", "Tab #3", "Tab #4", "Tab #5"];
+/// The caption of a tab's box that puts it in a window of its own.
+const UNDOCKED: &str = "Undocked";
+
+/// A small window standing out from another behind it over `r`: the Chat page's mark for an
+/// undocked tab.
+fn undocked_mark(p: &mut Painter<'_>, r: Rect, colour: u32) {
+    let k = p.scale;
+    let line = 1.0_f32.max(k);
+    let (w, h) = (r.w * 0.7, r.h * 0.68);
+    let back = Rect::new(r.x, r.bottom() - h, w, h);
+    let front = Rect::new(r.right() - w, r.y, w, h);
+    p.outline(back, line, crate::draw::with_alpha(colour, 0.55));
+    p.fill(front, 0xFF14_1A1E);
+    p.outline(front, line, colour);
+    p.fill(Rect::new(front.x, front.y, front.w, 2.5 * k), colour);
+}
+
+/// How many tabs the log window has: the game's five chat windows.
+const CHAT_TABS: usize = 5;
 
 /// The id of the first tab name's text box; the others follow it.
 const TAB_NAME_FIELD: u32 = 90;
-
-/// The Chat page's lines: the log window's heading with its two opacities, then each chat
-/// window's heading is its tab's, with the tab's name and (but for the main tab) its two
-/// opacities popped out under it before its filter's groups.
-fn chat_lines(state: &GameState) -> Vec<Line> {
-    let lines = sheet_lines(PageId::Chat, state);
-    let mut out = Vec::with_capacity(lines.len() + 16);
-    out.push(Line::Heading("Chat Window"));
-    out.push(Line::Opacity(None, true));
-    out.push(Line::Opacity(None, false));
-    for (n, line) in lines.iter().enumerate() {
-        let slot = match (line, lines.get(n + 1)) {
-            (Line::Heading(_), Some(Line::Row(row))) => match row.value {
-                Value::Filter { window, .. } => {
-                    crate::ui::chat::WINDOWS.iter().position(|w| *w == window)
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        match slot {
-            Some(slot) => {
-                out.push(Line::TabHeading(slot));
-                out.push(Line::TabName(slot));
-                if slot > 0 {
-                    out.push(Line::Opacity(Some(slot), true));
-                    out.push(Line::Opacity(Some(slot), false));
-                }
-            }
-            None => out.push(*line),
-        }
-    }
-    out
-}
 
 /// The game's settings this interface leaves off its pages: what its own HUD, camera and chat
 /// do their own way, so the setting would change nothing here.

@@ -16,4 +16,8 @@ pub struct ReplyTargets {
     pub monarch: Option<String>,
     /// The last name heard on the patron channel — action `0x10000021`.
     pub patron: Option<String>,
+    /// The last name `@tell` addressed, which `@retell` reuses.
+    pub last_tellee: Option<String>,
+    /// Recent tell partners, both ways, newest first.
+    pub recent: Vec<String>,
 }

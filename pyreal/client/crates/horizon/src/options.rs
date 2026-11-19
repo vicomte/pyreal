@@ -60,16 +60,22 @@ pub struct HorizonOptions {
     pub status_style: crate::ui::hud::StatusStyle,
     /// Where the way to a waypoint is shown.
     pub waypoint_style: crate::ui::waypoint::WaypointStyle,
+    /// How the chat input line works: Modern or the original game's Classic.
+    pub chat_style: crate::ui::chat::ChatStyle,
     /// The log window's tab names, one for each of the game's chat windows.
     pub chat_tabs: TabNames,
     /// How opaque the log window's ground is, docked and popped out.
     pub chat_opacity: ChatOpacity,
     /// Where each tab popped out was last put: its top-left, in layout units (screen pixels
-    /// at scale 1). The main tab never pops out.
+    /// at scale 1). The main tab never pops out; its entry is how far the docked window was moved
+    /// from its own place by a top or left corner.
     pub chat_popped: [Option<(f32, f32)>; 5],
     /// How large the player made each log window, in layout units: the docked window's (by the
     /// main tab), then each tab's popped out.
     pub chat_sizes: [Option<(f32, f32)>; 5],
+    /// Which tabs show how many lines came since they were last shown: the game's five
+    /// windows.
+    pub chat_unread: [bool; 5],
 }
 
 impl Default for HorizonOptions {
@@ -94,10 +100,12 @@ impl Default for HorizonOptions {
             spell_rows: 1,
             status_style: crate::ui::hud::StatusStyle::default(),
             waypoint_style: crate::ui::waypoint::WaypointStyle::default(),
+            chat_style: crate::ui::chat::ChatStyle::default(),
             chat_tabs: TabNames::default(),
             chat_opacity: ChatOpacity::default(),
             chat_popped: [None; 5],
             chat_sizes: [None; 5],
+            chat_unread: [true; 5],
         }
     }
 }
@@ -128,16 +136,30 @@ pub fn size_slot(key: &str) -> Option<usize> {
     (0..5).find(|slot| size_key(*slot) == key)
 }
 
-/// The settings file's key for where tab `slot` stands popped out.
+/// The settings file's key for where tab `slot` stands popped out, or for the main tab how far
+/// the docked window was moved from its own place.
 #[must_use]
 pub fn popped_key(slot: usize) -> String {
     format!("chat-tab-{}-at", slot + 1)
 }
 
-/// The tab a settings file key for a popped-out tab's place names.
+/// The tab a settings file key for a log window's place names.
 #[must_use]
 pub fn popped_slot(key: &str) -> Option<usize> {
-    (1..5).find(|slot| popped_key(*slot) == key)
+    (0..5).find(|slot| popped_key(*slot) == key)
+}
+
+/// The settings file's key for whether tab `slot` shows its unread count: one of the game's five
+/// windows.
+#[must_use]
+pub fn unread_key(slot: usize) -> String {
+    format!("chat-tab-{}-unread", slot + 1)
+}
+
+/// The tab a settings file key for an unread count names.
+#[must_use]
+pub fn unread_slot(key: &str) -> Option<usize> {
+    (0..5).find(|slot| unread_key(*slot) == key)
 }
 
 /// A place as the settings file writes it, `x,y`.
@@ -341,6 +363,11 @@ impl HorizonOptions {
                         o.waypoint_style = s;
                     }
                 }
+                "chat-input" => {
+                    if let Some(s) = crate::ui::chat::ChatStyle::from_word(value) {
+                        o.chat_style = s;
+                    }
+                }
                 // Bodies are always drawn smoothly: an older file's switches are read as nothing.
                 "smooth-animation" | "smooth-movement" => {}
                 other => {
@@ -355,6 +382,8 @@ impl HorizonOptions {
                         o.chat_popped[slot] = parse_point(value);
                     } else if let Some(slot) = size_slot(other) {
                         o.chat_sizes[slot] = parse_point(value);
+                    } else if let Some(slot) = unread_slot(other) {
+                        o.chat_unread[slot] = parse_switch(value);
                     } else if let Ok(v) = value.parse::<f32>() {
                         o.chat_opacity.set_by_key(other, v);
                     }
@@ -389,6 +418,7 @@ minimap-rotates={}
 spell-rows={}
 status-bar-style={}
 waypoints={}
+chat-input={}
 ",
             scale_word(self.scale),
             movement_word(self.orbit.movement),
@@ -409,6 +439,7 @@ waypoints={}
             self.spell_rows,
             self.status_style.word(),
             self.waypoint_style.word(),
+            self.chat_style.word(),
         );
         for slot in 0..DEFAULT_TAB_NAMES.len() {
             let _ = writeln!(
@@ -417,6 +448,9 @@ waypoints={}
                 TabNames::key(slot),
                 self.chat_tabs.name(slot)
             );
+        }
+        for (slot, on) in self.chat_unread.iter().enumerate() {
+            let _ = writeln!(text, "{}={on}", unread_key(slot));
         }
         for (key, value) in self.chat_opacity.entries() {
             let _ = writeln!(text, "{key}={value}");
@@ -514,7 +548,7 @@ pub fn parse_movement(s: &str) -> Option<pyreal_client_runtime::orbit::MovementM
 }
 
 /// A switch's word in the settings file: on for `true`, `yes`, `on` or `1`.
-fn parse_switch(s: &str) -> bool {
+pub(crate) fn parse_switch(s: &str) -> bool {
     matches!(
         s.trim().to_ascii_lowercase().as_str(),
         "true" | "yes" | "on" | "1"
@@ -659,6 +693,22 @@ camera-height=lots",
     }
 
     #[test]
+    fn the_chat_input_is_modern_until_classic_is_chosen_and_reads_back() {
+        use crate::ui::chat::ChatStyle;
+        let mut o = HorizonOptions::default();
+        assert_eq!(o.chat_style, ChatStyle::Modern);
+        o.chat_style = ChatStyle::Classic;
+        assert_eq!(
+            HorizonOptions::parse(&o.to_text()).chat_style,
+            ChatStyle::Classic
+        );
+        assert_eq!(
+            HorizonOptions::parse("chat-input=sideways").chat_style,
+            ChatStyle::Modern
+        );
+    }
+
+    #[test]
     fn a_renamed_tab_reads_back_and_one_left_blank_keeps_its_default_name() {
         let mut o = HorizonOptions::default();
         assert_eq!(o.chat_tabs.name(1), "Combat");
@@ -705,7 +755,13 @@ chat-tab-0=x"
     #[test]
     fn where_a_popped_out_tab_was_put_reads_back() {
         let o = HorizonOptions {
-            chat_popped: [None, Some((12.5, 40.0)), None, None, Some((0.0, 3.0))],
+            chat_popped: [
+                Some((-15.0, -30.0)),
+                Some((12.5, 40.0)),
+                None,
+                None,
+                Some((0.0, 3.0)),
+            ],
             ..HorizonOptions::default()
         };
         assert_eq!(
@@ -719,9 +775,38 @@ chat-tab-0=x"
         assert_eq!(HorizonOptions::parse(&o.to_text()).chat_sizes, o.chat_sizes);
         assert_eq!(
             HorizonOptions::parse("chat-tab-1-at=5,5\nchat-tab-3-at=oops").chat_popped,
-            [None; 5],
-            "the main tab has no place of its own, and an unreadable one is none"
+            [Some((5.0, 5.0)), None, None, None, None],
+            "the main tab's is how far the docked window was moved, and an unreadable one is none"
         );
+    }
+
+    #[test]
+    fn each_tab_s_unread_count_reads_back_and_starts_on() {
+        let mut o = HorizonOptions::default();
+        assert!(o.chat_unread.iter().all(|on| *on));
+        o.chat_unread[1] = false;
+        let back = HorizonOptions::parse(&o.to_text());
+        assert_eq!(back.chat_unread, [true, false, true, true, true]);
+        assert_eq!(
+            HorizonOptions::parse("chat-tells-tab=false\nchat-tab-6-unread=false"),
+            HorizonOptions::default(),
+            "an older file's Tells tab is left out"
+        );
+    }
+
+    #[test]
+    fn a_tab_past_the_fifth_is_left_out_and_not_written_back() {
+        let o = HorizonOptions::parse(
+            "chat-tab-6=Sir Fenn
+chat-tab-6-at=5,5
+chat-tab-6-size=300,200
+chat-tab-7-opacity-active=0.5",
+        );
+        assert_eq!(o, HorizonOptions::default());
+        let text = o.to_text();
+        for key in ["chat-tab-6=", "chat-tab-6-at", "chat-tab-6-size"] {
+            assert!(!text.contains(key), "{key}");
+        }
     }
 
     #[test]

@@ -225,6 +225,21 @@ impl HorizonUi {
                 channel: pyreal_client_model::chat::text_type::DEFAULT,
                 text: format!("You have arrived at {}.", arrived.label()),
             });
+            // A route's next step, from the journal, is the next waypoint.
+            if let Some(next) =
+                crate::ui::waypoint::next_route_page(&state.journal.pages, &arrived.label())
+            {
+                waypoints.set(crate::ui::waypoint::Waypoint {
+                    ns: next.ns,
+                    ew: next.ew,
+                    name: Some(next.title.trim().to_owned()),
+                });
+                out.requests.push(UiRequest::DisplayChatText {
+                    feedback: pyreal_client_contract::feedback::Feedback::LOCAL,
+                    channel: pyreal_client_model::chat::text_type::DEFAULT,
+                    text: format!("Your waypoint is now {}.", next.title.trim()),
+                });
+            }
         }
         let Some(w) = &waypoints.active else {
             return;
@@ -571,6 +586,11 @@ impl HorizonUi {
                 // off an open plugin choice's list closes it before anything under it sees it.
                 self.windows.follow_plugins(&p, &ctx);
                 self.windows.plugins.ui.begin(&p, &mut ctx.kit);
+                // Which tabs show their unread count, as the settings stand before the log is drawn.
+                self.hud.log.unread_shown = self.options.chat_unread;
+                if let Some((slot, open)) = self.windows.options_page.pop_out.take() {
+                    self.hud.log.pop_out(slot, open, self.time);
+                }
                 // The HUD is under every window: the pointer over a window is not over it.
                 ctx.input.occluders = self
                     .windows
@@ -648,10 +668,14 @@ impl HorizonUi {
                     .chat_tabs
                     .clone_from(&self.options.chat_tabs);
                 self.hud.log.tab_names.clone_from(&self.options.chat_tabs);
+                self.windows.options_page.chat_style = self.options.chat_style;
+                self.hud.log.style = self.options.chat_style;
                 self.windows.options_page.chat_opacity = self.options.chat_opacity;
                 self.hud.log.opacity = self.options.chat_opacity;
                 self.hud.log.popped_saved = self.options.chat_popped;
                 self.hud.log.sizes_saved = self.options.chat_sizes;
+                self.windows.options_page.chat_unread = self.options.chat_unread;
+                self.windows.options_page.chat_popped_out = self.hud.log.floating();
                 self.hud.log.editing = self.windows.is_open(panels::WindowId::Layout);
                 // The log window's popped-out tabs and its menus are over the HUD and under every
                 // window: the pointer over a window is not over them.
@@ -791,7 +815,9 @@ fn prompts(
         }
     }
     for (i, prompt) in state.prompts.iter().enumerate() {
-        let (title, buttons): (&str, &[&str]) = if prompt.question {
+        let (title, buttons): (&str, &[&str]) = if let Some(offer) = &prompt.offer {
+            (offer, &["Accept", "Decline"])
+        } else if prompt.question {
             ("Confirm", &["Yes", "No"])
         } else {
             ("Notice", &["OK"])

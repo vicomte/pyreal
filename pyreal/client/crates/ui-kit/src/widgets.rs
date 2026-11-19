@@ -1669,6 +1669,25 @@ fn disc(p: &mut Painter<'_>, cx: f32, cy: f32, radius: f32, colour: Argb) {
     }
 }
 
+/// A mark of `colour` filling `r` with round ends: a circle when `r` is square.
+pub fn pill(p: &mut Painter<'_>, r: Rect, colour: Argb) {
+    let radius = r.h / 2.0;
+    let (cy, left, right) = (r.y + radius, r.x + radius, r.right() - radius);
+    if right > left {
+        p.fill(Rect::new(left, r.y, right - left, r.h), colour);
+    }
+    let mut y = r.y.floor();
+    while y < r.bottom() {
+        let dy = (y + 0.5 - cy).abs();
+        let half = (radius * radius - dy * dy).max(0.0).sqrt();
+        if half > 0.0 {
+            p.fill(Rect::new(left - half, y, half, 1.0), colour);
+            p.fill(Rect::new(right.max(left), y, half, 1.0), colour);
+        }
+        y += 1.0;
+    }
+}
+
 /// A radio button in `r` (its round mark centred down the left of `r`), set when `on`: a dark
 /// well in a bronze ring, a cream dot in it when set. `true` when clicked.
 pub fn radio(p: &mut Painter<'_>, ctx: &mut Ctx<'_>, r: Rect, on: bool) -> bool {

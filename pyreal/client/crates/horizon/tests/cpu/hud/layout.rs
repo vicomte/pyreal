@@ -100,7 +100,7 @@ fn pop_out(h: &mut Harness, state: &GameState, name: &str) {
     h.input.down[1] = false;
     h.input.released[1] = true;
     h.frame(state);
-    let r = h.ui.hud.log.control("Pop Out").expect("the menu's Pop Out");
+    let r = h.ui.hud.log.control("Undock").expect("the menu's Undock");
     click_at(h, state, (r.x + r.w / 2.0, r.y + r.h / 2.0));
     h.move_to(1900.0, 5.0);
     h.frame(state);

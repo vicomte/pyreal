@@ -57,6 +57,12 @@ fn scroll_to(h: &mut Harness, state: &GameState, label: &str) {
     panic!("{label:?} never came into view");
 }
 
+/// Choose the Chat page's tab `n` (counting from one) in its list, and the frame after.
+fn chat_tab(h: &mut Harness, state: &GameState, n: usize) {
+    click(h, state, &format!("Tab {n}"));
+    assert_eq!(h.ui.windows.options_page.chat_tab, n - 1);
+}
+
 /// A left click at `(x, y)`, and the frame after it; what both frames asked for.
 fn click_at(h: &mut Harness, state: &GameState, x: f32, y: f32) -> Outcome {
     h.move_to(x, y);
@@ -211,6 +217,14 @@ fn a_tab_s_filters_menu_and_the_chat_page_edit_one_filter_for_its_window() {
     h.ui.windows.open(WindowId::Options, -1.0);
     h.frame(&state);
     click(&mut h, &state, "Chat");
+    chat_tab(&mut h, &state, 2);
+    assert!(
+        h.ui.windows
+            .options_page
+            .control(&format!("Magic@{main:x}", main = chat::WINDOWS[0]))
+            .is_none(),
+        "the page shows the chosen tab's channels only"
+    );
     let label = format!("Magic@{combat_tab:x}");
     scroll_to(&mut h, &state, &label);
     let out = click(&mut h, &state, &label);
@@ -224,6 +238,7 @@ fn a_tab_s_filters_menu_and_the_chat_page_edit_one_filter_for_its_window() {
     // And the other way: society turned off for the main window on the page shows off in the
     // main tab's menu, whose box turns it back on.
     let main = chat::WINDOWS[0];
+    chat_tab(&mut h, &state, 1);
     let label = format!("Society@{main:x}");
     scroll_to(&mut h, &state, &label);
     let out = click(&mut h, &state, &label);
@@ -250,9 +265,50 @@ fn a_tab_s_filters_menu_and_the_chat_page_edit_one_filter_for_its_window() {
 }
 
 #[test]
+fn the_chat_page_sets_each_tab_s_unread_count() {
+    let state = with_chat_windows();
+    let mut h = options_on("Chat", &state);
+    chat_tab(&mut h, &state, 2);
+    scroll_to(&mut h, &state, "Unread Count 2");
+    let out = click(&mut h, &state, "Unread Count 2");
+    assert_eq!(
+        out.settings,
+        [("chat-tab-2-unread".to_owned(), "false".to_owned())]
+    );
+    assert!(
+        h.ui.windows.options_page.control("Tells Tab").is_none(),
+        "there is no Tells tab"
+    );
+}
+
+#[test]
+fn the_chat_page_lists_the_five_tabs_and_pops_the_chosen_one_out_but_not_the_main_one() {
+    let state = with_chat_windows();
+    let mut h = options_on("Chat", &state);
+    for n in 1..=5 {
+        control(&h, &format!("Tab {n}"));
+    }
+    assert!(h.ui.windows.options_page.control("Tab 6").is_none());
+    assert!(
+        h.ui.windows.options_page.control("Undocked 1").is_none(),
+        "the main tab stays docked"
+    );
+    chat_tab(&mut h, &state, 3);
+    scroll_to(&mut h, &state, "Undocked 3");
+    click(&mut h, &state, "Undocked 3");
+    h.frame(&state);
+    assert_eq!(h.ui.hud.log.floating(), [false, false, true, false, false]);
+    assert!(h.ui.windows.options_page.chat_popped_out[2]);
+    click(&mut h, &state, "Undocked 3");
+    h.frame(&state);
+    assert_eq!(h.ui.hud.log.floating(), [false; 5], "and docks it again");
+}
+
+#[test]
 fn a_tab_renamed_on_the_chat_page_is_kept_in_the_settings_and_named_so_on_the_log_window() {
     let state = with_chat_windows();
     let mut h = options_on("Chat", &state);
+    chat_tab(&mut h, &state, 2);
     scroll_to(&mut h, &state, "Name 2");
     click(&mut h, &state, "Name 2");
     h.input.chars = vec!['!'];
@@ -707,7 +763,7 @@ fn pop_out_makes_the_tab_a_window_like_the_docked_one_moved_by_dragging_its_tab(
     let mut h = Harness::new(options);
     h.frame(&state);
     right_click_tab(&mut h, &state, "Combat");
-    click_menu(&mut h, &state, "Pop Out");
+    click_menu(&mut h, &state, "Undock");
     assert!(h.ui.hud.log.floating()[1]);
     assert!(!h.ui.hud.log.filters_open(), "the button closes the menu");
     h.move_to(5.0, 5.0);
@@ -759,7 +815,7 @@ fn pop_out_makes_the_tab_a_window_like_the_docked_one_moved_by_dragging_its_tab(
 /// Pop the tab named `name` out from its menu, and draw a frame with it out.
 fn pop_out(h: &mut Harness, state: &GameState, name: &str) {
     right_click_tab(h, state, name);
-    click_menu(h, state, "Pop Out");
+    click_menu(h, state, "Undock");
     h.move_to(1900.0, 5.0);
     h.frame(state);
 }
@@ -825,12 +881,12 @@ fn the_main_tab_s_menu_has_no_pop_out_and_a_right_click_shows_the_tab_it_was_on(
     h.frame(&state);
     right_click_tab(&mut h, &state, "Main");
     assert!(h.ui.hud.log.filters_open());
-    assert!(h.ui.hud.log.control("Pop Out").is_none());
+    assert!(h.ui.hud.log.control("Undock").is_none());
     assert!(h.ui.hud.log.control("Society").is_some());
     right_click_tab(&mut h, &state, "Allegiance");
     assert!(h.ui.hud.log.filters_open());
     assert_eq!(h.ui.hud.log.shown_tab(), 2);
-    assert!(h.ui.hud.log.control("Pop Out").is_some());
+    assert!(h.ui.hud.log.control("Undock").is_some());
 }
 
 #[test]
@@ -872,20 +928,18 @@ fn the_chat_page_sets_the_docked_window_s_opacities_and_each_tab_s_but_the_main_
         .set_by_key("chat-opacity-inactive", 0.25);
     options.chat_opacity.set_by_key("chat-opacity-active", 0.75);
     let mut h = options_on("Chat", &state);
-    for label in [
-        "Active Opacity",
-        "Inactive Opacity",
-        "Undocked Opacity (Active) 2",
-        "Undocked Opacity (Inactive) 5",
-    ] {
-        scroll_to(&mut h, &state, label);
-    }
+    control(&h, "Active Opacity");
+    control(&h, "Inactive Opacity");
     assert!(h
         .ui
         .windows
         .options_page
         .control("Undocked Opacity (Active) 1")
         .is_none());
+    chat_tab(&mut h, &state, 2);
+    scroll_to(&mut h, &state, "Undocked Opacity (Active) 2");
+    chat_tab(&mut h, &state, 5);
+    scroll_to(&mut h, &state, "Undocked Opacity (Inactive) 5");
     let r = control(&h, "Undocked Opacity (Inactive) 5");
     let out = click_at(&mut h, &state, r.x + 1.0, r.y + r.h / 2.0);
     assert_eq!(out.settings.len(), 1);
@@ -1050,7 +1104,7 @@ fn the_hud_layout_window_over_a_popped_out_chat_window_takes_the_press() {
 /// What HUD Layout's Reset forgets of the log windows: every popped-out tab's place and every
 /// log window's size.
 fn reset_settings() -> Vec<(String, String)> {
-    (1..5)
+    (0..5)
         .map(|n| format!("chat-tab-{}-at", n + 1))
         .chain((0..5).map(|n| format!("chat-tab-{}-size", n + 1)))
         .map(|k| (k, String::new()))
@@ -1154,6 +1208,126 @@ fn every_chat_window_is_sized_by_its_bottom_corner_and_keeps_its_size() {
         .expect("its ground")
         .dst;
     assert!((ground.w - 600.0).abs() < 0.5 && (ground.h - 252.0).abs() < 0.5);
+}
+
+/// The middle of the log control captioned `label`.
+fn middle_of(h: &Harness, label: &str) -> (f32, f32) {
+    let r =
+        h.ui.hud
+            .log
+            .control(label)
+            .unwrap_or_else(|| panic!("no {label:?}"));
+    (r.x + r.w / 2.0, r.y + r.h / 2.0)
+}
+
+/// Whether two edges are within half a pixel of each other.
+fn same(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.5
+}
+
+#[test]
+fn the_docked_chat_window_is_sized_from_every_corner_its_opposite_edges_staying_put() {
+    let state = with_chat_windows();
+    let mut h = Harness::new(Default::default());
+    h.frame(&state);
+    h.frame(&state);
+    let home = h.ui.hud.log.dock;
+    let was = home;
+    let (w, hh) = h.ui.hud.log.window_size(0, 1.0);
+    // The top-left corner moves the top and the left; the size and the place are kept.
+    let c = middle_of(&h, "Resize 1 Top Left");
+    let out = drag(&mut h, &state, c, (c.0 - 15.0, c.1 - 30.0));
+    assert_eq!(
+        out.settings,
+        [
+            (
+                "chat-tab-1-size".to_owned(),
+                format!("{},{}", w + 15.0, hh + 30.0)
+            ),
+            ("chat-tab-1-at".to_owned(), "-15,-30".to_owned()),
+        ]
+    );
+    h.frame(&state);
+    let now = h.ui.hud.log.dock;
+    assert!(same(now.x, was.x - 15.0) && same(now.y, was.y - 30.0));
+    assert!(same(now.right(), was.right()) && same(now.bottom(), was.bottom()));
+    // The top-right corner: the left and the bottom stay.
+    let was = now;
+    let c = middle_of(&h, "Resize 1 Top Right");
+    drag(&mut h, &state, c, (c.0 + 30.0, c.1 - 20.0));
+    h.frame(&state);
+    let now = h.ui.hud.log.dock;
+    assert!(same(now.x, was.x) && same(now.bottom(), was.bottom()));
+    assert!(same(now.right(), was.right() + 30.0) && same(now.y, was.y - 20.0));
+    // The bottom-left corner: the right and the top stay.
+    let was = now;
+    let c = middle_of(&h, "Resize 1 Bottom Left");
+    drag(&mut h, &state, c, (c.0 - 5.0, c.1 + 10.0));
+    h.frame(&state);
+    let now = h.ui.hud.log.dock;
+    assert!(same(now.right(), was.right()) && same(now.y, was.y));
+    assert!(same(now.x, was.x - 5.0) && same(now.bottom(), was.bottom() + 10.0));
+    // Never smaller than its least, the bottom-right corner held where it was.
+    let was = now;
+    let c = middle_of(&h, "Resize 1 Top Left");
+    let out = drag(&mut h, &state, c, (1900.0, 1070.0));
+    assert_eq!(
+        out.settings[0],
+        ("chat-tab-1-size".to_owned(), "200,120".to_owned())
+    );
+    h.frame(&state);
+    let now = h.ui.hud.log.dock;
+    assert!(same(now.right(), was.right()) && same(now.bottom(), was.bottom()));
+    // Its place and size come back with the settings.
+    let mut options = HorizonOptions::default();
+    options.chat_popped[0] = Some((10.0, -30.0));
+    options.chat_sizes[0] = Some((500.0, 260.0));
+    let mut h = Harness::new(options);
+    h.frame(&state);
+    h.frame(&state);
+    let dock = h.ui.hud.log.dock;
+    assert!(same(dock.x, home.x + 10.0) && same(dock.y, home.y - 30.0));
+    assert!(same(dock.w, 500.0) && same(dock.h, 260.0 - 24.0));
+}
+
+#[test]
+fn a_popped_out_chat_window_is_sized_from_its_top_left_corner_and_keeps_its_place() {
+    let state = with_chat_windows();
+    let mut options = HorizonOptions::default();
+    options.chat_popped[1] = Some((600.0, 400.0));
+    let mut h = Harness::new(options);
+    h.frame(&state);
+    pop_out(&mut h, &state, "Combat");
+    let (x, y) = h.ui.hud.log.popped_at(1).expect("out");
+    let (w, hh) = h.ui.hud.log.window_size(1, 1.0);
+    let c = middle_of(&h, "Resize 2 Top Left");
+    let out = drag(&mut h, &state, c, (c.0 - 50.0, c.1 - 40.0));
+    assert_eq!(
+        out.settings,
+        [
+            (
+                "chat-tab-2-size".to_owned(),
+                format!("{},{}", w + 50.0, hh + 40.0)
+            ),
+            (
+                "chat-tab-2-at".to_owned(),
+                format!("{},{}", x - 50.0, y - 40.0)
+            ),
+        ]
+    );
+    h.frame(&state);
+    assert_eq!(h.ui.hud.log.popped_at(1), Some((x - 50.0, y - 40.0)));
+    assert_eq!(h.ui.hud.log.window_size(1, 1.0), (w + 50.0, hh + 40.0));
+    // A drag on its tab still moves it.
+    let tab = h.ui.hud.log.control("Combat").unwrap();
+    drag(
+        &mut h,
+        &state,
+        (tab.x + 10.0, tab.y + 10.0),
+        (tab.x + 30.0, tab.y + 10.0),
+    );
+    assert_eq!(h.ui.hud.log.popped_at(1), Some((x - 30.0, y - 40.0)));
+    assert_eq!(h.ui.hud.log.window_size(1, 1.0), (w + 50.0, hh + 40.0));
 }
 
 #[test]

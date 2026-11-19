@@ -195,6 +195,8 @@ impl Hud {
         }
         world.chat.last_teller = Some(m.sender_id);
         world.chat.last_teller_name = trim_language_marker(&m.sender_name).to_owned();
+        let name = world.chat.last_teller_name.clone();
+        world.chat.note_tell_partner(&name);
         self.stats.last_teller_writes += 1;
     }
 

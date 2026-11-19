@@ -157,6 +157,22 @@ fn draw_every_options_tab_and_dropdown_for_a_person_to_look_at() {
             h.ui.windows.options_page.scroll[tab] = scroll + list.h * 0.85;
             settle(&mut h, &state);
         }
+        // The Chat page's other tabs, each chosen in its list.
+        if tab == 1 {
+            // The third tab popped out, as the list shows it.
+            h.ui.hud.log.pop_out(2, true, 0.0);
+            for slot in 1..5 {
+                h.ui.windows.options_page.chat_tab = slot;
+                h.ui.windows.options_page.scroll[tab] = 0.0;
+                settle(&mut h, &state);
+                write(
+                    &dir.join(format!("tab1-chat-tab-{}.png", slot + 1)),
+                    &h,
+                    &art,
+                );
+            }
+            h.ui.windows.options_page.chat_tab = 0;
+        }
     }
 }
 
@@ -259,10 +275,15 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
 /// window, the interface scale and the spell bar's rows; `PYREAL_UI_HUD_BARE` leaves the window shut
 /// and `PYREAL_UI_HUD_MAGIC` or `PYREAL_UI_HUD_PEACE` puts the character in that stance, and
 /// `PYREAL_UI_HUD_MODE` in the combat mode it names by number.
-/// `PYREAL_UI_HUD_FELLOWS` puts that many members (1 to 9) in the fellowship window.
+/// `PYREAL_UI_HUD_FELLOWS` puts that many members (1 to 9) in the fellowship window;
+/// `PYREAL_UI_HUD_AI` makes the second and third AI Players with the character leading, and
+/// `PYREAL_UI_HUD_OFFER` (`waypoint` or `note`) puts an Advocate's offer up. `PYREAL_UI_HUD_CLICK`
+/// (`x,y`) clicks there first. `PYREAL_UI_HUD_ALONE` leaves the character in no fellowship, with
+/// two AI Players following them.
 /// `PYREAL_UI_HUD_LAYOUT` opens the HUD Layout window; `PYREAL_UI_HUD_KEYS` names the keys, and
 /// `PYREAL_UI_HUD_SPELLS` puts that many spells in the first tab; `PYREAL_UI_HUD_STYLE` names
 /// the status bar style by its settings word.
+/// `PYREAL_UI_HUD_OPEN` opens `character` or `spellbook` in place of the fellowship window.
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
 fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
@@ -347,7 +368,29 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
     let spells: usize = env("PYREAL_UI_HUD_SPELLS")
         .and_then(|n| n.parse().ok())
         .unwrap_or(0);
-    let state = GameState {
+    let ai = env("PYREAL_UI_HUD_AI").is_some();
+    let offer = env("PYREAL_UI_HUD_OFFER").map(|kind| {
+        let (title, text) = if kind == "note" {
+            (
+                "Journal Note Offered",
+                "~Advocate Tamsin offers you a note for your journal called Drudges.",
+            )
+        } else {
+            (
+                "Waypoint Offered",
+                "~Advocate Tamsin offers you a waypoint to Holtburg square at 42.1N 33.6E.",
+            )
+        };
+        pyreal_horizon::ui::game::Prompt {
+            id: 1,
+            text: text.into(),
+            question: true,
+            modal: false,
+            waiting: 0,
+            offer: Some(title.into()),
+        }
+    });
+    let mut state = GameState {
         in_world: true,
         name: "Tester".into(),
         key_bindings,
@@ -417,8 +460,75 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
             .collect(),
             ..FellowshipView::default()
         }),
+        prompts: offer.into_iter().collect(),
         ..GameState::default()
     };
+    if env("PYREAL_UI_HUD_ALONE").is_some() {
+        state.player_id = Some(pyreal_primitives::ObjectId(1));
+        state.fellowship_view = None;
+        state.fellowship.clear();
+        state.ai_fellows = [(2, "~Tamsin", "defensive"), (3, "~Corvin", "aggressive")]
+            .into_iter()
+            .map(
+                |(id, name, mode)| pyreal_client_contract::view::AiFellowView {
+                    id: pyreal_primitives::ObjectId(id),
+                    name: name.into(),
+                    mode: mode.into(),
+                    in_fellowship: false,
+                },
+            )
+            .collect();
+    }
+    if ai {
+        state.player_id = Some(pyreal_primitives::ObjectId(1));
+        if let Some(f) = state.fellowship_view.as_mut() {
+            for m in f.members.iter_mut().skip(1).take(2) {
+                m.name = format!("~{}", m.name);
+            }
+        }
+        for (name, ..) in state.fellowship.iter_mut().take(2) {
+            *name = format!("~{name}");
+        }
+        state.ai_fellows = [(2, "~Aldren", "heal"), (3, "~Mirelle", "assist")]
+            .into_iter()
+            .take(fellows.saturating_sub(1))
+            .map(
+                |(id, name, mode)| pyreal_client_contract::view::AiFellowView {
+                    id: pyreal_primitives::ObjectId(id),
+                    name: name.into(),
+                    mode: mode.into(),
+                    in_fellowship: true,
+                },
+            )
+            .collect();
+    }
+    // The spellbook's spells, every school and level shown.
+    state.world_services.spell_filters = pyreal_client_contract::spellbook::DEFAULT_SPELL_FILTERS;
+    let schools = [
+        "",
+        "Flame Bolt",
+        "Heal Self",
+        "Blood Drinker",
+        "Strength Self",
+    ];
+    let levels = ["I", "II", "III", "IV", "V", "VI", "VII"];
+    state.spells = (1u32..=4)
+        .flat_map(|school| (1u32..=7).map(move |level| (school, level)))
+        .map(|(school, level)| pyreal_horizon::ui::game::Spell {
+            id: school * 100 + level,
+            name: format!(
+                "{} {}",
+                schools[school as usize],
+                levels[level as usize - 1]
+            ),
+            school,
+            level,
+            charge: None,
+            ac_icon: 0,
+            icon_power: 0,
+            bitfield: 0,
+        })
+        .collect();
     let art = Arc::new(Art::new(Arc::new(
         pyreal_horizon::pieces::Pieces::built_in(),
     )));
@@ -447,10 +557,30 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
     h.frame(&state);
     if env("PYREAL_UI_HUD_LAYOUT").is_some() {
         h.ui.windows.open(WindowId::Layout, 0.0);
+    } else if let Some(open) = env("PYREAL_UI_HUD_OPEN") {
+        h.ui.windows.open(
+            if open == "spellbook" {
+                WindowId::Actions
+            } else {
+                WindowId::Character
+            },
+            0.0,
+        );
     } else if env("PYREAL_UI_HUD_BARE").is_none() {
         h.ui.windows.open(WindowId::Social, 0.0);
     }
     settle(&mut h, &state);
+    if let Some((x, y)) = env("PYREAL_UI_HUD_CLICK").and_then(|c| {
+        let (x, y) = c.split_once(',')?;
+        Some((x.trim().parse::<f32>().ok()?, y.trim().parse::<f32>().ok()?))
+    }) {
+        h.move_to(x, y);
+        h.frame(&state);
+        h.press();
+        h.frame(&state);
+        h.release();
+        settle(&mut h, &state);
+    }
     let name = std::env::var("PYREAL_UI_HUD_NAME").unwrap_or_else(|_| "hud".into());
     write(&dir.join(format!("{name}.png")), &h, &art);
 }
@@ -463,11 +593,15 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
 /// - `PYREAL_UI_CREATION`: `heritage:preset` pairs, `;` between (default a few per era). A preset
 ///   the heritage cannot take is shown dimmed and explained.
 /// - `PYREAL_UI_CHANGE`: when set, lowers Self by ten after choosing, to show a changed preset.
+/// - `PYREAL_UI_SCALE`: the interface scale (default the window's own).
+/// - `PYREAL_UI_ALL_PAGES`: when set, draws every page, not only those four.
+/// - `PYREAL_UI_WHEEL`: `x,y,ticks`, the wheel turned there on each page (negative scrolls down).
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder and have the dats"]
 fn draw_the_creation_pages_for_a_person_to_look_at() {
     use pyreal_horizon::ui::creation::{Creation, Step};
     use pyreal_primitives::EraId;
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
         return;
     };
@@ -507,8 +641,12 @@ fn draw_the_creation_pages_for_a_person_to_look_at() {
                 continue;
             };
             let heritage: u32 = heritage.trim().parse().expect("a heritage key");
+            let options = pyreal_horizon::options::HorizonOptions {
+                scale: env("PYREAL_UI_SCALE").and_then(|s| s.parse().ok()),
+                ..Default::default()
+            };
             let mut h = Harness {
-                ui: HorizonUi::new(Arc::clone(&art), Default::default()),
+                ui: HorizonUi::new(Arc::clone(&art), options),
                 list: DrawList::default(),
                 input: InputFrame::default(),
                 screen: (W as f32, H as f32),
@@ -526,7 +664,20 @@ fn draw_the_creation_pages_for_a_person_to_look_at() {
                     c.state.set_attribute(pyreal_chargen::Attr::Self_, s - 10);
                 }
             }
-            for step in [Step::Profession, Step::Attributes, Step::Skills, Step::Name] {
+            let steps = if env("PYREAL_UI_ALL_PAGES").is_some() {
+                vec![
+                    Step::Heritage,
+                    Step::Sex,
+                    Step::Profession,
+                    Step::Attributes,
+                    Step::Skills,
+                    Step::Town,
+                    Step::Name,
+                ]
+            } else {
+                vec![Step::Profession, Step::Attributes, Step::Skills, Step::Name]
+            };
+            for step in steps {
                 if let Some(c) = h.ui.pregame.creation.as_mut() {
                     c.step = step;
                     if step == Step::Name {
@@ -534,6 +685,14 @@ fn draw_the_creation_pages_for_a_person_to_look_at() {
                     }
                 }
                 settle(&mut h, &state);
+                if let Some((x, y, n)) = env("PYREAL_UI_WHEEL").and_then(|w| {
+                    let v: Vec<f32> = w.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                    (v.len() == 3).then(|| (v[0], v[1], v[2]))
+                }) {
+                    h.move_to(x, y);
+                    h.input.wheel = n;
+                    settle(&mut h, &state);
+                }
                 let name = format!(
                     "creation-{}-{heritage}-{}-{step:?}.png",
                     era.name(),
@@ -1240,4 +1399,333 @@ fn draw_fifteen_friends_and_a_chest_of_sixty_for_a_person_to_look_at() {
     settle(&mut h, &state);
     let r = window(&h, WindowId::Loot);
     write_part(&dir.join("loot-60.png"), &h, &art, Some(r));
+}
+
+/// Not a claim: the log window and its input line in each of its states, Classic and Modern,
+/// into `<PYREAL_UI_SHOTS>/chat-*.png`.
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_the_chat_line_s_states_for_a_person_to_look_at() {
+    use pyreal_client_contract::chat::mainchat::ChatFocusView;
+    use pyreal_horizon::ui::chat::ChatStyle;
+    use pyreal_horizon::ui::game::ChatLine;
+    use pyreal_horizon::ui::input::vk;
+    let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    store::init();
+    let art = Arc::new(Art::new(Arc::new(
+        pyreal_horizon::pieces::Pieces::built_in(),
+    )));
+    let harness = |style| Harness {
+        ui: HorizonUi::new(
+            Arc::clone(&art),
+            pyreal_horizon::options::HorizonOptions {
+                chat_style: style,
+                ..Default::default()
+            },
+        ),
+        list: DrawList::default(),
+        input: InputFrame::default(),
+        screen: (W as f32, H as f32),
+    };
+    let mut focus = ChatFocusView {
+        focus: 1,
+        ..ChatFocusView::default()
+    };
+    for f in [1, 3, 7, 8, 9] {
+        focus.enabled[f] = true;
+        focus.selectable[f] = true;
+    }
+    let mut state = GameState {
+        in_world: true,
+        name: "Tester".into(),
+        chat_focus: focus,
+        ..GameState::default()
+    };
+    state.chat_windows = pyreal_horizon::ui::chat::WINDOWS
+        .iter()
+        .map(|id| pyreal_horizon::ui::game::ChatWindow {
+            id: *id,
+            filter: pyreal_horizon::ui::chat::default_filter(*id),
+            title: None,
+        })
+        .collect();
+    state.reply_targets.last_teller = Some("Alba".into());
+    state.reply_targets.recent = vec![
+        "Alba".into(),
+        "Sir Borin of Rithwic".into(),
+        "Kaelis".into(),
+    ];
+    let line = |chat_type, text: &str| ChatLine {
+        chat_type,
+        text: text.into(),
+        window: 0,
+    };
+    let lines = vec![
+        line(2, "<Tell:IIDString:1342177283:Borin>Borin<\\Tell> says, \"Anyone heading to the Shoushi drudges?\""),
+        line(19, "[Fellowship] <Tell:IIDString:1342177284:Mira>Mira<\\Tell> says, \"Healing up, one sec\""),
+        line(21, "You hit the drudge prowler for 12 points of slashing damage!"),
+        line(21, "The drudge prowler misses you."),
+        line(3, "<Tell:IIDString:1342177282:Alba>Alba<\\Tell> tells you, \"Yes, 40k each. Where are you?\""),
+        line(4, "You tell Kaelis, \"On my way to Holtburg\""),
+    ];
+    let shot = |h: &mut Harness, state: &GameState, name: &str| {
+        h.frame(state);
+        let d = h.ui.hud.log.dock;
+        let part =
+            pyreal_horizon::draw::Rect::new(d.x - 12.0, d.y - 250.0, d.w + 24.0, d.h + 262.0);
+        write_part(&dir.join(format!("chat-{name}.png")), h, &art, Some(part));
+    };
+    let open = |h: &mut Harness, state: &GameState| {
+        h.input.keys.push(vk::ENTER);
+        h.input
+            .actions
+            .push(pyreal_client_contract::actions::chat_entry::BEGIN_CHAT_MODE.0);
+        h.frame(state);
+    };
+    let typed = |h: &mut Harness, state: &GameState, text: &str| {
+        h.input.chars = text.chars().collect();
+        h.frame(state);
+    };
+    for (style, word) in [
+        (ChatStyle::Classic, "classic"),
+        (ChatStyle::Modern, "modern"),
+    ] {
+        let mut h = harness(style);
+        h.frame(&state);
+        state.new_chat.clone_from(&lines);
+        h.frame(&state);
+        state.new_chat.clear();
+        settle(&mut h, &state);
+        open(&mut h, &state);
+        typed(
+            &mut h,
+            &state,
+            "/t Alba, are you still selling those scarabs?",
+        );
+        shot(&mut h, &state, &format!("{word}-tell"));
+        h.input.keys.push(vk::ESCAPE);
+        h.frame(&state);
+        // Closed, the bar shows the draft the game keeps.
+        state.chat_draft = if style == ChatStyle::Modern {
+            "@tell Alba, are you still selling those scarabs?".into()
+        } else {
+            "/t Alba, are you still selling those scarabs?".into()
+        };
+        h.input.mouse = (0.0, 0.0);
+        shot(&mut h, &state, &format!("{word}-closed"));
+        state.chat_draft.clear();
+        let mut h = harness(style);
+        h.frame(&state);
+        state.new_chat.clone_from(&lines);
+        h.frame(&state);
+        state.new_chat.clear();
+        settle(&mut h, &state);
+        open(&mut h, &state);
+        typed(&mut h, &state, "/t Al");
+        shot(&mut h, &state, &format!("{word}-name"));
+        typed(&mut h, &state, "ba,");
+        if style == ChatStyle::Modern {
+            let chip = h.ui.hud.log.control("Chat Destination").expect("the chip");
+            h.input.mouse = (chip.x + chip.w / 2.0, chip.y + chip.h / 2.0);
+            h.input.pressed[0] = true;
+            h.frame(&state);
+            h.input.pressed[0] = false;
+            shot(&mut h, &state, "modern-menu");
+            h.input.mouse = (0.0, 0.0);
+            h.input.keys.push(vk::ESCAPE);
+            h.frame(&state);
+            h.input.keys.push(vk::BACK);
+            shot(&mut h, &state, "modern-backspace");
+            h.input.keys.push(vk::ESCAPE);
+            h.frame(&state);
+            let main = h.ui.hud.log.control("Main").expect("the main tab");
+            h.input.mouse = (main.x + main.w / 2.0, main.y + main.h / 2.0);
+            h.input.pressed[0] = true;
+            h.frame(&state);
+            h.input.pressed[0] = false;
+            h.frame(&state);
+            let name = h.ui.hud.log.control("Name: Mira").expect("Mira's name");
+            h.input.mouse = (name.x + name.w / 2.0, name.y + name.h / 2.0);
+            h.input.pressed[1] = true;
+            h.frame(&state);
+            h.input.pressed[1] = false;
+            shot(&mut h, &state, "modern-name-menu");
+        }
+    }
+}
+
+/// Not a claim: the Journal window's three tabs (`journal-contracts.png`, `journal-notebook.png`,
+/// `journal-timers.png`) into `<PYREAL_UI_SHOTS>/`, and with `PYREAL_MAP_DATS` the map with the
+/// journal's pages on it (`journal-map.png`).
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+#[allow(clippy::too_many_lines)]
+fn draw_the_journal_for_a_person_to_look_at() {
+    use pyreal_client_contract::journal::{HeardTimer, JournalPage, JournalView, QuestTimerView};
+    use pyreal_client_contract::view::ContractEntry;
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let Some(dir) = env("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    store::init();
+    let art = Arc::new(Art::new(Arc::new(
+        pyreal_horizon::pieces::Pieces::built_in(),
+    )));
+    let wall = 1_763_380_800; // 17 Nov 2025.
+    let page = |n: u32, label: &str, title: &str, notes: &str| JournalPage {
+        label: label.into(),
+        title: title.into(),
+        notes: notes.into(),
+        page_number: n,
+        made: wall - 3 * 86_400,
+        edited: wall - 600,
+        ..JournalPage::default()
+    };
+    let clock = 10_000.0;
+    let mut pages = vec![
+        page(1, "Timer", "Aerbax's Defeat", "Can repeat every 20 hours."),
+        page(
+            2,
+            "Quest, Al-Arqas",
+            "Gharu'ndim relics",
+            "Bring the three relics to Ayn Tayan in Al-Arqas.\nOne is in the Mite Maze at 40.4N, 39.5W, one is sold by the Gharu'ndim trader.\nThird: ask the Archmage.",
+        ),
+        page(3, "Loot", "Mana forge keys", "Keys sell for 5,000 at the Shopkeep."),
+        page(4, "Advocate", "To Fort Tethana (1/2)", "Step to the Portal to Town Network.\nSigned, Tamsin of Holtburg."),
+        page(5, "Advocate", "To Fort Tethana (2/2)", "Take the portal to Fort Tethana.\nSigned, Tamsin of Holtburg."),
+    ];
+    pages[0].timer_running = true;
+    pages[0].timer_stamp = clock - 30.0;
+    pages[1].timer_running = true;
+    pages[1].timer_stamp = clock + 3.0 * 3_600.0 + 12.0 * 60.0;
+    pages[1].hours = 20;
+    for (i, (ns, ew)) in [(1, (-31.4, 13.2)), (3, (42.3, -33.3)), (4, (40.1, -42.9))] {
+        pages[i].location_set = true;
+        pages[i].ns = ns;
+        pages[i].ew = ew;
+    }
+    pages[3].from = "~Advocate Tamsin".into();
+    pages[4].from = "~Advocate Tamsin".into();
+    let state = GameState {
+        in_world: true,
+        name: "Tester".into(),
+        clock,
+        wall,
+        contracts: vec![ContractEntry {
+            contract_id: 1,
+            name: "Hunting Aun Ralirea".into(),
+            status: "In Progress".into(),
+            description: "Slay the Aun Ralirea in the Ruins of Ahurenga.".into(),
+            contact: "Ralirea Scout".into(),
+            timed: "Timed: 2h 5m".into(),
+            repeat_remaining: Some(2.0 * 3_600.0 + 5.0 * 60.0),
+            ..ContractEntry::default()
+        }],
+        journal: JournalView {
+            draft: pages[1].clone(),
+            pages,
+            current_page: 2,
+            loaded: true,
+            quests_known: true,
+            since: 0.0,
+            quests: vec![QuestTimerView {
+                name: "colosseumwins".into(),
+                title: "Colosseum".into(),
+                min_delta: 72_000,
+                ready_at: Some(clock + 19.0 * 3_600.0 + 40.0 * 60.0),
+                ..QuestTimerView::default()
+            }],
+            heard: vec![HeardTimer {
+                title: "Quest from Ayn Tayan".into(),
+                ready_at: clock + 6.0 * 86_400.0 + 4.0 * 3_600.0,
+                seconds: 0,
+            }],
+            ..JournalView::default()
+        },
+        ..GameState::default()
+    };
+    let mut h = Harness {
+        ui: HorizonUi::new(Arc::clone(&art), Default::default()),
+        list: DrawList::default(),
+        input: InputFrame::default(),
+        screen: (W as f32, H as f32),
+    };
+    h.ui.windows.open(WindowId::Journal, -1.0);
+    h.frame(&state);
+    settle(&mut h, &state);
+    let window = |h: &Harness| {
+        h.ui.windows
+            .rects(1.0)
+            .into_iter()
+            .find(|(id, _)| *id == WindowId::Journal)
+            .map(|(_, r)| r)
+    };
+    for name in ["journal-contracts", "journal-notebook", "journal-timers"] {
+        if name != "journal-contracts" {
+            h.frame(&state);
+            let snap = h.input.nav.last.clone();
+            let bar = snap
+                .tabs_in(snap.layers.len())
+                .expect("the journal window's tabs are noted");
+            h.input.pad.tab_step = Some((bar, 1));
+            settle(&mut h, &state);
+        }
+        let r = window(&h);
+        write_part(&dir.join(format!("{name}.png")), &h, &art, r);
+    }
+    let Some(dats) = env("PYREAL_MAP_DATS") else {
+        return;
+    };
+    use pyreal_horizon::art::AcArt as _;
+    use pyreal_horizon::ui::panels::map::{map_pixel, OVERVIEW_KEY};
+    let dats = std::path::PathBuf::from(dats);
+    let store = pyreal_dat::RetailDatStore::open_dir(&dats).expect("the data files open");
+    art.set_ac_store(Arc::new(store));
+    let state = GameState {
+        is_admin: env("PYREAL_UI_ADMIN").is_some(),
+        coords: env("PYREAL_UI_ADMIN").map(|_| (40.9, -37.6)),
+        ..state
+    };
+    let mut h = Harness {
+        ui: HorizonUi::new(Arc::clone(&art), Default::default()),
+        list: DrawList::default(),
+        input: InputFrame::default(),
+        screen: (2000.0, 1500.0),
+    };
+    h.frame(&state);
+    h.ui.windows.open(WindowId::Map, 0.0);
+    h.frame(&state);
+    let start = std::time::Instant::now();
+    while art.lookup(OVERVIEW_KEY).is_none() && start.elapsed().as_secs() < 60 {
+        h.frame(&state);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    h.ui.windows
+        .waypoints
+        .set(pyreal_horizon::ui::waypoint::Waypoint {
+            ns: 42.3,
+            ew: -33.3,
+            name: Some("To Fort Tethana (1/2)".into()),
+        });
+    h.ui.windows.map_view.centre = map_pixel(41.0, -38.0);
+    h.ui.windows.map_view.zoom = 3.0;
+    let pin = ((40.4, -39.5), Some("Gharu'ndim relics".to_owned()));
+    h.ui.windows.map_view.pin = Some(pin.clone());
+    h.ui.windows.map_view.offer = Some(pin);
+    for _ in 0..60 {
+        h.frame(&state);
+    }
+    let r =
+        h.ui.windows
+            .rects(1.0)
+            .into_iter()
+            .find(|(id, _)| *id == WindowId::Map)
+            .map(|(_, r)| r);
+    write_part(&dir.join("journal-map.png"), &h, &art, r);
 }

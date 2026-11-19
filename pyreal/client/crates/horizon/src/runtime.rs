@@ -888,7 +888,7 @@ impl HorizonFrontEnd {
         let shown = self.dialogs.shown();
         let waiting = shown
             .iter()
-            .filter(|d| !d.message)
+            .filter(|d| !d.message && d.offer.is_none())
             .count()
             .saturating_sub(1);
         state.prompts = shown
@@ -897,8 +897,13 @@ impl HorizonFrontEnd {
                 id: d.id,
                 question: !d.message,
                 modal: d.modal,
-                waiting: if d.message { 0 } else { waiting },
+                waiting: if d.message || d.offer.is_some() {
+                    0
+                } else {
+                    waiting
+                },
                 text: d.text.clone(),
+                offer: d.offer.clone(),
             })
             .collect();
         if let Some(p) = self.resolution {
@@ -916,6 +921,7 @@ impl HorizonFrontEnd {
                 modal: true,
                 waiting: 0,
                 text: text.to_owned(),
+                offer: None,
             });
         }
         // A refusal of a character sent, in the creation wizard's own words.
@@ -1374,13 +1380,6 @@ impl HorizonFrontEnd {
                     .push(format!("nothing called {name:?} on the radar")),
             }
         }
-        if out
-            .requests
-            .iter()
-            .any(|r| matches!(r, UiRequest::AbuseLog { .. }))
-        {
-            self.abuse_answer = None;
-        }
         for request in out.requests {
             self.outbox.emit(request);
         }
@@ -1506,6 +1505,8 @@ impl HorizonFrontEnd {
                         options.chat_popped[slot] = crate::options::parse_point(value);
                     } else if let Some(slot) = crate::options::size_slot(other) {
                         options.chat_sizes[slot] = crate::options::parse_point(value);
+                    } else if let Some(slot) = crate::options::unread_slot(other) {
+                        options.chat_unread[slot] = crate::options::parse_switch(value);
                     } else if let Ok(v) = value.parse::<f32>() {
                         options.chat_opacity.set_by_key(other, v);
                     }
@@ -1621,13 +1622,8 @@ impl HorizonFrontEnd {
             .get(&state.heritage_group)
             .map_or(0, |h| h.environment_setup.0);
         let heritage = state.heritage_group;
-        // The heritage's standing pose, still, as the other interfaces show the model while it
-        // is not being turned.
-        let rest = {
-            let mut view = pyreal_ui_logic::chargen::Cg3dView::default();
-            view.initialize(state);
-            view.rest_animation_enum
-        };
+        // The heritage's standing pose, still.
+        let rest = pyreal_ui_logic::chargen::rest_animation_enum(state.heritage_group);
         let heading = creation.heading;
         let store = Arc::clone(cx.store());
         let assets = Arc::clone(cx.anim_assets());

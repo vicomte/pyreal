@@ -28,9 +28,35 @@ pub enum EntryAction {
     Previous,
     Next,
     RecallLast,
-    Reply { target: ReplyTarget, prefix: String },
+    Reply {
+        target: ReplyTarget,
+        prefix: String,
+    },
     ExpandAlias,
-    StartTell { name: String },
+    StartTell {
+        name: String,
+    },
+    /// Tab in a tell's name: fill the next matching name, or the previous one when `back`.
+    Complete {
+        names: NameSources,
+        back: bool,
+    },
+}
+
+/// The names Tab offers in a tell, as the interface sees them this frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NameSources {
+    /// The player's own name, never offered.
+    pub me: Option<String>,
+    /// The selected player.
+    pub selected: Option<String>,
+    /// Players nearby, nearest first.
+    pub nearby: Vec<String>,
+    pub fellowship: Vec<String>,
+    /// Monarch, patron, then vassals.
+    pub allegiance: Vec<String>,
+    /// Friends who are online.
+    pub friends: Vec<String>,
 }
 
 /// A text update consumed once by the active interface, never replayed on a switch.

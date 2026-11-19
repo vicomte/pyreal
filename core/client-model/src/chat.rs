@@ -337,12 +337,17 @@ pub struct ChatState {
     pub last_teller: Option<ObjectId>,
     pub last_teller_name: String,
     pub last_tellee_name: String,
+    /// Recent tell partners, both ways, newest first, for Tab in a tell.
+    pub recent_tells: Vec<String>,
     /// `ChatRoomTracker` — chat types 1..10 -> room ID (not talk-focus ordinals).
     pub chat_rooms: BTreeMap<u32, u32>,
     /// Whether the player wants allegiance chat; initially false. The optional allegiance
     /// chat-window restore producer is not yet ported; room receipt still honors this state.
     pub wants_allegiance_chat: bool,
 }
+
+/// How many tell partners Tab remembers.
+pub const RECENT_TELLS: usize = 10;
 
 impl ChatState {
     #[must_use]
@@ -352,7 +357,20 @@ impl ChatState {
             last_teller: present(&self.last_teller_name),
             monarch: present(&self.last_monarch_sender),
             patron: present(&self.last_patron_sender),
+            last_tellee: present(self.last_tellee_name.trim()),
+            recent: self.recent_tells.clone(),
         }
+    }
+
+    /// Puts a tell partner first in the recent list, which keeps [`RECENT_TELLS`] names.
+    pub fn note_tell_partner(&mut self, name: &str) {
+        let name = bare_name(name);
+        if name.is_empty() {
+            return;
+        }
+        self.recent_tells.retain(|n| !n.eq_ignore_ascii_case(name));
+        self.recent_tells.insert(0, name.to_owned());
+        self.recent_tells.truncate(RECENT_TELLS);
     }
 
     #[must_use]
@@ -749,6 +767,13 @@ pub fn join_args_as_name(joined: &str) -> &str {
     joined.trim_matches(WHITESPACE).trim_start_matches('+')
 }
 
+/// A player's name without an admin's leading `+` or an AI Player's `~`, which servers accept
+/// either way: what name completion matches, offers and remembers.
+#[must_use]
+pub fn bare_name(name: &str) -> &str {
+    name.trim_matches(WHITESPACE).trim_start_matches(['+', '~'])
+}
+
 impl ChatState {
     /// Handles `@tell`, `@t`, `@send`, `@whisper`, and `@w`.
     ///
@@ -783,6 +808,7 @@ impl ChatState {
         let message = s[comma + 1..].trim_matches(WHITESPACE).to_owned();
         // Remember the last tellee for `@retell`.
         self.last_tellee_name.clone_from(&target_name);
+        self.note_tell_partner(&target_name);
         TellOutcome::ByName {
             message,
             target_name,
@@ -1325,6 +1351,29 @@ mod tests {
 
     /// Pinned behavior: the empty arm returns silently, a missing last-tellee name produces the
     /// refusal, and the handler never replaces the remembered name.
+    #[test]
+    fn tell_partners_are_kept_newest_first_once_each_and_bounded() {
+        let mut s = ChatState::new();
+        assert!(matches!(s.do_tell("Alba, hi"), TellOutcome::ByName { .. }));
+        s.note_tell_partner("Bex");
+        s.note_tell_partner("  ");
+        assert!(matches!(
+            s.do_tell("ALBA , again"),
+            TellOutcome::ByName { .. }
+        ));
+        assert_eq!(s.recent_tells, ["ALBA", "Bex"]);
+        s.note_tell_partner("~bex");
+        s.note_tell_partner("+Alba");
+        assert_eq!(s.recent_tells, ["Alba", "bex"]);
+        assert_eq!(s.reply_targets().last_tellee.as_deref(), Some("ALBA"));
+        assert_eq!(bare_name(" +~Cy "), "Cy");
+        for n in 0..12 {
+            s.note_tell_partner(&format!("P{n}"));
+        }
+        assert_eq!(s.recent_tells.len(), RECENT_TELLS);
+        assert_eq!(s.reply_targets().recent[0], "P11");
+    }
+
     #[test]
     fn do_retell_is_silent_on_an_empty_line_and_never_replaces_the_name() {
         let mut s = ChatState::new();

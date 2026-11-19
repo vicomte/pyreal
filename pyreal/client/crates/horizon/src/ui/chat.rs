@@ -14,12 +14,15 @@
 use pyreal_client_contract::chat::entry::{EntryAction, ReplyTarget};
 use pyreal_client_contract::chat::interface::{route, window, Routed};
 use pyreal_client_contract::UiRequest;
+use pyreal_client_model::chat_entry::{
+    bare_tell, name_slot, reply_command, seed_name, split_tell, tell_line,
+};
 
 use crate::art::Family;
 use crate::draw::{Argb, Rect};
 use crate::options::{ChatOpacity, TabNames};
-use crate::ui::colours::chat_colour;
-use crate::ui::game::{ChatLine, ChatWindow, GameState};
+use crate::ui::colours::{chat_colour, line_colour};
+use crate::ui::game::{BlipKind, ChatLine, ChatWindow, GameState, Relation};
 use crate::ui::hud::{chat_links, Link, LinkTarget};
 use crate::ui::input::vk;
 use crate::ui::kit::{self, Ctx};
@@ -28,6 +31,53 @@ use crate::ui::Outcome;
 
 /// The side of a log window's corner it is sized by, in layout units.
 const GRIP: f32 = 12.0;
+
+/// The side of a log window's top corner it is sized by, in layout units: smaller, as the tabs
+/// are held by their corners too.
+const TOP_GRIP: f32 = 8.0;
+
+/// The height of the input line's bar, in layout units.
+const INPUT_H: f32 = 30.0;
+
+/// How far the destination's chip stands in from the input bar's top line and its foot.
+const CHIP_PAD: f32 = 5.0;
+
+/// A corner of a log window, which it is made larger or smaller by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    const ALL: [Self; 4] = [
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+    ];
+
+    const fn left(self) -> bool {
+        matches!(self, Self::TopLeft | Self::BottomLeft)
+    }
+
+    const fn top(self) -> bool {
+        matches!(self, Self::TopLeft | Self::TopRight)
+    }
+
+    /// The caption of log window `slot`'s corner, for a scripted run or a test to find it.
+    fn caption(self, slot: usize) -> String {
+        let n = slot + 1;
+        match self {
+            Self::BottomRight => format!("Resize {n}"),
+            Self::TopLeft => format!("Resize {n} Top Left"),
+            Self::TopRight => format!("Resize {n} Top Right"),
+            Self::BottomLeft => format!("Resize {n} Bottom Left"),
+        }
+    }
+}
 
 /// How many chat lines the log keeps.
 const CHAT_HISTORY: usize = 400;
@@ -44,17 +94,27 @@ pub const WINDOWS: [u32; 5] = [
     window::FLOATY_4,
 ];
 
-/// The colour a talk-focus destination's label is drawn in: its kind of chat's.
+/// The chat type a talk-focus destination's lines take, for its colour.
+#[must_use]
+pub fn focus_chat_type(focus: u32) -> u8 {
+    match focus {
+        2 => 3,
+        3 => 19,
+        4..=6 => 10,
+        7 => 18,
+        8 => 27,
+        9 => 28,
+        10 => 29,
+        11 => 30,
+        12 | 13 => 32,
+        _ => 2,
+    }
+}
+
+/// The colour a talk-focus destination's label and typed line are drawn in: its chat type's.
 #[must_use]
 pub fn focus_colour(focus: u32) -> Argb {
-    match focus {
-        2 => 0xFFFF_B8DE,
-        3 => 0xFF66_E5FF,
-        4..=7 => 0xFFAB_DBE5,
-        8..=12 => 0xFFD4_FF7D,
-        13 => 0xFFFF_A666,
-        _ => 0xFFF7_F7F7,
-    }
+    chat_colour(focus_chat_type(focus))
 }
 
 /// The destinations the talk-focus menu lists, in the game's menu order, with Olthoi's own
@@ -146,6 +206,36 @@ pub fn focus_command(text: &str) -> Option<(u32, &str)> {
     Some((focus as u32, after))
 }
 
+/// The names Tab offers in a tell: the selected player, players nearby (nearest first),
+/// fellowship, allegiance and friends online.
+#[must_use]
+pub fn tell_names(state: &GameState) -> pyreal_client_contract::chat::entry::NameSources {
+    let other = |id: pyreal_primitives::ObjectId| Some(id) != state.player_id;
+    let mut nearby: Vec<_> = state
+        .targets
+        .iter()
+        .filter(|b| matches!(b.kind, BlipKind::Player | BlipKind::Fellow) && other(b.id))
+        .collect();
+    nearby.sort_by(|a, b| (a.dx * a.dx + a.dy * a.dy).total_cmp(&(b.dx * b.dx + b.dy * b.dy)));
+    pyreal_client_contract::chat::entry::NameSources {
+        me: state.in_world.then(|| state.name.clone()),
+        selected: state
+            .target
+            .as_ref()
+            .filter(|t| t.relation == Relation::Player && other(t.id))
+            .map(|t| t.name.clone()),
+        nearby: nearby.into_iter().map(|b| b.name.clone()).collect(),
+        fellowship: state.fellowship.iter().map(|f| f.0.clone()).collect(),
+        allegiance: state.allegiance.iter().map(|a| a.1.clone()).collect(),
+        friends: state
+            .friends
+            .iter()
+            .filter(|f| f.1)
+            .map(|f| f.0.clone())
+            .collect(),
+    }
+}
+
 /// The channel a line being typed goes to, for its label: the one a command it starts with
 /// names, else `focus` (the destination's label and colour).
 #[must_use]
@@ -155,23 +245,144 @@ pub fn channel_label(text: &str, focus: (&str, Argb)) -> (String, Argb) {
         .strip_prefix('/')
         .or_else(|| lower.strip_prefix('@'))
         .map(|rest| rest.split_whitespace().next().unwrap_or(""));
-    let (label, colour) = match command {
+    let (label, ty) = match command {
         Some("t" | "tell" | "w" | "whisper" | "send" | "r" | "reply" | "rt" | "retell") => {
-            ("Tell", 0xFFFF_B8DE)
+            ("Tell", 3)
         }
-        Some("f" | "fellowship" | "fellow" | "fellows") => ("Fellowship", 0xFF66_E5FF),
-        Some(
-            "a" | "allegiance" | "p" | "patron" | "m" | "monarch" | "v" | "vassals" | "c"
-            | "covassals",
-        ) => ("Allegiance", 0xFFAB_DBE5),
-        Some("cg" | "general") => ("General", 0xFFD4_FF7D),
-        Some("ct" | "trade") => ("Trade", 0xFFD4_FF7D),
-        Some("clfg" | "lfg") => ("LFG", 0xFFD4_FF7D),
-        Some("e" | "em" | "emote" | "me") => ("Emote", 0xFFBA_FFF0),
-        Some(_) => ("Command", 0xFFCC_CCCC),
+        Some("f" | "fellowship" | "fellow" | "fellows") => ("Fellowship", 19),
+        Some("a" | "allegiance") => ("Allegiance", 18),
+        Some("p" | "patron" | "m" | "monarch" | "v" | "vassals" | "c" | "covassals") => {
+            ("Allegiance", 10)
+        }
+        Some("cg" | "general") => ("General", 27),
+        Some("ct" | "trade") => ("Trade", 28),
+        Some("clfg" | "lfg") => ("LFG", 29),
+        Some("e" | "em" | "emote" | "me") => ("Emote", 12),
+        Some(_) => return ("Command".to_owned(), 0xFFCC_CCCC),
         None => return (focus.0.to_owned(), focus.1),
     };
+    let colour = chat_colour(ty);
     (label.to_owned(), colour)
+}
+
+/// How the input line works: Modern holds a tell's person in a chip and keeps it after sending;
+/// Classic is the original game's line, where a tell is only the text typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatStyle {
+    #[default]
+    Modern,
+    Classic,
+}
+
+impl ChatStyle {
+    /// Every style, in the order Settings lists them.
+    pub const ALL: [Self; 2] = [Self::Modern, Self::Classic];
+
+    /// Its name in Settings.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Modern => "Modern",
+            Self::Classic => "Classic",
+        }
+    }
+
+    /// Its word in the settings file.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Modern => "modern",
+            Self::Classic => "classic",
+        }
+    }
+
+    /// The style a settings file's word names.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.word() == word.trim())
+    }
+}
+
+/// The person a tell line is with, either way: `Alba tells you, "hi"` and `You tell Alba, "hi"`
+/// are both Alba's. A tell to a network channel (`name@channel`) is no one's.
+#[must_use]
+pub fn tell_partner(line: &ChatLine) -> Option<String> {
+    if !matches!(line.chat_type, 3 | 4) {
+        return None;
+    }
+    let text = chat_links(&line.text).0;
+    let mut rest = text.as_str();
+    if let Some((stamp, after)) = rest.split_once(' ') {
+        if !stamp.is_empty() && stamp.chars().all(|c| c.is_ascii_digit() || c == ':') {
+            rest = after;
+        }
+    }
+    let name = match rest.strip_prefix("You tell ") {
+        Some(after) => after.split_once(", \"")?.0,
+        None => rest.split_once(" tells you, \"")?.0,
+    };
+    let name = pyreal_client_model::chat::bare_name(name);
+    (!name.is_empty() && !name.contains('@')).then(|| name.to_owned())
+}
+
+/// A log line's text with its tags taken out and its links, as [`chat_links`] finds them; in a
+/// tell, either way, the person's name is a link too.
+fn line_links(line: &ChatLine) -> (String, Vec<Link>) {
+    let (text, mut links) = chat_links(&line.text);
+    if line.chat_type == 4 || line.chat_type == 3 {
+        let span = if let Some(at) = text.find("You tell ") {
+            let from = at + "You tell ".len();
+            text[from..].find(", \"").map(|len| (from, from + len))
+        } else {
+            tell_partner(line).and_then(|name| {
+                let end = text.find(" tells you, \"")?;
+                text[..end]
+                    .ends_with(name.as_str())
+                    .then(|| (end - name.len(), end))
+            })
+        };
+        if let Some((from, to)) = span {
+            let name = &text[from..to];
+            let s = text[..from].chars().count();
+            let e = s + name.chars().count();
+            if !name.contains('@') && !links.iter().any(|(ls, le, _)| *ls < e && s < *le) {
+                links.push((s, e, LinkTarget::Name(name.to_owned())));
+                links.sort_by_key(|(s, _, _)| *s);
+            }
+        }
+    }
+    (text, links)
+}
+
+/// Whether a line typed in a tell is a command, which is sent as it is rather than told.
+fn is_command(text: &str) -> bool {
+    text.starts_with(['/', '@'])
+}
+
+/// What a log tab shows: one of the game's chat windows, by its filter.
+#[derive(Debug, Clone)]
+struct View(ChatWindow);
+
+impl View {
+    fn shows(&self, line: &ChatLine) -> bool {
+        shows_in(&self.0, line)
+    }
+}
+
+/// How many of a tab's lines arrived since it was last shown, and whether a tell is among them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Unread {
+    count: usize,
+    tell: bool,
+}
+
+/// An unread count as a tab shows it.
+fn count_word(n: usize) -> String {
+    if n > 99 {
+        "99+".to_owned()
+    } else {
+        n.to_string()
+    }
 }
 
 /// Whether `line` shows in `window`.
@@ -231,10 +442,18 @@ pub fn window_filter(state: &GameState, id: u32) -> u64 {
 }
 
 /// The menu open over the log window.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 enum Menu {
-    /// The talk-focus destinations.
+    /// The talk-focus destinations, and in Modern the recent tells.
     Focus,
+    /// What can be done with a name clicked in the lines, opened at the pointer.
+    /// `at` is where the window the name is in drew it: the docked one before the HUD layout
+    /// placed it.
+    Name {
+        name: String,
+        at: (f32, f32),
+        docked: bool,
+    },
     /// A tab's menu, opened over `at` (its tab bar, or its popped-out window's header): pop it
     /// out or dock it, and its filter. A docked tab's bar is where the docked window drew it,
     /// before the HUD layout placed the window.
@@ -274,13 +493,31 @@ pub struct ChatLog {
     lines: Vec<ChatLine>,
     /// The tab shown in the docked window.
     tab: usize,
-    /// Each window's scroll, in lines from the newest.
-    scroll: [usize; 5],
+    /// Each tab's scroll, in lines from the newest: the game's five windows.
+    scroll: Vec<usize>,
+    /// The newest line each tab has shown, counted from the first line the log kept.
+    seen: Vec<usize>,
+    /// How the input line works, from this interface's settings.
+    pub style: ChatStyle,
+    /// In Modern, the person the input line tells, kept after sending until another channel is
+    /// chosen.
+    tell: Option<String>,
+    /// Which tabs show their unread count, from this interface's settings.
+    pub unread_shown: [bool; 5],
+    /// A recalled line is on its way from the game, which takes its tell or leaves it.
+    recalling: bool,
+    /// A name filled by Tab is on its way from the game.
+    completing: bool,
+    /// The tell line Tab last filled, before it became the chip: Tab on the chip with nothing
+    /// typed goes on through the same names.
+    cycle_from: Option<String>,
     /// The windows popped out of the dock, each a window of its own.
     floating: [kit::WindowState; 5],
     /// The input line, while it is open, and its text as last told to the game.
     typing: Option<String>,
     told: String,
+    /// The player's name, for telling their own lines from other people's.
+    me: String,
     /// The line was opened by the `/` key, whose own typed `/` is still to come and is dropped.
     slash_typed: bool,
     menu: Option<Menu>,
@@ -298,9 +535,11 @@ pub struct ChatLog {
     pub tab_names: TabNames,
     /// How opaque the windows' grounds are, from this interface's settings.
     pub opacity: ChatOpacity,
-    /// Where each tab popped out was last put, in layout units, from this interface's settings.
+    /// Where each tab popped out was last put, in layout units, from this interface's settings;
+    /// the main tab's is how far the docked window stands from its own place.
     pub popped_saved: [Option<(f32, f32)>; 5],
-    /// Where each popped-out tab stands while it is out, in layout units, once it is moved.
+    /// Where each popped-out tab stands while it is out, in layout units, once it is moved; the
+    /// main tab's is how far the docked window stands from its own place.
     placed: [Option<(f32, f32)>; 5],
     /// Where each popped-out tab's window was drawn last.
     popped_rects: [Option<Rect>; 5],
@@ -320,8 +559,9 @@ pub struct ChatLog {
     pub sizes_saved: [Option<(f32, f32)>; 5],
     /// How large each log window is made while this session resizes it, in layout units.
     sizes: [Option<(f32, f32)>; 5],
-    /// The log window being resized by its corner, and how far the pointer is from the corner.
-    resizing: Option<(usize, (f32, f32))>,
+    /// The log window being resized, the corner it is held by, and how far the pointer is from
+    /// that corner.
+    resizing: Option<(usize, Corner, (f32, f32))>,
     /// The HUD Layout window is open: the popped-out tabs are moved and sized as its elements.
     pub editing: bool,
     /// Where the docked window would stand with no HUD layout: what the popped-out tabs' column
@@ -343,24 +583,57 @@ impl ChatLog {
         if state.chat_cleared {
             self.dropped += self.lines.len();
             self.lines.clear();
-            self.scroll = [0; 5];
+            self.scroll.iter_mut().for_each(|s| *s = 0);
             self.selection = None;
         }
         self.lines
             .extend(state.new_chat.iter().filter(|l| keep(l)).cloned());
+        self.fit_slots();
         if self.lines.len() > CHAT_HISTORY {
             let extra = self.lines.len() - CHAT_HISTORY;
             self.lines.drain(..extra);
             self.dropped += extra;
         }
+        self.me.clone_from(&state.name);
         for update in &state.chat_entry {
             if update.window != window::MAIN {
                 continue;
             }
             if update.focus || self.typing.is_some() {
-                self.typing = Some(update.text.clone());
+                let mut text = update.text.clone();
+                // In Modern a tell line opens as its person's chip and the message; a recalled
+                // line that is not a tell goes to the channel.
+                if self.style == ChatStyle::Modern {
+                    if let Some((name, body)) = split_tell(&text) {
+                        self.tell = Some(name);
+                        text = body;
+                        self.cycle_from = self.completing.then(|| update.text.clone());
+                    } else if self.recalling && !text.is_empty() {
+                        self.tell = None;
+                    }
+                }
+                self.recalling = false;
+                self.completing = false;
+                self.typing = Some(text);
                 self.told.clone_from(&update.text);
             }
+        }
+    }
+
+    /// Gives every tab a scroll and a mark of the lines it has shown, a new tab having seen them
+    /// all.
+    fn fit_slots(&mut self) {
+        let n = WINDOWS.len();
+        let end = self.dropped + self.lines.len();
+        self.scroll.resize(n, 0);
+        self.seen.resize(n, end);
+    }
+
+    /// The line as the game keeps it: in a tell, the `@tell` line with the person in front.
+    fn entry_text(&self, text: &str) -> String {
+        match &self.tell {
+            Some(name) if !is_command(text) => tell_line(name, text),
+            _ => text.to_owned(),
         }
     }
 
@@ -373,12 +646,19 @@ impl ChatLog {
             let extra = self.lines.len() - CHAT_HISTORY;
             self.lines.drain(..extra);
         }
-        self.scroll = [0; 5];
+        self.scroll.iter_mut().for_each(|s| *s = 0);
     }
 
     /// Open the input line with `text`.
     pub fn open(&mut self, text: String) {
         self.told.clone_from(&text);
+        let mut text = text;
+        if self.style == ChatStyle::Modern {
+            if let Some((name, body)) = split_tell(&text) {
+                self.tell = Some(name);
+                text = body;
+            }
+        }
         self.typing = Some(text);
     }
 
@@ -407,8 +687,9 @@ impl ChatLog {
             .and_then(|w| w.pos)
     }
 
-    /// Put every popped-out tab back in its own place in the column over the docked window and
-    /// every log window back to its first size, until HUD Layout is saved or put back.
+    /// Put every popped-out tab back in its own place in the column over the docked window, the
+    /// docked window back in its own place, and every log window back to its first size, until
+    /// HUD Layout is saved or put back.
     pub fn reset_places(&mut self) {
         self.placed = [None; 5];
         self.sizes = [None; 5];
@@ -481,7 +762,7 @@ impl ChatLog {
     /// The open menu, as it was last drawn: what is under it does not have the pointer.
     #[must_use]
     pub fn menu_rect(&self) -> Option<Rect> {
-        self.menu.and(self.menu_rect)
+        self.menu.as_ref().and(self.menu_rect)
     }
 
     /// The popped-out tabs' windows as they were last drawn: what is under them does not
@@ -548,6 +829,19 @@ impl ChatLog {
         self.floating.map(|w| w.open)
     }
 
+    /// Pop tab `slot` out of the dock (`open`) or dock it again, as its menu's button does. The
+    /// main tab stays docked.
+    pub fn pop_out(&mut self, slot: usize, open: bool, time: f64) {
+        let Some(float) = self.floating.get_mut(slot).filter(|_| slot > 0) else {
+            return;
+        };
+        if float.open != open {
+            float.open = open;
+            float.opened_at = time;
+            self.placed[slot] = None;
+        }
+    }
+
     /// One of the game's chat actions, its key pressed: replies, a tell to the selection, a
     /// command begun, the entry opened, and the recalled lines.
     pub fn action(&mut self, action: u32, state: &GameState, out: &mut Outcome) {
@@ -610,7 +904,7 @@ impl ChatLog {
         if std::mem::take(&mut self.write_places) {
             let value =
                 |v: Option<(f32, f32)>| v.map_or_else(String::new, |(x, y)| format!("{x},{y}"));
-            for slot in 1..5 {
+            for slot in 0..5 {
                 let at = self.placed[slot].or(self.kept_place(slot));
                 out.settings
                     .push((crate::options::popped_key(slot), value(at)));
@@ -622,23 +916,27 @@ impl ChatLog {
             }
             self.forgotten = false;
         }
-        let x = 20.0 * k;
+        let home_x = 20.0 * k;
         // As wide as it may be without reaching what is centred along the bottom, at its widest
         // (the spell bar's tab keys, or the cross hotbars), and no narrower than it may be made.
         let foot_left = sw / 2.0 - crate::ui::hud::FOOT_REACH * k;
         let home_h = 230.0 * k;
         self.home = Rect::new(
-            x,
+            home_x,
             sh - home_h - 24.0 * k,
             (480.0 * k)
-                .min(foot_left - x - 12.0 * k)
+                .min(foot_left - home_x - 12.0 * k)
                 .max(Self::smallest(0, k).0),
             home_h,
         );
-        let y = self.home.y;
-        // Made larger or smaller from its corner, it keeps its top-left where it starts.
-        let (w, h) = self.window_size(0, k);
+        // Where it starts, unless a top or left corner moved it, held on the screen.
         let least = Self::smallest(0, k);
+        let (dx, dy) = self.placed[0]
+            .or(self.kept_place(0))
+            .map_or((0.0, 0.0), |(dx, dy)| (dx * k, dy * k));
+        let x = (self.home.x + dx).clamp(0.0, (sw - least.0).max(0.0));
+        let y = (self.home.y + dy).clamp(0.0, (sh - least.1).max(0.0));
+        let (w, h) = self.window_size(0, k);
         let (w, h) = (w.min(sw - x).max(least.0), h.min(sh - y).max(least.1));
         let r = Rect::new(x, y + 24.0 * k, w, h - 24.0 * k);
         // The docked log is a panel of its own for the pad's focus, which the Back button
@@ -648,30 +946,19 @@ impl ChatLog {
             "Chat",
             crate::ui::nav::PanelKind::Chat,
         );
-        // The strip the input line sits in shows only while the line is open.
-        let strip = if self.typing.is_some() { 0.0 } else { 26.0 * k };
-        let shown = Rect::new(x, y, w, h - strip);
-        let grip = self.resize_grip(p, ctx, 0, shown, strip, out);
-        // Active while the pointer is over it or its line is being typed.
-        let active = self.typing.is_some() || ctx.input.hover(&Rect::new(x, y, w, h - strip));
-        p.fill(
-            Rect::new(r.x, r.y, r.w, r.h - strip),
-            ground(self.opacity.get(None, active)),
-        );
+        let showing = Rect::new(x, y, w, h);
         let windows = windows_of(state);
-        // The docked tabs: the windows not popped out.
-        let docked: Vec<usize> = (0..windows.len())
-            .filter(|i| !self.floating[*i].open)
-            .collect();
-        if !docked.contains(&self.tab) {
-            self.tab = docked.first().copied().unwrap_or(0);
+        if self.style == ChatStyle::Classic {
+            self.tell = None;
         }
-        let titles: Vec<String> = docked
-            .iter()
-            .map(|i| self.tab_names.name(*i).to_owned())
-            .collect();
-        let labels: Vec<&str> = titles.iter().map(String::as_str).collect();
+        self.fit_slots();
         let tab_bar = Rect::new(x, y, w, 24.0 * k);
+        let (docked, titles, marks, counted) = self.tab_row(&windows);
+        self.resize_grip(p, ctx, 0, showing, out);
+        // Active while the pointer is over it or its line is being typed.
+        let active = self.typing.is_some() || ctx.input.hover(&showing);
+        p.fill(r, ground(self.opacity.get(None, active)));
+        let labels: Vec<&str> = counted.iter().map(String::as_str).collect();
         let mut shown = docked.iter().position(|i| *i == self.tab).unwrap_or(0);
         if !labels.is_empty() {
             for (n, tr) in kit::tab_rects_for(p, tab_bar, &labels, shown)
@@ -696,6 +983,7 @@ impl ChatLog {
                 self.scroll[docked[shown]] = 0;
             }
             self.tab = docked[shown];
+            self.tab_marks(p, tab_bar, &labels, &marks, &docked);
         }
         let body = TextStyle::new(Family::Body, 12.0, 0xFFFF_FFFF).edge(0xFF00_0000);
         // The lines end above the corner the window is sized by.
@@ -703,93 +991,265 @@ impl ChatLog {
             r.x + 8.0 * k,
             r.y + 4.0 * k,
             r.w - 16.0 * k,
-            r.h - (38.0 + GRIP) * k + 4.0 * k,
+            r.h - (INPUT_H + 14.0 + GRIP) * k + 4.0 * k,
         );
         if !docked.is_empty() {
             let tab = self.tab;
-            self.draw_lines(p, ctx, &windows[tab], tab, text_area, &body, out);
+            if let Some(view) = self.view(&windows, tab) {
+                self.draw_lines(p, ctx, &view, tab, text_area, &body, out);
+            }
+        }
+        // What the docked tab and the popped-out windows show now is seen.
+        let end = self.dropped + self.lines.len();
+        let tab = self.tab;
+        for (slot, seen) in self.seen.iter_mut().enumerate() {
+            if slot == tab || self.floating[slot].open {
+                *seen = end;
+            }
         }
         self.input_line(p, ctx, state, r, &body, out);
         // The pad's focus rests on the input line, where CONFIRM opens it.
         {
-            let line = Rect::new(x, y + h - 26.0 * k, w, 26.0 * k);
+            let bar = (INPUT_H + 2.0) * k;
+            let line = Rect::new(x, y + h - bar, w, bar);
             let input = &mut *ctx.input;
             input
                 .nav
                 .note(line, crate::ui::nav::Kind::Text, &input.occluders);
             input.nav.home(line);
         }
-        if ctx.over_quiet(&Rect::new(x, y, w, h - strip))
-            && (ctx.input.pressed[0] || ctx.input.pressed[1])
-        {
+        if ctx.over_quiet(&showing) && (ctx.input.pressed[0] || ctx.input.pressed[1]) {
             ctx.input.captured = true;
         }
-        self.grip_mark(p, ctx, 0, grip);
+        self.grip_mark(p, ctx, 0, showing);
         ctx.input.nav.end_layer();
         self.dock = r;
         self.dock_drawn = r;
     }
 
-    /// A log window's corner it is made larger or smaller by: a press on it takes hold, a drag
-    /// sizes the window, held between its smallest and the screen, and letting go keeps the size.
-    /// `shown` is the window as it shows, `hidden` how much of its foot is not shown (the docked
-    /// window's input strip while its line is closed). Where the corner is, for
-    /// [`Self::grip_mark`].
+    /// The docked tabs (the windows not popped out), keeping the tab shown
+    /// among them: each tab's slot, name, unread lines and caption.
+    fn tab_row(
+        &mut self,
+        windows: &[ChatWindow],
+    ) -> (Vec<usize>, Vec<String>, Vec<Unread>, Vec<String>) {
+        let docked: Vec<usize> = (0..windows.len())
+            .filter(|i| !self.floating[*i].open)
+            .collect();
+        if !docked.contains(&self.tab) {
+            self.tab = docked.first().copied().unwrap_or(0);
+        }
+        let titles: Vec<String> = docked.iter().map(|i| self.tab_title(*i)).collect();
+        let marks: Vec<Unread> = docked
+            .iter()
+            .map(|i| {
+                if *i == self.tab {
+                    return Unread::default();
+                }
+                let mut unread = self
+                    .view(windows, *i)
+                    .map(|v| self.unread(&v, *i))
+                    .unwrap_or_default();
+                if !self.unread_shown.get(*i).copied().unwrap_or(true) {
+                    unread.count = 0;
+                }
+                unread
+            })
+            .collect();
+        // A tab with lines it has not shown carries their count after its name.
+        let counted: Vec<String> = titles
+            .iter()
+            .zip(&marks)
+            .map(|(t, m)| {
+                if m.count > 0 {
+                    format!("{t}  {}", count_word(m.count))
+                } else {
+                    t.clone()
+                }
+            })
+            .collect();
+        (docked, titles, marks, counted)
+    }
+
+    /// A tab's name: the game window's tab name.
+    fn tab_title(&self, slot: usize) -> String {
+        self.tab_names.name(slot).to_owned()
+    }
+
+    /// What tab `slot` shows: a game window.
+    fn view(&self, windows: &[ChatWindow], slot: usize) -> Option<View> {
+        windows.get(slot).cloned().map(View)
+    }
+
+    /// The lines tab `slot` shows that came since it was last shown, but the player's own.
+    fn unread(&self, view: &View, slot: usize) -> Unread {
+        let from = self.seen.get(slot).copied().unwrap_or(0);
+        let mut unread = Unread::default();
+        for (i, line) in self.lines.iter().enumerate() {
+            if self.dropped + i < from
+                || crate::ui::colours::is_own_line(line.chat_type, &line.text, &self.me)
+                || !view.shows(line)
+            {
+                continue;
+            }
+            unread.count += 1;
+            unread.tell |= line.chat_type == 3;
+        }
+        unread
+    }
+
+    /// Over the docked tabs as `tabs` drew them: each unread count in a badge, a line in tell
+    /// colour under a tab with an unread tell.
+    fn tab_marks(
+        &mut self,
+        p: &mut Painter<'_>,
+        bar: Rect,
+        labels: &[&str],
+        marks: &[Unread],
+        docked: &[usize],
+    ) {
+        let k = p.scale;
+        let shown = docked.iter().position(|i| *i == self.tab).unwrap_or(0);
+        let pal = *p.art.palette();
+        let style = TextStyle::new(Family::Body, 12.0, pal.label).edge(pal.edge);
+        let rects = kit::tab_rects_for(p, bar, labels, shown);
+        for (n, ((tr, label), mark)) in rects.iter().zip(labels).zip(marks).enumerate() {
+            // The count in a round badge over where the tab's name left room for it, in smaller
+            // figures.
+            if mark.count > 0 && p.fit(&style, label, tr.w - 16.0 * k) == *label {
+                let count = count_word(mark.count);
+                let small = TextStyle::new(Family::Body, 9.5, 0xFFFF_FFFF).edge(pal.edge);
+                let (tw, cw) = (p.measure(&style, label), p.measure(&style, &count));
+                let mid = tr.x + (tr.w - tw) / 2.0 + tw - cw / 2.0;
+                let d = (15.0 * k).round();
+                let w = d.max(p.measure(&small, &count) + 8.0 * k).round();
+                let badge = Rect::new(
+                    (mid - w / 2.0).round(),
+                    (tr.y + (tr.h - d) / 2.0).round(),
+                    w,
+                    d,
+                );
+                kit::pill(p, badge, if mark.tell { 0xFF8A_3F8A } else { 0xFF5A_5040 });
+                p.text_in(&small, badge, Align::Centre, &count);
+                let title = self.tab_title(docked[n]);
+                self.controls.push((format!("Unread {title}"), badge));
+            }
+            if mark.tell {
+                p.fill(
+                    Rect::new(
+                        tr.x + 4.0 * k,
+                        tr.bottom() - 2.0 * k,
+                        tr.w - 8.0 * k,
+                        2.0 * k,
+                    ),
+                    chat_colour(3),
+                );
+            }
+        }
+    }
+
+    /// A log window's corners it is made larger or smaller by: a press on one takes hold, a drag
+    /// moves that corner while the opposite one stays put, held between the window's smallest and
+    /// the screen, and letting go keeps the size and, from a top or left corner, the place.
+    /// `shown` is the window, its tab included.
     fn resize_grip(
         &mut self,
         p: &Painter<'_>,
         ctx: &mut Ctx<'_>,
         slot: usize,
         shown: Rect,
-        hidden: f32,
         out: &mut Outcome,
-    ) -> Rect {
+    ) {
         let k = p.scale;
-        let g = GRIP * k;
-        let grip = Rect::new(shown.right() - g, shown.bottom() - g, g, g);
+        let grips = corners(shown, k);
         let (mx, my) = ctx.input.mouse;
-        if self.resizing.is_none() && ctx.input.pressed[0] && ctx.input.hover(&grip) {
-            ctx.input.pressed[0] = false;
-            ctx.input.captured = true;
-            self.menu = None;
-            self.resizing = Some((slot, (shown.right() - mx, shown.bottom() - my)));
+        if self.resizing.is_none() && ctx.input.pressed[0] {
+            if let Some((c, _)) = grips.iter().find(|(_, r)| ctx.input.hover(r)) {
+                ctx.input.pressed[0] = false;
+                ctx.input.captured = true;
+                self.menu = None;
+                let cx = if c.left() { shown.x } else { shown.right() };
+                let cy = if c.top() { shown.y } else { shown.bottom() };
+                self.resizing = Some((slot, *c, (cx - mx, cy - my)));
+            }
         }
-        if let Some((s, (ox, oy))) = self.resizing.filter(|(s, _)| *s == slot) {
+        if let Some((s, c, (ox, oy))) = self.resizing.filter(|(s, _, _)| *s == slot) {
             let least = Self::smallest(s, k);
             let (sw, sh) = p.screen;
-            let size = (
-                (mx + ox - shown.x).clamp(least.0, (sw - shown.x).max(least.0)),
-                (my + oy - shown.y + hidden).clamp(least.1, (sh - shown.y).max(least.1)),
-            );
-            self.sizes[s] = Some((size.0 / k, size.1 / k));
+            // Where the held corner is to be; the opposite edges stay where they are.
+            let (cx, cy) = (mx + ox, my + oy);
+            let (right, bottom) = (shown.right(), shown.bottom());
+            let (x, w) = if c.left() {
+                let w = (right - cx).clamp(least.0, right.max(least.0));
+                (right - w, w)
+            } else {
+                let w = (cx - shown.x).clamp(least.0, (sw - shown.x).max(least.0));
+                (shown.x, w)
+            };
+            let (y, h) = if c.top() {
+                let h = (bottom - cy).clamp(least.1, bottom.max(least.1));
+                (bottom - h, h)
+            } else {
+                let h = (cy - shown.y).clamp(least.1, (sh - shown.y).max(least.1));
+                (shown.y, h)
+            };
+            self.sizes[s] = Some((w / k, h / k));
+            // The docked window's place is kept as how far it stands from its own.
+            let place = if s == 0 {
+                ((x - self.home.x) / k, (y - self.home.y) / k)
+            } else {
+                (x / k, y / k)
+            };
+            let moves = c.left() || c.top();
+            if moves {
+                self.placed[s] = Some(place);
+            }
             ctx.input.captured = true;
             if !ctx.input.down[0] {
                 self.resizing = None;
-                out.settings.push((
-                    crate::options::size_key(s),
-                    format!("{},{}", size.0 / k, size.1 / k),
-                ));
+                out.settings
+                    .push((crate::options::size_key(s), format!("{},{}", w / k, h / k)));
+                if moves {
+                    out.settings.push((
+                        crate::options::popped_key(s),
+                        format!("{},{}", place.0, place.1),
+                    ));
+                }
             }
         }
-        self.controls.push((format!("Resize {}", slot + 1), grip));
-        grip
+        for (c, r) in &grips {
+            self.controls.push((c.caption(slot), *r));
+        }
     }
 
-    /// The mark of a log window's corner it is sized by: a fine bronze angle, lit under the
-    /// pointer or while it is held.
-    fn grip_mark(&self, p: &mut Painter<'_>, ctx: &Ctx<'_>, slot: usize, grip: Rect) {
+    /// The marks of a log window's corners it is sized by: each a fine bronze angle, lit under
+    /// the pointer or while it is held. The foot's corners always show theirs; the top's, over
+    /// the tabs, show only lit. `shown` is the window as it shows.
+    fn grip_mark(&self, p: &mut Painter<'_>, ctx: &Ctx<'_>, slot: usize, shown: Rect) {
         let k = p.scale;
-        let lit = ctx.input.hover(&grip) || self.resizing.is_some_and(|(s, _)| s == slot);
-        let colour = if lit { 0xFFE8_D29A } else { 0xA0C8_B27A };
         let t = 2.0 * k;
-        p.fill(
-            Rect::new(grip.x + 3.0 * k, grip.bottom() - t - k, grip.w - 4.0 * k, t),
-            colour,
-        );
-        p.fill(
-            Rect::new(grip.right() - t - k, grip.y + 3.0 * k, t, grip.h - 4.0 * k),
-            colour,
-        );
+        for (c, grip) in &corners(shown, k) {
+            let lit = ctx.input.hover(grip)
+                || self
+                    .resizing
+                    .is_some_and(|(s, held, _)| s == slot && held == *c);
+            if c.top() && !lit {
+                continue;
+            }
+            let colour = if lit { 0xFFE8_D29A } else { 0xA0C8_B27A };
+            let (hx, vx) = if c.left() {
+                (grip.x + k, grip.x + k)
+            } else {
+                (grip.x + 3.0 * k, grip.right() - t - k)
+            };
+            let (hy, vy) = if c.top() {
+                (grip.y + k, grip.y + k)
+            } else {
+                (grip.bottom() - t - k, grip.y + 3.0 * k)
+            };
+            p.fill(Rect::new(hx, hy, grip.w - 4.0 * k, t), colour);
+            p.fill(Rect::new(vx, vy, t, grip.h - 4.0 * k), colour);
+        }
     }
 
     /// The popped-out windows and the menus, over the HUD, with [`Self::dock`] placed.
@@ -819,8 +1279,8 @@ impl ChatLog {
         // edited took the key for its own selection.
         if let Some(sel) = self.selection.filter(|s| s.anchor != s.end) {
             if ctx.input.ctrl && (ctx.input.take_key(0x43) || ctx.input.take_key(0x2D)) {
-                if let Some(window) = windows.get(sel.slot) {
-                    ctx.input.copied = Some(self.selected_text(window, sel));
+                if let Some(view) = self.view(&windows, sel.slot) {
+                    ctx.input.copied = Some(self.selected_text(&view, sel));
                 }
             }
         }
@@ -860,6 +1320,10 @@ impl ChatLog {
         let name = self.tab_names.name(slot).to_owned();
         let (mx, my) = ctx.input.mouse;
         let editing = self.editing;
+        // Its corners take a press before its tab does.
+        if !editing {
+            self.resize_grip(p, ctx, slot, Rect::new(x, y, w, whole_h), out);
+        }
         let float = &mut self.floating[slot];
         let tab = |p: &Painter<'_>, x: f32, y: f32| {
             kit::tab_rects_for(p, Rect::new(x, y, w, tab_h), &[name.as_str()], 0)[0]
@@ -946,18 +1410,13 @@ impl ChatLog {
             w - 16.0 * k,
             h - (8.0 + GRIP) * k,
         );
-        let grip = if editing {
-            None
-        } else {
-            Some(self.resize_grip(p, ctx, slot, whole, 0.0, out))
-        };
-        self.draw_lines(p, ctx, window, slot, area, body, out);
+        self.draw_lines(p, ctx, &View(window.clone()), slot, area, body, out);
         if editing {
             ctx.input.mouse = pointer;
             outline(p, whole, &name);
         }
-        if let Some(grip) = grip {
-            self.grip_mark(p, ctx, slot, grip);
+        if !editing {
+            self.grip_mark(p, ctx, slot, whole);
         }
         if ctx.over_quiet(&whole) && (ctx.input.pressed[0] || ctx.input.pressed[1]) {
             ctx.input.captured = true;
@@ -965,12 +1424,12 @@ impl ChatLog {
     }
 
     /// The text of `sel` among the lines `window` shows, its lines on lines of their own.
-    fn selected_text(&self, window: &ChatWindow, sel: LogSelection) -> String {
+    fn selected_text(&self, view: &View, sel: LogSelection) -> String {
         let (a, b) = sel.ends();
         let mut out: Vec<String> = Vec::new();
         for (i, line) in self.lines.iter().enumerate() {
             let at = self.dropped + i;
-            if at < a.0 || at > b.0 || !shows_in(window, line) {
+            if at < a.0 || at > b.0 || !view.shows(line) {
                 continue;
             }
             let chars: Vec<char> = chat_links(&line.text).0.chars().collect();
@@ -993,7 +1452,7 @@ impl ChatLog {
         &mut self,
         p: &mut Painter<'_>,
         ctx: &mut Ctx<'_>,
-        window: &ChatWindow,
+        view: &View,
         slot: usize,
         area: Rect,
         body: &TextStyle,
@@ -1007,14 +1466,10 @@ impl ChatLog {
             None => area,
         };
         let mut lines: Vec<Row> = Vec::new();
-        for (i, line) in self
-            .lines
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| shows_in(window, l))
-        {
+        for (i, line) in self.lines.iter().enumerate().filter(|(_, l)| view.shows(l)) {
             let at = self.dropped + i;
-            let (text, links) = chat_links(&line.text);
+            let (text, links) = line_links(line);
+            let colour = line_colour(line.chat_type, &text, &self.me);
             // Wrapped a paragraph at a time, so a blank line keeps its place.
             let mut paragraph_at = 0;
             for paragraph in text.split('\n') {
@@ -1036,7 +1491,7 @@ impl ChatLog {
                             (s.saturating_sub(start), (*e - start).min(len), n.clone())
                         })
                         .collect();
-                    lines.push((chat_colour(line.chat_type), wrapped, here, at, start));
+                    lines.push((colour, wrapped, here, at, start));
                     from += len;
                 }
                 paragraph_at += chars.len() + 1;
@@ -1044,6 +1499,7 @@ impl ChatLog {
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let visible = (area.h / lh).floor().max(1.0) as usize;
+        self.fit_slots();
         let scroll = &mut self.scroll[slot];
         if ctx.over_quiet(&area) && ctx.input.wheel != 0.0 {
             let max = lines.len().saturating_sub(visible);
@@ -1165,6 +1621,23 @@ impl ChatLog {
                         p.fill(Rect::new(x, ly + lh - 2.0 * k, w, k.max(1.0)), lit);
                         self.controls.push((url.clone(), r));
                     }
+                    if let LinkTarget::QuestTimer(_) = target {
+                        p.fill(Rect::new(x, ly + lh - 2.0 * k, w, k.max(1.0)), lit);
+                        self.controls
+                            .push((crate::ui::hud::TRACK_LINK.to_owned(), r));
+                    }
+                    // A right click on a name opens what can be done with it.
+                    if let LinkTarget::Name(name) = target {
+                        self.controls.push((format!("Name: {name}"), r));
+                        if over && ctx.input.right_clicked(&r) {
+                            let docked = !self.floating[slot].open;
+                            self.open_menu(Menu::Name {
+                                name: name.clone(),
+                                at: ctx.input.mouse,
+                                docked,
+                            });
+                        }
+                    }
                     if over && ctx.input.clicked(&r) {
                         out.requests.push(match target {
                             LinkTarget::Name(name) => UiRequest::ChatEntry {
@@ -1173,6 +1646,12 @@ impl ChatLog {
                                 action: EntryAction::StartTell { name: name.clone() },
                             },
                             LinkTarget::Web(url) => UiRequest::ChatLinkClicked(url.clone()),
+                            LinkTarget::QuestTimer(seconds) => UiRequest::Journal(
+                                pyreal_client_contract::journal::JournalAction::TrackTimer {
+                                    title: String::new(),
+                                    seconds: *seconds,
+                                },
+                            ),
                         });
                     }
                     x += w;
@@ -1264,8 +1743,11 @@ impl ChatLog {
 
     /// The input line: Enter opens it with the game's draft, Enter sends to the destination,
     /// Escape closes it and the game keeps the draft, Up and Down walk the lines sent, Tab steps
-    /// to the next destination, and a click on the destination's label lists them.
-    #[allow(clippy::too_many_arguments)]
+    /// to the next destination, and a click on the destination's label lists them. In Modern a
+    /// tell's person stands in a chip before the message and stays after sending; Tab steps
+    /// through recent tell partners, and Backspace on an empty message turns the chip back into
+    /// the `/t` line.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn input_line(
         &mut self,
         p: &mut Painter<'_>,
@@ -1278,12 +1760,22 @@ impl ChatLog {
         let k = p.scale;
         let input = Rect::new(
             r.x + 4.0 * k,
-            r.bottom() - 28.0 * k,
+            r.bottom() - (INPUT_H + 4.0) * k,
             r.w - 8.0 * k,
-            24.0 * k,
+            INPUT_H * k,
         );
-        let focus_label = line_label(state, state.chat_focus.focus);
+        // Under the bar's top line, where the chip stands with as much room above as below and
+        // the label and the typed text share one line, their letters centred.
+        let inner = Rect::new(input.x, input.y + k, input.w, input.h - k);
+        let chip_box = Rect::new(
+            inner.x,
+            inner.y + CHIP_PAD * k,
+            inner.w,
+            inner.h - 2.0 * CHIP_PAD * k,
+        );
+        let modern = self.style == ChatStyle::Modern;
         let Some(mut text) = self.typing.take() else {
+            self.closed_line(p, ctx, state, input, chip_box, body);
             return;
         };
         ctx.input.text_focus = true;
@@ -1313,7 +1805,25 @@ impl ChatLog {
             pressed_in,
             double,
         );
+        // Backspace on an empty tell turns its chip back into the line that made it.
+        if modern && text.is_empty() && ctx.input.chars.is_empty() {
+            if let Some(name) = self.tell.clone() {
+                if ctx.input.take_key(vk::BACK) {
+                    self.tell = None;
+                    text = format!("/t {name}");
+                    // The caret goes to the end of it.
+                    crate::ui::edit::begin(ctx.input, line_key, &text);
+                }
+            }
+        }
+        if !ctx.input.chars.is_empty() {
+            self.recalling = false;
+            self.completing = false;
+        }
         crate::ui::edit::keys(ctx.input, &mut text, MAX_LINE);
+        if !text.is_empty() {
+            self.cycle_from = None;
+        }
         let entry = |text: &str, action| UiRequest::ChatEntry {
             window: window::MAIN,
             text: text.to_owned(),
@@ -1325,36 +1835,66 @@ impl ChatLog {
             if focus_usable(&state.chat_focus, focus) {
                 out.requests.push(UiRequest::SetTalkFocus { focus });
                 text = rest.to_owned();
+                self.tell = None;
+            }
+        }
+        // In Modern a tell's name ended by its comma, or a reply command's space, becomes the
+        // chip, and the line keeps only the message.
+        if modern {
+            if let Some((name, message)) = split_tell(&text) {
+                self.tell = Some(name);
+                text = message;
+            } else if let Some((seed, rest)) = reply_command(&text) {
+                if let Some(name) = seed_name(seed, &state.reply_targets) {
+                    self.tell = Some(name.to_owned());
+                    text = rest.to_owned();
+                }
             }
         }
         if ctx.input.take_key(vk::TAB) {
-            if let Some(focus) = next_focus(&state.chat_focus) {
+            let back = ctx.input.shift;
+            let names = || EntryAction::Complete {
+                names: tell_names(state),
+                back,
+            };
+            // In a tell's name Tab fills and cycles names, and goes on cycling them once the name
+            // became the chip; on the chip it steps through recent tell partners; elsewhere it
+            // changes the channel.
+            if let (Some(line), true) = (self.cycle_from.clone(), text.is_empty()) {
+                self.completing = true;
+                out.requests.push(entry(&line, names()));
+            } else if name_slot(&text).is_some() {
+                self.completing = true;
+                out.requests.push(entry(&text, names()));
+            } else if let (true, Some(name)) = (modern, self.tell.as_deref()) {
+                if let Some(next) = next_partner(&state.reply_targets.recent, name, back) {
+                    self.tell = Some(next);
+                }
+            } else if let Some(focus) = next_focus(&state.chat_focus) {
                 out.requests.push(UiRequest::SetTalkFocus { focus });
             }
         }
         if ctx.input.take_key(vk::UP) {
-            out.requests.push(entry(&text, EntryAction::Previous));
+            self.recalling = true;
+            out.requests
+                .push(entry(&self.entry_text(&text), EntryAction::Previous));
         }
         if ctx.input.take_key(vk::DOWN) {
-            out.requests.push(entry(&text, EntryAction::Next));
+            self.recalling = true;
+            out.requests
+                .push(entry(&self.entry_text(&text), EntryAction::Next));
         }
         let send = ctx.input.take_key(vk::ENTER);
         // Escape, or a press anywhere off the log window, lets the keyboard go back to the game;
-        // the line is kept for the next opening.
+        // the line is kept for the next opening, and in Modern so is the tell.
         let (mx, my) = ctx.input.mouse;
         let pressed_away = (ctx.input.pressed[0] || ctx.input.pressed[1]) && !r.contains(mx, my);
-        let cancel = ctx.input.take_key(vk::ESCAPE) || pressed_away;
+        // An open menu takes Escape first.
+        let cancel = (self.menu.is_none() && ctx.input.take_key(vk::ESCAPE)) || pressed_away;
         p.fill(input, 0xE020_1C14);
         p.fill(Rect::new(input.x, input.y, input.w, 1.0 * k), 0xFFC8_B27A);
-        let (label, colour) =
-            channel_label(&text, (&focus_label, focus_colour(state.chat_focus.focus)));
-        let channel = TextStyle::new(Family::Body, 12.0, colour).edge(0xFF00_0000);
-        let cw = p.text(&channel, input.x + 6.0 * k, input.y + 4.0 * k, &label);
-        let label_rect = Rect::new(input.x, input.y, cw + 12.0 * k, input.h);
-        if ctx.over(&label_rect) && ctx.input.clicked(&label_rect) {
-            self.open_menu(Menu::Focus);
-        }
-        let tx = input.x + cw + 16.0 * k;
+        let (label_rect, colour) = self.destination(p, ctx, state, &text, input, chip_box, 1.0);
+        let tx = label_rect.right() + 4.0 * k;
         self.text_area = Rect::new(
             tx,
             input.y,
@@ -1363,14 +1903,17 @@ impl ChatLog {
         );
         crate::ui::edit::begin(ctx.input, line_key, &text);
         let blink = (ctx.time * 2.0).fract() < 0.5;
+        // The typed text takes the colour of the channel it goes to, as the label does.
+        let typed = body.colour(colour);
+        let top = p.text_top(&typed, chip_box.y, chip_box.h);
         crate::ui::edit::draw(
             p,
             &mut ctx.input.edit,
-            body,
+            &typed,
             &text,
             self.text_area,
-            input.y + 4.0 * k,
-            input.y + 4.0 * k,
+            top,
+            top,
             blink,
         );
         if send {
@@ -1381,12 +1924,21 @@ impl ChatLog {
             if let Some(focus) = alone {
                 if focus_usable(&state.chat_focus, focus) {
                     out.requests.push(UiRequest::SetTalkFocus { focus });
+                    self.tell = None;
                 }
                 // Nothing was said, so the game keeps no draft of the command.
                 out.requests.push(entry("", EntryAction::Draft));
+            } else if let Some(name) = bare_tell(&text).filter(|_| modern) {
+                // A tell sent with only its name turns the line to that person and keeps it open.
+                self.tell = Some(name.to_owned());
+                let told = self.entry_text("");
+                out.requests.push(entry(&told, EntryAction::Draft));
+                self.told = told;
+                self.typing = Some(String::new());
+                return;
             } else if !text.trim().is_empty() {
                 out.requests.push(UiRequest::ChatLine {
-                    text,
+                    text: self.entry_text(&text),
                     window: window::MAIN,
                 });
             }
@@ -1394,15 +1946,91 @@ impl ChatLog {
             self.scroll[0] = 0;
             return;
         }
-        if text != self.told {
-            out.requests.push(entry(&text, EntryAction::Draft));
-            self.told.clone_from(&text);
+        let told = self.entry_text(&text);
+        if told != self.told {
+            out.requests.push(entry(&told, EntryAction::Draft));
+            self.told = told;
         }
         if cancel {
             // The game keeps the line, and the next opening begins with it.
             return;
         }
         self.typing = Some(text);
+    }
+
+    /// Where the line goes, at the left of the bar `input`: the tell's person, or the channel,
+    /// in a chip on `row` in Modern; a command being typed is named plainly. A click on it opens
+    /// the list of destinations. Drawn at `alpha`; where it was drawn, and its colour.
+    #[allow(clippy::too_many_arguments)]
+    fn destination(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        text: &str,
+        input: Rect,
+        row: Rect,
+        alpha: f32,
+    ) -> (Rect, Argb) {
+        let k = p.scale;
+        let modern = self.style == ChatStyle::Modern;
+        let focus_label = destination_label(state, state.chat_focus.focus, modern);
+        let (label, colour) = match &self.tell {
+            Some(name) if modern && !is_command(text) => (format!("Tell: {name}"), chat_colour(3)),
+            _ => channel_label(text, (&focus_label, focus_colour(state.chat_focus.focus))),
+        };
+        let shade = crate::draw::with_alpha(colour, alpha);
+        let channel = TextStyle::new(Family::Body, 12.0, shade).edge(0xFF00_0000);
+        let label_rect = if modern && !is_command(text) {
+            draw_chip(p, &channel, row, &label, shade)
+        } else {
+            let top = p.text_top(&channel, row.y, row.h);
+            let cw = p.text(&channel, input.x + 6.0 * k, top, &label);
+            Rect::new(input.x, input.y, cw + 12.0 * k, input.h)
+        };
+        self.controls
+            .push(("Chat Destination".to_owned(), label_rect));
+        if ctx.over(&label_rect) && ctx.input.clicked(&label_rect) {
+            self.open_menu(Menu::Focus);
+        }
+        (label_rect, colour)
+    }
+
+    /// The input line while it is closed: its bar, dimmed, with where the line will go and the
+    /// draft the game keeps. A click on the bar opens the line, and on the destination its list.
+    fn closed_line(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        input: Rect,
+        row: Rect,
+        body: &TextStyle,
+    ) {
+        let k = p.scale;
+        p.fill(input, 0xE020_1C14);
+        p.fill(Rect::new(input.x, input.y, input.w, k), 0x80C8_B27A);
+        // In Modern a tell's draft shows as its message, its person in the chip.
+        let draft = match split_tell(&state.chat_draft) {
+            Some((_, message)) if self.style == ChatStyle::Modern => message,
+            _ => state.chat_draft.clone(),
+        };
+        let (label_rect, colour) = self.destination(p, ctx, state, &draft, input, row, 0.6);
+        let tx = label_rect.right() + 4.0 * k;
+        let area = Rect::new(
+            tx,
+            input.y,
+            (input.right() - 6.0 * k - tx).max(0.0),
+            input.h,
+        );
+        let typed = body.colour(crate::draw::with_alpha(colour, 0.6));
+        let shown = p.fit(&typed, &draft, area.w);
+        let top = p.text_top(&typed, row.y, row.h);
+        p.text(&typed, area.x.round(), top, &shown);
+        self.controls.push(("Chat Line".to_owned(), input));
+        if ctx.over(&input) && ctx.input.clicked(&input) {
+            self.open(state.chat_draft.clone());
+        }
     }
 
     /// A tab's menu, titled Filters, with a button beside the title that pops the tab out or
@@ -1499,7 +2127,7 @@ impl ChatLog {
             return (area, false);
         }
         let float = &mut self.floating[slot];
-        let label = if float.open { "Dock" } else { "Pop Out" };
+        let label = if float.open { "Dock" } else { "Undock" };
         let button = Rect::new(
             inner.right() - button_w,
             inner.y + 2.0 * k,
@@ -1526,7 +2154,7 @@ impl ChatLog {
         r: Rect,
         out: &mut Outcome,
     ) {
-        let Some(menu) = self.menu else {
+        let Some(menu) = self.menu.clone() else {
             return;
         };
         let k = p.scale;
@@ -1536,6 +2164,7 @@ impl ChatLog {
         let mut chosen = false;
         let area = match menu {
             Menu::Focus => {
+                let modern = self.style == ChatStyle::Modern;
                 let rooms = state.era.is_none_or(|e| e.global_chat_rooms);
                 let mut focuses = menu_focuses(state.chat_focus.is_olthoi);
                 // A world without the game's own rooms lists only one the server named.
@@ -1544,36 +2173,161 @@ impl ChatLog {
                         || !is_room_focus(*f)
                         || state.chat_focus.enabled.get(*f as usize).copied() == Some(true)
                 });
+                let mut items: Vec<Item> = focuses.into_iter().map(Item::Focus).collect();
+                // In Modern the recent tells follow the channels, then a row that starts a tell.
+                if modern {
+                    let recent: Vec<String> = state
+                        .reply_targets
+                        .recent
+                        .iter()
+                        .map(|n| pyreal_client_model::chat::bare_name(n).to_owned())
+                        .filter(|n| !n.is_empty())
+                        .take(8)
+                        .collect();
+                    if !recent.is_empty() {
+                        items.push(Item::Heading("Recent Tells"));
+                        items.extend(recent.into_iter().map(Item::Person));
+                    }
+                    items.push(Item::Someone);
+                }
                 #[allow(clippy::cast_precision_loss)]
                 let area = Rect::new(
                     r.x + 4.0 * k,
-                    r.bottom() - 30.0 * k - row * focuses.len() as f32,
-                    180.0 * k,
-                    row * focuses.len() as f32,
+                    r.bottom() - 30.0 * k - row * items.len() as f32 - 20.0 * k,
+                    200.0 * k,
+                    row * items.len() as f32 + 20.0 * k,
                 );
                 kit::panel(p, area, 0.95);
-                for (n, focus) in focuses.iter().enumerate() {
+                for (n, item) in items.iter().enumerate() {
                     #[allow(clippy::cast_precision_loss)]
-                    let rr = Rect::new(area.x, area.y + row * n as f32, area.w, row);
-                    let usable = focus_usable(&state.chat_focus, *focus);
-                    let mut label = focus_label(state, *focus);
-                    if *focus == 2 {
-                        if let Some(t) = &state.chat_focus.target {
-                            label = format!("{label}: {}", t.name);
+                    let rr = Rect::new(area.x, area.y + 10.0 * k + row * n as f32, area.w, row);
+                    let (label, usable, colour, current) = match item {
+                        Item::Focus(focus) => {
+                            let label = if modern {
+                                destination_label(state, *focus, true)
+                            } else {
+                                let mut label = focus_label(state, *focus);
+                                if *focus == 2 {
+                                    if let Some(t) = &state.chat_focus.target {
+                                        label = format!("{label}: {}", t.name);
+                                    }
+                                }
+                                label
+                            };
+                            let current = self.tell.is_none() && *focus == state.chat_focus.focus;
+                            (
+                                label,
+                                focus_usable(&state.chat_focus, *focus),
+                                focus_colour(*focus),
+                                current,
+                            )
                         }
+                        Item::Heading(h) => ((*h).to_owned(), false, 0xFF80_8080, false),
+                        Item::Person(name) => {
+                            let current = self
+                                .tell
+                                .as_deref()
+                                .is_some_and(|t| t.eq_ignore_ascii_case(name));
+                            (name.clone(), true, chat_colour(3), current)
+                        }
+                        Item::Someone => ("Tell Someone...".to_owned(), true, 0xFFCC_CCCC, false),
+                    };
+                    if current {
+                        p.fill(rr, crate::draw::with_alpha(colour, 0.14));
                     }
                     if usable && ctx.over(&rr) {
                         p.fill(rr, 0x40FF_FFFF);
                     }
-                    let style = if usable {
-                        text.colour(focus_colour(*focus))
+                    let style = if usable || matches!(item, Item::Heading(_)) {
+                        text.colour(colour)
                     } else {
                         dim
                     };
-                    p.text(&style, rr.x + 10.0 * k, rr.y + 4.0 * k, &label);
+                    p.text(&style, rr.x + 10.0 * k, rr.y + 3.0 * k, &label);
+                    self.controls.push((label.clone(), rr));
                     if usable && ctx.input.clicked(&rr) {
-                        out.requests.push(UiRequest::SetTalkFocus { focus: *focus });
+                        match item {
+                            Item::Focus(focus) => {
+                                out.requests.push(UiRequest::SetTalkFocus { focus: *focus });
+                                self.tell = None;
+                            }
+                            Item::Person(name) => self.tell = Some(name.clone()),
+                            Item::Someone => {
+                                self.tell = None;
+                                self.typing = Some("/t ".to_owned());
+                            }
+                            Item::Heading(_) => {}
+                        }
                         chosen = true;
+                    }
+                }
+                area
+            }
+            Menu::Name { name, at, docked } => {
+                // Where the name was, as the HUD layout placed the docked window.
+                let (x, y) = if docked {
+                    let (d, s) = (self.dock, self.dock_drawn);
+                    let f = if s.w > 0.0 { d.w / s.w } else { 1.0 };
+                    (d.x + (at.0 - s.x) * f, d.y + (at.1 - s.y) * f)
+                } else {
+                    at
+                };
+                let in_view = state
+                    .targets
+                    .iter()
+                    .find(|b| {
+                        pyreal_client_model::chat::bare_name(&b.name).eq_ignore_ascii_case(&name)
+                    })
+                    .map(|b| b.id);
+                let rows: [(&str, bool); 5] = [
+                    ("Tell", true),
+                    ("Select", in_view.is_some()),
+                    ("Add Friend", true),
+                    ("Squelch", true),
+                    ("Copy Name", true),
+                ];
+                let (sw, sh) = p.screen;
+                let (w, h) = (140.0 * k, row * 5.0 + 20.0 * k);
+                let area = Rect::new(
+                    x.min(sw - w).max(0.0),
+                    (y - h).clamp(0.0, (sh - h).max(0.0)),
+                    w,
+                    h,
+                );
+                kit::panel(p, area, 0.95);
+                for (n, (label, usable)) in rows.iter().enumerate() {
+                    #[allow(clippy::cast_precision_loss)]
+                    let rr = Rect::new(area.x, area.y + 10.0 * k + row * n as f32, area.w, row);
+                    if *usable && ctx.over(&rr) {
+                        p.fill(rr, 0x40FF_FFFF);
+                    }
+                    let colour = if n == 0 { chat_colour(3) } else { 0xFFFF_FFFF };
+                    let style = if *usable { text.colour(colour) } else { dim };
+                    p.text(&style, rr.x + 10.0 * k, rr.y + 3.0 * k, label);
+                    self.controls.push(((*label).to_owned(), rr));
+                    if !(*usable && ctx.input.clicked(&rr)) {
+                        continue;
+                    }
+                    chosen = true;
+                    match n {
+                        0 => out.requests.push(UiRequest::ChatEntry {
+                            window: window::MAIN,
+                            text: self.typing.clone().unwrap_or_default(),
+                            action: EntryAction::StartTell { name: name.clone() },
+                        }),
+                        1 => {
+                            if let Some(id) = in_view {
+                                out.requests.push(UiRequest::Select(id));
+                            }
+                        }
+                        2 => out
+                            .requests
+                            .push(UiRequest::AddFriend { name: name.clone() }),
+                        3 => out.requests.push(UiRequest::ChatLine {
+                            text: format!("@squelch {name}"),
+                            window: window::MAIN,
+                        }),
+                        _ => ctx.input.copied = Some(name.clone()),
                     }
                 }
                 area
@@ -1626,6 +2380,16 @@ impl ChatLog {
     }
 }
 
+/// Where each corner of a log window showing as `shown` is held to size it.
+fn corners(shown: Rect, k: f32) -> [(Corner, Rect); 4] {
+    Corner::ALL.map(|c| {
+        let g = if c.top() { TOP_GRIP } else { GRIP } * k;
+        let x = if c.left() { shown.x } else { shown.right() - g };
+        let y = if c.top() { shown.y } else { shown.bottom() - g };
+        (c, Rect::new(x, y, g, g))
+    })
+}
+
 /// A popped-out log window's outline while the HUD Layout window is open, as the HUD's elements
 /// are outlined there, with its tab's name.
 fn outline(p: &mut Painter<'_>, r: Rect, name: &str) {
@@ -1669,6 +2433,73 @@ fn windows_of(state: &GameState) -> Vec<ChatWindow> {
         w.filter = window_filter(state, w.id);
     }
     windows
+}
+
+/// A row of the destinations' list.
+enum Item {
+    Focus(u32),
+    Heading(&'static str),
+    Person(String),
+    Someone,
+}
+
+/// The chip the Modern input line names its destination in, at the left of `row` and as tall as
+/// it, with the small arrow that says it opens a list. Where it was drawn.
+fn draw_chip(p: &mut Painter<'_>, style: &TextStyle, row: Rect, label: &str, colour: Argb) -> Rect {
+    let k = p.scale;
+    let lw = p.measure(style, label);
+    let chip = Rect::new(row.x + 3.0 * k, row.y, lw + 26.0 * k, row.h);
+    p.fill(chip, crate::draw::with_alpha(colour, 0.16));
+    p.outline(chip, k.max(1.0), crate::draw::with_alpha(colour, 0.55));
+    p.text_in(
+        style,
+        Rect::new(chip.x + 7.0 * k, chip.y, lw, chip.h),
+        Align::Left,
+        label,
+    );
+    let (ax, ay) = (chip.x + 11.0 * k + lw, chip.y + chip.h / 2.0 - 1.5 * k);
+    for row in 0..3u8 {
+        let row = f32::from(row);
+        p.fill(
+            Rect::new(ax + row * k, ay + row * k, (5.0 - 2.0 * row) * k, k),
+            colour,
+        );
+    }
+    chip
+}
+
+/// The name a destination goes by on the input line and in its list. In Modern the game's tell
+/// to the selected object reads "Selected", with its name, so it is not taken for a tell by name.
+fn destination_label(state: &GameState, focus: u32, modern: bool) -> String {
+    if modern && focus == 2 {
+        return state.chat_focus.target.as_ref().map_or_else(
+            || "Selected".to_owned(),
+            |t| format!("Selected: {}", t.name),
+        );
+    }
+    line_label(state, focus)
+}
+
+/// The tell partner after `current` among `recent` (newest first), or before it when `back`,
+/// wrapping; the newest when `current` is not among them.
+#[must_use]
+pub fn next_partner(recent: &[String], current: &str, back: bool) -> Option<String> {
+    let names: Vec<&str> = recent
+        .iter()
+        .map(|n| pyreal_client_model::chat::bare_name(n))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    let n = names.len();
+    let at = names.iter().position(|x| x.eq_ignore_ascii_case(current));
+    let next = match at {
+        Some(i) if back => (i + n - 1) % n,
+        Some(i) => (i + 1) % n,
+        None => 0,
+    };
+    Some(names[next].to_owned())
 }
 
 /// A destination's label: the game's own word for it, else a plain one.
@@ -1920,5 +2751,65 @@ mod tests {
             "a tell is not a channel"
         );
         assert_eq!(focus_command("hello"), None);
+    }
+
+    fn line(chat_type: u8, text: &str) -> ChatLine {
+        ChatLine {
+            chat_type,
+            text: text.into(),
+            window: 0,
+        }
+    }
+
+    #[test]
+    fn a_tell_line_is_with_the_person_either_way() {
+        for (ty, text, who) in [
+            (3, "Alba tells you, \"hi\"", Some("Alba")),
+            (
+                3,
+                "<Tell:IIDString:1342177281:+Sir Fenn>+Sir Fenn<\\Tell> tells you, \"x\"",
+                Some("Sir Fenn"),
+            ),
+            (4, "You tell Alba, \"see you\"", Some("Alba")),
+            (4, "12:30 You tell Bex, \"a, b\"", Some("Bex")),
+            (4, "You tell group@channel, \"bro\"", None),
+            (2, "Alba says, \"hi\"", None),
+            (3, "You hear nothing.", None),
+        ] {
+            assert_eq!(tell_partner(&line(ty, text)).as_deref(), who, "{text}");
+        }
+    }
+
+    #[test]
+    fn tab_on_the_chip_steps_through_recent_partners_wrapping() {
+        let recent: Vec<String> = ["Alba", "+Bex", "Cato"].map(String::from).to_vec();
+        assert_eq!(next_partner(&recent, "alba", false).as_deref(), Some("Bex"));
+        assert_eq!(
+            next_partner(&recent, "Cato", false).as_deref(),
+            Some("Alba")
+        );
+        assert_eq!(next_partner(&recent, "Alba", true).as_deref(), Some("Cato"));
+        assert_eq!(
+            next_partner(&recent, "Dain", false).as_deref(),
+            Some("Alba")
+        );
+        assert_eq!(next_partner(&[], "Alba", false), None);
+    }
+
+    #[test]
+    fn the_name_in_a_tell_the_player_sent_is_a_link() {
+        let (text, links) = line_links(&line(4, "You tell Sir Fenn, \"hi\""));
+        assert_eq!(text, "You tell Sir Fenn, \"hi\"");
+        assert_eq!(links, [(9, 17, LinkTarget::Name("Sir Fenn".into()))]);
+        assert!(line_links(&line(4, "You tell a@b, \"x\"")).1.is_empty());
+        assert!(line_links(&line(2, "You tell no one, \"x\"")).1.is_empty());
+    }
+
+    #[test]
+    fn the_chat_input_styles_read_back_from_their_words() {
+        for s in ChatStyle::ALL {
+            assert_eq!(ChatStyle::from_word(s.word()), Some(s));
+        }
+        assert_eq!(ChatStyle::default(), ChatStyle::Modern);
     }
 }

@@ -9,7 +9,8 @@
 //! down until it meets the land, then runs on down the slope until it meets the water; where the
 //! pool above stops short of the edge, the water runs to the lip from it ([`frame_falls`]). `shaders/falls.wgsl` draws a run as a sheet of streaming water, a quad a
 //! row, glassy at the lip and whitening as it falls; foam spreading over the pool where it lands;
-//! and soft puffs of mist rolling up from there, with a faint rainbow in them when the sun shines
+//! a low bank of mist all along its foot, over the line the water meets the pool; and soft puffs
+//! of mist rolling up from there, with a faint rainbow in them when the sun shines
 //! on a clear day ([`bow_of`]).
 
 use glam::{Vec2, Vec3, Vec4};
@@ -55,6 +56,10 @@ const MIST_SIZE: f32 = 1.3;
 /// What sets a spot's second puff half a life after its first (`falls.wgsl` turns a seed into its
 /// life by 0.618 of it).
 const PUFF_APART: f32 = 0.809;
+/// The bank of mist along where a run lands: how far out over the pool it lies and how tall it
+/// stands, shares of a card's half width.
+const BANK_OUT: f32 = 1.5;
+const BANK_HEIGHT: f32 = 0.9;
 /// A lone mist emitter (no water landing within this many metres) still makes its puffs, this
 /// wide.
 const MIST_ALONE: f32 = 20.0;
@@ -66,6 +71,7 @@ const CLOCK_WRAP: f64 = 600.0;
 const FOAM: u32 = 0;
 const SHEET: u32 = 1;
 const MIST: u32 = 2;
+const BANK: u32 = 3;
 /// A piece's flags: drawn in a room; its water starts under the pool above the lip.
 const INDOOR: u32 = 1;
 const FROM_POOL: u32 = 2;
@@ -344,6 +350,14 @@ fn piece(rows: [[f32; 4]; 6], kind: u32, flags: u32, now: Now) -> [u8; PIECE] {
     out
 }
 
+/// Where a bank of mist stands over water from `lip` landing at `landed`, and how tall.
+fn bank_end(landed: Vec3, lip: &Lip) -> (Vec3, f32) {
+    (
+        landed + (lip.dir * lip.half * BANK_OUT).extend(0.0),
+        lip.half * BANK_HEIGHT,
+    )
+}
+
 fn sees(planes: &[Vec4], at: Vec3, r: f32) -> bool {
     planes.iter().all(|q| q.truncate().dot(at) + q.w >= -r)
 }
@@ -471,11 +485,19 @@ pub fn bow_of(light: &crate::sky::SkyLight, wet: f32) -> f32 {
         * (1.0 - wet.clamp(0.0, 1.0))
 }
 
+/// A frame's pieces, far to near: as `falls.wgsl` reads them, and each one's distance from the
+/// eye, by which the renderer draws them among the other translucent draws.
+#[derive(Debug, Default)]
+pub struct Framed {
+    pub bytes: Vec<u8>,
+    pub distances: Vec<f32>,
+}
+
 /// The waterfalls' pieces seen from `eye` inside `planes` (their cells' rectangles not empty, as
-/// `seen` says), as `falls.wgsl` reads them: the foam, then the sheets' rows, then the mist, each
-/// far to near. `ground` is the land's height at a place (the water's where it is water) and
-/// whether it is water, where known; `paths` keeps the paths walked; `bow` how strongly the sun
-/// makes a rainbow in the spray ([`bow_of`]).
+/// `seen` says): the foam, the sheets' rows and the mist, far to near. `ground` is the land's
+/// height at a place (the water's where it is water) and whether it is water, where known;
+/// `paths` keeps the paths walked; `bow` how strongly the sun makes a rainbow in the spray
+/// ([`bow_of`]).
 #[must_use]
 #[allow(clippy::too_many_lines)] // one pass from lips to pieces
 pub fn frame_falls(
@@ -486,9 +508,9 @@ pub fn frame_falls(
     seen: impl Fn(u32) -> bool,
     ground: Ground,
     bow: f32,
-) -> Vec<u8> {
+) -> Framed {
     if !particles.falls {
-        return Vec::new();
+        return Framed::default();
     }
     #[allow(clippy::cast_possible_truncation)] // a wrapped clock
     let now = Now {
@@ -497,6 +519,7 @@ pub fn frame_falls(
     };
     let (lips, mists) = lips_of(particles, eye, seen);
     let (mut sheets, mut foam, mut mist) = (Vec::new(), Vec::new(), Vec::new());
+    let mut bank_pieces = Vec::new();
     let mut landed: Vec<Vec3> = Vec::new();
     for run in runs_of(lips) {
         let paths: Vec<Walked> = run.iter().map(|l| paths.of(l, ground)).collect();
@@ -578,6 +601,30 @@ pub fn frame_falls(
                     ),
                 ));
             }
+            // A low bank of mist all along where it lands, over the line the water meets.
+            // Each end by its own lip, so the banks of a run meet.
+            let ((ba, ha), (bb, hb)) = (bank_end(pa, &a), bank_end(pb, &b));
+            let bank = (ba + bb) * 0.5;
+            if bank.distance(eye) <= MIST_REACH
+                && sees(planes, bank, ba.distance(bb) + ha.max(hb) * 2.0)
+            {
+                bank_pieces.push((
+                    bank.distance(eye),
+                    piece(
+                        [
+                            ba.extend(u[k]).to_array(),
+                            bb.extend(u[k + 1]).to_array(),
+                            [a.dir.x, a.dir.y, ha, 0.0],
+                            [b.dir.x, b.dir.y, hb, 0.0],
+                            [0.0; 4],
+                            [length, half, seed, 0.0],
+                        ],
+                        BANK,
+                        flags,
+                        now,
+                    ),
+                ));
+            }
             // Its mist: a spot each `MIST_SPACING` along where it lands, two puffs at each, half a
             // life apart, so it never thins.
             let span = pa.distance(pb);
@@ -641,13 +688,36 @@ pub fn frame_falls(
             ));
         }
     }
-    let mut out = Vec::new();
-    for mut list in [foam, sheets, mist] {
-        list.sort_by(|a, b| b.0.total_cmp(&a.0));
-        out.extend(list.into_iter().flat_map(|(_, p)| p));
+    mist.extend(bank_pieces);
+    far_to_near(foam, sheets, mist)
+}
+
+/// The foam, sheets and mist as one list far to near, so the pieces sort in among the other
+/// translucent draws; at one distance foam goes under its sheet and mist over it.
+fn far_to_near(
+    foam: Vec<(f32, [u8; PIECE])>,
+    sheets: Vec<(f32, [u8; PIECE])>,
+    mist: Vec<(f32, [u8; PIECE])>,
+) -> Framed {
+    let mut all: Vec<(f32, [u8; PIECE])> = foam.into_iter().chain(sheets).chain(mist).collect();
+    all.sort_by(|a, b| b.0.total_cmp(&a.0));
+    all.truncate(MAX_FRAME_FALLS);
+    Framed {
+        distances: all.iter().map(|(d, _)| *d).collect(),
+        bytes: all.into_iter().flat_map(|(_, p)| p).collect(),
     }
-    out.truncate(MAX_FRAME_FALLS * PIECE);
-    out
+}
+
+/// Where the pieces from `from` on (`distances` far to near) that are no nearer than a
+/// translucent draw `at` metres away end: those drawn before it.
+#[must_use]
+pub fn drawn_before(distances: &[f32], from: usize, at: f32) -> usize {
+    from + distances
+        .get(from..)
+        .unwrap_or(&[])
+        .iter()
+        .take_while(|d| **d >= at)
+        .count()
 }
 
 #[cfg(test)]
@@ -696,6 +766,65 @@ mod tests {
 
     /// A waterfall's lip and its mist are told by how their particles behave; a fountain's spray
     /// and rising steam are not.
+    /// The foam, sheets and mist of every fall make one list far to near, and a translucent draw
+    /// between them comes after the pieces beyond it and before those nearer: a lamp's glow near
+    /// the eye is not drawn under a waterfall far off.
+    #[test]
+    fn a_falls_pieces_sort_in_among_the_other_translucent_draws() {
+        let p = |d: f32, kind: u32| {
+            let now = Now {
+                clock: 0.0,
+                bow: 0.0,
+            };
+            (d, piece([[0.0; 4]; 6], kind, 0, now))
+        };
+        let framed = far_to_near(
+            vec![p(90.0, FOAM), p(30.0, FOAM)],
+            vec![p(100.0, SHEET), p(30.0, SHEET), p(12.0, SHEET)],
+            vec![p(95.0, MIST), p(30.0, MIST)],
+        );
+        assert_eq!(
+            framed.distances,
+            [100.0, 95.0, 90.0, 30.0, 30.0, 30.0, 12.0]
+        );
+        assert_eq!(framed.bytes.len(), framed.distances.len() * PIECE);
+        let kind = |i: usize| framed.bytes[i * PIECE + 96];
+        // At one distance: foam, then the sheet, then the mist.
+        assert_eq!([kind(3), kind(4), kind(5)], [0, 1, 2]);
+        let d = &framed.distances;
+        // A glow 5 m away comes after every piece; one 50 m away after the far fall only; one past
+        // them all before any.
+        assert_eq!(drawn_before(d, 0, 5.0), 7);
+        assert_eq!(drawn_before(d, 0, 50.0), 3);
+        assert_eq!(drawn_before(d, 0, 200.0), 0);
+        assert_eq!(drawn_before(d, 3, 20.0), 6);
+        assert_eq!(drawn_before(d, 7, 1.0), 7);
+    }
+
+    /// The bank of mist at a fall's foot lies out over the pool in front of where the water
+    /// lands, so from in front it hides the line the sheet meets the water at, and stands about as
+    /// tall as the water is wide; each end is its own lip's, so a run's banks meet.
+    #[test]
+    fn the_bank_of_mist_lies_out_over_the_pool_in_front_of_the_fall() {
+        let lip = Lip {
+            at: Vec3::new(0.0, 0.0, 30.0),
+            dir: Vec2::new(0.0, 1.0),
+            speed: 11.0,
+            rise: 0.0,
+            pull: 16.0,
+            life: 1.8,
+            half: 3.5,
+            cell: 0,
+        };
+        let landed = Vec3::new(0.0, 6.0, 0.0);
+        let (at, tall) = bank_end(landed, &lip);
+        assert!(at.y > landed.y + 3.0 && at.y < landed.y + 8.0, "{at}");
+        assert!((at.x, at.z) == (landed.x, landed.z), "{at}");
+        assert!(tall > 2.0 && tall < 5.0, "{tall}");
+        let wider = Lip { half: 4.5, ..lip };
+        assert_ne!(bank_end(landed, &wider), (at, tall));
+    }
+
     #[test]
     fn a_waterfall_is_told_by_its_emitters() {
         assert!(is_sheet(&sheet()));

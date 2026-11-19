@@ -3,7 +3,7 @@
 
 use glam::{Vec2, Vec3};
 use pyreal_engine::camera::Camera;
-use pyreal_engine::far::{levels_for, ranges, select, FarField, PATCH, TEXEL};
+use pyreal_engine::far::{levels_for, near_blocks, ranges, select, FarField, PATCH, TEXEL};
 use pyreal_primitives::num::math::{cosf, sinf};
 
 /// A 512-texel field of rolling ground with a 400 m near square in its middle.
@@ -115,4 +115,12 @@ fn far_trees_follow_the_far_terrain_and_the_haze_its_reach() {
     use pyreal_engine::atmosphere::{fog_end_for, HAZE_REACH};
     assert!((fog_end_for(2400.0, 3000.0) - 2400.0).abs() < 1e-3);
     assert!((fog_end_for(2400.0, HAZE_REACH * 4.0) - 9600.0).abs() < 1e-2);
+}
+
+/// The exact cells' square keeps to the world's blocks: at its edge the far rings take the rest.
+#[test]
+fn the_near_square_keeps_to_the_world() {
+    assert_eq!(near_blocks(0x80, 4), (0x7C, 0x85));
+    assert_eq!(near_blocks(0xFC, 4), (0xF8, 0xFF));
+    assert_eq!(near_blocks(0x02, 4), (0x00, 0x07));
 }

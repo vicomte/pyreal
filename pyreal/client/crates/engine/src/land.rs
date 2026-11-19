@@ -49,6 +49,8 @@ pub const SWASH_STEP: f32 = 0.05;
 pub const BANK_MOST: f32 = 1.6;
 /// How far over the level the ground stands where the still water stops showing against a bank.
 pub const BANK_CLEAR: f32 = 0.05;
+/// How far the ground beside a water vertex falls below it, metres, to be a brink its edge stops at.
+const BRINK_DROP: f32 = 4.0;
 
 /// The bank's rise (metres up a metre across) a word's five bits keep.
 #[must_use]
@@ -384,7 +386,7 @@ impl LandField {
 
     /// Each vertex beside the other kind: how steeply the bank rises across the water's edge
     /// there, the most up a metre across to a neighbour of the other kind (a cliff's, not a
-    /// beach's), kept in the word.
+    /// beach's; a water vertex's drop at a brink counts as a rise), kept in the word.
     fn find_banks(&mut self) {
         let (w, h) = (self.side.0, self.side.1);
         let mut out = self.word.clone();
@@ -410,7 +412,13 @@ impl LandField {
                         let (land, wet) = if water { (j, i) } else { (i, j) };
                         #[allow(clippy::cast_precision_loss)]
                         let across = ((dx * dx + dy * dy) as f32).sqrt() * CELL_SIZE;
-                        rise = rise.max((self.height[land] - self.height[wet]) / across);
+                        let mut up = self.height[land] - self.height[wet];
+                        // Ground falling away from a water vertex (a fall's brink) holds its edge
+                        // there as a cliff does.
+                        if water && -up > BRINK_DROP {
+                            up = -up;
+                        }
+                        rise = rise.max(up / across);
                     }
                 }
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

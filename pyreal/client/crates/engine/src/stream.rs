@@ -959,11 +959,13 @@ impl Stream {
     /// The square round `centre` in render space, where the far terrain leaves the ground to the
     /// exact cells.
     fn near_rect(&self, centre: Block) -> (Vec2, Vec2) {
-        let r = self.radius;
+        let (x, y) = (
+            crate::far::near_blocks(centre.0, self.radius),
+            crate::far::near_blocks(centre.1, self.radius),
+        );
         (
-            self.block_origin((centre.0 - r, centre.1 - r)).truncate(),
-            self.block_origin((centre.0 + r + 1, centre.1 + r + 1))
-                .truncate(),
+            self.block_origin((x.0, y.0)).truncate(),
+            self.block_origin((x.1, y.1)).truncate(),
         )
     }
 
@@ -1244,6 +1246,7 @@ impl Stream {
             let mine = |o: u32| runs.iter().any(|(lo, hi)| (*lo..*hi).contains(&o));
             engine.lamps.retain(|l| !mine(l.object));
             engine.flames.placed.retain(|f| !mine(f.object));
+            engine.flames.hearths.retain(|f| !mine(f.object));
             engine.particles.hosts.retain(|h| !mine(h.object));
         }
         self.recut_round(engine, loader, b, &boxes);

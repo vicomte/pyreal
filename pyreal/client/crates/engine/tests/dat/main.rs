@@ -5,15 +5,18 @@ mod beacons;
 mod bodies;
 mod drawn;
 mod falls;
+mod far;
+mod fountains;
 mod gates;
+mod lamps;
 mod particles;
 
 use glam::Vec3;
-use pyreal_assets::{CellLandblock, Decode, GfxObj, Surface};
+use pyreal_assets::{CellLandblock, Decode, GfxObj, Region, Surface};
 use pyreal_dat::{DbType, RetailDatStore};
 use pyreal_engine::asset::material::{describe_surface, KindTable, PackMaps};
 use pyreal_engine::asset::mesh::gfxobj_mesh;
-use pyreal_engine::asset::object::{degrade_chain, object_parts};
+use pyreal_engine::asset::object::{degrade_chain, object_affine, object_parts};
 use pyreal_engine::asset::texture::{PaletteSwap, PixelLayout, TextureSource};
 use pyreal_engine::camera::Camera;
 use pyreal_engine::cells::{self, CellGraph};
@@ -23,7 +26,7 @@ use pyreal_primitives::num::math::atan2f;
 use pyreal_primitives::DataId;
 use pyreal_terrain::land::mesh::{height_table, sw_to_ne_cut};
 use pyreal_world_data::env_cells::EnvCellLoader;
-use pyreal_world_data::landblock::{landblock_did, load_region};
+use pyreal_world_data::landblock::{landblock_did, load_region, PYREAL_REGION};
 
 fn decode<T: Decode>(store: &RetailDatStore, kind: DbType, id: DataId) -> Option<T> {
     let bytes = store.read_typed(kind, id).ok()?;
@@ -193,12 +196,13 @@ fn holtburgs_ground_is_the_retail_mesh_with_layered_cells() {
     }
 }
 
-/// Before Throne of Destiny the ground is palette-shifted: each cell is one picture drawn with a
-/// palette made from its corners' terrain palettes, a palette variant.
+/// Before Throne of Destiny the software renderer's region palette-shifts the ground: each cell is
+/// one picture drawn with a palette made from its corners' terrain palettes, a palette variant.
 #[test]
 fn the_older_ground_is_a_palette_variant_per_cell() {
     let store = pyreal_dat::testing::open_classic_store_or_fail();
-    let region = load_region(&store).expect("the region");
+    let region: Region =
+        decode(&store, DbType::Region, PYREAL_REGION).expect("the palette-shifting region");
     let lb: CellLandblock =
         decode(&store, DbType::LandBlock, landblock_did(0xA9B4)).expect("Holtburg");
     let mut req = Requests::default();
@@ -402,4 +406,56 @@ fn a_buildings_doorways_are_left_out_of_its_mesh() {
         mesh.submeshes.iter().all(|s| s.surface_index != blue),
         "the doorway's blue is not drawn"
     );
+}
+
+/// Jacob's report at 0x8A02: the stairs 0x02000623, a static of 0x8A02015F, climb north into
+/// 0x8A02015E. From the hallway cell 0x8A020143 the walk reaches 0x015E but not 0x015F, and the
+/// stairs are still seen, through 0x015E.
+#[test]
+fn stairs_reaching_into_the_next_room_are_seen_through_it() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let mut loader = EnvCellLoader::new();
+    let mut g = CellGraph::default();
+    let mut stairs = None;
+    for d in loader.load_block(&store, 0x8A02) {
+        let slot = g.add(room_cell(&d, Vec3::ZERO));
+        let o = d.cell.static_objects.iter().find(|o| o.id.0 == 0x0200_0623);
+        if let (0x8A02_015F, Some(o)) = (d.cell.id.0, o) {
+            stairs = Some((slot, object_affine(&o.frame, 1.0), o.id));
+        }
+    }
+    let (home, at, id) = stairs.expect("the stairs in 0x8A02015F");
+    let mut slots = Vec::new();
+    for part in object_parts(&store, id) {
+        let obj: GfxObj = decode(&store, DbType::GfxObj, part.gfxobj).expect("a part");
+        let mesh = gfxobj_mesh(&obj);
+        let t = at * part.transform;
+        let scale = t.matrix3.x_axis.length();
+        let center = t.transform_point3(Vec3::from(mesh.center));
+        slots.push(g.furniture_slot(home, center, mesh.radius * scale));
+    }
+    g.link();
+    let reaching = *slots
+        .iter()
+        .find(|&&s| s != home)
+        .expect("a part reaching out");
+
+    let camera = Camera {
+        position: Vec3::new(46.353_943, -39.379_33, -3.3),
+        yaw: -1.651_727_2,
+        pitch: -0.365_000_5,
+        fov_y: 90f32.to_radians(),
+        cell: Some(0x8A02_0143),
+        ..Camera::default()
+    };
+    let v = g.visibility(
+        &camera.view_projection(1.0),
+        camera.position,
+        camera.cell,
+        500.0,
+        1.0,
+    );
+    let seen = |id: u32| !cells::is_empty(&v.rects[g.slot_of(id).unwrap() as usize]);
+    assert!(seen(0x8A02_015E) && !seen(0x8A02_015F), "{v:?}");
+    assert!(!cells::is_empty(&v.rects[reaching as usize]), "the stairs");
 }

@@ -89,6 +89,38 @@ fn the_upper_pool_stays_level_at_the_top_of_a_fall() {
     );
 }
 
+/// A pool at 60 whose ground falls away to 0 past its last vertex (a fall's brink): its edge stops
+/// at that vertex, as against a cliff, rather than halfway out over the drop.
+#[test]
+fn a_pools_edge_stops_at_the_brink_of_a_fall() {
+    let mut heights = [0.0; 81];
+    let mut terrain = [1u16 << 2; 81];
+    for x in 0..9 {
+        for y in 0..=4 {
+            let k = x * 9 + y;
+            terrain[k] = 17 << 2;
+            heights[k] = 60.0;
+        }
+    }
+    let mut f = LandField::new((10, 10), (1, 1), Vec2::ZERO);
+    f.add_block(&BlockLand {
+        block: (10, 10),
+        heights,
+        terrain,
+        buildings: Vec::new(),
+        footprints: Vec::new(),
+        clearings: Vec::new(),
+        drawn: None,
+    });
+    f.finish(&WaterTable::default());
+    let drawn = |y: f32| {
+        let p = Vec2::new(4.0 * 24.0, y * 24.0);
+        f.water_at(p).expect("in the field").1 - f.bank_at(p).1
+    };
+    assert!(drawn(3.5) > 0.0, "{}", drawn(3.5));
+    assert!(drawn(4.1) <= 0.0, "{}", drawn(4.1));
+}
+
 /// A body's look comes from its water's terrain type and its shore: the same pond is a clear lake
 /// in grass and a swamp in a marsh.
 #[test]

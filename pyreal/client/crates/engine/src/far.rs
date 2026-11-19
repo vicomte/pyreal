@@ -13,22 +13,38 @@
 //! Its water is the near water's: the field's vertices are worked out as a [`LandField`] (how far
 //! inside the water, its level, each body's look), which the water pass reads where the far rings
 //! draw water, so it shades on as the near water does past the square's edge.
+//! Past the world's edge the field is open sea at the lowest height, so the sea runs on to the
+//! horizon there.
 
 use glam::{Vec2, Vec3, Vec4, Vec4Swizzles};
 use pyreal_assets::{CellLandblock, Region};
 use pyreal_dat::{DbType, RetailDatStore};
 use pyreal_primitives::DataId;
-use pyreal_terrain::land::water::{drawn_words, SurfChar, TERRAIN_SURF_CHAR};
+use pyreal_terrain::land::water::{
+    drawn_words, road_bits, terrain_type, SurfChar, TERRAIN_SURF_CHAR,
+};
 use pyreal_world_data::landblock::landblock_did;
 
 use crate::gpu::Gpu;
 use crate::land::{BlockLand, LandField};
 use crate::renderer::{ALBEDO, DEPTH, IDS, MATERIAL, MOTION, NORMAL};
 
+/// The blocks along one axis the exact cells cover round block `centre`, `radius` out: the first
+/// and one past the last, kept to the world's (past its edge the far rings draw the open sea).
+#[must_use]
+pub fn near_blocks(centre: i32, radius: i32) -> (i32, i32) {
+    (
+        (centre - radius).clamp(0, 0xFF),
+        (centre + radius + 1).clamp(0, 0xFF),
+    )
+}
+
 /// Quads along one side of a node's patch.
 pub const PATCH: u32 = 16;
 /// Metres between the dats' height samples.
 pub const TEXEL: f32 = 24.0;
+/// The terrain word of the open sea past the world's edge: deep sea (0x14), no road.
+const OPEN_SEA: u16 = 0x14 << 2;
 /// Nodes one frame can draw.
 pub const MAX_NODES: usize = 4096;
 /// The bytes of one node record.
@@ -106,19 +122,21 @@ impl FarField {
         let mut wet = false;
         for b in 0..blocks * blocks {
             let (bx, by) = (cx - radius + b / blocks, cy - radius + b % blocks);
-            if !(0..=0xFE).contains(&bx) || !(0..=0xFE).contains(&by) {
-                continue;
-            }
-            let id = u16::try_from((bx << 8) | by).unwrap_or(0);
-            let Some(mut lb) = decode::<CellLandblock>(store, DbType::LandBlock, landblock_did(id))
-            else {
-                continue;
+            // Past the world's edge the open sea runs on to the horizon.
+            let (height, terrain) = if (0..=0xFE).contains(&bx) && (0..=0xFE).contains(&by) {
+                let id = u16::try_from((bx << 8) | by).unwrap_or(0);
+                let Some(lb) = decode::<CellLandblock>(store, DbType::LandBlock, landblock_did(id))
+                else {
+                    continue;
+                };
+                (lb.height, drawn_words(&lb.terrain, &lb.height))
+            } else {
+                ([0u8; 81], [OPEN_SEA; 81])
             };
-            lb.terrain = drawn_words(&lb.terrain, &lb.height);
             land.add_block(&BlockLand {
                 block: (bx, by),
-                heights: std::array::from_fn(|i| table[usize::from(lb.height[i])]),
-                terrain: lb.terrain,
+                heights: std::array::from_fn(|i| table[usize::from(height[i])]),
+                terrain,
                 buildings: Vec::new(),
                 footprints: Vec::new(),
                 clearings: Vec::new(),
@@ -135,14 +153,15 @@ impl FarField {
                         continue;
                     }
                     let at = ty * n + tx;
-                    heights[at] = table[usize::from(lb.height[vx * 9 + vy])];
-                    let key = if lb.road(vx, vy) != 0 {
+                    let word = terrain[vx * 9 + vy];
+                    heights[at] = table[usize::from(height[vx * 9 + vy])];
+                    let kind = terrain_type(word);
+                    let key = if road_bits(word) != 0 {
                         32
                     } else {
-                        u32::from(lb.terrain_type(vx, vy))
+                        u32::try_from(kind).unwrap_or(0)
                     };
-                    let water =
-                        TERRAIN_SURF_CHAR[usize::from(lb.terrain_type(vx, vy))] == SurfChar::Water;
+                    let water = TERRAIN_SURF_CHAR[kind] == SurfChar::Water;
                     wet |= water;
                     colours[at] = *palette.entry(key).or_insert_with(|| colour(key));
                     colours[at][3] = if water { 0 } else { 255 };

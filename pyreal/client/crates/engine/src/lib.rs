@@ -38,6 +38,7 @@
 //! | [`cover`] | the pack's ground cover, placed on the GPU round the eye and drawn by a few draws |
 //! | [`particles`] | scripted objects' emitters, stepped by the client's own code, drawn as instanced cards |
 //! | [`falls`] | waterfalls: their emitters' water drawn as sheets down to the pool, with foam and mist |
+//! | [`fountains`] | fountains and basins: their water still and mirroring, their jets drawn as streams |
 //! | [`bolts`] | lightning in a creature's cloud: grown channels, their lines of light and lamps |
 //! | [`glow`] | creatures' light: their balls of light and lens stars drawn as light, and the lamp each carries |
 //! | [`temporal`], [`metalfx`] | the render scale (fixed or dynamic), the jitter, the temporal resolve and upscalers, the UI composite |
@@ -62,6 +63,7 @@ pub mod evict;
 pub mod falls;
 pub mod far;
 pub mod flames;
+pub mod fountains;
 pub mod frame_work;
 pub mod gates;
 pub mod glow;
@@ -203,6 +205,7 @@ impl Engine {
         self.far = None;
         self.lamps.clear();
         self.flames.placed.clear();
+        self.flames.hearths.clear();
         self.bodies.clear();
         self.umbrae.clear();
         self.clearings.clear();
@@ -233,6 +236,9 @@ impl Engine {
         }
         for f in &mut self.flames.placed {
             f.base += delta;
+        }
+        for p in self.flames.hearths.iter_mut().flat_map(|h| &mut h.points) {
+            p.at += delta;
         }
         self.snow_share_at = None;
         let by = pyreal_primitives::Vec3::new(delta.x, delta.y, delta.z);
@@ -398,9 +404,10 @@ impl Engine {
             }
         };
         // The bodies of fire gathered since the last frame: their flames and their lamps.
-        let fires = std::mem::take(&mut self.particles.fires);
+        let mut fires = std::mem::take(&mut self.particles.fires);
         let fire_on = self.flames.on && self.renderer.lamps;
         self.particles.fire_bodies = fire_on;
+        fires.extend(self.flames.hearths.iter().cloned());
         let (fire_flames, fire_lamps) = if fire_on {
             crate::body_fire::frame(
                 &fires,
@@ -489,6 +496,7 @@ impl Engine {
             snowy: w.snow_share,
         };
         self.particles.detail = self.renderer.effect_detail();
+        self.particles.fountains = self.renderer.fountains_drawn();
         let heavens = self
             .heavens
             .as_ref()
@@ -536,8 +544,16 @@ impl Engine {
                 }),
             )
         } else {
-            Vec::new()
+            crate::falls::Framed::default()
         };
+        // The fountains' jets, into their basins.
+        let frame_jets = crate::fountains::frame_jets(
+            &self.particles,
+            camera.position,
+            &camera.frustum(aspect),
+            seen,
+            self.renderer.clock,
+        );
         let body_water = self.water_lifts(camera.position);
         // The snowy land round the eye, worked out again as the eye moves; the bodies' prints.
         let w = &mut self.renderer.weather;
@@ -569,7 +585,9 @@ impl Engine {
                 lamps: &frame_lamps,
                 probe_lamps: &probe_lamps,
                 flames: &frame_flames,
-                falls: &frame_falls,
+                falls: &frame_falls.bytes,
+                fall_distances: &frame_falls.distances,
+                jets: &frame_jets,
                 bodies: &self.bodies,
                 body_water: &body_water,
                 umbrae: &self.umbrae,

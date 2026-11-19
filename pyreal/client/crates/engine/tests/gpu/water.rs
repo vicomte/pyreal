@@ -228,6 +228,51 @@ fn a_lower_pool_is_not_drawn_through_the_upper_pools_beach() {
     assert!(blue * 10 < n, "{blue} of {n} beach pixels show water");
 }
 
+/// Falls from a pool at 160 m down a face to a pool at 100 m.
+const FACE: u16 = 0xF418;
+
+/// From the lower pool (the owner's report), the upper pool is not drawn through the fall's face
+/// below it: the face is ground, not that pool's bed.
+#[test]
+fn an_upper_pool_is_not_drawn_through_the_face_below_it() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::light::loaded(
+        &store,
+        &region,
+        Area {
+            center: FACE,
+            radius: 1,
+        },
+    );
+    let camera = Camera {
+        position: Vec3::new(189.76, 178.21, 100.3),
+        yaw: -3.71,
+        pitch: 0.145,
+        fov_y: 66.36f32.to_radians(),
+        far: 400.0,
+        ..Camera::default()
+    };
+    let noon = SkyLight::at(&region, 0, 0.5);
+    let size = (280, 200);
+    let rgba = engine
+        .render_to_rgba(&camera, &noon, size)
+        .expect("a frame");
+    // The face beside the fall, under its brink.
+    let px = rgba.as_chunks::<4>().0;
+    let (mut wet, mut n) = (0, 0);
+    for y in 25..60 {
+        for x in 118..160 {
+            let p = px[y * size.0 as usize + x];
+            n += 1;
+            if p[2].saturating_add(4) > p[1] {
+                wet += 1;
+            }
+        }
+    }
+    assert!(wet * 10 < n, "{wet} of {n} face pixels show water");
+}
+
 /// Under water drawn as water the bed is drawn with the land's mud picture, so it shows a grain
 /// and bend of its own rather than one flat colour.
 #[test]
@@ -244,4 +289,74 @@ fn the_bed_is_drawn_with_the_lands_mud() {
     );
     let (slot, per_m) = engine.renderer.bed.expect("the bed's picture");
     assert!(slot != 0 && per_m > 0.0, "{slot} {per_m}");
+}
+
+/// The bay below the falls at 0xF518 (the owner's shimmer report), at Evensong.
+const BAY: u16 = 0xF518;
+
+/// The light on the bay shimmers on as the clock runs (the owner's report): over twenty seconds,
+/// long enough for every drift to have run a whole cell, no half second changes the water much
+/// more than the others do, as it did when the glitter held still and then jumped a cell.
+#[test]
+fn the_bays_shimmer_runs_on_without_jumps() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::light::loaded(
+        &store,
+        &region,
+        Area {
+            center: BAY,
+            radius: 4,
+        },
+    );
+    let camera = Camera {
+        position: Vec3::new(172.62, 183.70, 183.27),
+        yaw: -4.8746,
+        pitch: -0.36,
+        fov_y: 66.36f32.to_radians(),
+        far: 1000.0,
+        ..Camera::default()
+    };
+    let evensong = SkyLight::at(&region, 0, 0.763);
+    let size = (640u32, 360u32);
+    let band = |rgba: &[u8]| -> Vec<u8> {
+        (140..230u32)
+            .flat_map(|y| (350..470u32).map(move |x| (y * size.0 + x) as usize))
+            .flat_map(|i| rgba[i * 4..i * 4 + 3].to_vec())
+            .collect()
+    };
+    let mut frames = Vec::new();
+    for step in 0..41 {
+        engine.renderer.clock = 1000.0 + f64::from(step) * 0.5;
+        let mut rgba = Vec::new();
+        for _ in 0..2 {
+            rgba = engine
+                .render_to_rgba(&camera, &evensong, size)
+                .expect("a frame");
+        }
+        frames.push(band(&rgba));
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let mut changes: Vec<f64> = frames
+        .windows(2)
+        .map(|w| {
+            let sum: u64 = w[0]
+                .iter()
+                .zip(&w[1])
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            sum as f64 / w[0].len() as f64
+        })
+        .collect();
+    let most = changes.iter().copied().fold(0.0, f64::max);
+    changes.sort_by(f64::total_cmp);
+    let middle = changes[changes.len() / 2];
+    assert!(
+        middle > 0.05,
+        "the water shimmers: a half second changes it {middle:.2}"
+    );
+    assert!(
+        most < middle * 2.0,
+        "a half second changes the water {most:.2}, against {middle:.2} for most"
+    );
 }

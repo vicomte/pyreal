@@ -78,10 +78,13 @@ pub enum PipelineKind {
     Web,
     /// Glacier ice, drawn after the water over what lies behind it, writing its depth.
     Ice,
+    /// A basin's water ([`crate::fountains`]): drawn with the ice as water while water is drawn
+    /// as water, else with the translucent.
+    Pool,
 }
 
 impl PipelineKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Opaque,
         Self::TwoSided,
         Self::Terrain,
@@ -89,6 +92,7 @@ impl PipelineKind {
         Self::Additive,
         Self::Web,
         Self::Ice,
+        Self::Pool,
     ];
 
     /// Drawn into the G-buffer (rather than forward, after lighting).

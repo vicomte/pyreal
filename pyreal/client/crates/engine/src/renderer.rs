@@ -65,6 +65,11 @@ pub mod source {
     use super::{COMMON, FULLSCREEN, MATERIALS, SCENE};
 
     #[must_use]
+    pub fn pick() -> String {
+        include_str!("shaders/pick.wgsl").to_owned()
+    }
+
+    #[must_use]
     pub fn hiz_first() -> String {
         format!(
             "{}\n{}",
@@ -112,7 +117,7 @@ pub mod source {
     #[must_use]
     pub fn forward() -> String {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             gbuffer(),
             include_str!("shaders/sun_shadow.wgsl"),
             include_str!("shaders/lamp_types.wgsl"),
@@ -124,6 +129,7 @@ pub mod source {
             include_str!("shaders/webs.wgsl"),
             include_str!("shaders/flames.wgsl"),
             include_str!("shaders/falls.wgsl"),
+            include_str!("shaders/fountains.wgsl"),
             include_str!("shaders/body_fire.wgsl"),
             include_str!("shaders/blobs.wgsl"),
             include_str!("shaders/puffs.wgsl"),
@@ -458,6 +464,9 @@ pub fn graph_decl() -> GraphDecl {
                     "reactive",
                 ])
                 .writes(&["hdr", "oit", "reactive"]),
+            PassDecl::new("translucent objects", PassKind::Render)
+                .reads(&["draw-args", "visible", "depth", "materials", "objects"])
+                .writes(&["objects"]),
             PassDecl::new("oit", PassKind::Render)
                 .reads(&["oit", "hdr"])
                 .writes(&["hdr"]),
@@ -563,6 +572,10 @@ pub struct View<'a> {
     pub flames: &'a [crate::flames::Flame],
     /// The waterfalls' pieces seen, as `falls.wgsl` reads them ([`crate::falls::frame_falls`]).
     pub falls: &'a [u8],
+    /// Each of `falls`' pieces' distance from the eye, far to near.
+    pub fall_distances: &'a [f32],
+    /// The fountains' jets, as `fountains.wgsl` reads them ([`crate::fountains::frame_jets`]).
+    pub jets: &'a [u8],
     /// Where the bodies near the eye stand (their feet): they stir the water.
     pub bodies: &'a [glam::Vec3],
     /// How far the waves lift the water over its level where each of `bodies` stands.
@@ -812,7 +825,7 @@ pub struct Selection {
     pub colour: u32,
 }
 
-/// The waypoint's ring: laid on whatever stands round its middle, with an arrow on its rim
+/// The waypoint's ring: laid on the ground round its middle, with an arrow on its rim
 /// pointing the way to the waypoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaypointMark {
@@ -900,6 +913,23 @@ const T_HDR: usize = 6;
 /// Each pixel's object plus one (0 none), `IDS`'s format.
 const T_OBJECTS: usize = 7;
 
+/// What a pick read under one pixel.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Picked {
+    /// The object drawn there (its number), `None` for the ground, the sky or a draw with none.
+    pub object: Option<u32>,
+    /// How far from the eye the drawn surface there is, metres; `None` for the sky.
+    pub distance: Option<f32>,
+}
+
+/// A pick's readback buffer, and the pixel's place and the frame's view to read its depth by.
+#[derive(Debug)]
+struct PickCopy {
+    buffer: wgpu::Buffer,
+    ndc: glam::Vec2,
+    view: Option<(Mat4, glam::Vec3)>,
+}
+
 /// Everything the passes need besides the scene.
 #[derive(Debug)]
 pub struct Renderer {
@@ -984,6 +1014,9 @@ pub struct Renderer {
     /// This frame's waterfalls' pieces, and how many.
     fall_buffer: wgpu::Buffer,
     falls_drawn: u32,
+    /// This frame's fountains' jets (with their header), and how many pieces.
+    jet_buffer: wgpu::Buffer,
+    jets_drawn: u32,
     cluster_counts: wgpu::Buffer,
     cluster_lamps: wgpu::Buffer,
     cluster_layout: wgpu::BindGroupLayout,
@@ -1027,6 +1060,8 @@ pub struct Renderer {
     pub webs: crate::webs::Stir,
     /// Whether the water is drawn as water (the physical calibration only).
     pub water_on: bool,
+    /// Whether fountains and basins are drawn as water while the water is ([`crate::fountains`]).
+    pub fountains_on: bool,
     /// The ground cover, when the pack has some, and whether it is drawn.
     pub cover: Option<crate::cover::Cover>,
     /// The land field last given, whose footprints a cover made later takes.
@@ -1120,6 +1155,11 @@ pub struct Renderer {
     /// Translucent surfaces and particles drawn order-independently (weighted, blended) rather
     /// than sorted.
     pub oit: bool,
+    /// Objects numbered from here up are picked on their translucent surfaces too; below, a
+    /// translucent surface leaves the pick to what is behind it. 0 for every object.
+    pub pick_from: u32,
+    /// Writes a translucent surface's object into the objects target.
+    translucent_object_pipeline: wgpu::RenderPipeline,
     /// The particles drawn last frame and their draws.
     pub particles_drawn: usize,
     pub particle_draws: usize,
@@ -1141,12 +1181,20 @@ pub struct Renderer {
     puff_pipeline: wgpu::RenderPipeline,
     /// Glacier ice ([`PipelineKind::Ice`]).
     ice_pipeline: wgpu::RenderPipeline,
+    /// A basin's water ([`PipelineKind::Pool`]) and a fountain's jets, drawn with the ice.
+    pool_pipeline: wgpu::RenderPipeline,
+    jet_pipeline: wgpu::RenderPipeline,
     /// Translucent objects' order-independent pipelines (blended, additive).
     oit_pipelines: [wgpu::RenderPipeline; 2],
     oit_layout: wgpu::BindGroupLayout,
     oit_pipeline: wgpu::RenderPipeline,
-    /// A pick on its way back: the buffer its texel is copied into and whether it is mapped.
-    pick_pending: Option<(wgpu::Buffer, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    /// A pick on its way back: the buffer its texels are copied into and whether it is mapped.
+    pick_pending: Option<(PickCopy, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    /// The last frame's inverse (unjittered) view-projection and eye, to place a picked depth.
+    pick_view: Option<(Mat4, glam::Vec3)>,
+    /// Reads a pick's pixel of the objects and depth targets.
+    pick_layout: wgpu::BindGroupLayout,
+    pick_pipeline: wgpu::ComputePipeline,
 }
 
 fn storage(binding: u32, read_only: bool, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -1652,6 +1700,24 @@ impl Renderer {
             "cull",
             &[&cull_layout, &cull_hiz_layout],
         );
+        let pick_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pick"),
+            entries: &[
+                compute_texture(0, wgpu::TextureSampleType::Uint),
+                compute_texture(1, wgpu::TextureSampleType::Depth),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: S::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pick_pipeline = compute("pick", source::pick(), "pick", &[&pick_layout]);
 
         // The mesh pipelines.
         let mesh_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -1721,7 +1787,8 @@ impl Renderer {
                         PipelineKind::Translucent
                         | PipelineKind::Additive
                         | PipelineKind::Web
-                        | PipelineKind::Ice => {
+                        | PipelineKind::Ice
+                        | PipelineKind::Pool => {
                             unreachable!("forward pipelines are made with the light's layout")
                         }
                     };
@@ -1893,6 +1960,13 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let jet_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame jets"),
+            size: crate::fountains::JET_HEAD
+                + crate::fountains::JET_SIZE * crate::fountains::MAX_FRAME_JETS as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let cluster_capacity = CLUSTER_TILES.0 * CLUSTER_TILES.1;
         let (cluster_counts, cluster_lamps) = cluster_buffers(device, cluster_capacity);
         let cluster_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2052,6 +2126,7 @@ impl Renderer {
                 texture(13, wgpu::TextureSampleType::Float { filterable: true }),
                 texture(14, wgpu::TextureSampleType::Float { filterable: true }),
                 storage(15, true, S::VERTEX_FRAGMENT),
+                storage(16, true, S::VERTEX_FRAGMENT),
             ],
         });
         // The translucent surfaces' and particles' pipelines: lit as the opaque world is, their
@@ -2222,6 +2297,42 @@ impl Renderer {
             forward("bolts", "vs_bolt", "fs_bolt", true, false),
             forward("bolts oit", "vs_bolt", "fs_bolt_oit", true, true),
         ];
+        // Translucent surfaces' objects into the objects target, nearest last, for the pick.
+        let translucent_object_pipeline = job!(
+            jobs,
+            [gpu, forward_layout, forward_module, vertex_layout],
+            gpu.render_pipeline(wgpu::RenderPipelineDescriptor {
+                label: Some("translucent objects"),
+                layout: Some(&forward_layout),
+                vertex: wgpu::VertexState {
+                    module: &forward_module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_layout.clone())],
+                },
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &forward_module,
+                    entry_point: Some("fs_translucent_object"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(IDS.into())],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        );
         // Glacier ice: over the frame it reads behind it, writing its depth.
         let ice_pipeline = job!(
             jobs,
@@ -2263,6 +2374,108 @@ impl Renderer {
                             format: wgpu::TextureFormat::R8Unorm,
                             blend: None,
                             write_mask: wgpu::ColorWrites::empty(),
+                        }),
+                    ],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        );
+        // A basin's water: over the frame it reads behind it, writing its depth.
+        let pool_pipeline = job!(
+            jobs,
+            [gpu, forward_layout, forward_module, vertex_layout],
+            gpu.render_pipeline(wgpu::RenderPipelineDescriptor {
+                label: Some("pool"),
+                layout: Some(&forward_layout),
+                vertex: wgpu::VertexState {
+                    module: &forward_module,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[Some(vertex_layout.clone())],
+                },
+                primitive: wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &forward_module,
+                    entry_point: Some("fs_pool"),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: HDR,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::R8Unorm,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::empty(),
+                        }),
+                    ],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        );
+        // A fountain's jets: strips of water laid over the frame and the basins, not written to
+        // the depth; each marks the pixels it changes for the upscaler.
+        let jet_pipeline = job!(
+            jobs,
+            [gpu, forward_layout, forward_module],
+            gpu.render_pipeline(wgpu::RenderPipelineDescriptor {
+                label: Some("jets"),
+                layout: Some(&forward_layout),
+                vertex: wgpu::VertexState {
+                    module: &forward_module,
+                    entry_point: Some("vs_jet"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &forward_module,
+                    entry_point: Some("fs_jet"),
+                    compilation_options: Default::default(),
+                    targets: &[
+                        Some(wgpu::ColorTargetState {
+                            format: HDR,
+                            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        }),
+                        Some(wgpu::ColorTargetState {
+                            format: wgpu::TextureFormat::R8Unorm,
+                            blend: Some(wgpu::BlendState {
+                                color: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Max,
+                                },
+                                alpha: wgpu::BlendComponent {
+                                    src_factor: wgpu::BlendFactor::One,
+                                    dst_factor: wgpu::BlendFactor::One,
+                                    operation: wgpu::BlendOperation::Max,
+                                },
+                            }),
+                            write_mask: wgpu::ColorWrites::ALL,
                         }),
                     ],
                 }),
@@ -2499,6 +2712,7 @@ impl Renderer {
                 storage(3, true, S::FRAGMENT),
                 texture(4, wgpu::TextureSampleType::Depth),
                 texture(5, wgpu::TextureSampleType::Uint),
+                texture(6, unfilterable),
             ],
         });
         // A full-screen pass of its own module, made on the pool.
@@ -2660,6 +2874,12 @@ impl Renderer {
             ],
             immediate_size: 0,
         });
+        // The cover leaves the objects target alone, so a corpse or an item in the grass is picked
+        // through it, as retail's ray never tests scenery.
+        let mut cover_targets = gbuffer_targets.clone();
+        if let Some(Some(objects)) = cover_targets.last_mut() {
+            objects.write_mask = wgpu::ColorWrites::empty();
+        }
         // The cover's plants from the pool's vertices; the grass under it from nothing.
         let cover_pipeline =
             |label: &'static str,
@@ -2668,7 +2888,7 @@ impl Renderer {
              buffers: Vec<Option<wgpu::VertexBufferLayout<'static>>>| {
                 job!(
                     jobs,
-                    [gpu, cover_layout, cover_module, gbuffer_targets],
+                    [gpu, cover_layout, cover_module, cover_targets],
                     gpu.render_pipeline(wgpu::RenderPipelineDescriptor {
                         label: Some(label),
                         layout: Some(&cover_layout),
@@ -2695,7 +2915,7 @@ impl Renderer {
                             module: &cover_module,
                             entry_point: Some(fs),
                             compilation_options: Default::default(),
-                            targets: &gbuffer_targets,
+                            targets: &cover_targets,
                         }),
                         multiview_mask: None,
                         cache: None,
@@ -3068,6 +3288,8 @@ impl Renderer {
             flames_drawn: 0,
             fall_buffer,
             falls_drawn: 0,
+            jet_buffer,
+            jets_drawn: 0,
             cluster_counts,
             cluster_lamps,
             cluster_layout,
@@ -3093,6 +3315,7 @@ impl Renderer {
             headroom: 1.0,
             water: water.wait(),
             water_on: true,
+            fountains_on: true,
             cover: None,
             land_footprints: None,
             cover_on: true,
@@ -3154,6 +3377,8 @@ impl Renderer {
             waypoint: None,
             bed: None,
             oit: false,
+            pick_from: 0,
+            translucent_object_pipeline: translucent_object_pipeline.wait(),
             particles_drawn: 0,
             particle_draws: 0,
             particle_buffer,
@@ -3164,12 +3389,17 @@ impl Renderer {
             fall_pipelines,
             bolt_pipelines,
             ice_pipeline: ice_pipeline.wait(),
+            pool_pipeline: pool_pipeline.wait(),
+            jet_pipeline: jet_pipeline.wait(),
             blob_pipeline: blob_pipeline.wait(),
             puff_pipeline: puff_pipeline.wait(),
             oit_pipelines,
             oit_layout,
             oit_pipeline: oit_pipeline.wait(),
             pick_pending: None,
+            pick_view: None,
+            pick_layout,
+            pick_pipeline: pick_pipeline.wait(),
         })
     }
 
@@ -3385,6 +3615,7 @@ impl Renderer {
                     entire(3, &self.post.state),
                     view(4, &views[T_DEPTH]),
                     view(5, &views[T_OBJECTS]),
+                    view(6, &views[T_SURFACE]),
                 ],
             });
             let hiz_size = (width.div_ceil(2).max(1), height.div_ceil(2).max(1));
@@ -3572,6 +3803,7 @@ impl Renderer {
                         view(13, &scene_view),
                         view(14, self.trails.view()),
                         entire(15, &self.fall_buffer),
+                        entire(16, &self.jet_buffer),
                     ],
                 })
             });
@@ -3734,6 +3966,12 @@ impl Renderer {
             .unwrap_or_else(|| unreachable!("made above"))
     }
 
+    /// Whether fountains and basins are drawn as water this frame.
+    #[must_use]
+    pub fn fountains_drawn(&self) -> bool {
+        self.calibration == Calibration::Physical && self.water_on && self.fountains_on
+    }
+
     /// Draws one frame of `scene` seen by `camera` in `light` to `output`, `width` by `height`.
     ///
     /// # Errors
@@ -3798,6 +4036,7 @@ impl Renderer {
         let view_proj = crate::temporal::jitter_matrix(jitter) * plain;
         let prev = self.prev_view_proj.unwrap_or(plain);
         self.prev_view_proj = Some(plain);
+        self.pick_view = Some((plain.inverse(), camera.position));
         let reproject = prev * plain.inverse();
 
         self.weather
@@ -3960,6 +4199,14 @@ impl Renderer {
             gpu.queue.write_buffer(&self.flame_buffer, 0, &bytes);
             self.flames_drawn =
                 u32::try_from(bytes.len() as u64 / crate::flames::FLAME_SIZE).unwrap_or(0);
+        }
+        self.jets_drawn = 0;
+        if view.jets.len() as u64 >= crate::fountains::JET_HEAD {
+            gpu.queue.write_buffer(&self.jet_buffer, 0, view.jets);
+            self.jets_drawn = u32::try_from(
+                (view.jets.len() as u64 - crate::fountains::JET_HEAD) / crate::fountains::JET_SIZE,
+            )
+            .unwrap_or(0);
         }
         self.falls_drawn = 0;
         if !view.falls.is_empty() {
@@ -4377,9 +4624,18 @@ impl Renderer {
         self.sorted_draws = sorted.len();
         let blobs = view.particles.map_or((0, 0), |p| p.blobs);
         let puffs = view.particles.map_or((0, 0), |p| p.puffs);
+        let puff_runs: &[crate::particles::PuffRun] = view.particles.map_or(&[], |p| &p.puff_runs);
         let bolts = view.particles.map_or((0, 0), |p| p.bolts);
+        // A basin's water is drawn as water while water is drawn as water.
+        let pools_on = self.fountains_drawn();
+        let pools_drawn = pools_on
+            && sorted
+                .iter()
+                .any(|(_, d, _)| d.pipeline == PipelineKind::Pool);
         let ice_drawn = blobs.1 > 0
-            || puffs.1 > 0
+            || self.oit && puffs.1 > 0
+            || pools_drawn
+            || self.jets_drawn > 0
             || sorted
                 .iter()
                 .any(|(_, d, _)| d.pipeline == PipelineKind::Ice);
@@ -5147,13 +5403,32 @@ impl Renderer {
                         );
                     }
                 }
+                // A basin's water, then the jets falling into it.
+                if pools_drawn {
+                    pass.set_pipeline(&self.pool_pipeline);
+                    for (k, (_, d, _)) in sorted.iter().enumerate() {
+                        if d.pipeline == PipelineKind::Pool {
+                            let entry = sorted_base + u32::try_from(k).unwrap_or(0);
+                            pass.draw_indexed(
+                                d.first_index..d.first_index + d.index_count,
+                                0,
+                                entry..entry + 1,
+                            );
+                        }
+                    }
+                }
+                if self.jets_drawn > 0 {
+                    pass.set_pipeline(&self.jet_pipeline);
+                    pass.draw(0..crate::fountains::JET_VERTICES, 0..self.jets_drawn);
+                }
                 // Liquid: each ball a card the merged surface is found on.
                 if blobs.1 > 0 {
                     pass.set_pipeline(&self.blob_pipeline);
                     pass.draw(0..6, blobs.0..blobs.0 + blobs.1);
                 }
                 // Vapour: each ball a card, each body marched by the first ball the view crosses.
-                if puffs.1 > 0 {
+                // Out of order-independent blending it is sorted among the translucent.
+                if self.oit && puffs.1 > 0 {
                     pass.set_pipeline(&self.puff_pipeline);
                     pass.draw(0..6, puffs.0..puffs.0 + puffs.1);
                 }
@@ -5194,12 +5469,46 @@ impl Renderer {
             );
             draw(&mut pass, false);
             pass.set_bind_group(3, &t.light_group, &[]);
-            // Objects and runs of particles merged far to near (in any order under `oit`).
+            // Objects, runs of particles, vapour and the waterfalls' pieces merged far to near (in
+            // any order under `oit`, the vapour drawn with the ice).
             let mut current: Option<(bool, bool, bool)> = None;
-            let (mut i, mut j) = (0, 0);
-            while i < sorted.len() || j < batches.len() {
-                let object =
-                    j >= batches.len() || (i < sorted.len() && sorted[i].2 >= batches[j].distance);
+            let runs = if oit { &[] } else { puff_runs };
+            let (mut i, mut j, mut r) = (0, 0, 0);
+            let falls_drawn = self.falls_drawn as usize;
+            let mut fall = 0;
+            while i < sorted.len() || j < batches.len() || r < runs.len() {
+                let o = sorted.get(i).map_or(f32::MIN, |s| s.2);
+                let b = batches.get(j).map_or(f32::MIN, |b| b.distance);
+                let v = runs.get(r).map_or(f32::MIN, |v| v.2);
+                let vapour = r < runs.len() && v >= o && v >= b;
+                let object = !vapour
+                    && (j >= batches.len()
+                        || (i < sorted.len() && sorted[i].2 >= batches[j].distance));
+                if !oit {
+                    let next = o.max(b).max(v);
+                    let farther = crate::falls::drawn_before(
+                        &view.fall_distances[..falls_drawn.min(view.fall_distances.len())],
+                        fall,
+                        next,
+                    );
+                    if farther > fall {
+                        pass.set_pipeline(&self.fall_pipelines[0]);
+                        pass.draw(
+                            0..6,
+                            u32::try_from(fall).unwrap_or(0)..u32::try_from(farther).unwrap_or(0),
+                        );
+                        fall = farther;
+                        current = None;
+                    }
+                }
+                if vapour {
+                    let (first, count, _) = runs[r];
+                    r += 1;
+                    pass.set_pipeline(&self.puff_pipeline);
+                    pass.draw(0..6, first..first + count);
+                    current = None;
+                    continue;
+                }
                 let (d, instances) = if object {
                     let entry = sorted_base + u32::try_from(i).unwrap_or(0);
                     i += 1;
@@ -5209,9 +5518,21 @@ impl Renderer {
                     j += 1;
                     (b.draw, b.first..b.first + b.count)
                 };
-                if object && d.pipeline == PipelineKind::Ice {
+                if object
+                    && (d.pipeline == PipelineKind::Ice
+                        || pools_on && d.pipeline == PipelineKind::Pool)
+                {
                     continue;
                 }
+                // Out of the water pass, a basin's water is its picture, seen through.
+                let d = if d.pipeline == PipelineKind::Pool {
+                    crate::scene::Draw {
+                        pipeline: PipelineKind::Translucent,
+                        ..d
+                    }
+                } else {
+                    d
+                };
                 let additive = d.pipeline == PipelineKind::Additive;
                 let web = d.pipeline == PipelineKind::Web;
                 if web && !self.webs.on {
@@ -5237,10 +5558,10 @@ impl Renderer {
                 }
                 pass.draw_indexed(d.first_index..d.first_index + d.index_count, 0, instances);
             }
-            // The waterfalls: their foam, their sheets, their mist.
-            if self.falls_drawn > 0 {
+            // The waterfalls' pieces nearer than all of it.
+            if fall < falls_drawn {
                 pass.set_pipeline(&self.fall_pipelines[usize::from(oit)]);
-                pass.draw(0..6, 0..self.falls_drawn);
+                pass.draw(0..6, u32::try_from(fall).unwrap_or(0)..self.falls_drawn);
             }
             // The flames, added over all of it.
             if self.flames_drawn > 0 {
@@ -5251,6 +5572,44 @@ impl Renderer {
             if bolts.1 > 0 {
                 pass.set_pipeline(&self.bolt_pipelines[usize::from(oit)]);
                 pass.draw(0..6, bolts.0..bolts.0 + bolts.1);
+            }
+        }
+        {
+            // The translucent objects the pick names (far to near, so the nearest is left), as
+            // retail's ray tests a part's polygons whatever their translucency.
+            let mut pass = rec.render(
+                "translucent objects",
+                &[Some(wgpu::RenderPassColorAttachment {
+                    view: &t.views[T_OBJECTS],
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &t.views[T_DEPTH],
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+            );
+            draw(&mut pass, false);
+            pass.set_bind_group(3, &t.light_group, &[]);
+            pass.set_pipeline(&self.translucent_object_pipeline);
+            for (k, (i, d, _)) in sorted.iter().enumerate() {
+                let picked = scene
+                    .instance(*i)
+                    .is_some_and(|inst| inst.object >= self.pick_from);
+                if !picked || d.pipeline == PipelineKind::Web {
+                    continue;
+                }
+                let entry = sorted_base + u32::try_from(k).unwrap_or(0);
+                pass.draw_indexed(
+                    d.first_index..d.first_index + d.index_count,
+                    0,
+                    entry..entry + 1,
+                );
             }
         }
         {
@@ -5490,9 +5849,9 @@ impl Renderer {
         (counts, lists)
     }
 
-    /// The texel of the objects target under output pixel `at`, copied into a fresh readback
-    /// buffer by a submission of its own.
-    fn copy_pick(&self, gpu: &Gpu, at: (u32, u32)) -> Option<wgpu::Buffer> {
+    /// The object and depth under output pixel `at`, read into a fresh readback buffer by a
+    /// submission of its own, and the eye ray's place there.
+    fn copy_pick(&self, gpu: &Gpu, at: (u32, u32)) -> Option<PickCopy> {
         let t = self.targets.as_ref()?;
         let (ow, oh) = (self.output_size.0.max(1), self.output_size.1.max(1));
         let map = |v: u32, out: u32, size: u32| {
@@ -5501,57 +5860,104 @@ impl Renderer {
                 .min(size.saturating_sub(1))
         };
         let (x, y) = (map(at.0, ow, t.width), map(at.1, oh, t.height));
+        let words = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pick words"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let at_bytes: Vec<u8> = [x, y, 0, 0].iter().flat_map(|w| w.to_le_bytes()).collect();
+        gpu.queue.write_buffer(&words, 0, &at_bytes);
+        let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("pick"),
+            layout: &self.pick_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&t.views[T_OBJECTS]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&t.views[T_DEPTH]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: words.as_entire_binding(),
+                },
+            ],
+        });
         let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("pick"),
-            size: 256,
+            size: 16,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let mut enc = gpu.device.create_command_encoder(&Default::default());
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &t.textures[T_OBJECTS],
-                mip_level: 0,
-                origin: wgpu::Origin3d { x, y, z: 0 },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(256),
-                    rows_per_image: Some(1),
-                },
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("pick"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pick_pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        enc.copy_buffer_to_buffer(&words, 0, &buffer, 0, 16);
         gpu.queue.submit([enc.finish()]);
-        Some(buffer)
+        #[allow(clippy::cast_precision_loss)] // target sizes are a few thousand
+        let ndc = glam::Vec2::new(
+            (x as f32 + 0.5) / t.width as f32 * 2.0 - 1.0,
+            1.0 - (y as f32 + 0.5) / t.height as f32 * 2.0,
+        );
+        Some(PickCopy {
+            buffer,
+            ndc,
+            view: self.pick_view,
+        })
     }
 
-    /// The object number in a mapped pick buffer, `None` for no object.
-    fn read_pick(buffer: &wgpu::Buffer) -> Option<u32> {
-        let slice = buffer.slice(..);
-        let word = slice
-            .get_mapped_range()
-            .ok()
-            .map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
-        buffer.unmap();
-        word.and_then(|w| w.checked_sub(1))
+    /// The object number and the drawn surface's distance in a mapped pick buffer.
+    fn read_pick(copy: &PickCopy) -> Picked {
+        let slice = copy.buffer.slice(..);
+        let words = slice.get_mapped_range().ok().map(|v| {
+            (
+                u32::from_le_bytes([v[8], v[9], v[10], v[11]]),
+                f32::from_le_bytes([v[12], v[13], v[14], v[15]]),
+            )
+        });
+        copy.buffer.unmap();
+        let Some((word, depth)) = words else {
+            return Picked::default();
+        };
+        // Reverse Z: zero is the sky, as far as anything goes.
+        let distance = copy.view.filter(|_| depth > 0.0).map(|(inverse, eye)| {
+            let p = inverse * glam::Vec4::new(copy.ndc.x, copy.ndc.y, depth, 1.0);
+            (p.truncate() / p.w).distance(eye)
+        });
+        Picked {
+            object: word.checked_sub(1),
+            distance,
+        }
     }
 
     /// The object (its number) under output pixel `at` last frame, `None` for the ground, the sky
     /// or a draw with no object. Reads one texel back (blocking).
     #[must_use]
     pub fn pick(&self, gpu: &Gpu, at: (u32, u32)) -> Option<u32> {
-        let buffer = self.copy_pick(gpu, at)?;
-        buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        self.pick_texel(gpu, at).object
+    }
+
+    /// The object and the drawn surface's distance under output pixel `at` last frame (blocking).
+    #[must_use]
+    pub fn pick_texel(&self, gpu: &Gpu, at: (u32, u32)) -> Picked {
+        let Some(copy) = self.copy_pick(gpu, at) else {
+            return Picked::default();
+        };
+        copy.buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
         gpu.wait();
-        Self::read_pick(&buffer)
+        Self::read_pick(&copy)
     }
 
     /// Whether a pick asked for is still on its way back.
@@ -5564,23 +5970,24 @@ impl Renderer {
     /// [`Self::take_pick`] answers once the texel is back (a frame or so later). A request
     /// replaces one still on its way, which is then never answered ([`Self::pick_in_flight`]).
     pub fn request_pick(&mut self, gpu: &Gpu, at: (u32, u32)) {
-        let Some(buffer) = self.copy_pick(gpu, at) else {
+        let Some(copy) = self.copy_pick(gpu, at) else {
             return;
         };
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = std::sync::Arc::clone(&ready);
-        buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-            if r.is_ok() {
-                flag.store(true, std::sync::atomic::Ordering::Release);
-            }
-        });
-        self.pick_pending = Some((buffer, ready));
+        copy.buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |r| {
+                if r.is_ok() {
+                    flag.store(true, std::sync::atomic::Ordering::Release);
+                }
+            });
+        self.pick_pending = Some((copy, ready));
     }
 
-    /// The answer to the last [`Self::request_pick`] once it is back: `Some(object)`, the inner
-    /// `None` for no object. `None` while it is on its way or none was asked for.
-    #[allow(clippy::option_option)]
-    pub fn take_pick(&mut self, gpu: &Gpu) -> Option<Option<u32>> {
+    /// The answer to the last [`Self::request_pick`] once it is back. `None` while it is on its
+    /// way or none was asked for.
+    pub fn take_pick(&mut self, gpu: &Gpu) -> Option<Picked> {
         let ready = self.pick_pending.as_ref()?.1.clone();
         if !ready.load(std::sync::atomic::Ordering::Acquire) {
             let _ = gpu.device.poll(wgpu::PollType::Poll);
@@ -5588,8 +5995,8 @@ impl Renderer {
         if !ready.load(std::sync::atomic::Ordering::Acquire) {
             return None;
         }
-        let (buffer, _) = self.pick_pending.take()?;
-        Some(Self::read_pick(&buffer))
+        let (copy, _) = self.pick_pending.take()?;
+        Some(Self::read_pick(&copy))
     }
 
     /// The world's last picture, tone mapped and without the interface, at the drawn size.
@@ -5615,6 +6022,14 @@ impl Renderer {
     #[must_use]
     pub fn motion_texture(&self) -> Option<&wgpu::Texture> {
         self.targets.as_ref().and_then(|t| t.textures.get(T_MOTION))
+    }
+
+    /// Each pixel's object plus one (`u32`, 0 none), for a test that checks what was drawn.
+    #[must_use]
+    pub fn objects_texture(&self) -> Option<&wgpu::Texture> {
+        self.targets
+            .as_ref()
+            .and_then(|t| t.textures.get(T_OBJECTS))
     }
 
     /// Each pixel's normal (two halves: octahedral x and y), for a test that checks how a

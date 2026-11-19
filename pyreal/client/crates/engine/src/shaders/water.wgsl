@@ -163,11 +163,12 @@ fn is_bed(ip: vec2<i32>, q: vec3<f32>) -> bool {
 }
 
 // How far under its bed the water may lie and still be the water over it: a trough's depth.
+// Over it as far, as water lying down a sloped bed is seen from below.
 const BED_OVER: f32 = 2.0;
 
 // Whether the world drawn before the water hides its fragment `clip`, at `at`: anything nearer,
 // but for the bed the water lies on (retail draws its water cells as ground at the level); not a
-// pool's bed over lower water behind it.
+// pool's bed over lower water behind it, nor a fall's face under the pool above it.
 fn water_hidden(clip: vec4<f32>, at: vec3<f32>) -> bool {
     let ip = vec2<i32>(clip.xy);
     let d = textureLoad(g_depth, ip, 0);
@@ -175,7 +176,7 @@ fn water_hidden(clip: vec4<f32>, at: vec3<f32>) -> bool {
         return false;
     }
     let q = water_unproject(clip.xy, d);
-    return !is_bed(ip, q) || at.z < q.z - BED_OVER;
+    return !is_bed(ip, q) || abs(at.z - q.z) > BED_OVER;
 }
 
 // The water's depth and motion: where it is drawn and not hidden by the world.
@@ -212,6 +213,11 @@ fn drifting_noise(p: vec2<f32>, cell: f32, drift: vec4<f32>) -> f32 {
     let s = f * f * (3.0 - 2.0 * f);
     return mix(mix(land_hash(i), land_hash(i + vec2<i32>(1, 0)), s.x),
                mix(land_hash(i + vec2<i32>(0, 1)), land_hash(i + vec2<i32>(1, 1)), s.x), s.y);
+}
+
+// `d`, a drift on a lattice, counted in the cells of one `2^n` times as fine.
+fn finer_drift(d: vec4<f32>, n: u32) -> vec4<f32> {
+    return vec4<f32>(d.xy, bitcast<vec2<f32>>(bitcast<vec2<i32>>(d.zw) << vec2<u32>(n)));
 }
 
 // How much of a pattern repeating every `repeat` metres a pixel covering `foot` metres holds.
@@ -867,10 +873,132 @@ fn fs_far_water(in: FsIn) -> WaterFrag {
     return out;
 }
 
+// The roughest the glint's lobe reads, so its path stays narrow out to the horizon.
+const GLINT_ROUGH: f32 = 0.3;
+// Where the glint rolls off, in multiples of white: far past it, a pixel of it bloomed over the dark
+// round it (a tree before the moon's path at night) and left the upscaler a grid of it.
+const GLINT_MOST: f32 = 4.0;
+// The glitter's finest cell, metres.
+const GLITTER_CELL: f32 = 0.5;
+const GLITTER_NEAR: f32 = 80.0;
+const GLITTER_FAR: f32 = 400.0;
+// Where the fine glitter gives way to streaks, metres.
+const STREAKS_NEAR: f32 = 500.0;
+const STREAKS_FAR: f32 = 1200.0;
+// How wide the glint's path is taken to be on the still sea, as a roughness.
+const PATH_ROUGH: f32 = 0.5;
+// The streaks' threshold and gain: sparser than the fine glitter, a little under the glint
+// on the whole.
+const STREAKS_LOW: f32 = 0.55;
+const STREAKS_HIGH: f32 = 0.85;
+const STREAKS_GAIN: f32 = 3.75;
+const GLITTER_LOW: f32 = 0.5;
+const GLITTER_HIGH: f32 = 0.8;
+// One over the glitter's mean between GLITTER_LOW and GLITTER_HIGH, so it moves no light about.
+const GLITTER_GAIN: f32 = 4.2;
+// How often each glitter cell's corner turns to a new facet, a second; a whole number of
+// turns in the clock's ten minutes.
+const GLITTER_RATE: f32 = 1.5;
+const GLITTER_TURNS: i32 = 900;
+
+// How much of the glint a pixel `across` by `along` metres, `dist` off, shows: near, all of it;
+// further, the facets it cannot hold glittering in cells a couple of pixels wide, evened out as
+// more of them fall down the pixel; far off, and all along the glint's path (`path` 1 in it, 0 on
+// the broad sheen round it), streaks across the view a couple of pixels deep.
+fn glitter(p: vec2<f32>, across: f32, along: f32, dist: f32, path: f32) -> f32 {
+    let far = smoothstep(GLITTER_NEAR, GLITTER_FAR, dist);
+    if (far <= 0.0) {
+        return 1.0;
+    }
+    let streaks = max(smoothstep(STREAKS_NEAR, STREAKS_FAR, dist), smoothstep(0.3, 0.8, path));
+    var g = 0.0;
+    if (streaks < 1.0) {
+        let fine = glitter_cells(p, across * 2.0);
+        let s = smoothstep(GLITTER_LOW, GLITTER_HIGH, fine.x) * GLITTER_GAIN;
+        g += mix(1.0, s, sqrt(min(fine.y / max(along, 1e-3), 1.0))) * (1.0 - streaks);
+    }
+    if (streaks > 0.0) {
+        let s = smoothstep(STREAKS_LOW, STREAKS_HIGH, glitter_cells(p, along * 2.0).x) * STREAKS_GAIN;
+        g += mix(1.0, s, path) * streaks;
+    }
+    return mix(1.0, g, far);
+}
+
+// The glitter over cells about `size` metres (two octaves blended, so they keep their place as the
+// eye moves): x the noise, y the cells' size.
+fn glitter_cells(p: vec2<f32>, size: f32) -> vec2<f32> {
+    let level = log2(max(size / GLITTER_CELL, 1.0));
+    let cell = GLITTER_CELL * exp2(floor(level));
+    let s = mix(twinkling_noise(p, cell), twinkling_noise(p + vec2<f32>(17.3, 5.1), cell * 2.0), fract(level));
+    return vec2<f32>(s, cell * exp2(fract(level)));
+}
+
+// Value noise over a lattice `cell` metres wide, laid on the world, each corner fading to a new
+// value GLITTER_RATE times a second at a moment of its own, so it twinkles and never jumps.
+fn twinkling_noise(p: vec2<f32>, cell: f32) -> f32 {
+    let o = origin_cells(cell);
+    let q = p / cell + o.zw;
+    let i = vec2<i32>(floor(q)) + vec2<i32>(o.xy);
+    let f = q - floor(q);
+    let s = f * f * (3.0 - 2.0 * f);
+    let t = waves.surf.y * GLITTER_RATE;
+    return mix(mix(twinkle(i, t), twinkle(i + vec2<i32>(1, 0), t), s.x),
+               mix(twinkle(i + vec2<i32>(0, 1), t), twinkle(i + vec2<i32>(1, 1), t), s.x), s.y);
+}
+
+fn twinkle(i: vec2<i32>, t: f32) -> f32 {
+    let at = t + land_hash(i + vec2<i32>(311, 727));
+    let k = i32(floor(at)) % GLITTER_TURNS;
+    let next = (k + 1) % GLITTER_TURNS;
+    let a = land_hash(i + vec2<i32>(k * 4099, k * 6151));
+    let b = land_hash(i + vec2<i32>(next * 4099, next * 6151));
+    let f = fract(at);
+    return mix(a, b, f * f * (3.0 - 2.0 * f));
+}
+
+// How far inside the near square's edge the near water takes on the far field's there, metres.
+const LOOK_BLEND: f32 = 300.0;
+
+// The water `w` at `p` and its look: near the near square's edge, going over to the far field's
+// there, where a body the square cuts off may have been given another look than the whole one, and
+// its distance in from the shore measured short.
+struct EdgeWater {
+    w: WaterHere,
+    look: WaterLook,
+}
+
+fn at_edge(p: vec2<f32>, w: WaterHere, foot: f32, far: bool) -> EdgeWater {
+    let last = arrayLength(&looks) - 1u;
+    var out = EdgeWater(w, looks[min(w.look, last)]);
+    if (far || far_rings.water_side == 0u) {
+        return out;
+    }
+    let inset = min(min(p.x - far_rings.near_min.x, far_rings.near_max.x - p.x),
+                    min(p.y - far_rings.near_min.y, far_rings.near_max.y - p.y));
+    let t = 1.0 - smoothstep(0.0, LOOK_BLEND, inset);
+    if (t <= 0.0) {
+        return out;
+    }
+    let o = far_water_here(p, foot);
+    if (o.inside <= 0.0) {
+        return out;
+    }
+    out.w.inside = mix(w.inside, o.inside, t);
+    if (o.look != w.look) {
+        let k = looks[min(o.look, last)];
+        out.look.absorb = mix(out.look.absorb, k.absorb, t);
+        out.look.scatter = mix(out.look.scatter, k.scatter, t);
+        out.look.motion = mix(out.look.motion, k.motion, t);
+        out.look.surface = mix(out.look.surface, k.surface, t);
+        out.look.open = mix(out.look.open, k.open, t);
+    }
+    return out;
+}
+
 // The water's colour at `p` on its surface under pixel `px` (`w` the water there, `edge` metres
 // inside its swashing edge, `running` how much the swash runs up; `far`: on the far rings), seen
 // through the air, before it is laid over what lies under it.
-fn water_colour(px: vec2<f32>, p: vec3<f32>, w: WaterHere, edge: f32, running: f32,
+fn water_colour(px: vec2<f32>, p: vec3<f32>, here: WaterHere, edge: f32, running: f32,
                 far: bool) -> vec3<f32> {
     let ip = vec2<i32>(px);
     let eye = frame.camera.xyz;
@@ -886,7 +1014,9 @@ fn water_colour(px: vec2<f32>, p: vec3<f32>, w: WaterHere, edge: f32, running: f
         scene_world = water_unproject(px, d);
         has_scene = true;
     }
-    let look = looks[min(w.look, arrayLength(&looks) - 1u)];
+    let at = at_edge(p.xy, here, foot, far);
+    let w = at.w;
+    let look = at.look;
     // The surface's bend: waves, ripples and the simulation near the eye.
     let wave = wave_field(p.xy, look, w, Seen(false, foot_of(dir, foot)), far);
     let rip = ripple_at(p.xy);
@@ -909,7 +1039,8 @@ fn water_colour(px: vec2<f32>, p: vec3<f32>, w: WaterHere, edge: f32, running: f
     // What lies under it: the bed read a made-up depth down, or anything standing in the water at
     // its own depth.
     let bits = u32(textureLoad(g_material, ip, 0).a * 255.0 + 0.5);
-    let terrain = (bits & G_TERRAIN) != 0u && textureLoad(g_ids, ip, 0).r == frame.lists.z;
+    let id = textureLoad(g_ids, ip, 0).r;
+    let terrain = (bits & G_TERRAIN) != 0u && (id == frame.lists.z || (far && id == far_rings.material));
     let bed = bed_depth(max(edge, 0.0) * bank_scale(look, w), look.absorb.w, look.scatter.w);
     var below = max(p.z - scene_world.z, 0.0);
     if (terrain || !has_scene) {
@@ -982,15 +1113,22 @@ fn water_colour(px: vec2<f32>, p: vec3<f32>, w: WaterHere, edge: f32, running: f
     let mirror = mirrored;
     var c = mix(refracted, mirror, fresnel);
 
-    // The sun's glint, its lobe no wider than at half rough, so its path runs to the horizon.
+    // The sun's glint (the moon's by night): a narrow path running to the horizon, broken far off
+    // into the glitter of the facets the pixel cannot hold.
     let ndl = dot(n, frame.sun_dir.xyz);
     if (ndl > 0.0) {
         var sun = frame.sun_light.rgb;
         if (!has(F_PHYSICAL)) {
             sun = pow(frame.sun.rgb, vec3<f32>(2.2));
         }
-        let lobe = ggx(n, v, frame.sun_dir.xyz, min(rough, 0.5), vec3<f32>(0.02));
-        water_glint = lobe * ndl * sun * sun_vis * pre;
+        let lobe = ggx(n, v, frame.sun_dir.xyz, min(rough, GLINT_ROUGH), vec3<f32>(0.02));
+        let h = normalize(v + frame.sun_dir.xyz);
+        let a2 = PATH_ROUGH * PATH_ROUGH * PATH_ROUGH * PATH_ROUGH;
+        let peak = a2 / (h.z * h.z * (a2 - 1.0) + 1.0);
+        let path = smoothstep(0.05, 0.5, peak * peak);
+        water_glint = lobe * ndl * sun * sun_vis * pre
+            * glitter(p.xy, foot, foot * foot_of(dir, foot).stretch, dist, path);
+        water_glint /= 1.0 + luma(water_glint) / GLINT_MOST;
         c += water_glint;
     }
 
@@ -1010,7 +1148,8 @@ fn water_colour(px: vec2<f32>, p: vec3<f32>, w: WaterHere, edge: f32, running: f
         let lace = foam_texture(p.xy, foot);
         foam = foam_cover(lace, q_foam) * smoothstep(0.0, 0.2, edge);
         let fd = waves.drift[3];
-        let fleck = drifting_noise(p.xy, 0.09, fd) * 0.55 + drifting_noise(p.xy + vec2<f32>(5.3, 1.7), 0.23, fd) * 0.45;
+        let fleck = drifting_noise(p.xy, 0.125, finer_drift(fd, 2u)) * 0.55
+            + drifting_noise(p.xy + vec2<f32>(5.3, 1.7), 0.25, finer_drift(fd, 1u)) * 0.45;
         foam = max(foam, foam_cover(lace, wade) * mix(0.4, 1.0, smoothstep(0.4, 0.7, fleck)));
     }
     foam = max(foam, breaking_cover(p.xy, wave.breaking, look) * smoothstep(0.0, 0.2, edge));

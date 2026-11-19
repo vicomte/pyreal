@@ -3,7 +3,8 @@
 // down until it lands, then down the slope to the pool, each row a quad between two lips. Its water streams down it in ropes
 // of noise moving at the water's own speed, glassy and clear at the lip, whitening as it falls,
 // thinning into torn streaks at its sides and breaking up where it lands. Foam spreads over the
-// pool from where it lands, and soft puffs of mist roll up from there, each swelling and fading
+// pool from where it lands, a low bank of mist billows along its foot, and soft puffs of mist roll
+// up from there, each swelling and fading
 // over a few seconds. All of it is lit as the translucent world is.
 
 struct Fall {
@@ -19,7 +20,9 @@ struct Fall {
     times: vec4<f32>,
     // The run's length, a card's half width (foam: its reach; mist: its radius), and a seed.
     more: vec4<f32>,
-    // x its kind (0 foam, 1 sheet, 2 mist); y 1 in a room, 2 a sheet starting under the pool above
+    // Bank: a and b its ends out from where the water lands (w how far along the run), c and d
+    // which way that water runs and (z) how tall it stands there.
+    // x its kind (0 foam, 1 sheet, 2 mist, 3 bank); y 1 in a room, 2 a sheet starting under the pool above
     // the lip; z the wrapped clock and w how strongly
     // the sun makes a bow in the spray (f32 bits).
     kind: vec4<u32>,
@@ -43,6 +46,10 @@ const FALL_ROPES: vec2<f32> = vec2<f32>(0.45, 1.6);
 // Foam: how strong at its heart, and how fast it spreads, metres a second.
 const FALL_FOAM_STRENGTH: f32 = 0.85;
 const FALL_FOAM_SPREAD: f32 = 1.3;
+// How far it reaches back behind where the water lands, a share of its reach.
+const FALL_FOAM_BACK: f32 = 0.3;
+// Over how deep it fades into the rock and ground it runs into, metres.
+const FALL_FOAM_SOFT: f32 = 1.2;
 // How far over the water's level it lies, metres, over the waves.
 const FALL_FOAM_LIFT: f32 = 0.3;
 // Mist: a puff's life, seconds; how much it hides at its heart; how far it rises and swells.
@@ -50,6 +57,12 @@ const FALL_MIST_LIFE: f32 = 5.0;
 const FALL_MIST_OPACITY: f32 = 0.5;
 const FALL_MIST_RISE: f32 = 0.9;
 const FALL_MIST_ALBEDO: vec3<f32> = vec3<f32>(0.92, 0.95, 0.97);
+// The bank of mist along a fall's foot: how much it hides at its heart, and over how deep it
+// fades into the pool and the ground it lies on.
+const FALL_BANK_OPACITY: f32 = 0.8;
+const FALL_BANK_SOFT: f32 = 1.5;
+// Over how deep a sheet's foot fades into what it falls into.
+const FALL_FOOT_SOFT: f32 = 1.5;
 // The spray's rainbow: the angles from the point opposite the sun its violet and red edges lie
 // at, degrees, and how bright it is beside the sunlit mist.
 const FALL_BOW_ANGLES: vec2<f32> = vec2<f32>(39.8, 43.0);
@@ -65,8 +78,6 @@ struct FallOut {
     @location(2) share: f32,
     @location(3) normal: vec3<f32>,
     @location(4) @interpolate(flat) index: u32,
-    // Mist: its light, worked out once for the puff.
-    @location(5) @interpolate(flat) light: vec3<f32>,
 }
 
 fn fall_hash(c: vec2<i32>) -> f32 {
@@ -117,7 +128,6 @@ fn vs_fall(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> F
     var out: FallOut;
     out.index = i;
     out.share = 0.0;
-    out.light = vec3<f32>(0.0);
     var world: vec3<f32>;
     if (f.kind.x == 1u) {
         world = mix(mix(f.a.xyz, f.b.xyz, c.x), mix(f.c.xyz, f.d.xyz, c.x), c.y);
@@ -125,13 +135,30 @@ fn vs_fall(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> F
         out.at = vec2<f32>(mix(f.a.w, f.b.w, c.x), mix(mix(f.times.x, f.times.y, c.x), mix(f.c.w, f.d.w, c.x), c.y));
         out.share = mix(f.times.z, f.times.w, c.y);
     } else if (f.kind.x == 0u) {
-        // Foam: over the pool each side of where the water lands, a little over the water.
+        // Foam: over the pool out from where the water lands, a little over the water.
         let s = c.x;
-        let out_from = (c.y * 2.0 - 1.0) * f.more.y;
+        let out_from = mix(-FALL_FOAM_BACK, 1.0, c.y) * f.more.y;
         let dir = normalize(mix(f.c.xy, f.d.xy, s));
         world = mix(f.a.xyz, f.b.xyz, s) + vec3<f32>(dir * out_from, FALL_FOAM_LIFT);
         out.normal = vec3<f32>(0.0, 0.0, 1.0);
         out.at = vec2<f32>(mix(f.a.w, f.b.w, s), out_from);
+    } else if (f.kind.x == 3u) {
+        // Bank: a strip along where the water lands, turned to face the eye, its
+        // foot on the pool out in front of where the water meets it, so from in front its thick
+        // part hides that line and its own foot fades into the water just behind it.
+        let foot = mix(f.a.xyz, f.b.xyz, c.x);
+        let height = mix(f.c.z, f.d.z, c.x);
+        let to_eye = normalize(frame.camera.xyz - foot);
+        // Upright as the eye sees it, set by its place alone, so a run's strips meet at a bend.
+        var up = vec3<f32>(0.0, 0.0, 1.0) - to_eye * to_eye.z;
+        if (dot(up, up) < 1e-4) {
+            up = vec3<f32>(f.c.xy + f.d.xy, 0.0) + vec3<f32>(1e-4, 0.0, 0.0);
+        }
+        up = normalize(up);
+        let q = c.y * 2.0 - 1.0;
+        world = foot + up * (q + 1.0) * height;
+        out.normal = to_eye;
+        out.at = vec2<f32>(mix(f.a.w, f.b.w, c.x), q);
     } else {
         // Mist: a card turned to the eye, rising and swelling over its life, out from the fall.
         let life = fract(fall_clock(f) / FALL_MIST_LIFE + f.more.z * 0.618);
@@ -145,10 +172,6 @@ fn vs_fall(@builtin(vertex_index) vi: u32, @builtin(instance_index) i: u32) -> F
         out.normal = to_eye;
         out.at = q;
         out.share = sin(3.14159 * life);
-        // Lit through, as a cloud is: the sun, the sky, never a mirror.
-        let bits = select(G_FOLIAGE | G_NO_MIRROR, G_FOLIAGE | G_NO_MIRROR | G_INDOOR, (f.kind.y & 1u) != 0u);
-        out.light = shade_lit(FALL_MIST_ALBEDO, to_eye, to_eye, 1.0, 0.0, 0.0, bits, 1.0, 1.0,
-                              vec3<f32>(0.0), vec4<f32>(0.0));
     }
     out.world = world;
     out.clip = frame.view_proj * vec4<f32>(world, 1.0);
@@ -190,7 +213,7 @@ fn sheet_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool) -> 
     if ((f.kind.y & 2u) == 0u) {
         a *= smoothstep(0.0, 0.03, in.share);
     }
-    a = clamp(a, 0.0, 1.0) * fall_soft(in, FALL_SOFT);
+    a = clamp(a, 0.0, 1.0) * fall_soft(in, mix(FALL_SOFT, FALL_FOOT_SOFT, smoothstep(0.7, 1.0, in.share)));
     if (a <= 0.003) {
         discard;
     }
@@ -224,6 +247,12 @@ fn foam_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool) -> v
     let edge = min(in.at.x, f.more.x - in.at.x);
     var a = smoothstep(0.5, 0.8, churn * 0.7 + bubbles * 0.3 + heart * 0.3) * heart * FALL_FOAM_STRENGTH;
     a *= smoothstep(-1.0, FALL_FRAY, edge + (churn - 0.5) * FALL_FRAY);
+    // Seen edge on from the water's level it would be a bright line; the bank stands there.
+    a *= smoothstep(0.03, 0.2, abs(dir.z));
+    // Gone just behind where the water lands, under its sheet.
+    a *= smoothstep(-FALL_FOAM_BACK * reach, 0.0, in.at.y + (churn - 0.5) * 0.5);
+    // Fading into the rock and the bank it runs into, never cut off by them.
+    a *= fall_soft(in, FALL_FOAM_SOFT);
     if (a <= 0.003) {
         discard;
     }
@@ -233,6 +262,53 @@ fn foam_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool) -> v
         lit += sky_colour(reflect(dir, vec3<f32>(0.0, 0.0, 1.0))) * 0.08;
     }
     return vec4<f32>(through_air(lit, in.world, dir, indoor), a);
+}
+
+// Mist's light at a point, lit through as a cloud is: the sun past what shades it, whichever way
+// the eye looks, the lamps, the bounce and the sky, never a mirror.
+fn mist_light(world: vec3<f32>, v: vec3<f32>, bits: u32, px: vec2<f32>) -> vec3<f32> {
+    let b = bits | G_FOLIAGE | G_NO_MIRROR;
+    let depth = view_depth_at(world);
+    var sun_vis = 1.0;
+    if (has(F_SHADOWS) && (b & G_INDOOR) == 0u) {
+        sun_vis = sun_shadow(world, frame.sun_dir.xyz, depth, px);
+    }
+    var lamp = LampLight(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    if (has(F_LAMPS)) {
+        lamp = lamp_light(world, v, v, 1.0, vec3<f32>(0.04), b, depth, px, false);
+    }
+    var bounce = vec4<f32>(0.0);
+    if (has(F_GI)) {
+        bounce = probe_light(world, v);
+    }
+    return shade_lit(FALL_MIST_ALBEDO, v, v, 1.0, 0.0, 0.0, b, sun_vis, 1.0, lamp.diffuse, bounce);
+}
+
+// The bank: billows rolling slowly out of the water at the fall's foot, thickest low down and
+// thinning upward into nothing, frayed at the run's ends.
+fn bank_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool) -> vec4<f32> {
+    let clock = fall_clock(f);
+    let seed = f.more.z;
+    let q = in.at.y;
+    let p = vec2<f32>(in.at.x * 0.2 + seed, q * 0.9 - clock * 0.12);
+    let billow = fall_fbm(p + vec2<f32>(clock * 0.04, 0.0));
+    let fine = fall_fbm(p * 2.7 + vec2<f32>(5.0 - clock * 0.09, 3.0));
+    let top = 1.0 - smoothstep(-0.6, 0.9, q + (billow - 0.5) * 0.9);
+    var a = smoothstep(-1.0, -0.7, q + (billow - 0.5) * 0.5) * top
+        * smoothstep(0.2, 0.7, billow * 0.65 + fine * 0.35 + 0.1) * FALL_BANK_OPACITY;
+    let edge = min(in.at.x, f.more.x - in.at.x) + (billow - 0.5) * FALL_FRAY;
+    a *= smoothstep(0.0, FALL_FRAY, edge);
+    let near = distance(frame.camera.xyz, in.world);
+    a *= smoothstep(0.6, 1.6, near / max(f.c.z, 1.0));
+    a *= fall_soft(in, FALL_BANK_SOFT);
+    if (a <= 0.003) {
+        discard;
+    }
+    var light = mist_light(in.world, -dir, bits, in.clip.xy);
+    if (!indoor) {
+        light += fall_bow(dir, frame.sun_dir.xyz, bitcast<f32>(f.kind.w)) * frame.sun_light.rgb * FALL_BOW_GAIN;
+    }
+    return vec4<f32>(through_air(light, in.world, dir, indoor), a);
 }
 
 fn mist_puff_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool) -> vec4<f32> {
@@ -253,7 +329,7 @@ fn mist_puff_seen(in: FallOut, f: Fall, dir: vec3<f32>, bits: u32, indoor: bool)
         discard;
     }
     // Sunlight bent through the drops: a faint bow where the spray lies at its angle.
-    var light = in.light;
+    var light = mist_light(in.world, -dir, bits, in.clip.xy);
     if (!indoor) {
         light += fall_bow(dir, frame.sun_dir.xyz, bitcast<f32>(f.kind.w)) * frame.sun_light.rgb * FALL_BOW_GAIN;
     }
@@ -270,6 +346,9 @@ fn fall_seen(in: FallOut) -> vec4<f32> {
     }
     if (f.kind.x == 0u) {
         return foam_seen(in, f, dir, bits, indoor);
+    }
+    if (f.kind.x == 3u) {
+        return bank_seen(in, f, dir, bits, indoor);
     }
     return mist_puff_seen(in, f, dir, bits, indoor);
 }

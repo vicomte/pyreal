@@ -9,7 +9,8 @@
 //! | Height | height map | none: no parallax |
 //! | Roughness, metal | maps | one value per surface, from its kind, or a plain default |
 //! | Occlusion | map | none |
-//! | Emissive | map | the dat's luminous flag and colour |
+//! | Metal | map: where a metal is | the whole surface, by its kind |
+//! | Emissive | none | the dat's luminous flag and colour |
 
 use std::collections::HashMap;
 
@@ -36,7 +37,8 @@ pub mod flags {
     pub const HAS_HEIGHT: u32 = 1 << 10;
     pub const HAS_ROUGH_METAL: u32 = 1 << 11;
     pub const HAS_OCCLUSION: u32 = 1 << 12;
-    pub const HAS_EMISSIVE: u32 = 1 << 13;
+    /// A metal map: the surface is a metal only where it says, in red.
+    pub const HAS_METAL: u32 = 1 << 13;
     /// The roughness, occlusion and height maps are one packed surface picture.
     pub const PACKED_SURFACE: u32 = 1 << 14;
     /// A level of pictures from round a model (an impostor): the base colour and normal pictures
@@ -53,6 +55,9 @@ pub mod flags {
     pub const SMOKE: u32 = 1 << 19;
     /// Ice in its picture's own colour, a creature's body ([`ICE`] with it).
     pub const TINTED_ICE: u32 = 1 << 20;
+    /// A basin's water ([`super::is_pool`]): drawn as water over what lies under it while water
+    /// is drawn as water ([`crate::fountains`]), else as its picture.
+    pub const POOL: u32 = 1 << 21;
 }
 
 /// How much darker a surface under a film of water is drawn, and the film's roughness.
@@ -139,6 +144,19 @@ impl SurfaceKind {
     }
 }
 
+/// Retail's water in a fountain's, a basin's or a tub's bowl (`fountain_survey --water`): about
+/// 3,500 placed fountains, basins, troughs, wells and tubs, and no room; and a horned fountain's.
+pub const POOL_PICTURES: [u32; 2] = [0x0500_01B6, 0x0500_2921];
+
+/// Whether a surface is a basin's or a tub's water: retail's water picture, seen through or not.
+#[must_use]
+pub fn is_pool(surface: &Surface) -> bool {
+    surface.surface_type & (st::BASE1_IMAGE | st::BASE1_CLIPMAP) != 0
+        && surface
+            .orig_texture_id
+            .is_some_and(|t| POOL_PICTURES.contains(&t.0))
+}
+
 /// Retail's pictures of molten rock beside the volcano ground: the dungeons' lava cells, and the
 /// smaller picture the 1999 and 2005 files lay there (`docs/ERAS.md`).
 const MOLTEN_PICTURES: [u32; 2] = [0x0500_2A45, 0x0500_1824];
@@ -219,6 +237,9 @@ pub enum TextureKey {
     /// A dat ground picture in terrain type `terrain_type`'s Classic tint
     /// ([`crate::ground_tint`]).
     ClassicGround { id: DataId, terrain_type: u32 },
+    /// End of retail's ground picture beside an older world, untinted: the later files hold other
+    /// pictures than the world's under the same ids ([`crate::world::LaterGround`]).
+    LaterGround { id: DataId },
 }
 
 /// The maps the art pack supplies for one surface. Every one is optional.
@@ -229,7 +250,8 @@ pub struct PackMaps {
     pub height: Option<TextureKey>,
     pub roughness_metal: Option<TextureKey>,
     pub occlusion: Option<TextureKey>,
-    pub emissive: Option<TextureKey>,
+    /// Where the surface is a metal, in red; the whole of it where there is none.
+    pub metal: Option<TextureKey>,
     /// A kind for the surface, in place of the table's.
     pub kind: Option<SurfaceKind>,
     /// The roughness, occlusion and height maps are one picture holding them in red, green and
@@ -285,10 +307,12 @@ pub struct MaterialDesc {
     pub height: Option<TextureKey>,
     pub roughness_metal: Option<TextureKey>,
     pub occlusion: Option<TextureKey>,
-    pub emissive_map: Option<TextureKey>,
+    pub metal_map: Option<TextureKey>,
     /// Clear ice in its own colour ([`flags::TINTED_ICE`]): the share of the world behind seen
     /// through it, and its index of refraction.
     pub clear: [f32; 2],
+    /// How many times brighter its picture is drawn where its metal map says it is a metal.
+    pub brighten: f32,
 }
 
 /// An sRGB byte as linear light.
@@ -365,10 +389,15 @@ pub fn describe_surface(
     if clear.is_some() {
         flags |= flags::TINTED_ICE;
     }
-    // A metal's dark picture brightened toward what a metal mirrors.
-    if let Some(gain) = pack.matter.metal {
+    if !ice && !additive && is_pool(surface) {
+        flags |= flags::POOL;
+    }
+    // A metal's dark picture brightened toward what a metal mirrors; with a metal map, only
+    // where it is a metal (the record's `emissive.w`).
+    let brighten = pack.matter.metal.unwrap_or(1.0);
+    if pack.metal.is_none() {
         for c in &mut base_color[..3] {
-            *c *= gain;
+            *c *= brighten;
         }
     }
     // Under a film of water: darker, as smooth as a puddle.
@@ -391,7 +420,7 @@ pub fn describe_surface(
         (&pack.height, flags::HAS_HEIGHT),
         (&pack.roughness_metal, flags::HAS_ROUGH_METAL),
         (&pack.occlusion, flags::HAS_OCCLUSION),
-        (&pack.emissive, flags::HAS_EMISSIVE),
+        (&pack.metal, flags::HAS_METAL),
     ] {
         if map.is_some() {
             flags |= bit;
@@ -420,8 +449,13 @@ pub fn describe_surface(
         height: pack.height,
         roughness_metal: pack.roughness_metal,
         occlusion: pack.occlusion,
-        emissive_map: pack.emissive,
+        metal_map: pack.metal,
         clear: [clear.unwrap_or(0.0), pack.matter.refraction],
+        brighten: if flags & flags::HAS_METAL != 0 {
+            brighten
+        } else {
+            1.0
+        },
     }
 }
 
@@ -429,8 +463,9 @@ pub fn describe_surface(
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MaterialRecord {
     pub base_color: [f32; 4],
+    /// Luminosity, clear ice's clearness and refraction, and a metal map's brightening.
     pub emissive: [f32; 4],
-    /// Texture slots: base, normal, height, roughness/metal, occlusion, emissive.
+    /// Texture slots: base, normal, height, roughness/metal, occlusion, metal map.
     pub textures: [u32; 6],
     pub flags: u32,
     pub kind: u32,
@@ -467,12 +502,13 @@ impl MaterialRecord {
             take(&desc.height, flags::HAS_HEIGHT),
             take(&desc.roughness_metal, flags::HAS_ROUGH_METAL),
             take(&desc.occlusion, flags::HAS_OCCLUSION),
-            take(&desc.emissive_map, flags::HAS_EMISSIVE),
+            take(&desc.metal_map, flags::HAS_METAL),
         ];
         Self {
             base_color: desc.base_color,
-            // Clear ice keeps its clearness and refraction beside its luminosity.
-            emissive: [desc.emissive, desc.clear[0], desc.clear[1], desc.emissive],
+            // Clear ice keeps its clearness and refraction beside its luminosity, and a metal map
+            // its brightening.
+            emissive: [desc.emissive, desc.clear[0], desc.clear[1], desc.brighten],
             textures,
             flags,
             kind: desc.kind.index(),

@@ -136,7 +136,7 @@ fn tint_share(c: vec3<f32>) -> f32 {
 
 @fragment
 fn fs_cover(in: VsOut, @builtin(front_facing) front: bool) -> GOut {
-    var g = object_surface(in, front);
+    var g = object_surface(in, front, 0u);
     var c = g.albedo.rgb * in.shade;
     if (in.extra != 0u) {
         // Its own light and dark over the ground's colour.

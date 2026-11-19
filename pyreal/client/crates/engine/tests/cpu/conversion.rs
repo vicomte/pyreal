@@ -1,7 +1,10 @@
 //! A `GfxObj`'s polygons become sub-meshes by surface and side.
 
-use pyreal_assets::{GfxObj, Polygon, SwVertex, VertexArray};
-use pyreal_engine::asset::mesh::{gfxobj_mesh, oct_decode, oct_encode, Sides};
+use pyreal_assets::geometry::CellStruct;
+use pyreal_assets::{BspTree, GfxObj, Polygon, SwVertex, VertexArray};
+use pyreal_engine::asset::mesh::{
+    cell_mesh, gfxobj_mesh, oct_decode, oct_encode, Sides, HOLD_U, HOLD_V,
+};
 use pyreal_engine::asset::object::setup_parts;
 use pyreal_primitives::{DataId, Vec3};
 
@@ -153,6 +156,70 @@ fn a_small_shapes_bent_corners_keep_their_normals() {
         .vertices
         .iter()
         .any(|v| v.normal == [0.577, 0.577, 0.577]));
+}
+
+/// A cell's portal with a picture is drawn (0x8A020135's floor over the room below); one with
+/// no UVs is an opening and is left out.
+#[test]
+fn a_cells_pictured_portal_is_drawn_and_an_opening_is_not() {
+    let mut opening = polygon(0, 1, 0, &[0, 2, 3]);
+    opening.stippling = 4;
+    opening.pos_uv_indices = None;
+    let cell = CellStruct {
+        cellstruct_id: 0,
+        vertex_array: object(Vec::new()).vertex_array,
+        polygons: vec![
+            polygon(0, 0, 0, &[0, 1, 2]),
+            polygon(1, 0, 0, &[0, 2, 3]),
+            opening,
+        ],
+        portals: vec![1, 2],
+        cell_bsp: BspTree { nodes: Vec::new() },
+        physics_polygons: Vec::new(),
+        physics_bsp: BspTree { nodes: Vec::new() },
+        drawing_bsp: None,
+    };
+    let mesh = cell_mesh(&cell, &[DataId(0x0800_0377), DataId(0x0800_00DD)]);
+    let subs: Vec<(u16, Sides, u32)> = mesh
+        .submeshes
+        .iter()
+        .map(|s| (s.surface_index, s.sides, s.index_count))
+        .collect();
+    assert_eq!(subs, vec![(0, Sides::One, 3), (0, Sides::Both, 3)]);
+}
+
+/// A polygon whose picture lies within one repeat along an axis is held to its edge that way, its
+/// coordinates taken into 0 to 1: a wall's upper picture (0x8A02012C) no longer repeats its pale top
+/// into its foot. One that repeats is not held.
+#[test]
+fn a_polygon_within_one_repeat_is_held_to_its_edge() {
+    let mut obj = object(Vec::new());
+    for (v, (x, y)) in
+        obj.vertex_array
+            .vertices
+            .iter_mut()
+            .zip([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    {
+        v.uvs = vec![(5.0 + 2.0 * x, y), (x, 2.0 + y), (2.5 * x, 3.0 * y)];
+    }
+    for (k, (hold, uvs)) in [
+        (HOLD_V, [[5.0, 0.0], [7.0, 0.0], [7.0, 1.0], [5.0, 1.0]]),
+        (
+            HOLD_U | HOLD_V,
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
+        (0, [[0.0, 0.0], [2.5, 0.0], [2.5, 3.0], [0.0, 3.0]]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut p = polygon(0, 0, 0, &[0, 1, 2, 3]);
+        p.pos_uv_indices = Some(vec![u8::try_from(k).unwrap(); 4]);
+        obj.polygons = vec![p];
+        let mesh = gfxobj_mesh(&obj);
+        let got: Vec<(u32, [f32; 2])> = mesh.vertices.iter().map(|v| (v.extra[0], v.uv)).collect();
+        assert_eq!(got, uvs.map(|uv| (hold, uv)).to_vec(), "picture {k}");
+    }
 }
 
 /// An object with no drawing polygons has nothing to draw.

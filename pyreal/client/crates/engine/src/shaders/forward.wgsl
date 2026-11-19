@@ -128,7 +128,7 @@ fn translucent_seen(in: VsOut, front: bool) -> Seen {
     }
     var c = m.base_color;
     if ((m.flags & M_HAS_BASE) != 0u) {
-        c *= textureSampleGrad(textures[m.tex_base], samp_repeat, in.uv, dx, dy);
+        c *= pic_grad(m.tex_base, in.uv, dx, dy, in.extra);
     }
     var n = normalize(in.normal);
     if (!front) {
@@ -196,6 +196,18 @@ fn fs_translucent(in: VsOut, @builtin(front_facing) front: bool) -> SortedOut {
     }
     let s = translucent_seen(in, front);
     return sorted_out(s.colour, s.additive);
+}
+
+// A translucent surface's object, plus one, into the objects target, so a pick on it names it as
+// retail's polygon test does. Written wherever the surface is drawn, whatever its picture's alpha.
+@fragment
+fn fs_translucent_object(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) u32 {
+    let m = materials[in.material];
+    if (in.object == 0u || smoke_screened(in) || web_card_hidden(m.flags)
+        || (!front && (m.flags & M_TWO_SIDED) == 0u)) {
+        discard;
+    }
+    return in.object;
 }
 
 // The order-independent targets: the picture (additive light goes straight to it), the weighted

@@ -63,7 +63,13 @@ pub struct MaterialTable {
     group: Option<wgpu::BindGroup>,
     repeat: wgpu::Sampler,
     clamp: wgpu::Sampler,
+    /// Held to the picture's edge across, repeated down; and the other way round.
+    clamp_u: wgpu::Sampler,
+    clamp_v: wgpu::Sampler,
 }
+
+const REPEAT: wgpu::AddressMode = wgpu::AddressMode::Repeat;
+const CLAMP: wgpu::AddressMode = wgpu::AddressMode::ClampToEdge;
 
 impl MaterialTable {
     pub fn new(gpu: &Gpu) -> Self {
@@ -94,6 +100,18 @@ impl MaterialTable {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
@@ -115,12 +133,12 @@ impl MaterialTable {
                 },
             ],
         });
-        let sampler = |label, mode| {
+        let sampler = |label, u, v| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some(label),
-                address_mode_u: mode,
-                address_mode_v: mode,
-                address_mode_w: mode,
+                address_mode_u: u,
+                address_mode_v: v,
+                address_mode_w: v,
                 mag_filter: wgpu::FilterMode::Linear,
                 min_filter: wgpu::FilterMode::Linear,
                 mipmap_filter: wgpu::MipmapFilterMode::Linear,
@@ -159,8 +177,10 @@ impl MaterialTable {
             companion_buffer,
             layout,
             group: None,
-            repeat: sampler("repeat", wgpu::AddressMode::Repeat),
-            clamp: sampler("clamp", wgpu::AddressMode::ClampToEdge),
+            repeat: sampler("repeat", REPEAT, REPEAT),
+            clamp: sampler("clamp", CLAMP, CLAMP),
+            clamp_u: sampler("clamp across", CLAMP, REPEAT),
+            clamp_v: sampler("clamp down", REPEAT, CLAMP),
         };
         // Slot 0 is white, so a lookup that finds nothing samples something harmless.
         let _ = table.add_texture(gpu, &TexturePixels::solid([255, 255, 255, 255]));
@@ -439,6 +459,14 @@ impl MaterialTable {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: self.companion_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.clamp_u),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::Sampler(&self.clamp_v),
                     },
                 ],
             }));

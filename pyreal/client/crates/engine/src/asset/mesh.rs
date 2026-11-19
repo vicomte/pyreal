@@ -13,7 +13,8 @@ use pyreal_assets::{GfxObj, Polygon, SwVertex};
 use pyreal_primitives::DataId;
 
 /// One vertex as the pools hold it (32 bytes): position, octahedral normal, texture coordinate
-/// and two words a pipeline reads its own way (the terrain's cell record, for one).
+/// and two words a pipeline reads its own way (the terrain's cell record, for one; a retail
+/// polygon's [`HOLD_U`] and [`HOLD_V`]).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Vertex {
     pub position: [f32; 3],
@@ -161,6 +162,38 @@ fn corner_uv(indices: Option<&[u8]>, corner: usize, uvs: &[(f32, f32)]) -> (Opti
     (Some(index), uv)
 }
 
+/// A polygon's picture held to its edge across: its corners lie within one repeat that way.
+pub const HOLD_U: u32 = 1;
+/// [`HOLD_U`] down the picture.
+pub const HOLD_V: u32 = 2;
+/// How far past a whole repeat a corner may lie and still be within it.
+const HOLD_SLACK: f32 = 1e-3;
+
+/// The axes a polygon's corners' `uvs` lie within one repeat along ([`HOLD_U`], [`HOLD_V`]),
+/// and the whole repeats to take off each so they lie within 0 to 1.
+#[must_use]
+pub fn hold_of(uvs: &[[f32; 2]]) -> (u32, [f32; 2]) {
+    let mut hold = 0;
+    let mut shift = [0.0; 2];
+    for (axis, bit) in [(0, HOLD_U), (1, HOLD_V)] {
+        let lo = uvs.iter().map(|uv| uv[axis]).fold(f32::INFINITY, f32::min);
+        let hi = uvs
+            .iter()
+            .map(|uv| uv[axis])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let first = (lo + HOLD_SLACK).floor();
+        if lo.is_finite() && hi <= first + 1.0 + HOLD_SLACK {
+            hold |= bit;
+            shift[axis] = first;
+        }
+    }
+    (hold, shift)
+}
+
+/// A corner shared where it recurs: its vertex, UV, side, face (when it takes the face's normal),
+/// hold and whole repeats taken off.
+type Corner = (u16, Option<u8>, bool, u32, u32, [i32; 2]);
+
 /// The fan of one polygon side into its sub-mesh, sharing a vertex wherever the same corner
 /// recurs with the same UV.
 struct Builder<'a> {
@@ -169,7 +202,7 @@ struct Builder<'a> {
     groups: Vec<(u16, Sides, Vec<u32>)>,
     group_of: HashMap<(u16, Sides), usize>,
     out: Vec<Vertex>,
-    shared: HashMap<(u16, Option<u8>, bool, u32), u32>,
+    shared: HashMap<Corner, u32>,
     /// Polygon sides seen, so a corner given its face's normal is not shared.
     sides_seen: u32,
 }
@@ -241,11 +274,23 @@ impl Builder<'_> {
                 }
             });
         self.sides_seen += 1;
+        let uvs: Vec<[f32; 2]> = (0..n)
+            .map(|k| {
+                corner_uv(
+                    uv_indices,
+                    k,
+                    &self.vertices[usize::from(p.vertex_ids[k])].uvs,
+                )
+                .1
+            })
+            .collect();
+        let (hold, shift) = hold_of(&uvs);
         let mut corners = Vec::with_capacity(n);
         for k in 0..n {
             let vi = p.vertex_ids[k];
             let v = &self.vertices[usize::from(vi)];
             let (uv_index, uv) = corner_uv(uv_indices, k, &v.uvs);
+            let uv = [uv[0] - shift[0], uv[1] - shift[1]];
             let own = [v.normal.x, v.normal.y, v.normal.z];
             let flat = face.filter(|f| f[0] * own[0] + f[1] * own[1] + f[2] * own[2] < FLAT_BELOW);
             let key = (
@@ -253,6 +298,8 @@ impl Builder<'_> {
                 uv_index,
                 back,
                 flat.map_or(u32::MAX, |_| self.sides_seen),
+                hold,
+                shift.map(pyreal_primitives::num::to_i32),
             );
             let index = *self.shared.entry(key).or_insert_with(|| {
                 let normal = flat.unwrap_or(own);
@@ -261,7 +308,7 @@ impl Builder<'_> {
                     position: [v.position.x, v.position.y, v.position.z],
                     normal,
                     uv,
-                    extra: [0, 0],
+                    extra: [hold, 0],
                 });
                 u32::try_from(self.out.len() - 1).unwrap_or(0)
             });
@@ -354,13 +401,14 @@ pub fn gfxobj_mesh(obj: &GfxObj) -> MeshData {
     build(&obj.vertex_array.vertices, polygons, &obj.surfaces)
 }
 
-/// An indoor cell's drawing polygons as a mesh, against the cell's own surface list. Its portal
-/// polygons are openings and are left out (their surfaces are wholly transparent).
+/// An indoor cell's drawing polygons as a mesh, against the cell's own surface list. A portal
+/// polygon with no picture is an opening and is left out (its surface is wholly transparent);
+/// one with a picture is drawn, as retail draws it: a floor over the room below (0x8A020135).
 #[must_use]
 pub fn cell_mesh(cs: &CellStruct, surfaces: &[DataId]) -> MeshData {
     let polygons = cs.polygons.iter().enumerate().filter_map(|(i, p)| {
         let portal = u16::try_from(i).is_ok_and(|i| cs.portals.contains(&i));
-        (!portal).then_some(p)
+        (!portal || p.pos_uv_indices.is_some()).then_some(p)
     });
     build(&cs.vertex_array.vertices, polygons, surfaces)
 }

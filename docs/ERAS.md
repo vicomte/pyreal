@@ -71,3 +71,8 @@ renderer. `0x130F0000`, which the clients of the time loaded with a 3D card, tex
 End of Retail does. `load_region` (`core/world-data/src/landblock.rs`) loads `HARDWARE_REGION`,
 `0x130F0000`, wherever the files have it, sky included, so the older eras' ground goes through the
 same path as End of Retail's and takes every ground enhancement. End of Retail has no such record.
+
+With End of Retail's files beside a 1999 or 2005 world, each terrain type and the road take End of
+Retail's picture and repeat instead (`LaterGround`, `ground_picture`, `engine/src/world.rs`), tinted
+by Ground Coloring as End of Retail's own are, with the pack's relief for those pictures. The blend
+maps stay the world's. An older world with no later files beside it lays its own pictures.

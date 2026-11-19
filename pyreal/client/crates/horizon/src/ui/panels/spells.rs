@@ -72,6 +72,9 @@ const SEARCH_H: f32 = 34.0;
 /// tabs and the search box.
 const LIST_TOP: f32 = 74.0;
 
+/// The room under the list and the details, in layout units: the row of level filters.
+const LEVELS_H: f32 = 30.0;
+
 /// The level a search word names, written as the spellbook writes levels (`viii`) or as a
 /// number (`8`).
 fn level_word(word: &str) -> Option<u32> {
@@ -192,13 +195,8 @@ impl Windows {
         };
         let (school_name, school) = SCHOOLS[school_tab];
         let mask = state.world_services.spell_filters;
-        // The search box under the tabs.
-        let search = Rect::new(
-            body.x,
-            body.y + 32.0 * k,
-            body.w * LIST_SHARE - 8.0 * k,
-            SEARCH_H * k,
-        );
+        // The search box across the window under the tabs.
+        let search = Rect::new(body.x, body.y + 32.0 * k, body.w, SEARCH_H * k);
         kit::text_box(
             p,
             ctx,
@@ -228,28 +226,14 @@ impl Windows {
             body.x,
             body.y + LIST_TOP * k,
             list_w,
-            body.h - (LIST_TOP + 46.0) * k,
+            body.h - (LIST_TOP + LEVELS_H) * k,
         );
         self.spell_filters(
             p,
             ctx,
             state,
-            Rect::new(body.x, area.bottom() + 6.0 * k, list_w, 40.0 * k),
+            Rect::new(body.x, area.bottom() + 6.0 * k, body.w, 20.0 * k),
             out,
-        );
-        // Beside the level filters, under the details: the fighting stance's controls.
-        stance_controls(
-            p,
-            ctx,
-            state,
-            Rect::new(
-                area.right() + 12.0 * k,
-                area.bottom() + 6.0 * k,
-                body.right() - area.right() - 12.0 * k,
-                40.0 * k,
-            ),
-            out,
-            &mut self.tip,
         );
         let row_h = 40.0 * k;
         #[allow(clippy::cast_precision_loss)]
@@ -530,19 +514,15 @@ impl Windows {
         let w = &state.world_services;
         let mask = w.spell_filters;
         let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
-        let per = (r.w / 4.0).max(1.0);
+        #[allow(clippy::cast_precision_loss)]
+        let per = (r.w / LEVELS.len() as f32).max(1.0);
         for (i, label) in LEVELS.iter().enumerate() {
             let bit = level_mask(u32::try_from(i + 1).unwrap_or(1));
             if bit == 0 || (state.in_world && !w.era_ui.spell_filter(bit)) {
                 continue;
             }
             #[allow(clippy::cast_precision_loss)]
-            let row = Rect::new(
-                r.x + (i % 4) as f32 * per,
-                r.y + (i / 4) as f32 * 20.0 * k,
-                per,
-                20.0 * k,
-            );
+            let row = Rect::new(r.x + i as f32 * per, r.y, per, r.h);
             let on = mask & bit != 0;
             let boxed = kit::checkbox(p, ctx, Rect::new(row.x, row.y, 20.0 * k, row.h), on);
             let label_r = Rect::new(row.x + 22.0 * k, row.y, row.w - 22.0 * k, row.h);
@@ -588,6 +568,7 @@ impl Windows {
     ) {
         self.forget_question(p, ctx, state, out);
         self.abandon_question(p, ctx, out);
+        self.delete_question(p, ctx, out);
         self.train_question(p, ctx, out);
     }
 
@@ -683,69 +664,6 @@ impl Windows {
             }
         }
         p.list.pop_clip();
-    }
-}
-
-/// The fighting stance's five controls in a row over `r`, each to be put on a cross hotbar slot:
-/// confirming one starts the bind-to-hotbar notice, and the mouse drags it onto a slot. Each
-/// names itself (for the weapon in hand) while the pointer is over it.
-fn stance_controls(
-    p: &mut Painter<'_>,
-    ctx: &mut Ctx<'_>,
-    state: &GameState,
-    r: Rect,
-    out: &mut Outcome,
-    tip: &mut Option<(String, Vec<String>)>,
-) {
-    use crate::ui::hud::cross::{self, CrossBind, PowerAct};
-    let k = p.scale;
-    let missile = state.combat_mode == pyreal_client_contract::combat_mode::MISSILE;
-    let side = 36.0 * k;
-    let gap = 8.0 * k;
-    // The row of tiles stands centred in `r`, across and up and down, so it sits level with the
-    // two rows of level filters beside it.
-    #[allow(clippy::cast_precision_loss)]
-    let count = PowerAct::ALL.len() as f32;
-    let left = r.x + ((r.w - (count * side + (count - 1.0) * gap)) / 2.0).max(0.0);
-    for (i, act) in PowerAct::ALL.into_iter().enumerate() {
-        #[allow(clippy::cast_precision_loss)]
-        let tile = Rect::new(
-            left + i as f32 * (side + gap),
-            r.y + (r.h - side) / 2.0,
-            side,
-            side,
-        );
-        if tile.right() > r.right() {
-            break;
-        }
-        let bind = CrossBind::Power(act);
-        let pressed = cross::draw_slot(p, ctx, tile, None, Some(bind), missile, false, false);
-        if ctx.input.hover(&tile) {
-            *tip = Some((act.name(missile).to_owned(), Vec::new()));
-        }
-        if !pressed {
-            continue;
-        }
-        if ctx.input.pad.mode.is_some() {
-            out.bind_to_hotbar = Some(bind);
-        } else {
-            // Pressed, it can be dragged onto a cross hotbar slot.
-            *ctx.drag = Some(crate::ui::Drag {
-                item: pyreal_primitives::ObjectId(0),
-                look: None,
-                spell_look: None,
-                from_shortcut: None,
-                icon: None,
-                origin: ctx.input.mouse,
-                active: false,
-                on_click: None,
-                spell: None,
-                from_spell_slot: None,
-                component: false,
-                stance: Some(act),
-                command: None,
-            });
-        }
     }
 }
 

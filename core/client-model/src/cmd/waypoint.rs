@@ -77,6 +77,30 @@ pub fn read_place(text: &str) -> Option<((f64, f64), &str)> {
     }
 }
 
+/// Every place written in `text` as [`read_place`] reads one (`42.3N 33.3E`, `42.3n, 33.3e`,
+/// `42 S 33 W`), by the characters it spans. A place stands apart from the words round it, keeps
+/// to one line and lies on the map.
+#[must_use]
+pub fn find_places(text: &str) -> Vec<(std::ops::Range<usize>, (f64, f64))> {
+    let mut found = Vec::new();
+    let (mut byte, mut at, mut before) = (0, 0, None::<char>);
+    while let Some(c) = text[byte..].chars().next() {
+        let starts = c.is_ascii_digit() && !before.is_some_and(|b| b.is_alphanumeric() || b == '.');
+        if let Some(((ns, ew), rest)) = starts.then(|| read_place(&text[byte..])).flatten() {
+            let span = &text[byte..text.len() - rest.len()];
+            let apart = !rest.chars().next().is_some_and(char::is_alphanumeric);
+            if apart && !span.contains('\n') && ns.abs() <= FURTHEST && ew.abs() <= FURTHEST {
+                let n = span.chars().count();
+                found.push((at..at + n, (ns, ew)));
+                (byte, at, before) = (byte + span.len(), at + n, span.chars().last());
+                continue;
+            }
+        }
+        (byte, at, before) = (byte + c.len_utf8(), at + 1, Some(c));
+    }
+    found
+}
+
 /// One half of a place: how far north (south negative) or east (west negative).
 #[derive(Debug, Clone, Copy)]
 enum Half {
@@ -155,6 +179,95 @@ mod tests {
         let off = parse("120N 3E").unwrap_err();
         assert!(off.starts_with("120.0N 3.0E is off the map."), "{off}");
         assert_eq!(place_text(-0.04, -33.95), "0.0S 34.0W");
+    }
+
+    fn places(text: &str) -> Vec<(std::ops::Range<usize>, (f64, f64))> {
+        find_places(text)
+    }
+
+    #[test]
+    fn find_places_reads_the_game_s_own_form() {
+        assert_eq!(places("42.3N 33.3E"), [(0..11, (42.3, 33.3))]);
+    }
+
+    #[test]
+    fn find_places_reads_a_comma_between_the_halves() {
+        assert_eq!(places("42.3N, 33.3E"), [(0..12, (42.3, 33.3))]);
+    }
+
+    #[test]
+    fn find_places_reads_south_and_west() {
+        assert_eq!(places("12.5S 40.1W"), [(0..11, (-12.5, -40.1))]);
+    }
+
+    #[test]
+    fn find_places_reads_whole_numbers() {
+        assert_eq!(places("42N 33E"), [(0..7, (42.0, 33.0))]);
+    }
+
+    #[test]
+    fn find_places_reads_lower_case() {
+        assert_eq!(places("42.3n 33.3e"), [(0..11, (42.3, 33.3))]);
+    }
+
+    #[test]
+    fn find_places_reads_a_space_before_the_letter() {
+        assert_eq!(places("42.3 N, 33.3 E"), [(0..14, (42.3, 33.3))]);
+    }
+
+    #[test]
+    fn find_places_reads_the_halves_in_either_order_and_run_together() {
+        assert_eq!(places("33.3E 42.3N"), [(0..11, (42.3, 33.3))]);
+        assert_eq!(places("42.3N33.3E"), [(0..10, (42.3, 33.3))]);
+    }
+
+    #[test]
+    fn find_places_finds_each_place_in_a_note_by_its_characters() {
+        let note = "Café at 42.3N, 33.3E. Then 0.5s 7w.";
+        assert_eq!(
+            places(note),
+            [(8..20, (42.3, 33.3)), (27..34, (-0.5, -7.0))]
+        );
+        assert_eq!(
+            note.chars().skip(8).take(12).collect::<String>(),
+            "42.3N, 33.3E"
+        );
+    }
+
+    #[test]
+    fn find_places_leaves_plain_numbers_and_half_places() {
+        for text in [
+            "42.3 33.3",
+            "42, 33",
+            "Bring 12 of them",
+            "42.3N",
+            "42.3N 33.3N",
+            "33.3E 42.3W",
+            "N E",
+        ] {
+            assert_eq!(places(text), [], "{text}");
+        }
+    }
+
+    #[test]
+    fn find_places_leaves_words_and_places_inside_words() {
+        for text in [
+            "3 East 2 North",
+            "the 2nd and 3rd",
+            "x42.3N 33.3E",
+            "42.3N 33.3Ex",
+            "42.3N 33.3E5",
+            "1.2.3N 4E",
+        ] {
+            assert_eq!(places(text), [], "{text}");
+        }
+    }
+
+    #[test]
+    fn find_places_leaves_a_place_split_over_two_lines_or_off_the_map() {
+        assert_eq!(places("42.3N\n33.3E"), []);
+        assert_eq!(places("120N 30E"), []);
+        assert_eq!(places("42N 102.5W"), []);
     }
 
     #[test]

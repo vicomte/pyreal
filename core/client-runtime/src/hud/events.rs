@@ -598,6 +598,14 @@ impl Hud {
                             }
                             None => (m.text_type, m.text),
                         };
+                        // A quest timer the world gave, named for whom the player has selected.
+                        let dealing_with =
+                            world.selected.and_then(|id| world.weenie(id)).map(|w| {
+                                w.object_name(pyreal_client_model::weenie::NameType::Appropriate)
+                            });
+                        world
+                            .journal
+                            .hear(&body, self.server_now().0, dealing_with.as_deref());
                         chat.push(ChatMessage {
                             feedback: pyreal_client_contract::feedback::Feedback::ORDINARY,
                             ty: u8::try_from(ty).unwrap_or(0),

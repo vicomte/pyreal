@@ -7,18 +7,6 @@ pub struct EraUiFacts {
     pub void_magic: bool,
     pub spell_level_eight: bool,
     pub spell_favorite_tabs: usize,
-    /// Whether a scroll bar with nothing to scroll still draws its thumb.
-    pub idle_scroll_thumb: bool,
-    /// One panel of the spells in effect on a character, rather than beneficial and harmful apart.
-    pub one_effects_panel: bool,
-    /// The interface's words are the 1999 client's where a later client changed them.
-    pub launch_wording: bool,
-    /// The map opens only outdoors.
-    pub map_outdoors_only: bool,
-    /// The spellbook filters its rows by school and level.
-    pub spell_filter_panel: bool,
-    /// The combat panel carries the camera's option to keep the target in view.
-    pub combat_keep_in_view: bool,
 }
 impl Default for EraUiFacts {
     fn default() -> Self {
@@ -33,34 +21,16 @@ impl EraUiFacts {
                 void_magic: true,
                 spell_level_eight: true,
                 spell_favorite_tabs: 8,
-                idle_scroll_thumb: true,
-                one_effects_panel: false,
-                launch_wording: false,
-                map_outdoors_only: false,
-                spell_filter_panel: true,
-                combat_keep_in_view: true,
             },
             EraId::Launch => Self {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
-                idle_scroll_thumb: false,
-                one_effects_panel: true,
-                launch_wording: true,
-                map_outdoors_only: true,
-                spell_filter_panel: false,
-                combat_keep_in_view: false,
             },
             EraId::Infiltration => Self {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
-                idle_scroll_thumb: true,
-                one_effects_panel: false,
-                launch_wording: false,
-                map_outdoors_only: false,
-                spell_filter_panel: true,
-                combat_keep_in_view: false,
             },
         }
     }
@@ -91,15 +61,12 @@ pub enum QuestPage {
     Contracts,
 }
 
-/// Retain a valid selection; otherwise prefer the journal, then contracts.
+/// Retain a valid selection; otherwise the journal, which every world has.
 #[must_use]
 pub const fn quest_page(features: EraFeatures, current: Option<QuestPage>) -> Option<QuestPage> {
     match current {
-        Some(QuestPage::Journal) if features.journal => current,
         Some(QuestPage::Contracts) if features.contracts => current,
-        _ if features.journal => Some(QuestPage::Journal),
-        _ if features.contracts => Some(QuestPage::Contracts),
-        _ => None,
+        _ => Some(QuestPage::Journal),
     }
 }
 
@@ -120,7 +87,8 @@ pub const fn aetheria_slots(features: EraFeatures, unlocks: i32) -> u8 {
 pub enum EraSurface {
     /// The window holding the journal and the contracts: offered with either.
     QuestWindow,
-    /// The journal's pages.
+    /// The journal's pages. They are the client's own, kept in a file and never sent to the
+    /// world, so every world has them whatever its era.
     Journal,
     /// The contracts held.
     Contracts,
@@ -163,7 +131,7 @@ impl EraSurface {
     pub const fn offered(self, features: EraFeatures) -> bool {
         match self {
             Self::QuestWindow => quest_page(features, None).is_some(),
-            Self::Journal => features.journal,
+            Self::Journal => true,
             Self::Contracts => features.contracts,
             Self::Titles => features.titles,
             Self::House => features.housing,
@@ -313,12 +281,6 @@ mod tests {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
-                idle_scroll_thumb: true,
-                one_effects_panel: false,
-                launch_wording: false,
-                map_outdoors_only: false,
-                spell_filter_panel: true,
-                combat_keep_in_view: false,
             }
         );
         let mut late = world(EraId::Eor);
@@ -329,12 +291,6 @@ mod tests {
                 void_magic: true,
                 spell_level_eight: true,
                 spell_favorite_tabs: 8,
-                idle_scroll_thumb: true,
-                one_effects_panel: false,
-                launch_wording: false,
-                map_outdoors_only: false,
-                spell_filter_panel: true,
-                combat_keep_in_view: true,
             }
         );
         late.era.announced_features.set("luminance", false);
@@ -366,12 +322,6 @@ mod tests {
             void_magic: false,
             spell_level_eight: true,
             spell_favorite_tabs: 7,
-            idle_scroll_thumb: true,
-            one_effects_panel: false,
-            launch_wording: false,
-            map_outdoors_only: false,
-            spell_filter_panel: true,
-            combat_keep_in_view: false,
         };
         assert!(!facts.spell_filter(0x2000));
         assert!(facts.spell_filter(0x800));
@@ -384,33 +334,35 @@ mod tests {
         assert!(!facts.spell_filter(0x800));
     }
 
+    /// The journal is in every world, whatever its era says; the contracts only where it has them.
     #[test]
-    fn quest_fallback_preserves_a_valid_page_and_hides_neither_systems_page() {
-        for (journal, contracts, fallback) in [
-            (false, false, None),
-            (true, false, Some(QuestPage::Journal)),
-            (false, true, Some(QuestPage::Contracts)),
-            (true, true, Some(QuestPage::Journal)),
-        ] {
+    fn quest_fallback_keeps_the_contracts_where_they_are_and_the_journal_everywhere() {
+        for (journal, contracts) in [(false, false), (true, false), (false, true), (true, true)] {
             let features = EraFeatures {
                 journal,
                 contracts,
                 ..Default::default()
             };
-            assert_eq!(quest_page(features, None), fallback);
-            assert_eq!(quest_page(features, Some(QuestPage::Journal)), fallback);
+            assert_eq!(quest_page(features, None), Some(QuestPage::Journal));
+            assert_eq!(
+                quest_page(features, Some(QuestPage::Journal)),
+                Some(QuestPage::Journal)
+            );
             assert_eq!(
                 quest_page(features, Some(QuestPage::Contracts)),
-                if contracts {
-                    Some(QuestPage::Contracts)
+                Some(if contracts {
+                    QuestPage::Contracts
                 } else {
-                    fallback
-                }
+                    QuestPage::Journal
+                })
             );
+            assert!(EraSurface::Journal.offered(features));
+            assert!(EraSurface::QuestWindow.offered(features));
         }
     }
 
     /// Each surface follows its own flag alone, and a world whose era is not known has everything.
+    /// The journal and its window have no flag: every world has them.
     #[test]
     fn each_surface_follows_its_own_system_and_an_unknown_world_has_everything() {
         fn lacking(surface: EraSurface) -> EraFeatures {
@@ -433,10 +385,15 @@ mod tests {
             }
             f
         }
+        let everywhere = [EraSurface::QuestWindow, EraSurface::Journal];
         for surface in EraSurface::ALL {
             assert!(surface.offered(EraFeatures::ALL), "{surface:?}");
             assert!(!surface.refused(Some(EraFeatures::ALL)), "{surface:?}");
             assert!(!surface.refused(None), "{surface:?}");
+            if everywhere.contains(&surface) {
+                assert!(surface.offered(lacking(surface)), "{surface:?}");
+                continue;
+            }
             assert!(!surface.offered(lacking(surface)), "{surface:?}");
             assert!(surface.refused(Some(lacking(surface))), "{surface:?}");
             for other in EraSurface::ALL {
@@ -452,10 +409,6 @@ mod tests {
                 }
             }
         }
-        let mut one = lacking(EraSurface::Journal);
-        assert!(EraSurface::QuestWindow.offered(one), "contracts alone");
-        one.contracts = false;
-        assert!(!EraSurface::QuestWindow.offered(one));
     }
 
     #[test]
@@ -499,12 +452,6 @@ mod tests {
                 void_magic: false,
                 spell_level_eight: true,
                 spell_favorite_tabs: 7,
-                idle_scroll_thumb: true,
-                one_effects_panel: false,
-                launch_wording: false,
-                map_outdoors_only: false,
-                spell_filter_panel: true,
-                combat_keep_in_view: false,
             }),
             ..Default::default()
         };

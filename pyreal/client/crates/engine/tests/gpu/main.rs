@@ -9,6 +9,7 @@ mod light;
 mod marks;
 mod portal;
 mod preview;
+mod rings;
 mod settings;
 mod stream;
 mod surfaces;

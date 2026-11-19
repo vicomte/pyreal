@@ -28,7 +28,7 @@ use crate::art::{AcArt as _, Art, Family, Image, Sprite};
 use crate::draw::{Rect, WHITE};
 use crate::ui::game::GameState;
 use crate::ui::kit::{self, Ctx};
-use crate::ui::paint::{Align, Painter, TextStyle};
+use crate::ui::paint::{Painter, TextStyle};
 use crate::ui::Outcome;
 
 /// The picture's side, in its own pixels.
@@ -91,8 +91,13 @@ const CLICK_SLOP: f32 = 4.0;
 /// How long, in seconds, explore mode waits after a click before it moves there, so a double
 /// click sets a waypoint and goes nowhere.
 const GO_AFTER: f64 = 0.5;
-/// The line above the picture.
-const WAYPOINT_HINT: &str = "Double-click a point on the map to create a waypoint marker.";
+/// What a click on the picture offers at the place clicked, and a click on a link's arrow there.
+pub const CREATE_WAYPOINT: &str = "Create Waypoint";
+/// The zoom the map opens at to show a journal page's place.
+const JOURNAL_ZOOM: f32 = 2.5;
+/// A journal page's mark's side, in layout units, and its colour.
+const JOURNAL_MARK: f32 = 9.0;
+const JOURNAL_COLOUR: u32 = 0xFFD9_C27A;
 /// The waypoint's marker, on the screen at this many layout units a side.
 const WAYPOINT_UNITS: f32 = 26.0;
 
@@ -100,6 +105,13 @@ const WAYPOINT_UNITS: f32 = 26.0;
 const ARROW_UNITS: f32 = 30.0;
 /// The arrow's picture's side, in its pixels.
 const ARROW_SIDE: u32 = 64;
+/// A link's arrow, on the screen at this many layout units a side, what it is kept under and its
+/// fill: blue, green and red.
+const PIN_UNITS: f32 = 26.0;
+const PIN_KEY: &str = "map.pin";
+const PIN_FILL: [f32; 3] = [240.0, 200.0, 60.0];
+/// An administrator's arrow's fill.
+const ADMIN_FILL: [f32; 3] = [32.0, 32.0, 224.0];
 /// The arrow's corners in its picture, from its tip, which points straight down at the middle of
 /// the bottom edge but for a margin for its edge's filter.
 const ARROW: [(f32, f32); 4] = [(32.0, 62.0), (10.0, 4.0), (32.0, 18.0), (54.0, 4.0)];
@@ -567,6 +579,9 @@ pub struct MapView {
     pub centre: (f32, f32),
     /// Where the out, in and fit buttons were drawn this frame.
     pub buttons: Option<[Rect; 3]>,
+    /// What was drawn under the picture this frame, by name: the buttons, the coordinates and the
+    /// journal's controls, which must never overlap.
+    pub bar: Vec<(&'static str, Rect)>,
     /// Where the pointer last was in a pan under way.
     drag: Option<(f32, f32)>,
     /// Where the press that began it was.
@@ -578,6 +593,16 @@ pub struct MapView {
     go_waiting: Option<((f64, f64), f64)>,
     /// The waypoint marker's tooltip, while the pointer is on it.
     waypoint_tip: Option<(String, Vec<String>)>,
+    /// Where the waypoint's marker was drawn this frame.
+    waypoint_mark: Option<Rect>,
+    /// The arrow a coordinate link stood on the map: its place, and the name a waypoint there takes.
+    pub pin: Option<((f64, f64), Option<String>)>,
+    /// Where the link's arrow was drawn this frame.
+    pub pin_mark: Option<Rect>,
+    /// Where Create Waypoint is offered, and the name the waypoint takes.
+    pub offer: Option<((f64, f64), Option<String>)>,
+    /// Where Create Waypoint was drawn this frame.
+    pub offer_button: Option<Rect>,
     /// The tiles drawn, and when a view last needed each.
     tiles: HashMap<(u32, u32), f64>,
     /// The places, once read, and what from: the era, and the world's own document by address.
@@ -600,12 +625,18 @@ impl Default for MapView {
             zoom: 1.0,
             centre: (MAP_SIZE / 2.0, MAP_SIZE / 2.0),
             buttons: None,
+            bar: Vec::new(),
             drag: None,
             press: None,
             pointed: None,
             pointed_name: None,
             go_waiting: None,
             waypoint_tip: None,
+            waypoint_mark: None,
+            pin: None,
+            pin_mark: None,
+            offer: None,
+            offer_button: None,
             tiles: HashMap::new(),
             places: None,
             hidden: Vec::new(),
@@ -761,7 +792,7 @@ fn image(pixels: Pixels) -> Image {
 }
 
 /// The arrow's picture: red, in a white edge that shows on every ground the map has.
-fn arrow_image() -> Image {
+fn arrow_image(fill: [f32; 3]) -> Image {
     let side = ARROW_SIDE as usize;
     let mut bgra = vec![0; side * side * 4];
     // Distance from `(x, y)` to the arrow's edge, negative inside.
@@ -800,9 +831,9 @@ fn arrow_image() -> Image {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         // LINT-OK: a coverage in 0..1 scaled to a byte.
         px.copy_from_slice(&[
-            blend(255.0, 32.0),
-            blend(255.0, 32.0),
-            blend(255.0, 224.0),
+            blend(255.0, fill[0]),
+            blend(255.0, fill[1]),
+            blend(255.0, fill[2]),
             (cover * 255.0) as u8,
         ]);
     }
@@ -893,6 +924,26 @@ fn most_zoom(area: Rect) -> f32 {
     (MOST_MAGNIFIED * MAP_SIZE / area.w.max(1.0)).max(1.0)
 }
 
+/// `text` written as a link from `(x, y)`: underlined in its own colour. Where it was drawn, and
+/// whether it was clicked.
+pub(super) fn link_text(
+    p: &mut Painter<'_>,
+    ctx: &mut Ctx<'_>,
+    style: &TextStyle,
+    (x, y): (f32, f32),
+    text: &str,
+) -> (Rect, bool) {
+    let k = p.scale;
+    let r = Rect::new(x, y, p.measure(style, text), p.line_height(style));
+    let over = ctx.over(&r);
+    p.text(style, x, y, text);
+    p.fill(
+        Rect::new(x, r.bottom() - 2.0 * k, r.w, k.max(1.0)),
+        style.colour,
+    );
+    (r, over && ctx.input.clicked(&r))
+}
+
 /// What tile `(col, row)` is kept under.
 #[must_use]
 pub fn tile_key(col: u32, row: u32) -> String {
@@ -906,6 +957,8 @@ impl Windows {
             self.map_view.let_tiles_go(p, f64::INFINITY);
         }
         self.map_view.picture = Picture::None;
+        self.map_view.pin = None;
+        self.map_view.offer = None;
     }
 
     pub(super) fn map(
@@ -918,20 +971,23 @@ impl Windows {
     ) {
         let k = p.scale;
         p.fill(body, 0xFF2A_2418);
-        // How to set a waypoint, above the picture.
-        let hint = TextStyle::new(Family::Body, 13.0, ctx.colours.dim()).edge(ctx.colours.edge());
-        p.text_in(
-            &hint,
-            Rect::new(body.x, body.y + 4.0 * k, body.w, 20.0 * k),
-            Align::Centre,
-            WAYPOINT_HINT,
-        );
-        // The picture, as large as the window holds it.
-        let top = 28.0 * k;
-        let side = (body.w - 24.0 * k).min(body.h - 48.0 * k - top + 8.0 * k);
+        // The picture, as large as the window holds it over two rows of controls.
+        let top = 8.0 * k;
+        let side = (body.w - 24.0 * k).min(body.h - 78.0 * k - top + 8.0 * k);
+        self.map_view.bar.clear();
         let area = Rect::new(body.x + (body.w - side) / 2.0, body.y + top, side, side);
         self.map_view.settle(area);
         self.map_zoom_buttons(p, ctx, state, body, area);
+        // A press anywhere else in the window lets Create Waypoint go.
+        let offered = self.map_offer_rect(p, area);
+        let mouse = ctx.input.mouse;
+        if ctx.input.pressed[0]
+            && ctx.input.hover(&body)
+            && !offered.is_some_and(|r| r.contains(mouse.0, mouse.1))
+        {
+            self.map_view.offer = None;
+            self.map_view.offer_button = None;
+        }
         self.map_pointer(ctx, area, p.scale);
         self.draw_map(p, ctx, area);
         // The pad's focus starts on the map itself, none of its places chosen.
@@ -945,8 +1001,11 @@ impl Windows {
         self.map_picture = Some(area);
         self.tell_map_presses(ctx, area, p.scale);
         self.map_places(p, ctx, state, area);
+        self.map_journal(p, ctx, state, area, out);
         self.map_waypoint(p, ctx, state, area);
         self.map_kinds(p, ctx, state, area);
+        let clicked = self.map_click(ctx, area, k);
+        self.map_offer(p, ctx, state, area, clicked);
         // The plugins' points and lines on the map.
         if !self.plugins.frame.marks.map.is_empty() {
             let view = &self.map_view;
@@ -967,15 +1026,49 @@ impl Windows {
             let style =
                 TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
             let label = coords_text(n, e);
-            p.text_in(
-                &style,
-                Rect::new(body.x, area.bottom() + 6.0 * k, body.w, 24.0 * k),
-                Align::Centre,
-                &label,
-            );
+            let w = p.measure(&style, &label);
+            let at = (body.x + (body.w - w) / 2.0, area.bottom() + 8.0 * k);
+            let (r, hit) = link_text(p, ctx, &style, at, &label);
+            self.map_view.bar.push(("Coordinates", r));
+            // The player's own place, a link like any other.
+            if hit {
+                let here = (f64::from(n), f64::from(e));
+                self.show_place_on_map(here, None, ctx.time);
+            }
+        }
+        // The second row: the journal's pages on the map or not, and the waypoint made a page.
+        let second = area.bottom() + 34.0 * k;
+        let style = TextStyle::new(Family::Body, 12.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let caption = "Journal pages";
+        let toggle = Rect::new(
+            body.x + 8.0 * k,
+            second + 2.0 * k,
+            p.measure(&style, caption) + 28.0 * k,
+            22.0 * k,
+        );
+        self.map_view.bar.push(("Journal pages", toggle));
+        if let Some(on) = kit::check_row(p, ctx, toggle, !self.map_journal_hidden, &style, caption)
+        {
+            self.map_journal_hidden = !on;
+        }
+        if let Some(w) = self.waypoints.active.clone() {
+            let r = Rect::new(body.right() - 208.0 * k, second, 200.0 * k, 26.0 * k);
+            self.map_view.bar.push(("Add Waypoint to Journal", r));
+            if kit::button(p, ctx, r, "Add Waypoint to Journal", true) {
+                out.requests
+                    .push(pyreal_client_contract::UiRequest::Journal(
+                        pyreal_client_contract::journal::JournalAction::NewPageAt {
+                            title: w.label(),
+                            ns: w.ns,
+                            ew: w.ew,
+                        },
+                    ));
+                self.open(super::WindowId::Journal, ctx.time);
+                self.show_journal_tab(super::JournalTab::Notebook);
+            }
         }
         self.map_teleport(p, ctx, state, (body, area), out);
-        self.map_explore_go(ctx, state, (area, k));
+        self.map_explore_go(ctx, state, (area, k), clicked.is_some());
         self.map_explore_went(ctx, state, out);
         // The marker's own tooltip over explore mode's.
         if let Some(tip) = self.map_view.waypoint_tip.take() {
@@ -985,14 +1078,15 @@ impl Windows {
 
     /// In explore mode a click on the picture that does not pan moves the camera there, onto the
     /// place under the pointer if there is one, once no second click follows it.
-    fn map_explore_go(&mut self, ctx: &mut Ctx<'_>, state: &GameState, (area, k): (Rect, f32)) {
+    fn map_explore_go(
+        &mut self,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        (area, k): (Rect, f32),
+        still: bool,
+    ) {
         const GO: &str = "Click to go there.";
         let view = &mut self.map_view;
-        let press = if ctx.input.released[0] {
-            view.press.take()
-        } else {
-            None
-        };
         if state.explore.is_none() || !ctx.input.hover(&area) {
             return;
         }
@@ -1013,7 +1107,6 @@ impl Windows {
                 self.tip = Some((here, vec![GO.to_owned()]));
             }
         }
-        let still = press.is_some_and(|p| hypotf(p.0 - mouse.0, p.1 - mouse.1) <= CLICK_SLOP * k);
         if still {
             view.go_waiting = Some((at, ctx.time));
         }
@@ -1033,6 +1126,191 @@ impl Windows {
         }
     }
 
+    /// A press on the picture let go where it began: a click, where it was, and no pan.
+    fn map_click(&mut self, ctx: &Ctx<'_>, area: Rect, k: f32) -> Option<(f32, f32)> {
+        let press = if ctx.input.released[0] {
+            self.map_view.press.take()
+        } else {
+            None
+        }?;
+        let mouse = ctx.input.mouse;
+        let still = hypotf(press.0 - mouse.0, press.1 - mouse.1) <= CLICK_SLOP * k;
+        (still && ctx.input.hover(&area)).then_some(mouse)
+    }
+
+    /// Open the map on a place written as a link, an arrow standing on it that offers Create
+    /// Waypoint, named `name`.
+    pub(super) fn show_place_on_map(&mut self, at: (f64, f64), name: Option<String>, now: f64) {
+        self.show_on_map(at.0, at.1, now);
+        self.map_view.pin = Some((at, name));
+        self.map_view.offer = None;
+    }
+
+    /// Where Create Waypoint stands beside the place it is offered at, inside the picture; `None`
+    /// with nothing offered or the place out of view.
+    fn map_offer_rect(&mut self, p: &Painter<'_>, area: Rect) -> Option<Rect> {
+        let k = p.scale;
+        let view = &mut self.map_view;
+        let r = view.offer.as_ref().and_then(|((ns, ew), _)| {
+            let (x, y) = view.on_screen(area, map_pixel(*ns, *ew));
+            if !area.contains(x, y) {
+                return None;
+            }
+            let (w, h, gap) = (
+                kit::button_label_width(p, CREATE_WAYPOINT) + 18.0 * k,
+                26.0 * k,
+                12.0 * k,
+            );
+            let bx = if x + gap + w <= area.right() {
+                x + gap
+            } else {
+                x - gap - w
+            };
+            let by = (y - h / 2.0).clamp(area.y, area.bottom() - h);
+            Some(Rect::new(bx, by, w, h))
+        });
+        view.offer_button = r;
+        r
+    }
+
+    /// A link's arrow, and Create Waypoint: offered at a place clicked, unless explore mode goes
+    /// there, and at the arrow when it is clicked. Choosing it sets the waypoint there.
+    fn map_offer(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        area: Rect,
+        clicked: Option<(f32, f32)>,
+    ) {
+        use crate::ui::waypoint as wp;
+        let k = p.scale;
+        let view = &mut self.map_view;
+        view.pin_mark = None;
+        if let Some(((ns, ew), name)) = view.pin.clone() {
+            let (px, py) = view.on_screen(area, map_pixel(ns, ew));
+            if area.contains(px, py) {
+                let side = PIN_UNITS * k;
+                #[allow(clippy::cast_precision_loss)]
+                let tip = ARROW[0].1 / ARROW_SIDE as f32 * side;
+                let dst = Rect::new(px - side / 2.0, py - tip, side, side);
+                if let Some(arrow) = p.art.cached(PIN_KEY, || Some(arrow_image(PIN_FILL))) {
+                    p.list.push_clip(area);
+                    p.sprite(&arrow, dst, WHITE);
+                    p.list.pop_clip();
+                }
+                view.pin_mark = Some(dst);
+                if ctx.over(&dst) {
+                    let here = coords_text_f64((ns, ew));
+                    view.waypoint_tip = Some((
+                        name.clone().unwrap_or_else(|| here.clone()),
+                        vec![here, "Click to create a waypoint here.".to_owned()],
+                    ));
+                }
+            }
+        }
+        if self.admin.map_armed {
+            view.offer = None;
+        } else if let Some(at) = clicked {
+            let on = |r: Option<Rect>| r.is_some_and(|r| r.contains(at.0, at.1));
+            let on_list = view.kinds_open && kinds_rect(area, k).contains(at.0, at.1);
+            if on(view.pin_mark) {
+                view.offer.clone_from(&view.pin);
+            } else if state.explore.is_none() && !on(view.waypoint_mark) && !on_list {
+                let (x, y) = view.on_picture(area, at);
+                view.offer = match view.pointed {
+                    Some(at) => Some((at, view.pointed_name.clone())),
+                    None => map_place(x, y).map(|at| (at, None)),
+                };
+            }
+        }
+        let Some((at, name)) = self.map_view.offer.clone() else {
+            self.map_view.offer_button = None;
+            return;
+        };
+        let Some(r) = self.map_offer_rect(p, area) else {
+            return;
+        };
+        if kit::button(p, ctx, r, CREATE_WAYPOINT, true) {
+            self.waypoints.set(wp::Waypoint {
+                ns: at.0,
+                ew: at.1,
+                name,
+            });
+            let view = &mut self.map_view;
+            if view.pin.as_ref().is_some_and(|(pin, _)| *pin == at) {
+                view.pin = None;
+            }
+            view.offer = None;
+            view.offer_button = None;
+        }
+    }
+
+    /// Open the map on a place, close enough to see what is round it.
+    pub(super) fn show_on_map(&mut self, ns: f64, ew: f64, now: f64) {
+        self.open(super::WindowId::Map, now);
+        self.map_view.centre = map_pixel(ns, ew);
+        self.map_view.zoom = self.map_view.zoom.max(JOURNAL_ZOOM);
+    }
+
+    /// The journal's pages with a place, unless turned off: a mark and the page's name each, its
+    /// notes' first line under the pointer, and a click opens the page.
+    fn map_journal(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        area: Rect,
+        out: &mut Outcome,
+    ) {
+        if self.map_journal_hidden {
+            return;
+        }
+        let k = p.scale;
+        let small = TextStyle::new(Family::Body, 11.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let side = JOURNAL_MARK * k;
+        let mut open = None;
+        p.list.push_clip(area);
+        for page in state.journal.pages.iter().filter(|pg| pg.location_set) {
+            let at = self.map_view.on_screen(area, map_pixel(page.ns, page.ew));
+            if !area.contains(at.0, at.1) {
+                continue;
+            }
+            let mark = Rect::new(at.0 - side / 2.0, at.1 - side / 2.0, side, side);
+            p.fill(mark, 0xFF10_1010);
+            p.fill(
+                Rect::new(mark.x + k, mark.y + k, side - 2.0 * k, side - 2.0 * k),
+                JOURNAL_COLOUR,
+            );
+            let name = if page.name().is_empty() {
+                format!("Page {}", page.page_number)
+            } else {
+                page.name().to_owned()
+            };
+            p.text(&small, mark.right() + 3.0 * k, at.1 - 7.0 * k, &name);
+            let reach = mark.inset(-3.0 * k);
+            if ctx.over(&reach) {
+                #[allow(clippy::cast_possible_truncation)]
+                // LINT-OK: a coordinate within the world.
+                let mut lines = vec![coords_text(page.ns as f32, page.ew as f32)];
+                if let Some(first) = page.notes.lines().find(|l| !l.trim().is_empty()) {
+                    lines.insert(0, first.to_owned());
+                }
+                lines.push("Click to open the page.".to_owned());
+                self.map_view.waypoint_tip = Some((name, lines));
+                if ctx.input.clicked(&reach) {
+                    open = Some(page.page_number);
+                }
+            }
+        }
+        p.list.pop_clip();
+        if let Some(page) = open {
+            self.map_view.press = None;
+            self.map_view.drag = None;
+            self.open_notebook_page(page, ctx.time, out);
+        }
+    }
+
     /// The waypoint on the map: a double click on the picture sets it there (on the place under
     /// the pointer, named for it, when there is one), and its marker stands on it, its tip on the
     /// very place.
@@ -1047,7 +1325,12 @@ impl Windows {
         let k = p.scale;
         let mouse = ctx.input.mouse;
         let on_list = self.map_view.kinds_open && kinds_rect(area, k).contains(mouse.0, mouse.1);
-        if !self.admin.map_armed && !on_list && ctx.input.double_clicked(&area) {
+        let on_offer = self
+            .map_view
+            .offer_button
+            .is_some_and(|r| r.contains(mouse.0, mouse.1));
+        self.map_view.waypoint_mark = None;
+        if !self.admin.map_armed && !on_list && !on_offer && ctx.input.double_clicked(&area) {
             let (x, y) = self.map_view.on_picture(area, mouse);
             let picked = match self.map_view.pointed {
                 Some(at) => Some((at, self.map_view.pointed_name.clone())),
@@ -1056,7 +1339,9 @@ impl Windows {
             if let Some(((ns, ew), name)) = picked {
                 self.waypoints.set(wp::Waypoint { ns, ew, name });
             }
-            // The double click neither pans nor moves explore mode's camera.
+            // The double click neither pans, offers Create Waypoint nor moves explore mode's camera.
+            self.map_view.offer = None;
+            self.map_view.offer_button = None;
             self.map_view.press = None;
             self.map_view.drag = None;
             self.map_view.go_waiting = None;
@@ -1082,6 +1367,7 @@ impl Windows {
         p.list.push_clip(area);
         p.sprite_turned(&arrow, dst, WHITE, std::f32::consts::PI);
         p.list.pop_clip();
+        self.map_view.waypoint_mark = Some(dst);
         if ctx.over(&dst) {
             let mut lines = vec![wp::set_text(&w)];
             if let Some(here) = state.here {
@@ -1119,8 +1405,14 @@ impl Windows {
         };
         let (out_at, in_at, fit_at) = (next(30.0), next(30.0), next(44.0));
         view.buttons = Some([out_at, in_at, fit_at]);
-        if state.is_admin && kit::button(p, ctx, next(64.0), "Places", true) {
-            view.kinds_open = !view.kinds_open;
+        view.bar
+            .extend([("Zoom Out", out_at), ("Zoom In", in_at), ("Fit", fit_at)]);
+        if state.is_admin {
+            let places = next(64.0);
+            view.bar.push(("Places", places));
+            if kit::button(p, ctx, places, "Places", true) {
+                view.kinds_open = !view.kinds_open;
+            }
         }
         if kit::button(p, ctx, out_at, "-", view.zoom > 1.0) {
             view.zoom_about(area, view.zoom / BUTTON_STEP, anchor);
@@ -1157,7 +1449,13 @@ impl Windows {
             } else {
                 view.drag = None;
             }
-        } else if over && !armed && ctx.input.pressed[0] {
+        } else if over
+            && !armed
+            && ctx.input.pressed[0]
+            && !view
+                .offer_button
+                .is_some_and(|r| r.contains(mouse.0, mouse.1))
+        {
             view.drag = Some(mouse);
             view.press = Some(mouse);
         }
@@ -1415,7 +1713,7 @@ impl Windows {
         }
         let (px, py) = self.map_view.on_screen(area, (x, y));
         if state.is_admin || state.explore.is_some() {
-            if let Some(arrow) = p.art.cached("map.arrow", || Some(arrow_image())) {
+            if let Some(arrow) = p.art.cached("map.arrow", || Some(arrow_image(ADMIN_FILL))) {
                 let side = ARROW_UNITS * p.scale;
                 #[allow(clippy::cast_precision_loss)]
                 let tip = ARROW[0].1 / ARROW_SIDE as f32 * side;
@@ -1438,7 +1736,12 @@ impl Windows {
     fn tell_map_presses(&mut self, ctx: &mut Ctx<'_>, area: Rect, k: f32) {
         let input = &*ctx.input;
         let mouse = input.mouse;
+        let on_offer = self
+            .map_view
+            .offer_button
+            .is_some_and(|r| r.contains(mouse.0, mouse.1));
         if !input.hover(&area)
+            || on_offer
             || (self.map_view.kinds_open && kinds_rect(area, k).contains(mouse.0, mouse.1))
         {
             return;

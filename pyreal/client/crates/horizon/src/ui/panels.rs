@@ -28,6 +28,7 @@ pub mod info;
 mod items;
 pub use items::loot_all_request;
 mod journal;
+pub use journal::{timer_rows, JournalTab, TimerAction, TimerRow};
 pub mod map;
 mod notebook;
 pub mod options;
@@ -172,7 +173,7 @@ impl WindowId {
             Self::Loot => ((440.0, 374.0), (560.0, 260.0)),
             Self::Vendor => ((820.0, 574.0), (240.0, 140.0)),
             Self::Trade => ((640.0, 434.0), (480.0, 200.0)),
-            Self::Journal => ((720.0, 474.0), (500.0, 160.0)),
+            Self::Journal => ((780.0, 540.0), (480.0, 140.0)),
             Self::Book => ((520.0, 554.0), (700.0, 120.0)),
             Self::Salvage => ((380.0, 294.0), (740.0, 260.0)),
             Self::Maintenance => ((480.0, 254.0), (700.0, 260.0)),
@@ -476,10 +477,21 @@ pub struct Windows {
     squelch_name: String,
     squelch_selected: Option<usize>,
     /// The Journal's tab; whether the game has been told the notebook is on screen; what is
-    /// typed into its search.
+    /// typed into its search, the tag it is narrowed to, how it is sorted and scrolled.
     journal_tab: usize,
     notebook_shown: bool,
     notebook_search: String,
+    notebook_tag: Option<String>,
+    notebook_sort: notebook::Sort,
+    notebook_scroll: f32,
+    /// The page whose deleting is being asked: its number and name.
+    delete_asked: Option<(u32, String)>,
+    /// How far the Journal's timers are scrolled.
+    timers_scroll: f32,
+    /// Whether the map leaves the journal's pages off.
+    pub map_journal_hidden: bool,
+    /// The places written on the open page this frame, each a link to the map: where, and which.
+    pub notebook_links: Vec<(Rect, (f64, f64))>,
     /// The Admin window's own state.
     pub admin: admin::AdminWindow,
     /// The world's services' windows.
@@ -818,7 +830,7 @@ impl Windows {
         self.follow_commerce(ctx, state, out);
         self.follow_social(state, out);
         self.follow_reading(ctx, state, out);
-        self.follow_notebook(state, out);
+        self.follow_notebook(out);
         self.follow_world(ctx, state, out);
         self.follow_learned_spells(ctx, state);
         self.follow_admin(ctx, state);
@@ -1072,15 +1084,28 @@ impl Windows {
         // The figure with its slots around it; the character's sheet on
         // the right.
         // The figure's column, narrower than its share of the window and centred in it; the
-        // whole of it stood in the middle of the window's height.
-        let slot = 42.0 * k;
-        let gap = 6.0 * k;
+        // whole of it stood in the middle of the window's height, made smaller to fit there.
+        // Each sigil the character has unlocked; with none, no row is kept for them.
+        let sigils: Vec<&(&str, u32)> = SIGIL_SLOTS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| state.sigil_slots & (1 << i) != 0)
+            .map(|(_, s)| s)
+            .collect();
+        // The column's height in layout units: the top row and eight rows of slots, the sigils,
+        // then what is held and the gamepad shortcuts, each under its heading.
+        let sigil_units = if sigils.is_empty() { 0.0 } else { 42.0 };
+        let units = 9.0 * 48.0 - 6.0 + 10.0 + sigil_units + 2.0 * (30.0 + 42.0);
+        let u = k.min(body.h / units);
+        let slot = 42.0 * u;
+        let gap = 6.0 * u;
         let step = slot + gap;
         let rows = 8.0;
-        let figure_w = 212.0 * k;
-        let gear_w = figure_w + 2.0 * (slot + 10.0 * k);
-        let held_gap = 30.0 * k;
-        let tall = step + rows * step - gap + 10.0 * k + slot + held_gap + slot;
+        let figure_w = 212.0 * u;
+        let gear_w = figure_w + 2.0 * (slot + 10.0 * u);
+        let held_gap = 30.0 * u;
+        let sigil_row = sigil_units * u;
+        let tall = units * u;
         let gear = Rect::new(
             body.x + (DOLL_COLUMN * k - gear_w) / 2.0,
             body.y + ((body.h - tall) / 2.0).max(0.0),
@@ -1096,7 +1121,7 @@ impl Windows {
         // The top row over the figure, a column down each side of it, the sigils under it,
         // and what is held in a row of its own at the foot.
         let figure = Rect::new(
-            gear.x + slot + 10.0 * k,
+            gear.x + slot + 10.0 * u,
             gear.y + step,
             figure_w,
             rows * step - gap,
@@ -1117,10 +1142,10 @@ impl Windows {
             let w = n as f32 * slot + n.saturating_sub(1) as f32 * gap;
             gear.x + (gear.w - w) / 2.0
         };
-        let mut x = centred_row(top.len(), 10.0 * k);
+        let mut x = centred_row(top.len(), 10.0 * u);
         for s in top {
             tiles.push((Rect::new(x, gear.y, slot, slot), s));
-            x += slot + 10.0 * k;
+            x += slot + 10.0 * u;
         }
         for (i, s) in LEFT_SLOTS.iter().enumerate() {
             #[allow(clippy::cast_precision_loss)]
@@ -1134,35 +1159,44 @@ impl Windows {
                 tiles.push((Rect::new(gear.right() - slot, y, slot, slot), s));
             }
         }
-        // Each sigil the character has unlocked.
-        let sigils: Vec<&(&str, u32)> = SIGIL_SLOTS
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| state.sigil_slots & (1 << i) != 0)
-            .map(|(_, s)| s)
-            .collect();
-        let sigil_y = figure.bottom() + 10.0 * k;
+        let sigil_y = figure.bottom() + 10.0 * u;
         let mut x = centred_row(sigils.len(), gap);
         for s in sigils {
             tiles.push((Rect::new(x, sigil_y, slot, slot), s));
             x += step;
         }
         // What is held, spread apart, each under a small heading of its own.
-        let held_y = sigil_y + slot + held_gap;
+        let held_y = sigil_y + sigil_row + held_gap;
         let heading =
             TextStyle::new(Family::Heading, 15.0, ctx.colours.dim()).edge(ctx.colours.edge());
-        let spread = 34.0 * k;
+        let spread = 34.0 * u;
         let mut x = centred_row(HELD_SLOTS.len(), spread);
         for (s, label) in HELD_SLOTS.iter().zip(["WEAPON", "SHIELD", "AMMO"]) {
             p.text_in(
                 &heading,
-                Rect::new(x - spread / 2.0, held_y - 20.0 * k, slot + spread, 16.0 * k),
+                Rect::new(x - spread / 2.0, held_y - 20.0 * u, slot + spread, 16.0 * u),
                 Align::Centre,
                 label,
             );
             tiles.push((Rect::new(x, held_y, slot, slot), s));
             x += slot + spread;
         }
+        // Under them, the fighting stance's controls to put on the gamepad's hotbars.
+        let shortcuts_y = held_y + slot + held_gap;
+        p.text_in(
+            &heading,
+            Rect::new(gear.x, shortcuts_y - 20.0 * u, gear.w, 16.0 * u),
+            Align::Centre,
+            "GAMEPAD SHORTCUTS",
+        );
+        stance_controls(
+            p,
+            ctx,
+            state,
+            Rect::new(gear.x, shortcuts_y, gear.w, slot),
+            out,
+            &mut self.tip,
+        );
         for (r, (name, mask)) in tiles {
             let worn = state.equipped.iter().find(|e| e.worn & mask != 0);
             // The shield's slot takes what is dropped on it there: a shield, or with Dual Wield
@@ -1769,6 +1803,68 @@ impl Windows {
             }
         }
         p.list.pop_clip();
+    }
+}
+
+/// The fighting stance's five controls in a row over `r`, each to be put on a cross hotbar slot:
+/// confirming one starts the bind-to-hotbar notice, and the mouse drags it onto a slot. Each
+/// names itself (for the weapon in hand) while the pointer is over it.
+fn stance_controls(
+    p: &mut Painter<'_>,
+    ctx: &mut Ctx<'_>,
+    state: &GameState,
+    r: Rect,
+    out: &mut Outcome,
+    tip: &mut Option<(String, Vec<String>)>,
+) {
+    use crate::ui::hud::cross::{self, CrossBind, PowerAct};
+    let k = p.scale;
+    let missile = state.combat_mode == pyreal_client_contract::combat_mode::MISSILE;
+    let side = r.h;
+    let gap = 10.0 * k;
+    // The row of tiles stands centred across `r`.
+    #[allow(clippy::cast_precision_loss)]
+    let count = PowerAct::ALL.len() as f32;
+    let left = r.x + ((r.w - (count * side + (count - 1.0) * gap)) / 2.0).max(0.0);
+    for (i, act) in PowerAct::ALL.into_iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let tile = Rect::new(
+            left + i as f32 * (side + gap),
+            r.y + (r.h - side) / 2.0,
+            side,
+            side,
+        );
+        if tile.right() > r.right() {
+            break;
+        }
+        let bind = CrossBind::Power(act);
+        let pressed = cross::draw_slot(p, ctx, tile, None, Some(bind), missile, false, false);
+        if ctx.input.hover(&tile) {
+            *tip = Some((act.name(missile).to_owned(), Vec::new()));
+        }
+        if !pressed {
+            continue;
+        }
+        if ctx.input.pad.mode.is_some() {
+            out.bind_to_hotbar = Some(bind);
+        } else {
+            // Pressed, it can be dragged onto a cross hotbar slot.
+            *ctx.drag = Some(crate::ui::Drag {
+                item: pyreal_primitives::ObjectId(0),
+                look: None,
+                spell_look: None,
+                from_shortcut: None,
+                icon: None,
+                origin: ctx.input.mouse,
+                active: false,
+                on_click: None,
+                spell: None,
+                from_spell_slot: None,
+                component: false,
+                stance: Some(act),
+                command: None,
+            });
+        }
     }
 }
 

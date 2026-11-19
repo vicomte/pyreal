@@ -16,6 +16,27 @@ use pyreal_client_model::cmd::waypoint::{place_text, WaypointCommand};
 
 use crate::art::Image;
 
+/// A route's step and its count in a title that ends `(2/5)`, and the title before it.
+fn route_step(title: &str) -> Option<(&str, u32, u32)> {
+    let (stem, tail) = title.trim().rsplit_once(" (")?;
+    let (step, of) = tail.strip_suffix(')')?.split_once('/')?;
+    Some((stem, step.trim().parse().ok()?, of.trim().parse().ok()?))
+}
+
+/// The page with the next step of a route, with a place, after arriving at the step called
+/// `arrived`: an Advocate's route pages are titled `To Fort Tethana (1/2)` and so on.
+#[must_use]
+pub fn next_route_page<'a>(
+    pages: &'a [pyreal_client_contract::journal::JournalPage],
+    arrived: &str,
+) -> Option<&'a pyreal_client_contract::journal::JournalPage> {
+    let (stem, step, of) = route_step(arrived)?;
+    (step < of).then_some(())?;
+    pages.iter().find(|p| {
+        p.location_set
+            && route_step(&p.title).is_some_and(|(s, n, o)| s == stem && n == step + 1 && o == of)
+    })
+}
 /// A unit of the game's coordinates, in metres: ten landcells of 24.
 pub const METRES_PER_UNIT: f64 = 240.0;
 
@@ -415,5 +436,32 @@ mod tests {
         assert!(WaypointStyle::Radar.on_radar() && !WaypointStyle::Radar.on_character());
         assert!(!WaypointStyle::OnCharacter.on_radar());
         assert!(WaypointStyle::Both.on_radar() && WaypointStyle::Both.on_character());
+    }
+
+    #[test]
+    fn arriving_at_a_route_s_step_finds_the_next_step_s_page() {
+        use pyreal_client_contract::journal::JournalPage;
+        let step = |title: &str, placed: bool| JournalPage {
+            title: title.into(),
+            location_set: placed,
+            ns: 42.3,
+            ew: -33.3,
+            ..JournalPage::default()
+        };
+        let pages = [
+            step("To Fort Tethana (1/3)", true),
+            step("To Fort Tethana (2/3)", true),
+            step("To Fort Tethana (3/3)", false),
+            step("To Yaraq (2/3)", true),
+        ];
+        let next = |arrived| next_route_page(&pages, arrived).map(|p| p.title.as_str());
+        assert_eq!(next("To Fort Tethana (1/3)"), Some("To Fort Tethana (2/3)"));
+        assert_eq!(
+            next("To Fort Tethana (2/3)"),
+            None,
+            "the last step has no place"
+        );
+        assert_eq!(next("To Fort Tethana (3/3)"), None);
+        assert_eq!(next("The well"), None);
     }
 }

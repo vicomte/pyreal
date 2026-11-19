@@ -505,3 +505,172 @@ fn a_double_click_on_the_map_sets_the_waypoint_there_and_explore_mode_goes_nowhe
         assert_eq!(w.name, None, "no place under the pointer");
     }
 }
+
+/// Under the picture every control and the player's coordinates stand inside the window and clear
+/// of each other, for a player and for an administrator with Places and Teleport, at the window's
+/// own size and at a larger interface scale.
+#[test]
+fn the_controls_under_the_map_never_overlap_for_a_player_or_an_administrator() {
+    let art = built_in();
+    for scale in [1.0, 1.5] {
+        for admin in [false, true] {
+            let mut state = if admin { administrator() } else { player() };
+            state.coords = Some((42.3, -33.3));
+            let mut h = Harness {
+                ui: HorizonUi::new(
+                    Arc::clone(&art),
+                    HorizonOptions {
+                        scale: Some(scale),
+                        ..Default::default()
+                    },
+                ),
+                list: DrawList::default(),
+                input: InputFrame::default(),
+                screen: (1920.0, 1080.0),
+            };
+            h.frame(&state);
+            h.ui.windows.open(WindowId::Map, 0.0);
+            h.ui.windows
+                .waypoints
+                .set(pyreal_horizon::ui::waypoint::Waypoint {
+                    ns: 42.3,
+                    ew: -33.3,
+                    name: Some("The well".into()),
+                });
+            h.frame(&state);
+            h.frame(&state);
+            let window =
+                h.ui.windows
+                    .rects(scale)
+                    .into_iter()
+                    .find(|(id, _)| *id == WindowId::Map)
+                    .map(|(_, r)| r)
+                    .expect("the map window");
+            let bar = h.ui.windows.map_view.bar.clone();
+            let names: Vec<&str> = bar.iter().map(|(n, _)| *n).collect();
+            let mut want = vec![
+                "Zoom Out",
+                "Zoom In",
+                "Fit",
+                "Coordinates",
+                "Journal pages",
+                "Add Waypoint to Journal",
+            ];
+            if admin {
+                want.extend(["Places", "Teleport"]);
+            }
+            for w in &want {
+                assert!(
+                    names.contains(w),
+                    "{w} at {scale} (admin {admin}): {names:?}"
+                );
+            }
+            for (i, (a, ra)) in bar.iter().enumerate() {
+                assert!(
+                    ra.x >= window.x
+                        && ra.right() <= window.right()
+                        && ra.bottom() <= window.bottom(),
+                    "{a} {ra:?} outside {window:?} at {scale} (admin {admin})"
+                );
+                for (b, rb) in &bar[i + 1..] {
+                    assert!(
+                        ra.intersect(rb).is_none(),
+                        "{a} {ra:?} overlaps {b} {rb:?} at {scale} (admin {admin})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A press on the picture let go where it began, without the pause before a double click.
+fn single_click(h: &mut Harness, state: &GameState, at: (f32, f32)) {
+    h.move_to(at.0, at.1);
+    h.frame(state);
+    h.input.note_left_press(10_000);
+    h.press();
+    h.frame(state);
+    h.release();
+    h.frame(state);
+}
+
+/// A single click on the map offers Create Waypoint beside the place clicked, for a player and for
+/// an administrator, and choosing it sets the waypoint there; an administrator's teleport, once
+/// armed, offers nothing.
+#[test]
+fn a_single_click_on_the_map_offers_create_waypoint_there_for_a_player_or_an_administrator() {
+    for state in [player(), administrator()] {
+        let mut h = Harness::with_built_in_art();
+        h.frame(&state);
+        h.ui.windows.open(WindowId::Map, 0.0);
+        h.frame(&state);
+        let r = h.ui.windows.map_picture.expect("the map's picture");
+        let at = (r.x + r.w * 0.3, r.y + r.h * 0.6);
+        single_click(&mut h, &state, at);
+        let (place, name) = h.ui.windows.map_view.offer.clone().expect("an offer");
+        assert_eq!(name, None, "no place under the pointer");
+        let back =
+            h.ui.windows
+                .map_view
+                .on_screen(r, map_pixel(place.0, place.1));
+        assert!((back.0 - at.0).abs() < 2.0 && (back.1 - at.1).abs() < 2.0);
+        assert!(h.ui.windows.waypoints.active.is_none(), "only offered");
+        let button = h.ui.windows.map_view.offer_button.expect("Create Waypoint");
+        assert!(r.contains(button.x, button.y) && r.contains(button.right(), button.bottom()));
+        assert!(
+            !button.contains(at.0, at.1),
+            "beside the place, clear of a second click"
+        );
+        click(&mut h, &state, middle(button));
+        let w = h.ui.windows.waypoints.active.clone().expect("a waypoint");
+        assert_eq!((w.ns, w.ew), place);
+        assert!(h.ui.windows.map_view.offer.is_none());
+        if state.is_admin {
+            let teleport = h.ui.windows.admin.map_button.expect("Teleport");
+            click(&mut h, &state, middle(teleport));
+            assert!(h.ui.windows.admin.map_armed);
+            single_click(&mut h, &state, at);
+            assert!(
+                h.ui.windows.map_view.offer.is_none(),
+                "the teleport's click"
+            );
+        }
+    }
+}
+
+/// A drag pans and offers nothing, and a press elsewhere in the window lets an offer go.
+#[test]
+fn a_drag_offers_nothing_and_a_press_elsewhere_lets_create_waypoint_go() {
+    let state = player();
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    h.ui.windows.open(WindowId::Map, 0.0);
+    h.frame(&state);
+    let r = h.ui.windows.map_picture.expect("the map's picture");
+    wheel(&mut h, &state, middle(r), 4.0);
+    let from = middle(r);
+    let was = h.ui.windows.map_view.centre;
+    h.move_to(from.0, from.1);
+    h.press();
+    h.frame(&state);
+    h.move_to(from.0 + 40.0, from.1 + 20.0);
+    h.frame(&state);
+    h.release();
+    h.frame(&state);
+    assert_ne!(h.ui.windows.map_view.centre, was, "the drag pans");
+    assert!(
+        h.ui.windows.map_view.offer.is_none(),
+        "a drag offers nothing"
+    );
+    single_click(&mut h, &state, (r.x + r.w * 0.3, r.y + r.h * 0.6));
+    assert!(h.ui.windows.map_view.offer.is_some());
+    let fit =
+        h.ui.windows
+            .map_view
+            .bar
+            .iter()
+            .find(|(n, _)| *n == "Journal pages");
+    let toggle = fit.expect("the journal's checkbox").1;
+    click(&mut h, &state, middle(toggle));
+    assert!(h.ui.windows.map_view.offer.is_none());
+}

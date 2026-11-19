@@ -137,7 +137,46 @@ server's patch logic works unchanged. A server that knows the extension can do m
   revision downloads its records in the patch itself instead of purging them for the client to ask
   for one by one, and purges only the overlay's whole-landblock deletions.
 
-## 6. Where reimplementations differ
+## 6. Dereth's extensions (this client and Empyrean only)
+
+Messages only this client and Empyrean read, numbered after the overlay's and outside the
+client's `0xF7E2`–`0xF7EB` range, so a retail client never dispatches them. Neither side sends one
+the other has not asked for.
+
+- **`0xF7EF` handshake** (client to server on queue 5, answered on queue 9): a packed list of extension names (strings). The
+  client sends the ones it knows once its account is in, before entering the world; a server that
+  knows the message answers with those of them it has, and keeps them for the connection. A retail
+  server drops it unread, and the client then uses none. Empyrean has `ai_fellows`,
+  `advocate_offers` and `quest_timers`.
+- **`0xF7F0` AI fellows** (`ai_fellows`; server to client, queue 9): the AI Players in the
+  player's company (in their fellowship, or following them), all of them each time and sent when
+  that changes: a packed list of the guid (dword), name (string), mode (string: `aggressive`,
+  `defensive`, `assist`, `heal` or `passive`) and whether it is in the fellowship (dword, 0 or 1).
+  The player sets a mode with the chat command `@aifellow <name|guid|all> <mode>`, which any
+  client can type; a fellowship's leader sets those in it, any player those following them.
+- **`0xF7F1` waypoint** (`advocate_offers`; server to client, queue 9): a waypoint an Advocate
+  offered and the player accepted in the game's Yes/No dialog: who offered it (guid dword, name
+  string), a label (string), and the spot as a cell (dword) and x, y and z in its landblock
+  (floats).
+- **`0xF7F2` journal entry** (`advocate_offers`; server to client, queue 9): a note an Advocate
+  offered and the player accepted: who offered it (guid dword, name string), a title and the text
+  (strings), and when the note has a place a dword 1 and its north and east coordinates (floats).
+  A client without the extension is sent an accepted waypoint or note as a chat line. The client
+  keeps it as a journal page tagged Advocate; the journal itself is the client's own file and is
+  never sent to the server.
+- **`0xF7F3` quest timers** (`quest_timers`; server to client, queue 9): the character's quest
+  registry and when each quest may be solved again. The server's unix time when sent (dword), then
+  whether this is the whole list (dword, 1) or only changes (0), a packed list of quests, and a
+  packed list of the names of quests erased (strings; empty in a whole list). Each quest is its
+  registry name and the quest table's message (strings, the message empty when none), the times
+  solved (dword), the most solves allowed (int, -1 for no limit), the seconds between solves after
+  `quest_mindelta_rate` (dword), the last solve and when it may be solved again (dwords, unix
+  seconds; 0 when it may be now, `0xFFFFFFFF` when never, as for a quest at its most solves or
+  missing from the quest table). The whole list comes once the character is in the world, then a
+  change whenever a quest is solved, set or erased. The client puts each time on its own clock by
+  the difference from the server's, and shows the running ones in the Journal's Timers tab.
+
+## 7. Where reimplementations differ
 
 | topic | the client | common reimplementations |
 |---|---|---|

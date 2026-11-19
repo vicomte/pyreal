@@ -20,8 +20,7 @@ pub const STEM: &str = "Journal";
 ///
 /// `directory` is the client's settings directory, `world` is the current world name, and
 /// `character` is the local player's singular object name. All three are
-/// process globals in the client; here the host hands them over through
-/// [`crate::view::GameView::journal_identity`].
+/// process globals in the client; here the host hands them over.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalIdentity {
     pub directory: std::path::PathBuf,
@@ -94,6 +93,85 @@ pub fn delta_time_to_string(seconds: i64) -> String {
     s
 }
 
+/// The end of the line a world says when a quest was solved too recently: the time it gives
+/// follows, then a full stop.
+pub const QUEST_AGAIN: &str = "You may complete this quest again in ";
+
+/// The seconds a "You may complete this quest again in 1d 2h 3m 4s." line gives, read from
+/// anywhere in `text`; `None` for any other line.
+#[must_use]
+pub fn heard_quest_seconds(text: &str) -> Option<u32> {
+    let at = text.find(QUEST_AGAIN)? + QUEST_AGAIN.len();
+    let rest = &text[at..];
+    let span = rest.split('.').next()?.trim();
+    let mut total: u64 = 0;
+    let mut any = false;
+    for part in span.split_whitespace() {
+        let unit = part.trim_start_matches(|c: char| c.is_ascii_digit());
+        let n: u64 = part[..part.len() - unit.len()].parse().ok()?;
+        total += n * match unit {
+            "d" => 86_400,
+            "h" => 3_600,
+            "m" => 60,
+            "s" => 1,
+            _ => return None,
+        };
+        any = true;
+    }
+    any.then(|| u32::try_from(total).unwrap_or(u32::MAX))
+}
+
+/// A time left in its two largest parts: `6d 4h`, `3h 12m`, `40m 5s`, `50s`.
+#[must_use]
+pub fn short_time(seconds: f64) -> String {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let s = seconds.max(0.0).ceil() as u64;
+    let parts = [
+        (s / 86_400, "d"),
+        (s / 3_600 % 24, "h"),
+        (s / 60 % 60, "m"),
+        (s % 60, "s"),
+    ];
+    let first = parts.iter().position(|(n, _)| *n > 0).unwrap_or(3);
+    parts[first..]
+        .iter()
+        .take(2)
+        .filter(|(n, _)| *n > 0 || first == 3)
+        .map(|(n, u)| format!("{n}{u}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// What a quest timer is called: the quest's message when it is a short one, else its name with
+/// a capital first letter.
+#[must_use]
+pub fn quest_title(name: &str, message: &str) -> String {
+    let message = message.trim();
+    if !message.is_empty() && message.chars().count() <= 48 && !message.contains('\n') {
+        return message.to_owned();
+    }
+    let mut chars = name.trim().chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
+}
+
+/// The chat line when a page's timer runs out.
+#[must_use]
+pub fn timer_ready_line(name: &str) -> String {
+    if name.is_empty() {
+        "A journal timer is ready.".to_owned()
+    } else {
+        format!("Your journal timer {name} is ready.")
+    }
+}
+
+/// The chat line when a quest's timer runs out.
+#[must_use]
+pub fn quest_ready_line(title: &str) -> String {
+    format!("You may complete {title} again.")
+}
+
 /// One journal page.
 ///
 /// The two coordinates are named for what they hold rather than for retail's x/y; see
@@ -123,7 +201,54 @@ pub struct JournalPage {
     pub timer_running: bool,
     /// Whether a location is set.
     pub location_set: bool,
+    /// When the page was written and last changed, in Unix seconds; 0 when not known.
+    pub made: u64,
+    pub edited: u64,
+    /// Who gave the page, when someone did (an Advocate's note).
+    pub from: String,
 }
+
+/// The separator between a page's tags in its label.
+pub const TAG_SEPARATOR: char = ',';
+
+impl JournalPage {
+    /// The page's tags: its label split at commas, trimmed, the empty ones left out.
+    pub fn tags(&self) -> impl Iterator<Item = &str> {
+        self.label
+            .split(TAG_SEPARATOR)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Whether one of the page's tags is `tag`, ignoring case.
+    #[must_use]
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags().any(|t| t.eq_ignore_ascii_case(tag))
+    }
+
+    /// The name the page goes by: its title, else its label.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        let title = self.title.trim();
+        if title.is_empty() {
+            self.label.trim()
+        } else {
+            title
+        }
+    }
+
+    /// Seconds until the running timer is ready at `now`: `None` when it is not running, and
+    /// zero or less once it is ready.
+    #[must_use]
+    pub fn timer_left(&self, now: f64) -> Option<f64> {
+        (self.timer_running && self.timer_stamp > 0.0).then_some(self.timer_stamp - now)
+    }
+}
+
+/// The tag of a page made from a timer heard in chat or taken from the Timers tab.
+pub const TIMER_TAG: &str = "Timer";
+/// The tag of a page an Advocate gave.
+pub const ADVOCATE_TAG: &str = "Advocate";
 
 /// Shared notebook gestures. Drafts carry their identity generation and page.
 #[derive(Debug, Clone, PartialEq)]
@@ -145,9 +270,45 @@ pub enum JournalAction {
     StampLocation,
     ToggleTimer,
     Visibility(bool),
-    Sort(u8),
-    Search(String),
-    ResetSearch,
+    /// A page titled `title` with its timer started for `seconds`: the page of that title tagged
+    /// Timer when there is one, else a new one. An empty title is the last timer heard in chat.
+    TrackTimer {
+        title: String,
+        seconds: u32,
+    },
+    /// A new page titled `title` at a place.
+    NewPageAt {
+        title: String,
+        ns: f64,
+        ew: f64,
+    },
+}
+
+/// A quest's timer as the world reported it ([`JournalView::quests`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuestTimerView {
+    /// The quest's registry name.
+    pub name: String,
+    /// What the timer is called: the quest's message when it has a short one, else its name.
+    pub title: String,
+    pub solves: u32,
+    /// `-1` for no limit.
+    pub max_solves: i32,
+    /// Seconds between solves; 0 for a quest with no timer.
+    pub min_delta: u32,
+    /// When it may be solved again, on the game's clock; `None` when never.
+    pub ready_at: Option<f64>,
+}
+
+/// A quest timer heard in a chat line ("You may complete this quest again in ...").
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HeardTimer {
+    /// What the timer is called: who the player was dealing with, when known.
+    pub title: String,
+    /// When it may be solved again, on the game's clock.
+    pub ready_at: f64,
+    /// The seconds the line gave.
+    pub seconds: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -158,12 +319,18 @@ pub struct JournalView {
     pub loaded: bool,
     pub revision: u64,
     pub generation: u64,
-    pub sort: u8,
-    pub reverse: bool,
-    pub search: String,
-    pub filtered: bool,
     pub page_loads: u32,
     pub page_saves: u32,
+    /// The character's quest timers from a world with the quest-timers extension; empty
+    /// otherwise.
+    pub quests: Vec<QuestTimerView>,
+    /// Whether the world sends quest timers.
+    pub quests_known: bool,
+    /// Quest timers heard in chat this session, newest last.
+    pub heard: Vec<HeardTimer>,
+    /// The game's clock when the session's first tick came: a timer that was ready before it was
+    /// ready before the player arrived.
+    pub since: f64,
 }
 
 /// File work is performed by the host, outside the shared notebook.

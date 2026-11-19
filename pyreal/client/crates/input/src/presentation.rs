@@ -652,7 +652,7 @@ mod era_tests {
             f(&mut features);
             features
         };
-        let flags: [(&str, EraFeatures); 20] = [
+        let flags: [(&str, EraFeatures); 18] = [
             (
                 "PlayerOption_FellowshipShareLoot",
                 without(|f| f.fellowship_share_loot = false),
@@ -667,8 +667,6 @@ mod era_tests {
             ),
             ("ToggleHousePanel", without(|f| f.housing = false)),
             ("ToggleCharacterTitlePanel", without(|f| f.titles = false)),
-            ("ToggleJournalPanel", without(|f| f.journal = false)),
-            ("TogglePageListPanel", without(|f| f.journal = false)),
             ("ToggleContractsPanel", without(|f| f.contracts = false)),
             ("ToggleTradePanel", without(|f| f.trade = false)),
             (
@@ -712,6 +710,11 @@ mod era_tests {
             assert!(row.needs().met(Some(&EraFeatures::ALL)), "{name}");
             assert!(!row.needs().met(Some(&off)), "{name}");
             assert!(row.needs().met(None), "{name}");
+        }
+        // The journal is the client's own, so its keys stay in every world.
+        let no_journal = without(|f| f.journal = false);
+        for name in ["ToggleJournalPanel", "TogglePageListPanel"] {
+            assert!(row_named(name).needs().met(Some(&no_journal)), "{name}");
         }
         for row in ROWS {
             assert_eq!(row.listed(None), row.shown(), "{}", row.action_name);

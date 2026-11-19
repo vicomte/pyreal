@@ -798,6 +798,55 @@ pub fn apply_events_at_boundary(
                     .push((m.confirmation_type, m.context_id));
             }
 
+            // ---- Dereth's extensions, from a world that agreed to them --------------------
+            Opcode::DERETH_AI_FELLOWS
+                if inter.has_extension(pyreal_protocol::extensions::AI_FELLOWS) =>
+            {
+                let Ok(m) = pyreal_protocol::extensions::AiFellows::read(&mut r) else {
+                    continue;
+                };
+                game.ai_fellows = m.fellows;
+            }
+            // An Advocate's waypoint, accepted: set as `@way` would set it.
+            Opcode::DERETH_WAYPOINT
+                if inter.has_extension(pyreal_protocol::extensions::ADVOCATE_OFFERS) =>
+            {
+                let Ok(m) = pyreal_protocol::extensions::Waypoint::read(&mut r) else {
+                    continue;
+                };
+                inter.push_waypoint_command(
+                    pyreal_client_model::dereth_extensions::waypoint_command(&m),
+                    pyreal_client_contract::chat::interface::window::MAIN,
+                );
+            }
+            // An Advocate's note, accepted: a page of its own in the journal.
+            Opcode::DERETH_JOURNAL_ENTRY
+                if inter.has_extension(pyreal_protocol::extensions::ADVOCATE_OFFERS) =>
+            {
+                let Ok(m) = pyreal_protocol::extensions::JournalEntry::read(&mut r) else {
+                    continue;
+                };
+                game.journal
+                    .add_page(pyreal_client_model::dereth_extensions::journal_page(&m));
+                game.scroll.add_feedback_to_scroll(
+                    &pyreal_client_model::dereth_extensions::journal_line(&m),
+                    pyreal_client_model::chat::text_type::DEFAULT,
+                    true,
+                    pyreal_client_contract::chat::interface::window::MAIN,
+                    pyreal_client_contract::feedback::Feedback::LOCAL,
+                );
+            }
+
+            // The character's quest timers, from a world that sends them.
+            Opcode::DERETH_QUEST_TIMERS
+                if inter.has_extension(pyreal_protocol::extensions::QUEST_TIMERS) =>
+            {
+                let Ok(m) = pyreal_protocol::extensions::QuestTimers::read(&mut r) else {
+                    continue;
+                };
+                game.journal.set_quest_timers(&m, inter.last_use_time.0);
+            }
+
             // Vendor-info handling opens the shop. This is the active vendor id's writer;
             // without it `toolbar::splitter`'s vendor arm and `use_object`'s two vendor guards
             // would be inert.

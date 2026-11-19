@@ -130,6 +130,7 @@ fn chat_entry_state<S: Shell>(cx: &crate::runtime::Cx<'_, S>, g: &mut GameState)
         .get(&window::MAIN)
         .map(|e| e.text.clone())
         .unwrap_or_default();
+    g.reply_targets = cx.model().chat.reply_targets();
 }
 
 /// A game phase in the words the interface shows.
@@ -213,7 +214,7 @@ pub fn snapshot<S: Shell>(
         client_version: cx.client_version().to_owned(),
         host: cx.config().host.clone(),
         address: world_address(&cx.config().host, cx.config().port),
-        account: cx.config().account.clone(),
+        account: cx.config().account_name().to_owned(),
         world: pregame.world_name.clone(),
         sigil_slots: cx.hud().view(cx.objects()).aetheria_slots(),
         local_time: local_clock(cx.hud().view(cx.objects()).utc_offset_secs()),
@@ -521,11 +522,12 @@ pub fn snapshot<S: Shell>(
     g.packet_loss = v.packet_loss_percent();
     // How lately the server was heard, as the modern interface's lamp reads it each frame.
     g.link_quiet = pyreal_client_runtime::net::link_status_holder::connection_status(cx.now());
-    g.map_profile = pyreal_client_contract::panels::map::profile(&v);
     g.fellowship_view = v.fellowship();
+    g.ai_fellows = v.ai_fellows();
     g.squelches = v.squelch_list();
     g.journal = v.journal();
-    g.notebook = pyreal_client_contract::era::EraSurface::Journal.offered(v.era_features());
+    g.clock = v.now();
+    g.wall = pyreal_client_runtime::platform::clock::system_unix_time().map_or(0, |d| d.as_secs());
     g.friend_list = v.friends();
     g.options = pyreal_client_contract::view::PlayerOption::ALL
         .iter()

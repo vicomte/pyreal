@@ -11,6 +11,8 @@
 // For the highlights: the depth, and each pixel's object plus one.
 @group(1) @binding(4) var t_depth: texture_depth_2d;
 @group(1) @binding(5) var t_objects: texture_2d<u32>;
+// For the rings: each pixel's surface bits (alpha), which mark what moves.
+@group(1) @binding(6) var t_surface: texture_2d<f32>;
 
 // The selected object's outline and target ring, and the hovered one's outline.
 // The bloom's strength in the dark (an exposure from the first to the second, log2): glows, lamps
@@ -68,27 +70,39 @@ fn surface_step(px: vec2<i32>, p: vec2<f32>, w: vec3<f32>, step: vec2<i32>) -> v
     return select(to_b, to_a, dot(to_a, to_a) < dot(to_b, to_b));
 }
 
-// How much a ring round `c` may lie on the world point `w`, whose surface steps a pixel across and
-// down are `sx` and `sy`: none on walls and the sides of things, none on a floor above or below.
-fn ground_share(w: vec3<f32>, c: vec3<f32>, slack: f32, sx: vec3<f32>, sy: vec3<f32>) -> f32 {
-    let up = abs(normalize(cross(sx, sy)).z);
-    // As high or low as the slope under it climbs from the middle, so steep hillsides keep it.
-    let climb = sqrt(max(1.0 - up * up, 0.0)) / max(up, 0.2);
-    if (abs(w.z - c.z) > slack + length(w.xy - c.xy) * (climb + 0.3)) {
-        return 0.0;
-    }
-    return smoothstep(0.2, 0.35, up);
+// Whether pixel `px` is of something that moves: a creature, a person, or any server object
+// such as a sign, a door or a chest. A ring lies on the ground, never on one of these.
+fn moves(px: vec2<i32>) -> bool {
+    return (u32(textureLoad(t_surface, px, 0).a * 255.0 + 0.5) & G_MOVES) != 0u;
 }
 
-// The target ring under the selected object: a band on whatever stands round its feet.
+// How much a ring round `c` may lie on the world point `w`, whose surface steps a pixel across and
+// down are `sx` and `sy`: none on walls and the sides of things (steeper than about 60 degrees),
+// none on a floor above or below, or a table top.
+fn ground_share(w: vec3<f32>, c: vec3<f32>, slack: f32, sx: vec3<f32>, sy: vec3<f32>) -> f32 {
+    let up = abs(normalize(cross(sx, sy)).z);
+    let level = smoothstep(0.42, 0.55, up);
+    if (level <= 0.0) {
+        return 0.0;
+    }
+    // As high or low as the slope under it climbs from the middle, so steep hillsides keep it,
+    // and a stair's rise on flat treads.
+    let climb = sqrt(max(1.0 - up * up, 0.0)) / up;
+    if (abs(w.z - c.z) > slack + length(w.xy - c.xy) * (climb + 0.35)) {
+        return 0.0;
+    }
+    return level;
+}
+
+// The target ring under the selected object: a band on the ground round its feet.
 fn ring(px: vec2<i32>, p: vec2<f32>) -> f32 {
     let d = textureLoad(t_depth, px, 0);
-    if (d <= 0.0 || textureLoad(t_objects, px, 0).r == frame.select.x) {
+    if (d <= 0.0 || textureLoad(t_objects, px, 0).r == frame.select.x || moves(px)) {
         return 0.0;
     }
     let w = world_at(p, d);
     let c = frame.ring;
-    let share = ground_share(w, c.xyz, 0.6 + c.w * 0.3,
+    let share = ground_share(w, c.xyz, 0.25 + c.w * 0.1,
                              surface_step(px, p, w, vec2<i32>(1, 0)),
                              surface_step(px, p, w, vec2<i32>(0, 1)));
     if (share <= 0.0) {
@@ -112,7 +126,7 @@ fn outside_edge(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 }
 
 // How much of the waypoint's ring pixel `px` takes: x its fill, y its dark edge. The ring lies on
-// whatever stands round its middle, the object it rings left bare, with an arrowhead on its rim
+// the ground round its middle, the object it rings left bare, with an arrowhead on its rim
 // the way to the waypoint.
 fn waypoint_ring(px: vec2<i32>, p: vec2<f32>) -> vec2<f32> {
     let c = frame.waypoint;
@@ -121,13 +135,13 @@ fn waypoint_ring(px: vec2<i32>, p: vec2<f32>) -> vec2<f32> {
     }
     let d = textureLoad(t_depth, px, 0);
     let around = bitcast<u32>(frame.waypoint_way.z);
-    if (d <= 0.0 || (around != 0u && textureLoad(t_objects, px, 0).r == around)) {
+    if (d <= 0.0 || (around != 0u && textureLoad(t_objects, px, 0).r == around) || moves(px)) {
         return vec2<f32>(0.0);
     }
     let w = world_at(p, d);
     let sx = surface_step(px, p, w, vec2<i32>(1, 0));
     let sy = surface_step(px, p, w, vec2<i32>(0, 1));
-    let level = ground_share(w, c.xyz, 0.8, sx, sy);
+    let level = ground_share(w, c.xyz, 0.4, sx, sy);
     if (level <= 0.0) {
         return vec2<f32>(0.0);
     }

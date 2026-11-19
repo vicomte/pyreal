@@ -611,6 +611,7 @@ impl Windows {
             26.0 * k,
         );
         self.admin.map_button = Some(button);
+        self.map_view.bar.push(("Teleport", button));
         let label = if armed { CANCEL } else { "Teleport" };
         if kit::button_lit(p, ctx, button, label, true, armed) {
             self.admin.map_armed = !armed;
@@ -868,19 +869,15 @@ fn find_and_spawn(
     }
     if f.a.found.is_empty() {
         let dim = f.dim();
-        let text = match (&weenies, wants_weenies, query.is_empty()) {
-            (Err(None), true, _) => "Fetching this world's list".to_owned(),
-            (Err(Some(why)), true, _) if !with_places || query.is_empty() => {
-                format!("{why} Loot and Kits makes things by id or class name.")
-            }
-            (Ok(l), true, true) => format!(
-                "{} things this world can make and {} places. Type part of a name.",
-                thousands(l.weenies.len()),
-                thousands(places.len())
-            ),
-            (_, _, true) => format!("{} places. Type part of a name.", thousands(places.len())),
-            _ => "Nothing by that name".to_owned(),
-        };
+        let text = nothing_found(
+            weenies
+                .as_ref()
+                .map(|l| l.weenies.len())
+                .map_err(Option::as_deref),
+            wants_weenies,
+            places.len(),
+            query.is_empty(),
+        );
         let text = f.p.fit(&dim, &text, list.w - 16.0 * k);
         f.p.text_in(&dim, list, Align::Centre, &text);
     } else {
@@ -914,6 +911,29 @@ impl Form<'_, '_, '_> {
     /// The text box holding the keyboard.
     fn typing_field(&self) -> u32 {
         *self.typing
+    }
+}
+
+/// What Find says when it lists nothing: `weenies` is the list's length, or why there is none
+/// (`None` while it is fetched).
+fn nothing_found(
+    weenies: Result<usize, Option<&str>>,
+    wants_weenies: bool,
+    places: usize,
+    no_query: bool,
+) -> String {
+    match (weenies, wants_weenies, no_query) {
+        (Err(None), true, _) => "Fetching this world's list".to_owned(),
+        (Err(Some(why)), true, _) => {
+            format!("{why} Loot and Kits makes things by id or class name.")
+        }
+        (Ok(n), true, true) => format!(
+            "{} things this world can make and {} places. Type part of a name.",
+            thousands(n),
+            thousands(places)
+        ),
+        (_, _, true) => format!("{} places. Type part of a name.", thousands(places)),
+        _ => "Nothing by that name".to_owned(),
     }
 }
 
@@ -2068,6 +2088,22 @@ fn results_strip(f: &mut Form<'_, '_, '_>, r: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_that_finds_no_place_says_why_there_are_no_things_to_make() {
+        let why = "This world doesn't publish its list of things to make.";
+        let said = nothing_found(Err(Some(why)), true, 40, false);
+        assert!(said.starts_with(why), "{said}");
+        assert_eq!(
+            nothing_found(Ok(9), true, 40, false),
+            "Nothing by that name"
+        );
+        assert_eq!(
+            nothing_found(Err(Some(why)), false, 40, false),
+            "Nothing by that name",
+            "Places alone"
+        );
+    }
 
     #[test]
     fn a_value_of_several_words_is_quoted_so_it_reaches_the_server_as_one() {

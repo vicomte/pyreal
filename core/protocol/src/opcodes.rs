@@ -818,6 +818,17 @@ op! {
         DDD_BULK_OFFER = 0xF7ED;
         /// `0xF7EE` DDD_BulkDeclineMessage: not a retail message ([`crate::admin::DddBulkDecline`]).
         DDD_BULK_DECLINE = 0xF7EE;
+        /// `0xF7EF` Dereth_Extensions: not a retail message; the extensions each side knows
+        /// ([`crate::extensions::DerethExtensions`]), in both directions.
+        DERETH_EXTENSIONS = 0xF7EF;
+        /// `0xF7F0` Dereth_AiFellows: not a retail message ([`crate::extensions::AiFellows`]).
+        DERETH_AI_FELLOWS = 0xF7F0;
+        /// `0xF7F1` Dereth_Waypoint: not a retail message ([`crate::extensions::Waypoint`]).
+        DERETH_WAYPOINT = 0xF7F1;
+        /// `0xF7F2` Dereth_JournalEntry: not a retail message ([`crate::extensions::JournalEntry`]).
+        DERETH_JOURNAL_ENTRY = 0xF7F2;
+        /// `0xF7F3` Dereth_QuestTimers: not a retail message ([`crate::extensions::QuestTimers`]).
+        DERETH_QUEST_TIMERS = 0xF7F3;
     }
 }
 

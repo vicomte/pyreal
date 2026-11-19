@@ -157,8 +157,8 @@ fn service_journal<H: Host>(cx: &mut Cx<'_, H>) {
         parse_pages, save_pages_text, LOAD_COMPLAINT, LOAD_COMPLAINT_CHANNEL,
     };
     let identity = journal_identity(cx);
-    cx.hud_mut().journal_identity = identity.clone();
     cx.prepare_journal(identity);
+    cx.tick_journal();
     for io in cx.take_journal_io() {
         match io {
             JournalIo::Load {
@@ -844,7 +844,7 @@ fn explore_event<H: Host>(
 }
 
 /// The explore key a virtual key is: WASD or the arrows fly, E or Space rise, Q sinks, plus and
-/// minus step the speed, C copies the place and R the report line, F9 saves the frame timings.
+/// minus step the speed, C copies the place and R the report line.
 fn explore_key_of(virtual_key: usize) -> Option<pyreal_client_runtime::explore::Key> {
     use pyreal_client_runtime::explore::Key;
     Some(match virtual_key {

@@ -148,6 +148,8 @@ pub struct Prompt {
     pub modal: bool,
     /// How many questions wait behind it.
     pub waiting: usize,
+    /// An Advocate's offer, under this title, answered Accept or Decline.
+    pub offer: Option<String>,
 }
 
 /// Which of the examine window's panes an appraisal fills.
@@ -441,8 +443,6 @@ pub struct GameState {
     pub account_has_tod: bool,
     /// How many items the main pack holds, as the game has the player's capacity.
     pub pack_capacity: Option<u32>,
-    /// Which world's map notes the map shows: the towns and places named on its picture.
-    pub map_profile: pyreal_primitives::EraId,
     /// The account's first free character slot, when it has one.
     pub free_slot: Option<i32>,
     /// The game's last verification answer to a character sent, and how many it has had.
@@ -560,6 +560,8 @@ pub struct GameState {
     pub spell_identify: Option<(u32, pyreal_client_contract::view::SpellExamineView)>,
     /// The fellowship, whole, the allegiance and the friends, for the social windows.
     pub fellowship_view: Option<pyreal_client_contract::view::FellowshipView>,
+    /// The AI Players in the player's company and their modes, from a world that tells them.
+    pub ai_fellows: Vec<pyreal_client_contract::view::AiFellowView>,
     pub roster: pyreal_client_contract::view::AllegianceRoster,
     pub friend_list: Vec<pyreal_client_contract::view::FriendEntry>,
     /// The player's own options (the character options), as the game holds them.
@@ -670,16 +672,20 @@ pub struct GameState {
     pub swear_target: Option<pyreal_primitives::ObjectId>,
     /// The world charges more experience for an oath than the character has to spare.
     pub short_of_oath_experience: bool,
-    /// The player's notebook, as the game's shared notebook holds it, and whether the world's
-    /// era has one.
+    /// The player's notebook, as the game's shared notebook holds it. Every world has one.
     pub journal: pyreal_client_contract::journal::JournalView,
-    pub notebook: bool,
+    /// The game's clock, which the journal's timers count against, and the wall clock in Unix
+    /// seconds, for a page's dates.
+    pub clock: f64,
+    pub wall: u64,
     /// The characters and accounts the player has squelched, as the game holds them.
     pub squelches: Vec<pyreal_client_contract::view::SquelchEntry>,
     /// Each talk-focus destination's label in the game's words, by focus.
     pub chat_focus_labels: Vec<String>,
     /// The main chat entry's text as the game keeps it between openings.
     pub chat_draft: String,
+    /// Who the game's replies answer, and the recent tell partners, newest first.
+    pub reply_targets: pyreal_client_contract::chat::window::ReplyTargets,
     /// What the game did to the chat entry this frame (a reply, a recalled line, a tell begun).
     pub chat_entry: Vec<pyreal_client_contract::chat::entry::EntryUpdate>,
 }

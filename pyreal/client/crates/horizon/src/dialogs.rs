@@ -3,7 +3,8 @@
 //! What each answer does is the shared dialog service's ([`pyreal_client_runtime::dialogs`]): it
 //! asks, this keeps the boxes the interface draws and reports each answer back. A fellowship
 //! invitation and an offer to swear allegiance are worded from the game's panel strings; the
-//! house questions use the house panel's own sentences; every other question carries its sentence.
+//! house questions use the house panel's own sentences; an Advocate's offer says who offers what;
+//! every other question carries its sentence.
 
 use std::collections::BTreeMap;
 
@@ -19,6 +20,8 @@ pub struct Shown {
     pub message: bool,
     /// It takes every press until it is answered.
     pub modal: bool,
+    /// An Advocate's offer, under this title, answered Accept or Decline.
+    pub offer: Option<String>,
 }
 
 /// The boxes, and the answers the interface has given them.
@@ -57,6 +60,30 @@ pub fn prompt_text(prompt: &Prompt, panel: &mut dyn FnMut(&str, &str) -> String)
         Prompt::AcceptSwear { name } => panel(allegiance::ID_ACCEPT_SWEAR_CONFIRMATION, name),
         Prompt::HouseBuy => slumlord::BUY_CONFIRMATION.to_owned(),
         Prompt::HouseRentByProxy => slumlord::RENT_BY_PROXY_CONFIRMATION.to_owned(),
+        Prompt::AdvocateWaypoint { from, label, place } => {
+            if label.is_empty() || label == place {
+                format!("{from} offers you a waypoint at {place}.")
+            } else {
+                format!("{from} offers you a waypoint to {label} at {place}.")
+            }
+        }
+        Prompt::AdvocateNote { from, title } => {
+            format!("{from} offers you a note for your journal called {title}.")
+        }
+        Prompt::AdvocatePages { from, count, to } => {
+            format!("{from} offers you {count} journal pages with the way to {to}.")
+        }
+    }
+}
+
+/// The title of an Advocate's offer's box; `None` for any other question.
+#[must_use]
+pub fn offer_title(prompt: &Prompt) -> Option<&'static str> {
+    match prompt {
+        Prompt::AdvocateWaypoint { .. } => Some("Waypoint Offered"),
+        Prompt::AdvocateNote { .. } => Some("Journal Note Offered"),
+        Prompt::AdvocatePages { .. } => Some("Journal Pages Offered"),
+        _ => None,
     }
 }
 
@@ -92,6 +119,7 @@ impl DialogPresenter for Presenter<'_> {
             text,
             message: question.message,
             modal: question.modal,
+            offer: offer_title(&question.prompt).map(str::to_owned),
         });
         true
     }
@@ -168,6 +196,41 @@ mod tests {
             prompt_text(&Prompt::Text("Sure?".into()), &mut panel),
             "Sure?"
         );
+    }
+
+    #[test]
+    fn an_advocate_s_offer_says_who_offers_what_under_its_own_title() {
+        let mut panel = |_: &str, n: &str| n.to_owned();
+        let waypoint = Prompt::AdvocateWaypoint {
+            from: "Advocate Tamsin".into(),
+            label: "Holtburg square".into(),
+            place: "42.1N 33.6E".into(),
+        };
+        assert_eq!(
+            prompt_text(&waypoint, &mut panel),
+            "Advocate Tamsin offers you a waypoint to Holtburg square at 42.1N 33.6E."
+        );
+        let note = Prompt::AdvocateNote {
+            from: "Advocate Tamsin".into(),
+            title: "Drudges".into(),
+        };
+        assert_eq!(
+            prompt_text(&note, &mut panel),
+            "Advocate Tamsin offers you a note for your journal called Drudges."
+        );
+        let mut dialogs = HorizonDialogs::default();
+        let mut p = Presenter {
+            dialogs: &mut dialogs,
+            accepting: true,
+            panel: &mut panel,
+        };
+        p.open(&Question {
+            prompt: note,
+            ..question(3, false)
+        });
+        p.open(&question(4, false));
+        let titles: Vec<_> = dialogs.shown().iter().map(|s| s.offer.as_deref()).collect();
+        assert_eq!(titles, [Some("Journal Note Offered"), None]);
     }
 
     #[test]

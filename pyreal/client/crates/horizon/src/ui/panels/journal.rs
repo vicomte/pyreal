@@ -1,7 +1,9 @@
 //! The Journal (the contracts the player holds, each with its notes, contact and places, and
-//! Abandon; and the notebook, in its own module), and the Profile tab's titles and life facts, doing what the game's contracts,
-//! titles and character information panels do.
+//! Abandon; the notebook, in its own module; and every timer in one list), and the Profile tab's
+//! titles and life facts, doing what the game's contracts, titles and character information
+//! panels do.
 
+use pyreal_client_contract::journal::JournalAction;
 use pyreal_client_contract::UiRequest;
 
 use super::Windows;
@@ -35,9 +37,129 @@ pub fn duration_words(seconds: i64) -> String {
     }
 }
 
+/// The Journal's tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JournalTab {
+    Contracts,
+    Notebook,
+    Timers,
+}
+
+/// One running or lately ready timer on the Timers tab: what it is called, when it is ready on
+/// the game's clock, where it comes from, and what its button does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimerRow {
+    pub title: String,
+    pub ready_at: f64,
+    pub from: &'static str,
+    pub action: TimerAction,
+}
+
+/// A Timers row's button.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TimerAction {
+    /// Open this notebook page.
+    Open(u32),
+    /// Start a notebook page's timer for this quest.
+    Track,
+    /// Show the contracts.
+    Contracts,
+}
+
+/// Every timer for the Timers tab at `now`: the notebook's running ones, the contracts waiting
+/// to repeat, the world's quest timers and those heard in chat, each that is running or ran out
+/// since the player arrived; running ones soonest first, then the ready ones, latest first.
+#[must_use]
+pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
+    let j = &state.journal;
+    let now = state.clock;
+    let mut rows: Vec<TimerRow> = j
+        .pages
+        .iter()
+        .filter(|p| p.timer_running && p.timer_stamp > 0.0)
+        .map(|p| TimerRow {
+            title: if p.name().is_empty() {
+                format!("Page {}", p.page_number)
+            } else {
+                p.name().to_owned()
+            },
+            ready_at: p.timer_stamp,
+            from: "Notebook page",
+            action: TimerAction::Open(p.page_number),
+        })
+        .collect();
+    rows.extend(state.contracts.iter().filter_map(|c| {
+        c.repeat_remaining.map(|left| TimerRow {
+            title: c.name.clone(),
+            ready_at: now + left,
+            from: "Contract",
+            action: TimerAction::Contracts,
+        })
+    }));
+    let tracked = |title: &str| {
+        j.pages
+            .iter()
+            .any(|p| p.timer_running && p.name().eq_ignore_ascii_case(title))
+    };
+    rows.extend(j.quests.iter().filter_map(|q| {
+        let at = q.ready_at?;
+        (q.min_delta > 0 && at > j.since && !tracked(&q.title)).then(|| TimerRow {
+            title: q.title.clone(),
+            ready_at: at,
+            from: "Quest",
+            action: TimerAction::Track,
+        })
+    }));
+    rows.extend(
+        j.heard
+            .iter()
+            .filter(|h| !tracked(&h.title))
+            .map(|h| TimerRow {
+                title: h.title.clone(),
+                ready_at: h.ready_at,
+                from: "Heard in chat",
+                action: TimerAction::Track,
+            }),
+    );
+    rows.sort_by(|a, b| {
+        let (ra, rb) = (a.ready_at <= now, b.ready_at <= now);
+        ra.cmp(&rb).then(if ra {
+            b.ready_at.total_cmp(&a.ready_at)
+        } else {
+            a.ready_at.total_cmp(&b.ready_at)
+        })
+    });
+    rows
+}
+
 impl Windows {
-    /// The contracts: the list on the left, the chosen one's notes, contact and places on the
-    /// right, and Abandon.
+    /// The Journal's tabs, in order: the contracts where the world has them, the notebook and
+    /// the timers.
+    fn journal_tabs(&self) -> Vec<JournalTab> {
+        let mut tabs = Vec::with_capacity(3);
+        if self.has_contracts() {
+            tabs.push(JournalTab::Contracts);
+        }
+        tabs.extend([JournalTab::Notebook, JournalTab::Timers]);
+        tabs
+    }
+
+    /// The Journal's tab on show.
+    pub(super) fn journal_page(&self) -> JournalTab {
+        let tabs = self.journal_tabs();
+        tabs.get(self.journal_tab)
+            .copied()
+            .unwrap_or(JournalTab::Notebook)
+    }
+
+    /// Bring the Journal's `tab` up.
+    pub fn show_journal_tab(&mut self, tab: JournalTab) {
+        if let Some(i) = self.journal_tabs().iter().position(|t| *t == tab) {
+            self.journal_tab = i;
+        }
+    }
+
+    /// The Journal: the contracts, the notebook and the timers, a tab each.
     pub(super) fn journal(
         &mut self,
         p: &mut Painter<'_>,
@@ -47,30 +169,169 @@ impl Windows {
         out: &mut Outcome,
     ) {
         let k = p.scale;
-        // A tab for each page the world has.
         let strip = Rect::new(body.x, body.y, body.w, 26.0 * k);
-        if self.has_contracts() && state.notebook {
-            kit::tabs(
-                p,
-                ctx,
-                strip,
-                &["Contracts", "Notebook"],
-                &mut self.journal_tab,
-            );
+        let tabs = self.journal_tabs();
+        let ready = timer_rows(state)
+            .iter()
+            .filter(|r| r.ready_at <= state.clock)
+            .count();
+        let timers = if ready > 0 {
+            format!("Timers ({ready})")
         } else {
-            let mut only = 0;
-            let caption = if state.notebook {
-                "Notebook"
-            } else {
-                "Contracts"
-            };
-            kit::tabs(p, ctx, strip, &[caption], &mut only);
-        }
+            "Timers".to_owned()
+        };
+        let labels: Vec<&str> = tabs
+            .iter()
+            .map(|t| match t {
+                JournalTab::Contracts => "Contracts",
+                JournalTab::Notebook => "Notebook",
+                JournalTab::Timers => timers.as_str(),
+            })
+            .collect();
+        self.journal_tab = self.journal_tab.min(tabs.len() - 1);
+        kit::tabs(p, ctx, strip, &labels, &mut self.journal_tab);
         let body = Rect::new(body.x, body.y + 34.0 * k, body.w, body.h - 34.0 * k);
-        if self.journal_page(state) == 1 {
-            self.notebook(p, ctx, state, body, out);
-            return;
+        match self.journal_page() {
+            JournalTab::Contracts => self.contracts(p, ctx, state, body),
+            JournalTab::Notebook => self.notebook(p, ctx, state, body, out),
+            JournalTab::Timers => self.journal_timers(p, ctx, state, body, out),
         }
+    }
+
+    /// The timers: what each is, how long is left, where it is from, and a button to open its
+    /// page or start a page's timer for it.
+    fn journal_timers(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        body: Rect,
+        out: &mut Outcome,
+    ) {
+        let k = p.scale;
+        let name = TextStyle::new(Family::Body, 13.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
+        let rows = timer_rows(state);
+        let (from_w, button_w) = (120.0 * k, 96.0 * k);
+        let cols = |r: Rect| {
+            let button = Rect::new(r.right() - button_w, r.y, button_w, r.h);
+            let from = Rect::new(button.x - from_w - 8.0 * k, r.y, from_w, r.h);
+            let left = Rect::new(from.x - 100.0 * k, r.y, 92.0 * k, r.h);
+            let title = Rect::new(r.x + 8.0 * k, r.y, left.x - r.x - 16.0 * k, r.h);
+            (title, left, from, button)
+        };
+        let head = Rect::new(body.x, body.y, body.w, 22.0 * k);
+        let (t, l, f, _) = cols(head);
+        p.text_in(&dim, t, Align::Left, "Timer");
+        p.text_in(&dim, l, Align::Left, "Ready in");
+        p.text_in(&dim, f, Align::Left, "From");
+        p.fill(
+            Rect::new(head.x, head.bottom(), head.w, k.max(1.0)),
+            0x80B3_9555,
+        );
+        let foot_h = if state.journal.quests_known {
+            0.0
+        } else {
+            40.0 * k
+        };
+        let list = Rect::new(
+            body.x,
+            head.bottom() + 2.0 * k,
+            body.w,
+            body.bottom() - head.bottom() - 2.0 * k - foot_h,
+        );
+        p.fill(list, 0x6010_0C08);
+        if rows.is_empty() {
+            let lines = p.wrap(
+                &dim,
+                "No timers are running. Start one on a notebook page, or follow a quest timer from chat.",
+                list.w - 60.0 * k,
+            );
+            let lh = p.line_height(&dim);
+            #[allow(clippy::cast_precision_loss)]
+            let mut y = list.y + list.h / 2.0 - lh * lines.len() as f32 / 2.0;
+            for l in lines {
+                p.text_in(&dim, Rect::new(list.x, y, list.w, lh), Align::Centre, &l);
+                y += lh;
+            }
+        }
+        let row_h = 30.0 * k;
+        let scroll =
+            kit::ScrollList::begin(p, ctx, list, rows.len(), row_h, &mut self.timers_scroll);
+        for (i, row) in rows.iter().enumerate() {
+            let Some(r) = scroll.row(i, row_h - 2.0 * k) else {
+                continue;
+            };
+            if ctx.input.hover(&r) {
+                crate::ui::pregame::list_highlight(p, r, false);
+            }
+            let (t, l, f, b) = cols(r);
+            let title = kit::middle_ellipsis(p, &name, &row.title, t.w);
+            p.text_in(&name, t, Align::Left, &title);
+            let left = row.ready_at - state.clock;
+            let (words, colour) = if left <= 0.0 {
+                ("Ready".to_owned(), super::notebook::READY_COLOUR)
+            } else {
+                (
+                    pyreal_presentation::journal::short_time(left),
+                    super::notebook::RUNNING_COLOUR,
+                )
+            };
+            let style = TextStyle::new(Family::Body, 13.0, colour).edge(ctx.colours.edge());
+            p.text_in(&style, l, Align::Left, &words);
+            p.text_in(&dim, f, Align::Left, row.from);
+            let button = Rect::new(b.x, b.y + 2.0 * k, b.w, b.h - 4.0 * k);
+            match &row.action {
+                TimerAction::Open(page) => {
+                    if kit::button(p, ctx, button, "Open", true) {
+                        self.show_journal_tab(JournalTab::Notebook);
+                        out.requests
+                            .push(UiRequest::Journal(JournalAction::Goto(*page)));
+                    }
+                }
+                TimerAction::Contracts => {
+                    if kit::button(p, ctx, button, "Contracts", true) {
+                        self.show_journal_tab(JournalTab::Contracts);
+                    }
+                }
+                TimerAction::Track => {
+                    let seconds = left.max(0.0).ceil();
+                    if kit::button(p, ctx, button, "Track", left > 0.0) {
+                        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                        let seconds = seconds.min(f64::from(u32::MAX)) as u32;
+                        self.show_journal_tab(JournalTab::Notebook);
+                        out.requests
+                            .push(UiRequest::Journal(JournalAction::TrackTimer {
+                                title: row.title.clone(),
+                                seconds,
+                            }));
+                    }
+                }
+            }
+        }
+        scroll.end(p, ctx);
+        if foot_h > 0.0 {
+            let note = Rect::new(body.x, list.bottom() + 4.0 * k, body.w, foot_h - 4.0 * k);
+            for (n, l) in p
+                .wrap(
+                    &dim,
+                    "This world doesn't send quest timers. A timer a quest giver tells you of in chat shows here, and its link in chat starts one on a page.",
+                    note.w,
+                )
+                .into_iter()
+                .take(2)
+                .enumerate()
+            {
+                #[allow(clippy::cast_precision_loss)]
+                p.text(&dim, note.x, note.y + n as f32 * 16.0 * k, &l);
+            }
+        }
+    }
+
+    /// The contracts: the list on the left, the chosen one's notes, contact and places on the
+    /// right, and Abandon.
+    fn contracts(&mut self, p: &mut Painter<'_>, ctx: &mut Ctx<'_>, state: &GameState, body: Rect) {
+        let k = p.scale;
         let name = TextStyle::new(Family::Body, 13.0, ctx.colours.text()).edge(ctx.colours.edge());
         let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
         let list = Rect::new(body.x, body.y, body.w * 0.42, body.h - 36.0 * k);
@@ -169,22 +430,11 @@ impl Windows {
         ) {
             self.abandon_asked = Some((c.contract_id, c.name.clone()));
         }
-        let _ = out;
     }
 
     /// Whether the world has the Journal window's Contracts tab.
     fn has_contracts(&self) -> bool {
         !self.refuses(pyreal_client_contract::era::EraSurface::Contracts)
-    }
-
-    /// The Journal's page on show, 0 the contracts and 1 the notebook: the tab chosen, or the one
-    /// page the world has.
-    pub(super) fn journal_page(&self, state: &GameState) -> usize {
-        match (self.has_contracts(), state.notebook) {
-            (true, false) => 0,
-            (false, true) => 1,
-            _ => self.journal_tab,
-        }
     }
 
     /// The question before a contract is abandoned.

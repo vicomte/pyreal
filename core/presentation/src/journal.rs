@@ -11,9 +11,14 @@
 //! tabs), `<DAYS>`, `<HOUR>` and `<MINU>` a count, `<LOC?>` and `<TIM?>` the word `TRUE` or
 //! `FALSE`, and `<LOCX>`, `<LOCY>` and `<TIME>` a number with six decimals. `<PNUM>` is read and
 //! ignored: a page's number is its place in the file.
+//!
+//! This client adds `<MADE>` and `<EDIT>` (Unix seconds) and `<FROM>` (who gave the page), each
+//! written only when it has a value. Retail's reader skips a tag it does not know, so it still
+//! reads these files.
 
 pub use pyreal_client_contract::journal::{
-    create_journal_path, delta_time_to_string, JournalIdentity, STEM,
+    create_journal_path, delta_time_to_string, heard_quest_seconds, quest_ready_line, quest_title,
+    short_time, timer_ready_line, JournalIdentity, QUEST_AGAIN, STEM,
 };
 
 /// The client's "no timer" answer, and the location display's "no location" one.
@@ -56,6 +61,12 @@ pub mod tag {
     pub const TIMER_RUNNING: &str = "<TIM?>";
     /// The timer stamp.
     pub const TIMER_STAMP: &str = "<TIME>";
+    /// When the page was written, in Unix seconds. This client's own.
+    pub const MADE: &str = "<MADE>";
+    /// When the page was last changed, in Unix seconds. This client's own.
+    pub const EDITED: &str = "<EDIT>";
+    /// Who gave the page. This client's own.
+    pub const FROM: &str = "<FROM>";
 }
 
 /// The stored word used to write `<LOC?>` and `<TIM?>`, and the
@@ -89,6 +100,15 @@ pub fn save_pages_text(pages: &[JournalPage]) -> String {
         let _ = writeln!(out, "{} {:.6}", tag::LOCATION_X, p.ew);
         let _ = writeln!(out, "{} {:.6}", tag::LOCATION_Y, p.ns);
         let _ = writeln!(out, "{} {}", tag::TIMER_RUNNING, bool_word(p.timer_running));
+        if p.made != 0 {
+            let _ = writeln!(out, "{} {}", tag::MADE, p.made);
+        }
+        if p.edited != 0 {
+            let _ = writeln!(out, "{} {}", tag::EDITED, p.edited);
+        }
+        if !p.from.is_empty() {
+            let _ = writeln!(out, "{} {}", tag::FROM, p.from);
+        }
         // `"<TIME> %f\n\n"` — the blank line is part of the format.
         let _ = writeln!(out, "{} {:.6}\n", tag::TIMER_STAMP, p.timer_stamp);
     }
@@ -185,6 +205,17 @@ pub fn parse_pages(text: &str) -> Result<Vec<JournalPage>, ()> {
                     p.timer_stamp = v;
                 }
             }
+            tag::MADE => {
+                if let Ok(v) = word.parse() {
+                    p.made = v;
+                }
+            }
+            tag::EDITED => {
+                if let Ok(v) = word.parse() {
+                    p.edited = v;
+                }
+            }
+            tag::FROM => p.from = line_rest.to_owned(),
             _ => {}
         }
     }
@@ -424,5 +455,68 @@ mod tests {
             pages.iter().map(|p| p.page_number).collect::<Vec<_>>(),
             [1, 2]
         );
+    }
+
+    #[test]
+    fn a_quest_timer_line_gives_its_seconds_and_other_lines_none() {
+        assert_eq!(
+            heard_quest_seconds("You may complete this quest again in 19h 40m."),
+            Some(19 * 3_600 + 40 * 60)
+        );
+        assert_eq!(
+            heard_quest_seconds("You may complete this quest again in 1d 2h 3m 4s."),
+            Some(86_400 + 7_200 + 180 + 4)
+        );
+        assert_eq!(
+            heard_quest_seconds("You may complete this quest again in soon."),
+            None
+        );
+        assert_eq!(
+            heard_quest_seconds("You have solved this quest too recently!"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_time_left_shows_its_two_largest_parts() {
+        assert_eq!(short_time(6.0 * 86_400.0 + 4.0 * 3_600.0 + 59.0), "6d 4h");
+        assert_eq!(short_time(3.0 * 3_600.0 + 12.0 * 60.0), "3h 12m");
+        assert_eq!(short_time(3_600.0), "1h");
+        assert_eq!(short_time(40.0 * 60.0 + 5.0), "40m 5s");
+        assert_eq!(short_time(49.2), "50s");
+        assert_eq!(short_time(0.0), "0s");
+    }
+
+    #[test]
+    fn a_quest_is_called_by_its_short_message_else_its_name() {
+        assert_eq!(
+            quest_title("aerbaxdefeat", "Aerbax's Defeat"),
+            "Aerbax's Defeat"
+        );
+        assert_eq!(quest_title("aerbaxdefeat", ""), "Aerbaxdefeat");
+        assert_eq!(
+            quest_title(
+                "x",
+                "A very long message that reads like a sentence about the quest."
+            ),
+            "X"
+        );
+    }
+
+    #[test]
+    fn this_client_s_tags_read_back_and_retail_s_reader_would_skip_them() {
+        let page = JournalPage {
+            title: "Drudges".into(),
+            made: 1_700_000_000,
+            edited: 1_700_000_500,
+            from: "Advocate Tamsin".into(),
+            page_number: 1,
+            ..JournalPage::default()
+        };
+        let text = save_pages_text(std::slice::from_ref(&page));
+        assert!(text.contains("<MADE> 1700000000\n<EDIT> 1700000500\n<FROM> Advocate Tamsin\n"));
+        assert_eq!(parse_pages(&text).unwrap(), vec![page]);
+        let plain = save_pages_text(&[JournalPage::default()]);
+        assert!(!plain.contains("<MADE>") && !plain.contains("<FROM>"));
     }
 }

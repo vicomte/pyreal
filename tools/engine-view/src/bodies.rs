@@ -418,7 +418,7 @@ pub fn gather(
             }
             engine
                 .particles
-                .gather(&b.driver, b.cell, glam::Vec3::ZERO, eye, b.shadow);
+                .gather(&b.driver, b.cell, glam::Vec3::ZERO, eye, b.shadow, false);
         }
         if b.setup.0 != 0 {
             let at = pyreal_engine::asset::object::frame_affine(&b.frame);
@@ -429,6 +429,20 @@ pub fn gather(
     }
 }
 
+/// The room holding `p`, one of the view's `block` before another block's dungeon laid over it.
+fn cell_at(engine: &Engine, p: glam::Vec3, block: u16) -> u32 {
+    let cells = &engine.cells;
+    cells
+        .cells()
+        .into_iter()
+        .find(|c| {
+            c.id >> 16 == u32::from(block) && c.volume.as_ref().is_some_and(|v| v.contains(p, 0.0))
+        })
+        .and_then(|c| cells.slot_of(c.id))
+        .or_else(|| cells.cell_at(p))
+        .unwrap_or(pyreal_engine::cells::OUTSIDE)
+}
+
 /// Places `bodies` into the engine, each posed at its current time; the first `named` (the ones
 /// the command line asked for) are reported one by one, the rest together.
 pub fn place_all(
@@ -437,17 +451,12 @@ pub fn place_all(
     store: &RetailDatStore,
     bodies: &mut [Body],
     named: usize,
+    block: u16,
 ) {
     let mut rest = (0, 0);
     for (k, b) in bodies.iter_mut().enumerate() {
-        let cell = engine
-            .cells
-            .cell_at(glam::Vec3::new(
-                b.frame.origin.x,
-                b.frame.origin.y,
-                b.frame.origin.z + 0.5,
-            ))
-            .unwrap_or(pyreal_engine::cells::OUTSIDE);
+        let o = b.frame.origin;
+        let cell = cell_at(engine, glam::Vec3::new(o.x, o.y, o.z + 0.5), block);
         b.cell = cell;
         let n = b.place(engine, loader, store);
         b.draw_skin(engine, loader);

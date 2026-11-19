@@ -187,7 +187,7 @@ const GROW_IN: f32 = 0.12;
 // The share of plants kept at world `w` by bare patches a few metres across, more of them where
 // the ground grows patchily (`patchy`).
 fn patches(w: vec2<f32>, patchy: f32) -> f32 {
-    let n = land_noise(w, 6.0) * 0.65 + land_noise(w + vec2<f32>(17.0, 5.0), 2.2) * 0.35;
+    let n = world_noise(w, 6.0) * 0.65 + world_noise(w + vec2<f32>(17.0, 5.0), 2.2) * 0.35;
     let lo = mix(0.15, 0.36, patchy);
     return smoothstep(lo, lo + 0.12, n);
 }
@@ -274,7 +274,7 @@ fn place(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) groups: 
     keep *= patches(w, patchy);
     if (s > 1.4) {
         let o = vec2<f32>(f32(k.seed & 255u), f32((k.seed >> 8u) & 255u)) * 1.37;
-        keep *= 2.0 * smoothstep(0.35, 0.65, land_noise(w + o, 5.0));
+        keep *= 2.0 * smoothstep(0.35, 0.65, world_noise(w + o, 5.0));
     } else {
         // The dense kinds stand thinner where the grass under them grows.
         let under = mix(mix(BLADE_GROWS[a.word & LW_TYPE].x, BLADE_GROWS[b.word & LW_TYPE].x, f.x),
@@ -307,7 +307,7 @@ fn place(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) groups: 
     var grown = clamp((keep - h) / GROW_IN, 0.0, 1.0);
     // Taller in patches a few metres across, and each its own; smaller toward the edge of what it
     // grows on and toward a road.
-    let size = clamp(0.5 + (land_noise(w + vec2<f32>(29.0, 61.0), 3.5) - 0.5) * 1.5
+    let size = clamp(0.5 + (world_noise(w + vec2<f32>(29.0, 61.0), 3.5) - 0.5) * 1.5
         + (cover_hash(gi, k.seed, 2u) - 0.5) * 0.7, 0.0, 1.0);
     var scale = mix(k.scale_lo, k.scale_hi, size) * (0.6 + 0.4 * clamp(share, 0.0, 1.0))
         * (0.7 + 0.3 * road);

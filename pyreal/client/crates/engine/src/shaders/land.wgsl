@@ -158,6 +158,17 @@ fn land_noise(p: vec2<f32>, cell: f32) -> f32 {
                mix(land_hash(i + vec2<i32>(0, 1)), land_hash(i + vec2<i32>(1, 1)), s.x), s.y);
 }
 
+// `land_noise` at world metres `w`, not render space's: the same to the bit wherever render space
+// lies, as placement needs.
+fn world_noise(w: vec2<f32>, cell: f32) -> f32 {
+    let q = w / cell;
+    let i = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let s = f * f * (3.0 - 2.0 * f);
+    return mix(mix(land_hash(i), land_hash(i + vec2<i32>(1, 0)), s.x),
+               mix(land_hash(i + vec2<i32>(0, 1)), land_hash(i + vec2<i32>(1, 1)), s.x), s.y);
+}
+
 // `land_noise` (x) and how it changes east and north, a metre (yz).
 fn land_noise_sloped(p: vec2<f32>, cell: f32) -> vec3<f32> {
     let o = origin_cells(cell);

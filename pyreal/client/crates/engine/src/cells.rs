@@ -242,11 +242,26 @@ impl Visibility {
         self.rects.first().is_some_and(|r| !is_empty(r))
     }
 
-    /// Cells seen, the outside not counted.
+    /// Slots seen, the outside not counted (a room's spill slot counts as one).
     #[must_use]
     pub fn cells_seen(&self) -> usize {
         self.rects.iter().skip(1).filter(|r| !is_empty(r)).count()
     }
+}
+
+/// A room's furniture that reaches past its walls (stairs that climb into the next room): seen
+/// through its own slot wherever the room or any room it reaches into is seen, as retail lists a
+/// static object in every cell its sphere touches.
+#[derive(Debug, Clone)]
+struct Spill {
+    /// Its slot, which holds no cell.
+    slot: u32,
+    /// The room it stands in.
+    home: u32,
+    /// Its pieces' spheres.
+    spheres: Vec<(Vec3, f32)>,
+    /// The rooms the spheres reach into through portals, once linked.
+    into: Vec<u32>,
 }
 
 /// The loaded cells, by slot (slot `k` is `cells[k - 1]`; a removed cell's slot is reused).
@@ -256,24 +271,103 @@ pub struct CellGraph {
     free: Vec<u32>,
     // ORDER-OK: looked up by dat id, never iterated.
     by_id: HashMap<u32, u32>,
+    spills: Vec<Spill>,
 }
 
 impl CellGraph {
     /// Adds `cell`; its slot.
     pub fn add(&mut self, cell: Cell) -> u32 {
         let id = cell.id;
-        let slot = match self.free.pop() {
+        let slot = self.take_slot(Some(cell));
+        self.by_id.insert(id, slot);
+        slot
+    }
+
+    fn take_slot(&mut self, cell: Option<Cell>) -> u32 {
+        match self.free.pop() {
             Some(slot) => {
-                self.cells[slot as usize - 1] = Some(cell);
+                self.cells[slot as usize - 1] = cell;
                 slot
             }
             None => {
-                self.cells.push(Some(cell));
+                self.cells.push(cell);
                 u32::try_from(self.cells.len()).unwrap_or(u32::MAX)
             }
-        };
-        self.by_id.insert(id, slot);
+        }
+    }
+
+    /// The slot a piece of furniture in room `home` with bounding sphere `center`, `radius` is
+    /// seen through: `home`'s own when the sphere stays within its volume, else the room's
+    /// spill slot ([`Spill`]), which [`Self::link`] gives the rooms it reaches.
+    pub fn furniture_slot(&mut self, home: u32, center: Vec3, radius: f32) -> u32 {
+        let inside = self
+            .cell(home)
+            .and_then(|c| c.volume.as_ref())
+            .is_none_or(|v| v.planes.iter().all(|p| p.xyz().dot(center) + p.w >= radius));
+        if inside {
+            return home;
+        }
+        if let Some(s) = self.spills.iter_mut().find(|s| s.home == home) {
+            s.spheres.push((center, radius));
+            return s.slot;
+        }
+        let slot = self.take_slot(None);
+        self.spills.push(Spill {
+            slot,
+            home,
+            spheres: vec![(center, radius)],
+            into: Vec::new(),
+        });
         slot
+    }
+
+    /// The rooms `spill`'s spheres reach from its room through portals, each crossing a portal's
+    /// opening into a room whose volume it touches.
+    fn reached(&self, spill: &Spill) -> Vec<u32> {
+        let mut into: Vec<u32> = Vec::new();
+        let mut open = vec![spill.home];
+        while let Some(slot) = open.pop() {
+            let Some(cell) = self.cell(slot) else {
+                continue;
+            };
+            for p in &cell.portals {
+                let Some(next) = p.to else { continue };
+                if next == spill.home || into.contains(&next) {
+                    continue;
+                }
+                let (lo, hi) = p.points.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| {
+                    (lo.min(*q), hi.max(*q))
+                });
+                let touches = self
+                    .cell(next)
+                    .and_then(|c| c.volume.as_ref())
+                    .is_some_and(|v| {
+                        spill.spheres.iter().any(|&(c, r)| {
+                            p.side(c) < r
+                                && c.cmpge(lo - r).all()
+                                && c.cmple(hi + r).all()
+                                && c.cmpge(v.min - r).all()
+                                && c.cmple(v.max + r).all()
+                                && v.planes.iter().all(|q| q.xyz().dot(c) + q.w >= -r)
+                        })
+                    });
+                if touches {
+                    into.push(next);
+                    open.push(next);
+                }
+            }
+        }
+        into
+    }
+
+    fn link_spills(&mut self, homes: Option<&[u32]>) {
+        let mut spills = std::mem::take(&mut self.spills);
+        for s in &mut spills {
+            if homes.is_none_or(|h| h.contains(&s.home)) {
+                s.into = self.reached(s);
+            }
+        }
+        self.spills = spills;
     }
 
     /// Takes the cell in `slot` out; its slot is reused. Portals into it lead nowhere once
@@ -290,6 +384,13 @@ impl CellGraph {
             self.by_id.remove(&c.id);
         }
         self.free.push(slot);
+        let free = &mut self.free;
+        self.spills.retain(|s| {
+            if s.home == slot {
+                free.push(s.slot);
+            }
+            s.home != slot
+        });
     }
 
     /// Resolves every portal's dat id to a loaded slot; a portal to a cell not loaded leads
@@ -300,6 +401,7 @@ impl CellGraph {
                 p.to = p.to_id.and_then(|id| self.by_id.get(&id).copied());
             }
         }
+        self.link_spills(None);
     }
 
     /// [`Self::link`] for the cells in `slots` alone (one block's rooms, which lead only to each
@@ -316,6 +418,7 @@ impl CellGraph {
                 p.to = p.to_id.and_then(|id| self.by_id.get(&id).copied());
             }
         }
+        self.link_spills(Some(slots));
     }
 
     /// Moves every cell by `delta`.
@@ -329,6 +432,11 @@ impl CellGraph {
                     *q += delta;
                 }
                 p.plane.w -= p.plane.xyz().dot(delta);
+            }
+        }
+        for s in &mut self.spills {
+            for (c, _) in &mut s.spheres {
+                *c += delta;
             }
         }
     }
@@ -353,6 +461,19 @@ impl CellGraph {
     #[must_use]
     pub fn slots(&self) -> usize {
         self.cells.len() + 1
+    }
+
+    /// The rooms `v` saw.
+    #[must_use]
+    pub fn rooms_seen(&self, v: &Visibility) -> usize {
+        v.rects
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|&(k, r)| {
+                !is_empty(r) && u32::try_from(k).is_ok_and(|k| self.cell(k).is_some())
+            })
+            .count()
     }
 
     /// The cell whose volume holds `p`, the first by slot.
@@ -436,6 +557,12 @@ impl CellGraph {
                     (None, Some(_)) => {}
                 }
             }
+        }
+        for s in &self.spills {
+            let r = s.into.iter().fold(rects[s.home as usize], |r, &k| {
+                union(&r, &rects[k as usize])
+            });
+            rects[s.slot as usize] = r;
         }
         Visibility { rects, eye_cell }
     }

@@ -44,6 +44,7 @@ fn the_engines_frame_graph_validates() {
             "puddles",
             "ice",
             "translucent",
+            "translucent objects",
             "oit",
             "weather",
             "air",

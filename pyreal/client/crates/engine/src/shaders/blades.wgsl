@@ -154,12 +154,12 @@ fn blades(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lo
         }
         // Taller in patches a few metres across, as the cover is, and each its own.
         let tall = tall_here * scale * grow * mix(0.78, 1.18, cover_unit(cover_mix(h2)))
-            * mix(0.62, 1.28, land_noise(w + vec2<f32>(29.0, 61.0), 3.5));
+            * mix(0.62, 1.28, world_noise(w + vec2<f32>(29.0, 61.0), 3.5));
         // A little drier here, a little lusher there.
-        let dry = clamp(dry_here + (land_noise(w, 23.0) - 0.5) * 0.5, 0.0, 1.0);
+        let dry = clamp(dry_here + (world_noise(w, 23.0) - 0.5) * 0.5, 0.0, 1.0);
         var tint = 0u;
         if (colour.w > 0.5) {
-            let t = clamp(colour.rgb / colour.w * mix(0.92, 1.06, land_noise(w + vec2<f32>(3.0, 9.0), 11.0))
+            let t = clamp(colour.rgb / colour.w * mix(0.92, 1.06, world_noise(w + vec2<f32>(3.0, 9.0), 11.0))
                 / BLADE_RANGE, vec3<f32>(0.0), vec3<f32>(1.0));
             let qc = vec3<u32>(round(t * 1023.0));
             tint = qc.x | (qc.y << 10u) | (qc.z << 20u) | (1u << 30u);

@@ -168,6 +168,67 @@ fn rooms_see_into_the_next_building_through_the_outdoors() {
     assert!(is_empty(&g.visibility(&vp, at, None, 100.0, 1.0).rects[3]));
 }
 
+/// Furniture in a room the walk does not reach is still seen where it reaches into a room the walk
+/// does (stairs climbing into the next room); furniture within its room's walls is not.
+#[test]
+fn furniture_reaching_into_a_seen_room_is_seen_through_it() {
+    // The house, with room C (x 4 to 8, y 4 to 8) east of B through a doorway at x 4, y 5 to 7.
+    let (a, b, c) = (
+        Vec3::new(2.0, 2.0, 1.5),
+        Vec3::new(2.0, 6.0, 1.5),
+        Vec3::new(6.0, 6.0, 1.5),
+    );
+    let side = |inside: Vec3, to: u32| {
+        Portal::new(
+            vec![
+                Vec3::new(4.0, 5.0, 0.0),
+                Vec3::new(4.0, 7.0, 0.0),
+                Vec3::new(4.0, 7.0, 2.5),
+                Vec3::new(4.0, 5.0, 2.5),
+            ],
+            inside,
+            Some(to),
+        )
+    };
+    let mut g = CellGraph::default();
+    g.add(room(
+        0x0100,
+        (0.0, 4.0),
+        (0.0, 4.0),
+        vec![door(4.0, a, Some(0x0101))],
+    ));
+    g.add(room(
+        0x0101,
+        (0.0, 4.0),
+        (4.0, 8.0),
+        vec![
+            door(4.0, b, Some(0x0100)),
+            door(8.0, b, None),
+            side(b, 0x0102),
+        ],
+    ));
+    let home = g.add(room(0x0102, (4.0, 8.0), (4.0, 8.0), vec![side(c, 0x0101)]));
+    let inside = g.furniture_slot(home, Vec3::new(6.0, 6.0, 1.0), 0.5);
+    let reaching = g.furniture_slot(home, Vec3::new(5.0, 6.0, 1.0), 1.5);
+    assert_eq!(inside, home);
+    assert_ne!(reaching, home);
+    g.link();
+    // From A looking north, B is seen through its door and C's doorway lies outside it.
+    let (vp, at) = eye(Vec3::new(2.0, 1.0, 1.5), 0.0);
+    let v = g.visibility(&vp, at, None, 100.0, 1.0);
+    assert!(
+        !is_empty(&v.rects[2]) && is_empty(&v.rects[home as usize]),
+        "{v:?}"
+    );
+    assert_eq!(v.rects[reaching as usize], v.rects[2]);
+    assert_eq!(g.rooms_seen(&v), 2);
+    // Looking south, neither.
+    let (vp, at) = eye(Vec3::new(2.0, 1.0, 1.5), std::f32::consts::PI);
+    assert!(is_empty(
+        &g.visibility(&vp, at, None, 100.0, 1.0).rects[reaching as usize]
+    ));
+}
+
 /// A report's cell wins over the volumes: an outdoor cell id means outdoors, a room's means that
 /// room.
 #[test]

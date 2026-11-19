@@ -137,7 +137,7 @@ fn scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l
         var share: f32;
         if (stone) {
             // On bare patches and stony ground, and in a band along the road's edge.
-            let gap = road_gap(roads, f) + (land_noise(w + vec2<f32>(5.3, 11.9), 1.7) - 0.5) * 1.2;
+            let gap = road_gap(roads, f) + (world_noise(w + vec2<f32>(5.3, 11.9), 1.7) - 0.5) * 1.2;
             var verge = smoothstep(-1.0, 0.0, gap) * (1.0 - smoothstep(1.0, 3.0, gap));
             var on_road = 0.04 * (1.0 - smoothstep(-0.8, -0.4, gap));
             if (cp.bare.y != 0u) {
@@ -146,13 +146,13 @@ fn scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l
             }
             // A pack keeps them off its grounds that ask, the road's edges aside.
             share = max((strewn + 0.3 * (1.0 - kept)) * (1.0 - bare), 0.9 * verge) + on_road;
-            share *= mix(0.5, 1.2, land_noise(w + vec2<f32>(47.0, 3.0), 4.0));
+            share *= mix(0.5, 1.2, world_noise(w + vec2<f32>(47.0, 3.0), 4.0));
         } else {
             if (grows.x <= 0.0) {
                 continue;
             }
             // In small drifts over about a sixth of the meadow, a rare one between.
-            let n = land_noise(w + vec2<f32>(31.0, 77.0), 6.0) * 0.7 + land_noise(w + vec2<f32>(41.0, 13.0), 2.5) * 0.3;
+            let n = world_noise(w + vec2<f32>(31.0, 77.0), 6.0) * 0.7 + world_noise(w + vec2<f32>(41.0, 13.0), 2.5) * 0.3;
             share = grows.x * max(smoothstep(0.66, 0.76, n), 0.005) * kept * road_keep(roads, f, p);
         }
         share *= smoothstep(0.2, 2.0, building_gap(c, p)) * object_keep(c, p);
@@ -197,7 +197,7 @@ fn scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l
         } else {
             // A stretch of meadow's colours: one of its terrain's three, now and then the fourth.
             let palette = FLOWER_PALETTES[types[most]];
-            let region = land_noise(w + vec2<f32>(71.0, 19.0), 14.0);
+            let region = world_noise(w + vec2<f32>(71.0, 19.0), 14.0);
             var pick = min(u32(region * 3.0), 2u);
             let v = cover_unit(cover_mix(h3 ^ 0x68E31DA4u));
             if (v < 0.12) {
@@ -207,7 +207,7 @@ fn scatter(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) l
             }
             let fc = FLOWER_COLOURS[(palette >> (pick * 4u)) & 7u];
             let tall = grows.y / grows.x * mix(0.75, 1.2, cover_unit(cover_mix(h1 ^ 0x3C6EF372u)))
-                * mix(0.62, 1.28, land_noise(w + vec2<f32>(29.0, 61.0), 3.5)) * scale * grow;
+                * mix(0.62, 1.28, world_noise(w + vec2<f32>(29.0, 61.0), 3.5)) * scale * grow;
             let head = mix(0.032, 0.05, cover_unit(cover_mix(h2 ^ 0x1B873593u))) * mix(0.5, 1.0, scale);
             record = Clump(vec4<f32>(foot, tall), h3,
                            scatter_colour(fc.rgb * mix(0.88, 1.1, cover_unit(cover_mix(h)))), head,

@@ -183,6 +183,7 @@ pyreal_testkit::scenarios! {
     scenario_a_server_named_placement_draws_its_own_frames => a_server_named_placement_draws_its_own_frames ["objects.placement.a-server-named-placement-draws-its-own-frames"],
     scenario_a_pick_sweep_uses_the_placement_the_shard_named => a_pick_sweep_uses_the_placement_the_shard_named ["objects.pick.a-sweep-uses-the-placement-the-shard-named"],
     scenario_a_held_object_is_pickable_and_a_contained_object_is_not => a_held_object_is_pickable_and_a_contained_object_is_not ["objects.held-object.is-a-pick-candidate-while-a-contained-object-is-not"],
+    scenario_where_the_picture_shows_no_object_the_sweep_answers => where_the_picture_shows_no_object_the_sweep_answers ["objects.pick.where-the-picture-shows-no-object-the-sweep-answers"],
 }
 
 // =============================================================================================
@@ -2301,6 +2302,77 @@ mod held {
             && miss == Some(ObjectId(0))
     }
 
+    /// [`PickAt`] with a drawn picture: what it shows at the click and how far off it is.
+    struct Pictured {
+        swept: PickAt,
+        shows: ObjectId,
+        front: Option<f32>,
+    }
+
+    impl PickScene for Pictured {
+        fn viewer(&self) -> Frame {
+            self.swept.viewer
+        }
+
+        fn object_frame(&self, id: ObjectId) -> Option<Frame> {
+            self.swept.object_frame(id)
+        }
+
+        fn fov_y_rad(&self, viewport: (u32, u32)) -> f32 {
+            self.swept.fov_y_rad(viewport)
+        }
+
+        fn picked(&self, _at: (f32, f32)) -> Option<ObjectId> {
+            Some(self.shows)
+        }
+
+        fn drawn_distance(&self, _at: (f32, f32)) -> Option<f32> {
+            self.front
+        }
+    }
+
+    pub(super) fn where_the_picture_shows_no_object_the_sweep_answers() -> bool {
+        let store = store();
+        let (combat, _) = sphere_centre(1);
+        let screen = (800u32, 600u32);
+        let viewport = Viewport {
+            x: 0,
+            y: 0,
+            width: screen.0,
+            height: screen.1,
+        };
+        let mut posed = objects();
+        posed.apply_event(
+            &create_event(ITEM, PICK_SETUP, None, Some(1)),
+            LocalTime(0.0),
+        );
+        // The item is three metres off: the sky or the ground behind it lets the sweep answer,
+        // a wall half a metre off does not, and an object the picture names is the answer.
+        let other = ObjectId(0x5000_0099);
+        let cases = [
+            (ObjectId(0), None, ObjectId(ITEM)),
+            (ObjectId(0), Some(10.0), ObjectId(ITEM)),
+            (ObjectId(0), Some(0.5), ObjectId(0)),
+            (other, Some(0.5), other),
+        ];
+        let mut pick = WorldPicker::new();
+        cases.iter().all(|&(shows, front, want)| {
+            let scene = Pictured {
+                swept: pick_scene(combat),
+                shows,
+                front,
+            };
+            assert!(pick.find_object(399, 299, viewport));
+            let got = pick.draw_no_blit(&store, &scene, &posed, screen, viewport);
+            assert_eq!(
+                got,
+                Some(want),
+                "shows {shows:?} with a surface at {front:?}"
+            );
+            got == Some(want)
+        })
+    }
+
     pub(super) fn a_held_object_is_pickable_and_a_contained_object_is_not() -> bool {
         let store = store();
         let (combat, _) = sphere_centre(1);
@@ -2396,6 +2468,15 @@ pub fn a_pick_sweep_uses_the_placement_the_shard_named() {
     let mut client = HeadlessClient::model();
     client.assert_behaviour(
         "objects.pick.a-sweep-uses-the-placement-the-shard-named",
+        move |_| picked,
+    );
+}
+
+pub fn where_the_picture_shows_no_object_the_sweep_answers() {
+    let picked = held::where_the_picture_shows_no_object_the_sweep_answers();
+    let mut client = HeadlessClient::model();
+    client.assert_behaviour(
+        "objects.pick.where-the-picture-shows-no-object-the-sweep-answers",
         move |_| picked,
     );
 }

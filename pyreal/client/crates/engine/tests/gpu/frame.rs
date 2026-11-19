@@ -104,6 +104,88 @@ fn picking_finds_the_object_drawn_under_a_pixel() {
     }
 }
 
+/// A pick reads how far the drawn surface under the pixel is: the drudge's front a little short of
+/// its middle, at full and half render scale, and nothing for the sky.
+#[test]
+fn picking_reads_the_drawn_surfaces_distance() {
+    let mut engine = engine();
+    let body = door_and_drudge(&mut engine);
+    let camera = camera();
+    let size = (320, 180);
+    let middle = Vec3::new(1.0, 4.0, 0.9);
+    let far = middle.distance(camera.position);
+    for scale in [1.0, 0.5] {
+        engine.renderer.render_scale = scale;
+        engine
+            .render_to_rgba(&camera, &SkyLight::default(), size)
+            .expect("a frame");
+        let p = engine
+            .renderer
+            .pick_texel(&engine.gpu, pixel_of(&camera, size, middle));
+        assert_eq!(p.object, Some(body.object));
+        let d = p.distance.expect("a surface");
+        assert!(
+            d > far - 0.6 && d < far + 0.1,
+            "{d} m to the drudge, {far} m to its middle"
+        );
+        let sky = engine.renderer.pick_texel(&engine.gpu, (2, 2));
+        assert_eq!((sky.object, sky.distance), (None, None), "the sky");
+    }
+}
+
+/// The olthoi door (weenie 5627's setup): opaque jambs and lintel round ten translucent leaves.
+const OLTHOI_DOOR: DataId = DataId(0x0200_05F2);
+/// ...and its motion table, which closes it.
+const OLTHOI_DOOR_MOTIONS: DataId = DataId(0x0900_0087);
+
+/// A click on a door's translucent leaves picks the door, as retail's polygon test does: the
+/// leaves write the object under them, nearest last. Objects below `pick_from` leave the pick to
+/// what is behind their translucent surfaces (here the sky).
+#[test]
+fn picking_finds_an_object_by_its_translucent_surfaces() {
+    let mut engine = engine();
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let mut loader = AssetLoader::default();
+    let mut body = Body::new(
+        Arc::new(DatAnimAssets::new(Arc::clone(&store))),
+        OLTHOI_DOOR,
+        None,
+        Frame::new(DVec3::new(0.0, 4.0, 0.0), Quat::IDENTITY),
+    )
+    .expect("the olthoi door");
+    assert!(body.driver.set_motion_table(OLTHOI_DOOR_MOTIONS));
+    body.advance(0.5);
+    body.driver.update_parts(&body.frame);
+    assert_eq!(body.place(&mut engine, &mut loader, &store), 13);
+    let camera = Camera {
+        position: Vec3::new(0.0, -4.0, 1.6),
+        far: 100.0,
+        ..Camera::default()
+    };
+    let light = SkyLight::default();
+    let size = (320, 320);
+    let leaves = [(0.0, 1.6), (0.4, 2.0), (-0.4, 1.2)]
+        .map(|(x, z)| pixel_of(&camera, size, Vec3::new(x, 4.0, z)));
+    let jamb = pixel_of(&camera, size, Vec3::new(-1.95, 4.0, 1.5));
+    engine
+        .render_to_rgba(&camera, &light, size)
+        .expect("a frame");
+    for at in leaves {
+        assert_eq!(
+            engine.renderer.pick(&engine.gpu, at),
+            Some(body.object),
+            "the leaves at {at:?}"
+        );
+    }
+    assert_eq!(engine.renderer.pick(&engine.gpu, jamb), Some(body.object));
+    engine.renderer.pick_from = body.object + 1;
+    engine
+        .render_to_rgba(&camera, &light, size)
+        .expect("a frame");
+    assert_eq!(engine.renderer.pick(&engine.gpu, leaves[0]), None);
+    assert_eq!(engine.renderer.pick(&engine.gpu, jamb), Some(body.object));
+}
+
 /// With the temporal anti-aliasing on a still scene, consecutive frames settle: once the history
 /// holds the jitter's offsets, two frames differ by far less than two frames drawn before it did,
 /// and the settled frame differs from the unjittered one only at edges.

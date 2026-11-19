@@ -108,6 +108,10 @@ pub struct MouseSelectData {
     pub closest_sphere: f64,
     pub sphere_id: ObjectId,
     pub sphere_index: i32,
+    /// How far along the world ray each answer's hit is: the ray's parameter times its part-space
+    /// length. Not the client's; Pyreal weighs the sweep against the drawn depth with it.
+    pub polygon_distance: f64,
+    pub sphere_distance: f64,
 }
 
 impl Default for MouseSelectData {
@@ -121,6 +125,8 @@ impl Default for MouseSelectData {
             closest_sphere: f64::MAX,
             sphere_id: ObjectId(0),
             sphere_index: -1,
+            polygon_distance: f64::MAX,
+            sphere_distance: f64::MAX,
         }
     }
 }
@@ -142,6 +148,18 @@ impl MouseSelectData {
             (self.sphere_id, self.sphere_index)
         } else {
             (ObjectId(0), -1)
+        }
+    }
+
+    /// How far the hit [`Self::result`] answers with is, `None` with no hit.
+    #[must_use]
+    pub fn distance(&self) -> Option<f64> {
+        if self.found_polygon {
+            Some(self.polygon_distance)
+        } else if self.found_sphere {
+            Some(self.sphere_distance)
+        } else {
+            None
         }
     }
 }
@@ -292,6 +310,7 @@ pub fn gfx_obj_under_selection_ray(
         return false;
     };
     let t = f64::from(t);
+    let along = f64::from(ray.dir.magnitude());
     if data.found_polygon && t > data.closest_polygon {
         return false;
     }
@@ -300,6 +319,7 @@ pub fn gfx_obj_under_selection_ray(
         data.closest_sphere = t;
         data.sphere_id = c.physobj_id;
         data.sphere_index = c.physobj_index;
+        data.sphere_distance = t * along;
     }
     if c.check_polys {
         for poly in c.polygons {
@@ -310,6 +330,7 @@ pub fn gfx_obj_under_selection_ray(
                     data.closest_polygon = tp;
                     data.polygon_id = c.physobj_id;
                     data.polygon_index = c.physobj_index;
+                    data.polygon_distance = tp * along;
                 }
                 break; // the FIRST hit polygon only
             }

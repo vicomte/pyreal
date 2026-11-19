@@ -110,8 +110,9 @@ impl From<DeviceError> for PresentError {
     }
 }
 
-/// A pick's answer: the viewport point asked, the object there and the frame it was read in.
-type PickAnswer = ((f32, f32), ObjectId, u64);
+/// A pick's answer: the viewport point asked, the object there, the frame it was read in and how
+/// far the drawn surface there is (`None` for the sky).
+type PickAnswer = ((f32, f32), ObjectId, u64, Option<f32>);
 
 /// What the scene views read beside the world state: the selection the runtime names, the pick
 /// read off the last frame, the frame rate and the game viewport.
@@ -136,6 +137,15 @@ pub struct Look {
 }
 
 impl Look {
+    /// The last pick's object and drawn distance, when it was asked at `at` and is fresh.
+    fn answer_at(&self, at: (f32, f32)) -> Option<(ObjectId, Option<f32>)> {
+        let (p, id, when, distance) = self.picked.get()?;
+        ((p.0 - at.0).abs() < 1.0
+            && (p.1 - at.1).abs() < 1.0
+            && self.frame.get().saturating_sub(when) <= PICK_FRESH)
+            .then_some((id, distance))
+    }
+
     /// The field of view the world is drawn with on a `width` x `height` back buffer: the game
     /// field of view over the game viewport's aspect, as the client's `view_params` takes it.
     #[must_use]
@@ -288,16 +298,10 @@ macro_rules! view_reads {
                 let _ = self.size;
                 // Asked again whatever the answer, so it stays a frame or two old.
                 self.look.wanted.set(Some(at));
-                match self.look.picked.get() {
-                    Some((p, id, when))
-                        if (p.0 - at.0).abs() < 1.0
-                            && (p.1 - at.1).abs() < 1.0
-                            && self.look.frame.get().saturating_sub(when) <= PICK_FRESH =>
-                    {
-                        Some(id)
-                    }
-                    _ => None,
-                }
+                self.look.answer_at(at).map(|a| a.0)
+            }
+            fn drawn_distance(&self, at: (f32, f32)) -> Option<f32> {
+                self.look.answer_at(at).and_then(|a| a.1)
             }
         }
     };
@@ -582,7 +586,11 @@ pub fn keep_pipeline_cache_in(dir: impl Into<std::path::PathBuf>, version: &str)
 }
 
 fn engine_on(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Engine, DeviceError> {
-    Ok(Engine::new(gpu.clone(), PoolSizes::default(), format)?)
+    let mut engine = Engine::new(gpu.clone(), PoolSizes::default(), format)?;
+    // Only server objects are picked on their translucent surfaces; a static's leaves the pick
+    // to what is behind it, as retail's ray never tests one.
+    engine.renderer.pick_from = crate::bridge::SERVER_NUMBERS;
+    Ok(engine)
 }
 
 /// The window's format: a float one in extended linear sRGB for HDR Output, an sRGB one otherwise.
@@ -1207,9 +1215,12 @@ impl SceneRenderer {
         if let Some(answer) = self.engine.renderer.take_pick(&self.gpu) {
             if let Some(at) = self.pick_at.take() {
                 let id = answer
+                    .object
                     .and_then(|n| self.bridge.as_ref()?.object_of(n))
                     .unwrap_or(ObjectId(0));
-                self.look.picked.set(Some((at, id, self.look.frame.get())));
+                self.look
+                    .picked
+                    .set(Some((at, id, self.look.frame.get(), answer.distance)));
             }
         }
         // The screens before the world show the portal lights, not a world kept from the game.
@@ -1360,8 +1371,8 @@ impl SceneRenderer {
             .look
             .picked
             .get()
-            .filter(|(_, _, when)| self.look.frame.get().saturating_sub(*when) <= PICK_FRESH)
-            .and_then(|(_, id, _)| bridge.number_of(id));
+            .filter(|(_, _, when, _)| self.look.frame.get().saturating_sub(*when) <= PICK_FRESH)
+            .and_then(|(_, id, _, _)| bridge.number_of(id));
         self.engine.renderer.selection = pyreal_engine::renderer::Selection {
             selected: number.or_else(|| marker.and_then(|m| bridge.number_of(m.object))),
             hovered: hovered.filter(|h| Some(*h) != number),

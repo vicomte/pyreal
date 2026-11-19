@@ -81,11 +81,13 @@ pub(super) fn grass_pack() -> ArtPack {
 
 /// The plants placed in the world square `[x0, x0 + 8) by [y0, y0 + 8)` (world metres), seen
 /// straight down from 25 metres over it (`offset` metres east) with the area loaded round block
-/// `center`: each one's world foot (to the millimetre) and scale, once.
+/// `center`: each one's world foot (to the millimetre) and scale, once. The cover reaches twice
+/// the pack's, so no plant in the square is shrinking away with distance.
 fn plants_in(center: u16, x0: f32, y0: f32, offset: f32) -> Vec<[i64; 4]> {
     let store = pyreal_dat::testing::open_store_or_fail();
     let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
     let mut engine = super::engine();
+    engine.renderer.cover_reach = 2.0;
     let mut loader =
         AssetLoader::with_pack(pyreal_engine::pack::EnginePack::new(Arc::new(grass_pack())));
     load_area(
@@ -201,8 +203,9 @@ fn cover_grows_up_to_a_buildings_walls() {
     };
     let z = ground_height(&store, &region, BLOCK, b.frame.origin.x, b.frame.origin.y)
         .expect("the ground");
+    // Near enough that the plants by the walls are not yet shrinking away with distance.
     let camera = Camera {
-        position: print.at.extend(z + 60.0),
+        position: print.at.extend(z + 30.0),
         pitch: -1.5,
         far: 300.0,
         ..Camera::default()
@@ -276,4 +279,90 @@ fn cover_stones_bind_the_land_s_rock_picture() {
         engine.materials.texture_live(slot),
         "slot {slot} kept when nothing draws it"
     );
+}
+
+/// A corpse lying in the grass is picked through the blades in front of it: the pixels that name
+/// it with the cover drawn are those that name it without, though blades stand before some.
+#[test]
+fn a_corpse_in_the_grass_is_picked_through_it() {
+    use pyreal_animation::MotionCommand;
+    use pyreal_engine::body::Body;
+    use pyreal_primitives::{Frame, Quat, Vec3 as DVec3};
+
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::engine();
+    let mut loader =
+        AssetLoader::with_pack(pyreal_engine::pack::EnginePack::new(Arc::new(grass_pack())));
+    load_area(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        Area {
+            center: MEADOW,
+            radius: 1,
+        },
+    );
+    let (x, y) = (90.0, 90.0);
+    let z = ground_height(&store, &region, MEADOW, x, y).expect("the ground");
+    let world = engine.renderer.world_origin;
+    let at = glam::Vec2::new(
+        f32::from(MEADOW >> 8) * 192.0 + x,
+        f32::from(MEADOW & 0xFF) * 192.0 + y,
+    ) - world;
+    let mut body = Body::new(
+        Arc::new(pyreal_world_data::anim_assets::DatAnimAssets::new(
+            Arc::clone(&store),
+        )),
+        DataId(0x0200_07DD),
+        None,
+        Frame::new(DVec3::new(at.x, at.y, z), Quat::IDENTITY),
+    )
+    .expect("a drudge");
+    assert!(body.driver.set_motion_table(DataId(0x0900_0008)));
+    assert_eq!(body.command(MotionCommand::DEAD), 0);
+    body.advance(4.0);
+    body.driver.update_parts(&body.frame);
+    assert!(body.place(&mut engine, &mut loader, &store) > 5);
+    let camera = Camera {
+        position: at.extend(z + 1.2) - Vec3::new(0.0, 3.0, 0.0),
+        pitch: -0.35,
+        far: 300.0,
+        ..Camera::default()
+    };
+    let size = (160, 120);
+    let look = |engine: &mut pyreal_engine::Engine| {
+        engine
+            .render_to_rgba(&camera, &SkyLight::default(), size)
+            .expect("a frame");
+        let depth: Vec<f32> = pyreal_engine::read_texture(
+            &engine.gpu,
+            engine.renderer.depth_texture().expect("the depth"),
+            4,
+        )
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect();
+        let named: Vec<bool> = (0..size.1)
+            .flat_map(|py| (0..size.0).map(move |px| (px, py)))
+            .map(|p| engine.renderer.pick(&engine.gpu, p) == Some(body.object))
+            .collect();
+        (named, depth)
+    };
+    let (with_cover, grassy) = look(&mut engine);
+    let cover = engine.renderer.cover.take();
+    assert!(cover.is_some(), "the pack's cover");
+    let (bare, plain) = look(&mut engine);
+    let body_pixels = bare.iter().filter(|n| **n).count();
+    // Reverse Z: a blade before the body is nearer, so deeper.
+    let behind_blades = (0..bare.len())
+        .filter(|&i| bare[i] && grassy[i] > plain[i] + 1e-6)
+        .count();
+    eprintln!("{body_pixels} pixels name the corpse, {behind_blades} behind blades");
+    assert!(body_pixels > 100, "the corpse is in view");
+    assert!(behind_blades > 10, "blades stand before the corpse");
+    assert_eq!(with_cover, bare, "the same pixels name the corpse");
 }

@@ -123,7 +123,13 @@ pub struct PickStats {
     /// counted here is swept at the wrong pose: for the retail door that is a closed door standing
     /// in an open doorway.
     pub parts_at_the_rest_pose: u64,
+    /// Sweep hits dropped because the drawn picture showed a surface well in front of them.
+    pub hidden_behind_drawn: u64,
 }
+
+/// How far behind the drawn surface a sweep's hit may be and still answer, as a share of that
+/// surface's distance and metres: a sphere hit, grass or ground beside a small item.
+const HIDDEN_BEHIND: (f64, f64) = (1.05, 1.0);
 
 /// One part of one setup record, in the part's own space, ready to be swept.
 #[derive(Debug)]
@@ -308,8 +314,14 @@ pub trait PickScene {
 
     /// The object the drawn picture shows under viewport point `at`, when the presentation reads
     /// it off its own frame (an object id per pixel, read back a frame late): `Some(ObjectId(0))`
-    /// for nothing there. `None` is no answer for that point, and the sweep decides.
+    /// for nothing there. `None` is no answer for that point; with either, the sweep decides.
     fn picked(&self, _at: (f32, f32)) -> Option<ObjectId> {
+        None
+    }
+
+    /// How far from the eye the drawn surface under `at` is, metres, read with [`Self::picked`];
+    /// `None` for the sky or no answer.
+    fn drawn_distance(&self, _at: (f32, f32)) -> Option<f32> {
         None
     }
 }
@@ -494,16 +506,19 @@ impl WorldPicker {
         viewport: Viewport,
     ) -> Option<ObjectId> {
         let (px, py) = self.looking_for.take()?;
-        if let Some(id) = scene.picked((px, py)) {
+        // The drawn picture's answer when it names an object. Where it shows none (a cut-out's
+        // gap, a faded body's screened pixel, an item a pixel wide), retail's sweep below decides,
+        // with its polygon and drawing-sphere tests.
+        let drawn = scene.picked((px, py));
+        if let Some(id) = drawn.filter(|id| id.0 != 0) {
             self.click_object_id = id;
             self.click_object_index = 0;
-            if id.0 == 0 {
-                self.stats.missed += 1;
-            } else {
-                self.stats.found += 1;
-            }
+            self.stats.found += 1;
             return Some(id);
         }
+        // What the picture shows there when it shows no object: the sweep's hit must not be
+        // well behind it, or a click on a wall would name the creature beyond it.
+        let in_front = drawn.and_then(|_| scene.drawn_distance((px, py)));
         let viewer = scene.viewer();
         let ray = selection_ray(
             &viewer,
@@ -695,7 +710,13 @@ impl WorldPicker {
         }
         self.stats.parts_swept += parts.len() as u64;
         let data = find_object(viewer.origin, ray, &parts);
-        let (id, index) = data.result();
+        let (mut id, mut index) = data.result();
+        if let (Some(front), Some(hit)) = (in_front, data.distance()) {
+            if hit > f64::from(front) * HIDDEN_BEHIND.0 + HIDDEN_BEHIND.1 {
+                self.stats.hidden_behind_drawn += 1;
+                (id, index) = (ObjectId(0), -1);
+            }
+        }
         self.click_object_id = id;
         self.click_object_index = index;
         if id.0 == 0 {

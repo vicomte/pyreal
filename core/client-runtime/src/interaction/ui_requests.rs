@@ -123,39 +123,6 @@ feedback,channel: 0x1A, text},
                     game.set_selected_object(id, false, &mut out);
                     self.stats.selections += 1;
                 }
-                // The paper-doll message handler's `0x1C` tail — the half of
-                // paper-doll item-under-mouse lookup that needs the player.
-                //
-                // It finds the upper inventory object for the mask and returns if there is none.
-                // On a primary click (7) with a target mode up it executes the target mode on
-                // **the player**; otherwise a primary click selects the object. A secondary click
-                // (8) selects and examines it.
-                //
-                // The target-mode arm really does pass the player's id and not the found object.
-                // Reproduced, not corrected.
-                UiRequest::PaperDollRegion { mask, secondary } => {
-                    let Some(player) = game.player else {
-                        self.stats.ui_requests_handled += 1;
-                        continue;
-                    };
-                    // The upper-inventory fallback is the player id when nothing
-                    // the player is wearing covers that colour. Clicking a bare shoulder selects
-                    // you, and it is the same statement that makes an empty doll clickable at all.
-                    let id = game
-                        .inventory(player)
-                        .and_then(|inv| inv.upper_inv_obj(mask))
-                        .unwrap_or(player);
-                    if !secondary && self.target_mode != TargetMode::None {
-                        self.execute_target_mode_for_item(player, game, &mut req, &mut out, now);
-                        self.stats.ui_requests_handled += 1;
-                        continue;
-                    }
-                    game.set_selected_object(Some(id), false, &mut out);
-                    self.stats.selections += 1;
-                    if secondary {
-                        game.examine_object(&mut req, id);
-                    }
-                }
                 // The busy-count increment has one owner and is also read
                 // by enable_selection's current-focus fallback. Nothing is sent here.
                 UiRequest::SetTalkFocus { focus } => {
@@ -175,6 +142,17 @@ feedback,channel: 0x1A, text},
                 // The communication system's last speakable target, which the main chat window
                 // writes: the tell destination of talk focus 2, and the object the squelch row
                 // and the window's sweep ask about.
+                UiRequest::Tell { target, text } => {
+                    pyreal_client_model::RequestSink::send(
+                        &mut req,
+                        Request::TalkDirect(pyreal_protocol::comms::CommunicationTalkDirect {
+                            message: text,
+                            target,
+                        }),
+                    );
+                    self.stats.ui_requests_handled += 1;
+                    continue;
+                }
                 UiRequest::SetLastSpeakableTarget { object } => {
                     game.chat.last_speakable_target = (object.0 != 0).then_some(object);
                     self.stats.ui_requests_handled += 1;
@@ -268,9 +246,6 @@ feedback,channel: 0x1A, text},
                 // The *whether* is the panel's (`ExaminationPanel::examine_spell`, guarding on its
                 // own two appraisal ids as retail does); this arm is the unconditional half.
                 UiRequest::CancelAppraisal => game.cancel_appraisal(&mut req),
-                UiRequest::VendorFilter(index) => {
-                    game.vendor_filter = index;
-                }
                 UiRequest::StackSliderChanged { split, max } => {
                     game.split = SplitState {
                         split_size: split,
@@ -279,13 +254,6 @@ feedback,channel: 0x1A, text},
                     self.stats.ui_requests_handled += 1;
                     continue;
                 }
-                UiRequest::ClearItemWaiting(item) => game.set_waiting_state(item, false),
-                // The object-state half of the item-list drag-start handler's
-                // `set_waiting_state(1)` call.
-                // The pick-up ghost lives on the object in retail, which is what lets
-                // the item list's flush and slot clear run over the slot
-                // without losing it.
-                UiRequest::SetItemWaiting(item) => game.set_waiting_state(item, true),
                 // The toolbar's Use / Examine
                 // button pressed with **nothing selected**. This is the only writer of
                 // `target_mode` in the client. The field is read at
@@ -336,21 +304,6 @@ feedback,channel: 0x1A, text},
                     game.attempt_set_inscription(&mut req, object, &text);
                     self.stats.ui_requests_handled += 1;
                     continue;
-                }
-                // The abuse-report panel has already refused an
-                // empty field. Retail supplies literal status 1 and sends this ordered 0x0140
-                // without an optimistic result; the 0x04B8..0x04BA reply owns that text.
-                UiRequest::AbuseLog { target, complaint } => {
-                    pyreal_client_model::RequestSink::send(
-                        &mut req,
-                        pyreal_client_model::Request::AbuseLog(
-                            pyreal_protocol::admin::CharacterAbuseLogRequest {
-                                target,
-                                status: 1,
-                                complaint,
-                            },
-                        ),
-                    );
                 }
                 // The book panel's five writing requests. It has already checked
                 // authorship and pending-request guards. Like inscription requests, these are
@@ -469,22 +422,6 @@ feedback,channel: 0x1A, text},
                     self.stats.ui_requests_handled += 1;
                     continue;
                 }
-                UiRequest::StartTell { name } => {
-                    let window = pyreal_client_contract::chat::interface::window::MAIN;
-                    let text = game
-                        .chat
-                        .entries
-                        .get(&window)
-                        .map_or_else(String::new, |e| e.text.clone());
-                    self.edit_chat_entry(
-                        game,
-                        window,
-                        text,
-                        pyreal_client_contract::chat::entry::EntryAction::StartTell { name },
-                    );
-                    self.stats.ui_requests_handled += 1;
-                    continue;
-                }
                 UiRequest::ChatLine { text, window } => {
                     // Convert submitted chat from wide to narrow text BEFORE command parsing and
                     // every destination. Input history remains the original wide text.
@@ -494,6 +431,15 @@ feedback,channel: 0x1A, text},
                     if player_typed {
                         game.chat.entries.entry(window).or_default().submit(&text);
                     }
+                    // `%t` and `<t>` name the selection in what the player typed; history keeps them.
+                    let text = if player_typed {
+                        let target = game.selected.and_then(|id| game.weenie(id)).map(|w| {
+                            w.object_name(pyreal_client_model::weenie::NameType::Appropriate)
+                        });
+                        pyreal_client_model::chat_entry::substitute_target(&text, target.as_deref())
+                    } else {
+                        text
+                    };
                     // Existing narrow-message String storage is a bijective BYTE SPELLING:
                     // cp1252::encode writes these exact bytes, even when ACP is not1252.
                     // This is NOT ACP decoding to Unicode, and must not be used for display.
@@ -989,51 +935,6 @@ feedback,channel: 0x1A, text},
                         self.stats.requests_refused += 1;
                     }
                 }
-                UiRequest::SetCombatMode(raw) => {
-                    let mode = if raw == 0 {
-                        let (mode, refusal) = game.get_default_combat_mode(false);
-                        if let Some(text) = refusal {
-                            out.emit(pyreal_client_model::Notice::DisplayString {
-                                channel: pyreal_client_model::chat::REFUSAL_CHANNEL,
-                                text,
-                                feedback: pyreal_client_contract::feedback::Feedback::LOCAL,
-                            });
-                        }
-                        mode
-                    } else {
-                        pyreal_client_model::combat::CombatMode::from_raw(raw)
-                    };
-                    if matches!(mode.raw(), 1 | 2 | 4 | 8) {
-                        let ready = self.ready_for_mode_change(game);
-                        if game
-                            .set_combat_mode(&mut req, &mut out, mode, true, ready, false)
-                            .is_err()
-                        {
-                            self.stats.requests_refused += 1;
-                        }
-                    }
-                }
-                UiRequest::AutoWear(item) => {
-                    if game
-                        .auto_wear(&mut req, &mut out, item, game.split, now, false)
-                        .is_err()
-                    {
-                        self.stats.requests_refused += 1;
-                    }
-                }
-                UiRequest::AutoWield { item, side } => {
-                    use pyreal_rules::slots::SlotSide;
-                    let side = match side {
-                        1 => SlotSide::Left,
-                        2 => SlotSide::Right,
-                        _ => SlotSide::Null,
-                    };
-                    if !game.auto_wield(
-                        &mut req, &mut out, item, side, false, true, false, game.split, now,
-                    ) {
-                        self.stats.requests_refused += 1;
-                    }
-                }
                 // The map teleport of a privileged player: the middle of the outdoor block.
                 UiRequest::MapTeleport { x, y } => {
                     let cell = i32::try_from(x)
@@ -1067,64 +968,6 @@ feedback,channel: 0x1A, text},
                             pyreal_protocol::trade::HouseQueryHouse,
                         ),
                     );
-                }
-                UiRequest::OpenTrade(partner) => {
-                    if partner.0 == 0 {
-                    } else if game.combat.combat_mode
-                        != pyreal_client_model::combat::CombatMode::NonCombat
-                    {
-                        out.emit(pyreal_client_model::Notice::DisplayString {
-                            feedback: pyreal_client_contract::feedback::Feedback::WARNING,
-                            channel: pyreal_client_model::chat::REFUSAL_CHANNEL,
-                            text: "You need to be in peace mode to trade.".into(),
-                        });
-                        self.stats.requests_refused += 1;
-                    } else {
-                        pyreal_client_model::RequestSink::send(
-                            &mut req,
-                            pyreal_client_model::Request::OpenTradeNegotiations(
-                                pyreal_protocol::trade::TradeOpenTradeNegotiations { partner },
-                            ),
-                        );
-                    }
-                }
-                UiRequest::AbuseLogStatus {
-                    target,
-                    enabled,
-                    complaint,
-                } => {
-                    pyreal_client_model::RequestSink::send(
-                        &mut req,
-                        pyreal_client_model::Request::AbuseLog(
-                            pyreal_protocol::admin::CharacterAbuseLogRequest {
-                                target,
-                                status: u32::from(enabled),
-                                complaint,
-                            },
-                        ),
-                    );
-                }
-                // Both option words at once: the classic Character page. The second word keeps
-                // whatever the page does not show above its low byte.
-                UiRequest::SetOptionWords {
-                    options,
-                    options2,
-                    timestamp_format,
-                    save,
-                } => {
-                    let player = &mut game.player_system;
-                    player.options.options = options;
-                    player.options.options2 = options2;
-                    if let Some(module) = &mut player.module {
-                        module.options = options;
-                        module.options2 = options2;
-                        if timestamp_format.is_some() {
-                            module.timestamp_format = timestamp_format;
-                        }
-                    }
-                    if save {
-                        player.save_to_server(&mut req, true);
-                    }
                 }
                 UiRequest::CastSpell { spell_id } => {
                     let sent = req.0.len();
@@ -1221,16 +1064,6 @@ feedback,channel: 0x1A, text},
                 // The escape key's abort of an automatic attack, without its stop of the body, and
                 // a swing still charging dropped.
                 UiRequest::CombatAbortAttack => game.stop_attack(&mut req),
-                // The radar padlock's request reaches the same native setter as the
-                // lock-UI command: bit 24 of the second options word, then broadcast option
-                // `0x33`. The latter emits one immediate 0x0005 because LockUI is auto-save. Queue the
-                // global-0D presentation half only after this authoritative write, matching the
-                // native button's set_lock_ui-then-global-broadcast order.
-                UiRequest::SetLockUi(locked) => {
-                    self.apply_lock_ui_option(game, &mut req, locked, now);
-                    self.pending_ui_layout_commands
-                        .push(UiLayoutCommand::SetLockUi(locked));
-                }
                 // ---- the option wire's three ends ---------------------------------------------
                 //
                 // The option-change path applies `(option, current)` to the player module.
@@ -1326,11 +1159,6 @@ feedback,channel: 0x1A, text},
                         self.module_save_at = Some(ServerTime(now.0 + MODULE_SAVE_DELAY));
                     }
                 }
-                UiRequest::SavePlayerOptions => {
-                    if game.player_system.save_to_server(&mut req, false) {
-                        self.stats.player_modules_sent += 1;
-                    }
-                }
                 // ---- the two vital queries a selection change sends ---------------------------
                 //
                 // Toolbar selection-change handling is the only producer of either
@@ -1339,10 +1167,6 @@ feedback,channel: 0x1A, text},
                 // health meter and ask nobody to fill it.
                 UiRequest::QueryHealth(id) => {
                     game.query_health(&mut req, id);
-                    self.stats.vital_queries += 1;
-                }
-                UiRequest::QueryItemMana(id) => {
-                    game.query_item_mana(&mut req, id);
                     self.stats.vital_queries += 1;
                 }
                 // ---- the allegiance panel's update request -------------------------------------
@@ -1355,15 +1179,6 @@ feedback,channel: 0x1A, text},
                 UiRequest::AllegianceUpdateRequest { on } => {
                     game.allegiance_update_request(&mut req, on);
                     self.stats.allegiance_update_requests += 1;
-                }
-                // A window's own busy latch: the count the busy cursor reads.
-                UiRequest::Busy { raised } => {
-                    let busy = &mut game.magic.busy_count;
-                    *busy = if raised {
-                        busy.saturating_add(1)
-                    } else {
-                        busy.saturating_sub(1)
-                    };
                 }
                 // ---- the allegiance panel's three buttons ---------------------------------
                 //
@@ -1464,17 +1279,6 @@ feedback,channel: 0x1A, text},
                         .add_feedback_to_scroll(&text, channel, true, 0, feedback);
                     self.stats.panel_notice_strings += 1;
                 }
-                UiRequest::ChannelBroadcast { channel, text } => {
-                    pyreal_client_model::RequestSink::send(
-                        &mut req,
-                        Request::ChannelBroadcast(
-                            pyreal_protocol::comms::CommunicationChannelBroadcast {
-                                channel,
-                                message: text,
-                            },
-                        ),
-                    );
-                }
                 // The urgent-assistance window's Send button.
                 //
                 // Retail returns without sending or advancing when the text box
@@ -1526,11 +1330,6 @@ feedback,channel: 0x1A, text},
                 }
                 UiRequest::HousePaymentConfirmation { rent } => {
                     self.pending_house_payment_confirmations.push(rent);
-                }
-                UiRequest::HouseQueryLord { slumlord } => {
-                    if game.query_lord(&mut req, slumlord) {
-                        self.stats.house_lord_queries += 1;
-                    }
                 }
                 // A plugin's appraisal: the request alone, so no examination window opens.
                 UiRequest::Appraise(id) => {
@@ -1854,13 +1653,6 @@ feedback,channel: 0x1A, text},
                         self.add_shortcut(old, n, game, req, now);
                     }
                 }
-                return;
-            }
-            // This unresolved item-list form names a list element, not its container
-            // object. That mapping belongs to the inventory panel and is unavailable here.
-            // Drop and count the request rather than guess a destination.
-            DropTarget::ItemList { .. } => {
-                self.stats.requests_refused += 1;
                 return;
             }
             // The item-list slot-drop arm

@@ -48,10 +48,6 @@ pub trait GameView: std::fmt::Debug {
     fn vital(&self, _id: ObjectId, _which: Vital) -> Option<(u32, u32)> {
         None
     }
-    /// The shared inventory parent shown by either interface and used for pickups.
-    fn open_inventory_container(&self) -> Option<ObjectId> {
-        self.player()
-    }
     fn container_contents(&self, _id: ObjectId) -> &[ObjectId] {
         &[]
     }
@@ -76,30 +72,6 @@ pub trait GameView: std::fmt::Debug {
     /// writes into `UI_ItemList_FixedListSize` for a non-container list. `None` when the object is
     /// unknown; a negative value is the client's "unbounded" and selects the empty-slot update.
     fn items_capacity(&self, _id: ObjectId) -> Option<i32> {
-        None
-    }
-    /// The subcontainer count used by a container-list update.
-    fn containers_capacity(&self, _id: ObjectId) -> Option<i32> {
-        None
-    }
-    /// An inventory request naming this object is outstanding, so its icon is ghosted.
-    fn item_waiting(&self, _id: ObjectId) -> bool {
-        false
-    }
-    /// The item-list insertion index for the list identified by
-    /// its parent container id and container-list flag — the optimistic row a drop draws before the
-    /// shard answers, together with its insertion index.
-    ///
-    /// Retail holds this on the list element, so the panel that owns the list also owns the row.
-    /// This build rebuilds every list from the world on each changed frame, so the row travels the
-    /// other way: it lives beside the object table and the panels splice it into the ids they
-    /// fill from, at this index. `None` is the ordinary case — at most one list in the whole UI
-    /// has a pending row at a time, because the player has one pointer.
-    fn pending_row(
-        &self,
-        _container: Option<ObjectId>,
-        _containers_list: bool,
-    ) -> Option<(ObjectId, u32)> {
         None
     }
     /// The selected object's id.
@@ -202,24 +174,6 @@ pub trait GameView: std::fmt::Debug {
         false
     }
 
-    /// The player module's default option value — the value *Restore Defaults* writes into
-    /// one character option, which the check box reads at bind
-    /// time and the page's restore-defaults writes back.
-    ///
-    /// **`Option`, not `bool`, and that is the whole point.** The function is a membership test
-    /// against a compiled-in true-list, so *every* option has an answer in retail; a host that
-    /// cannot supply one has to say so rather than answer `false`, because a Defaults button that
-    /// silently unticked 49 boxes would look like it worked.
-    /// `crate::options::character::CharacterSettingsPage::restore_default_values` counts the
-    /// rows that got an answer, so "Defaults is not available on this host" and "Defaults set
-    /// every option off" are different numbers.
-    ///
-    /// The table is `pyreal_client_model::player::options::DEFAULT_TRUE_ORDINALS`, and this crate has no
-    /// edge to `pyreal-client-model`; `pyreal_client_runtime::hud::HudView` does, and is the implementor.
-    fn player_option_default(&self, _o: PlayerOption) -> Option<bool> {
-        None
-    }
-
     /// Read a floating-point gameplay option by property id — the read
     /// half of the client's named-property arm.
     ///
@@ -309,28 +263,11 @@ pub trait GameView: std::fmt::Debug {
     fn player_heading(&self) -> f32 {
         0.0
     }
-    /// the `/radar off` state, separate from window visibility.
-    fn radar_blank(&self) -> bool {
-        false
-    }
 
     /// The text properties at the top of the player module's gameplay-options collection, which
     /// the server keeps for the character and returns at login: `None` before the module has
     /// arrived, and an empty list when it holds none.
     fn player_module_strings(&self) -> Option<Vec<(u32, String)>> {
-        None
-    }
-
-    /// The link-status holder's connection status — the link lamp's only input.
-    ///
-    /// The connected state carries **seconds since the last datagram from the current
-    /// server** and not a round-trip time. `None` is the not-connected case, where the client
-    /// leaves the elapsed time at 0.0 and the flag clear — which
-    /// `crate::hud::indicators::link_status::link_state` turns into the "lost" lamp.
-    ///
-    /// One further quirk is reproduced there rather than here: the connection-status query clamps its
-    /// answer to 15.0 while the no-drop-kick flag is set.
-    fn link_status(&self) -> Option<f64> {
         None
     }
 
@@ -441,17 +378,6 @@ pub trait GameView: std::fmt::Debug {
         None
     }
 
-    /// The component-object lookup — which object in the player's own
-    /// inventory a component row in the spell examine pane names.
-    ///
-    /// The argument is the row's `0x10000010` component SCID. The host maps it to a
-    /// WCID and searches the seven component-tracker categories for the first carried
-    /// object of that class. `None` means no tracker, no such class or no carried
-    /// instance; the click then does nothing.
-    fn component_object_id(&self, _scid: u32) -> Option<pyreal_primitives::ObjectId> {
-        None
-    }
-
     /// The component tracker's is-owned test for a formula slot's SCID — whether the
     /// player holds any of that component.
     ///
@@ -460,16 +386,6 @@ pub trait GameView: std::fmt::Debug {
     /// that cannot answer shows the "you do not have this" mark rather than hiding it.
     fn component_is_owned(&self, _scid: u32) -> bool {
         false
-    }
-
-    /// The update-spell-components notice, as a serial.
-    ///
-    /// The client is pushed that notice whenever a component object is offered to the tracker;
-    /// this build pulls, so a reader that sees a different number does what the listener does —
-    /// the same shape as [`Self::examine_request`]'s serial. `0` from a host that has no tracker
-    /// at all, which never changes and therefore never refreshes.
-    fn component_serial(&self) -> u64 {
-        0
     }
 
     /// The non-raw attribute query for `id` — the number
@@ -507,22 +423,9 @@ pub trait GameView: std::fmt::Debug {
         None
     }
 
-    /// The journal path builder's three globals.
-    ///
-    /// The settings directory, current world name, and local player's singular object name — the same
-    /// three `pyreal_client_shell::ui::UiShell::screen_layout_path` needs for
-    /// the screen-layout path builder, which is the precedent this follows. None of them is
-    /// reachable from this crate, and the journal is the one panel whose model outlives the
-    /// process.
-    ///
-    /// `None` means "no journal file", and the panel then keeps its pages in memory only: a build
-    /// with no preferences file, no world name or no character yet has nowhere to write and must
-    /// not guess. See [`crate::journal::JournalIdentity`].
+    /// The journal's pages and state.
     fn journal(&self) -> crate::journal::JournalView {
         crate::journal::JournalView::default()
-    }
-    fn journal_identity(&self) -> Option<crate::journal::JournalIdentity> {
-        None
     }
 
     /// The client's inputs.
@@ -601,17 +504,6 @@ pub trait GameView: std::fmt::Debug {
         &[]
     }
 
-    /// The client's three-condition test, answered by the
-    /// host because the `ITEM_TYPE` constants live below this crate.
-    ///
-    /// `(item, spellID)` for the object wielded at equipment location `0x1000000` whose
-    /// `ITEM_TYPE` carries `Caster (0x8000)` and whose public-description spell id is non-zero;
-    /// `None` when any of the three fails, which is the arm that clears the endowment item and the
-    /// endowment-selected flag.
-    fn endowment(&self) -> Option<(ObjectId, u32)> {
-        None
-    }
-
     /// The UI item's decoration fields for one object — everything
     /// the UI item's per-frame update reads off the weenie **after** the icon, and
     /// nothing else.
@@ -633,14 +525,6 @@ pub trait GameView: std::fmt::Debug {
     /// appraisal is known; `false` before it has been appraised.
     fn item_attuned(&self, _id: ObjectId) -> bool {
         false
-    }
-
-    /// The object's plural name, which item lists request for a stack.
-    ///
-    /// The client falls back to the object's name when the plural buffer is empty (length 1, i.e.
-    /// the terminator alone), so `None` here means "use [`Self::name`]" and not "no name".
-    fn plural_name(&self, _id: ObjectId) -> Option<&str> {
-        None
     }
 
     /// The object's `AppraisalProfile` projected for the examination panel.
@@ -715,29 +599,6 @@ pub trait GameView: std::fmt::Debug {
         AllegianceRoster::default()
     }
 
-    /// The game world's allegiance-abort counter — how many `0x0003
-    /// Allegiance_AllegianceUpdateAborted` have arrived.
-    ///
-    /// The **panel's edge** for the one notice this build's per-frame pull cannot otherwise see:
-    /// the allegiance panel's update-aborted notice updates the panel
-    /// only when it is visible, and the update's first statement is the busy-latch clear that
-    /// the retired retail UI's `panels::allegiance::AllegiancePanel::awaiting_update` carries. Without this the
-    /// latch, set on every allegiance update request, would stay set for ever on a request the server
-    /// aborts — the panel stuck "busy" with no answer coming.
-    fn allegiance_update_aborts(&self) -> u64 {
-        0
-    }
-
-    /// The game world's allegiance-update counter — how many `0x0020
-    /// Allegiance_AllegianceUpdate` have arrived.
-    ///
-    /// The panel's edge for an answer that leaves the roster as it was: every answer runs the
-    /// panel's update, whose first statement clears the busy latch, so an unchanged roster must
-    /// still be seen to have arrived.
-    fn allegiance_updates(&self) -> u64 {
-        0
-    }
-
     /// The current fellowship, when one exists.
     ///
     /// The default is `None` — *no fellowship* — which is what every host that has never received
@@ -746,6 +607,12 @@ pub trait GameView: std::fmt::Debug {
     /// pointer to choose which of its two frames is on screen.
     fn fellowship(&self) -> Option<FellowshipView> {
         None
+    }
+
+    /// The AI Players in the player's company and their modes; empty from a world without
+    /// Dereth's `ai_fellows` extension.
+    fn ai_fellows(&self) -> Vec<AiFellowView> {
+        Vec::new()
     }
 
     /// The friends list in model order.
@@ -893,15 +760,6 @@ pub trait GameView: std::fmt::Debug {
     fn salvage_list(&self) -> crate::panels::salvage::SalvageListView {
         crate::panels::salvage::SalvageListView::default()
     }
-    fn salvage_item_suitable(&self, _item: ObjectId, _panel_material: u32) -> bool {
-        false
-    }
-
-    /// Whether the item is owned by the player, the client's first test and the one that produces
-    /// the panel's only refusal string.
-    fn item_owned_by_player(&self, _item: ObjectId) -> bool {
-        false
-    }
 
     /// `None` until a `0x021D House_HouseProfile` arrives.
     fn slumlord(&self) -> Option<SlumlordView> {
@@ -924,206 +782,10 @@ pub trait GameView: std::fmt::Debug {
         0
     }
 
-    /// The payment strings and paid-in-full result after this window's current drops.
-    ///
-    /// Each `drops` row carries `(wcid, amount, trade-note face value)` in drop order.
-    /// The host replays them over a pristine profile copy. This matches the original
-    /// window's accumulated payment state, which adds payment on insertion and removes
-    /// it on removal.
-    ///
-    /// The arithmetic stays in `pyreal-client-model` with `HousePaymentList`, rather than being
-    /// duplicated here, as with [`Self::salvage_item_suitable`].
-    fn slumlord_payment(&self, _rent: bool, _drops: &[(u32, i32, Option<i32>)]) -> SlumlordPayment {
-        SlumlordPayment::default()
-    }
-
-    /// Check whether the selected rent or purchase payment still needs class `wcid` over the same
-    /// replayed state — the client's last test, and the one that decides whether a drop is
-    /// taken at all.
-    fn slumlord_needs_more(
-        &self,
-        _rent: bool,
-        _drops: &[(u32, i32, Option<i32>)],
-        _wcid: u32,
-        _trade_note_value: Option<i32>,
-    ) -> bool {
-        false
-    }
-
-    /// Apply `{wcid, num}` to the selected rent or purchase payment over the same replayed state —
-    /// the boolean the slumlord window's add-payment gates its add-item on.
-    ///
-    /// It is **not** the same question as [`Self::slumlord_needs_more`], and the two are a pair
-    /// because the client asks both: the drag-acceptance test asks whether more is needed about the *drag*, and
-    /// the add then asks the payment step about the *insert*, so an item that passed the hover test can
-    /// still be refused at the drop when the payment attempt finds the row already full.
-    ///
-    /// It cannot be inferred from [`Self::slumlord_payment`] either: the buy tab's text is
-    /// `"<num> <name>"`, which carries **no paid count at all**, so a partial
-    /// payment changes nothing visible and a panel that diffed the two strings would refuse every
-    /// drop against the purchase price.
-    fn slumlord_pay(
-        &self,
-        _rent: bool,
-        _drops: &[(u32, i32, Option<i32>)],
-        _wcid: u32,
-        _amount: i32,
-        _trade_note_value: Option<i32>,
-    ) -> bool {
-        false
-    }
-
     /// The item's public weenie class id, used by the window's remaining-payment
     /// check and by each payment entry it adds.
     fn item_wcid(&self, _item: ObjectId) -> u32 {
         0
-    }
-
-    /// Reverse-lookup `wcid` in the dual enum map selected by group 10, enum `0x10000001`, and
-    /// type `0x28`, yielding the trade-note value when present.
-    fn item_trade_note_value(&self, _item: ObjectId) -> Option<i32> {
-        None
-    }
-
-    /// The item's payment quantity: its stack size when nonzero, otherwise 1.
-    /// This is the amount added to a house-payment entry.
-    fn item_house_payment(&self, _item: ObjectId) -> i32 {
-        1
-    }
-
-    /// The stack slider's top. The panel compares [`Self::split_size`] against it and takes the
-    /// whole-stack arm when they are equal.
-    fn max_split_size(&self) -> i32 {
-        1
-    }
-
-    /// The object's material type, which latches into
-    /// the window's material on its first row.
-    ///
-    /// `0` is the client's "no material", which is also the window material's empty value, so a miss
-    /// leaves the window unlocked rather than locked to a material nothing can match.
-    fn item_material_type(&self, _item: ObjectId) -> u32 {
-        0
-    }
-
-    fn vendor_drag_item_accepted(&self, _item: ObjectId) -> bool {
-        false
-    }
-
-    /// The secure-trade window's drag test, **ownership half**, asked with
-    /// `quiet = 1` from its item-list drag-over.
-    ///
-    /// An unknown id is refused silently. An object the player does not own is refused, and
-    /// unless `quiet` the client displays "You can only trade items you are carrying" as type
-    /// `0x1A`. Otherwise the answer is whether the item is not already in the self items list.
-    ///
-    /// This is everything except the last step; the already-in-the-list half is the panel's own
-    /// list and stays in the retired retail UI's `panels::trade::TradePanel::drag_accept_state`. The host
-    /// answers it with the game world's trade-item acceptance query, which the **drop** path
-    /// also uses; this is the hover's.
-    ///
-    /// Default **false**: the client's own answer when the weenie lookup misses is
-    /// a silent refusal, so a host with no world refuses every drag rather than accepting one.
-    fn trade_drag_item_acceptable(&self, _item: ObjectId) -> bool {
-        false
-    }
-
-    /// The external-container window's drag test, asked with `quiet = 1` from
-    /// its item-list drag-over -- **the hover hint over an open chest, corpse, ground
-    /// pack or hook.**
-    ///
-    /// The drag test accepts when the window has no ground-object id or when that
-    /// container cannot be found. If the container exists but the dragged item does
-    /// not, it refuses. Otherwise it performs the hook-status check below.
-    ///
-    /// `quiet` is never read: every refusal is silent, unlike vendor or trade refusals.
-    ///
-    /// The hook check first clears its output flag and refuses an absent item or
-    /// container. A container with hook-type mask 0 **or** accepted-item-type mask 0
-    /// is not a hook and accepts. A hook with owner id 0 sets the output flag to 1
-    /// and refuses. It also refuses an item whose hook-type mask is 0 or has no bit
-    /// in common with the hook's mask. Otherwise it accepts exactly when the item's
-    /// type intersects the hook's accepted-item-type mask.
-    ///
-    /// **So every container that is not a hook answers `1`, and the hint over a chest or a corpse
-    /// is the plain green `0x10000040` for every item you can carry** -- the window reads neither
-    /// an is-corpse test nor `ITEM_TYPE` nor ownership. The red `0x10000041` exists, but only
-    /// for a hook whose location mask or item-type mask the carried object misses, and for a hook
-    /// in nobody's house.
-    ///
-    /// Default **true**, which is the client's own answer when the window has no ground object:
-    /// a host with no world paints the same green every non-hook container paints, rather than a
-    /// red the drop would then contradict.
-    fn external_container_drag_item_acceptable(&self, _item: ObjectId, _ground: ObjectId) -> bool {
-        true
-    }
-
-    /// The item's public valid-location mask — what the paper
-    /// doll's item-list drag-over reads.
-    ///
-    /// `None` is the client's own answer when the weenie lookup misses: the handler
-    /// returns without writing any state, which is not the same as refusing.
-    fn item_valid_locations(&self, _item: ObjectId) -> Option<u32> {
-        None
-    }
-
-    /// Shared slot and canvas drag feedback. Missing slot objects and already-worn canvas
-    /// items leave the existing hint unchanged.
-    fn equipment_hover(&self, _item: ObjectId) -> EquipmentHover {
-        EquipmentHover::default()
-    }
-
-    /// The spell's is-untargeted test — the first of the two tests the spellcasting panel's
-    /// cast-button tooltip makes before it enables the Cast
-    /// button.
-    ///
-    /// ```text
-    /// f = the spell's formula
-    /// t = the formula's targeting type
-    /// return t == 0
-    /// ```
-    ///
-    /// where an incomplete formula (any of its first five slots empty) has type 0, and otherwise the
-    /// targeting type is read from one component: the walk goes up from slot **5** while the slot is
-    /// filled and takes the last filled one (slot 4 when slot 5 is empty), and that component's
-    /// targeting type is the answer —
-    /// so this is a property of the *formula*, not a flag on the base. It is deliberately **not**
-    /// the same question as `_bitfield & SelfTargeted (8)`, which
-    /// [`SpellEntry::bitfield`](crate::view::SpellEntry::bitfield) already carries and which
-    /// the tooltip tests separately: a spell can be either, both or neither, and each alone enables
-    /// the button.
-    ///
-    /// Default false — a host with no spell table cannot say a spell needs no target, and the
-    /// safe direction is the one that leaves the button greyed.
-    fn spell_is_untargeted(&self, _spell_id: u32) -> bool {
-        false
-    }
-
-    /// Whether the selected object is compatible with the spell, queried quietly.
-    ///
-    /// The function reads the spell base only to reach its target type and then delegates to
-    /// the target-type compatibility test, which is the same predicate
-    /// the game world's spell-casting operation runs before it sends. **The call here is quiet** where
-    /// `CastSpell`'s is loud: this one runs to build a *tooltip*, and a
-    /// chatty version would spam the feedback channel every time the selection moved.
-    ///
-    /// The object asked about is always [`Self::selected_object`], which is why it is not a parameter.
-    ///
-    /// Default false, for [`Self::spell_is_untargeted`]'s reason.
-    fn spell_target_compatible(&self, _spell_id: u32) -> bool {
-        false
-    }
-
-    /// Whether the item can be used with self as its target.
-    ///
-    /// The original client shifts the public useability word's high half down sixteen
-    /// places with a sixteen-iteration loop, then tests bit 1. An endowed wand usable
-    /// on the player needs no selection, the first and most common endowment-tooltip
-    /// arm.
-    ///
-    /// Default false.
-    fn item_useable_self_target(&self, _item: ObjectId) -> bool {
-        false
     }
 
     /// Where `object` may be used from, its useability word's source half (usable at a distance,
@@ -1131,19 +793,6 @@ pub trait GameView: std::fmt::Debug {
     /// not known.
     fn useability(&self, _object: ObjectId) -> Option<u32> {
         None
-    }
-
-    /// Whether the selected target is compatible with the item, queried quietly.
-    ///
-    /// The argument order is **target first, source second**. The game-layer compatibility query
-    /// uses the same `(target, source)` order.
-    ///
-    /// Quiet, for [`Self::spell_target_compatible`]'s reason. The target is always
-    /// [`Self::selected_object`].
-    ///
-    /// Default false.
-    fn item_target_compatible(&self, _item: ObjectId) -> bool {
-        false
     }
 
     /// The selected object: the vendor button handler reads it once before
@@ -1181,12 +830,6 @@ pub trait GameView: std::fmt::Debug {
         None
     }
 
-    /// The stack slider's current value; the default is 1, which is what a shop's own splitter
-    /// seeds to (the toolbar's selection-changed handler, vendor arm).
-    fn split_size(&self) -> i32 {
-        1
-    }
-
     /// The component tracker's seven category lists joined to the player's desired quantities.
     ///
     /// The spell-component panel walks all seven tracker categories in order, emitting
@@ -1203,22 +846,6 @@ pub trait GameView: std::fmt::Debug {
                 rows: Vec::new(),
             })
             .collect()
-    }
-
-    /// Ask whether `obj` is an owned component and return its class id — is this
-    /// **object** one of the components the player is carrying, and if so which class is it?
-    ///
-    /// The spell-component panel's selection-changed notice is its only caller in the
-    /// panel layer, and the question it asks cannot be answered from
-    /// [`Self::spell_components`]: that snapshot carries one object per row
-    /// while the tracker's object-id hash carries **every**
-    /// object of every stack. Selecting the third of five piles of Lead Scarabs in the world
-    /// still highlights the Lead Scarab row in retail, and matching on the row's first object
-    /// would miss four of the five.
-    ///
-    /// `None` is the client's `FALSE` return: not a component, or not owned.
-    fn object_is_owned_component(&self, _obj: ObjectId) -> Option<u32> {
-        None
     }
 
     /// The enchantment registry's cooldown test on the **player's own** registry, for the
@@ -1268,23 +895,6 @@ pub trait GameView: std::fmt::Debug {
         crate::combat_mode::NONCOMBAT
     }
 
-    /// The mode the combat button would enter from peace, for what is in hand.
-    fn default_combat_mode(&self) -> u32 {
-        crate::combat_mode::MELEE
-    }
-
-    /// The player module's advanced-combat-UI option — bit 12 of the first player-option word.
-    ///
-    /// The combat window's set-combat-mode notice calls it **itself**,
-    /// rather than reading the copy the combat mode setter keeps of it, so this is
-    /// the option and not the combat system's cached word. When it is on, the classic combat
-    /// cluster stays down in every mode: the advanced combat interface is a different window.
-    ///
-    /// Default `false` — `PLAYER_OPTIONS`' bit 12 is clear in the client's own defaults.
-    fn advanced_combat_ui(&self) -> bool {
-        false
-    }
-
     /// The combat window's three read-back notices, as one snapshot. See
     /// [`CombatBar`], and `crate::hud::combat_window::CombatWindow::update`, which applies it.
     ///
@@ -1293,15 +903,6 @@ pub trait GameView: std::fmt::Debug {
     /// character who has just logged in shows.
     fn combat_bar(&self) -> CombatBar {
         CombatBar::default()
-    }
-
-    /// The player's advancement class for Recklessness, skill `0x32`. This alone
-    /// decides whether the combat cluster draws its recklessness meter in melee.
-    ///
-    /// The default is 0 (`Undef`), below 2, so the meter stays hidden before the player
-    /// description arrives.
-    fn recklessness_advancement_class(&self) -> u32 {
-        0
     }
 }
 

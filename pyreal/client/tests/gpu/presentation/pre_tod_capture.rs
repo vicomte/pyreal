@@ -1,7 +1,8 @@
 //! The world of February 2005 (the `portal.dat` and `cell.dat` from before Throne of Destiny)
 //! draws under today's screens: the client binary, with no window, given one data folder holding
-//! both sets and the Infiltration era, draws one frame of Holtburg from the older world set with
-//! the end-of-retail files beside it for the interface, and saves it.
+//! both sets and the Infiltration era, explores Holtburg from the older world set with the
+//! end-of-retail files beside it for the interface, and saves one frame. Explore, because the
+//! screens before the world show portal space and not a world.
 //! The landscape is the older files' own (their hardware region's blended ground), the buildings
 //! and scenery the older art, and the screens the end-of-retail ones.
 //! Fixture: the retail dats (`PYREAL_TEST_DAT_DIR`), the February 2005 dats
@@ -10,6 +11,10 @@
 use crate::common::client_dir;
 
 use std::process::Command;
+
+/// Holtburg by the road, a player's camera from a report.
+const HOLTBURG: &str =
+    "camera 0xA9B4 [146.54408 25.145638 97.8691] yaw -5.7061586 pitch -0.3000001";
 
 #[test]
 fn the_february_2005_holtburg_draws_under_todays_screens() {
@@ -35,7 +40,14 @@ fn the_february_2005_holtburg_draws_under_todays_screens() {
     let exe = env!("CARGO_BIN_EXE_pyreal");
     let output = Command::new(exe)
         // Several frames: the landscape a later frame draws is the one a player sees.
-        .args(["--headless", "--frames", "3", "--capture"])
+        .args([
+            "--headless",
+            "--frames",
+            "3",
+            "--explore",
+            HOLTBURG,
+            "--capture",
+        ])
         .arg(&out)
         .arg("--dat-dir")
         .arg(&both)
@@ -76,15 +88,11 @@ fn the_february_2005_holtburg_draws_under_todays_screens() {
         .collect();
     assert!(colours.len() > 1000, "{} colours", colours.len());
 
-    // The ground in front, either side of the body, is the textured landscape and not one
-    // shaded colour: the bottom quarter's outer halves hold thousands of colours.
+    // The ground in front, right of the Explore panel, is the textured landscape and not one
+    // shaded colour: the bottom quarter's right quarter holds thousands of colours.
     let (w, h) = (info.width as usize, info.height as usize);
     let ground: std::collections::BTreeSet<[u8; 3]> = (h * 3 / 4..h)
-        .flat_map(|y| {
-            (0..w / 4)
-                .chain(w * 3 / 4..w)
-                .map(move |x| (y * w + x) * bpp)
-        })
+        .flat_map(|y| (w * 3 / 4..w).map(move |x| (y * w + x) * bpp))
         .map(|i| [buf[i], buf[i + 1], buf[i + 2]])
         .collect();
     assert!(ground.len() > 2000, "{} ground colours", ground.len());

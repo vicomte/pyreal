@@ -14,15 +14,6 @@ pub const fn number(action: ActionId) -> Option<u32> {
     }
 }
 
-/// The classic shortcut bar has nine positions.
-#[must_use]
-pub const fn classic_number(action: ActionId) -> Option<u32> {
-    match number(action) {
-        Some(n) if n <= 9 => Some(n),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,7 +27,6 @@ mod tests {
                 .strip_prefix("UseQuickSlot_")
                 .and_then(|n| n.parse().ok());
             assert_eq!(number(id), old, "{raw:#x}");
-            assert_eq!(classic_number(id), old.filter(|n| (1..=9).contains(n)));
         }
         for id in [ActionId(0), ActionId(u32::MAX), CREATE] {
             assert_eq!(number(id), None);

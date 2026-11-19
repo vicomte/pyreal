@@ -1,17 +1,9 @@
-//! `UserPreferences.ini` and the options metadata layered over it.
+//! `UserPreferences.ini`.
 //!
 //! `UserPreferences` is a plain INI in the **install** directory with **one section per category** —
 //! `[Sound]`, `[Render]`, `[Display]`, `[Camera]`, `[Input]`, `[Misc]`, `[UI]`, `[Net]`,
 //! `[International]` — and the registry name is `sprintf("%s.%s", section, key)` on the way in,
 //! which the save splits back apart at the name's **last** dot.
-//! The all-static options façade *decorates* an entry with the metadata an options
-//! page needs.
-//!
-//! The name token is not computed here: it is `pyreal_primitives::num::hash::str_hash`, which
-//! `dereth-ui` exposes as the free function the retired UI framework's `persist::preferences::token_of`. Everything
-//! else is reachable through the retired UI framework's `persist::preferences`'s re-export.
-
-use std::collections::BTreeMap;
 
 use super::PersistError;
 
@@ -70,22 +62,6 @@ impl UserPreferences {
             .rev()
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
             .map(|(_, v)| v.as_str())
-    }
-
-    /// The bool overload of preference registration.
-    #[must_use]
-    pub fn get_bool(&self, key: &str) -> Option<bool> {
-        match self.get(key)?.trim() {
-            "1" | "true" | "True" | "TRUE" => Some(true),
-            "0" | "false" | "False" | "FALSE" => Some(false),
-            _ => None,
-        }
-    }
-
-    /// The float overload.
-    #[must_use]
-    pub fn get_f32(&self, key: &str) -> Option<f32> {
-        self.get(key)?.trim().parse().ok()
     }
 
     /// Set a **qualified** key's last copy. A key that is not already present is appended, which
@@ -348,117 +324,6 @@ pub mod keys {
     pub const CHAT_FONT_SIZE: &str = crate::options::names::CHAT_FONT_SIZE;
 }
 
-/// The type supplied when attaching a preference.
-///
-/// The supported tags are 2 = enum, 3 = float, and 4 = bool.
-///
-/// Other tags are rejected by [`UiPreferenceItem::new`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreferenceDataType {
-    Enum = 2,
-    Float = 3,
-    Bool = 4,
-}
-
-impl PreferenceDataType {
-    #[must_use]
-    pub const fn from_u32(v: u32) -> Option<Self> {
-        Some(match v {
-            2 => Self::Enum,
-            3 => Self::Float,
-            4 => Self::Bool,
-            // 1 (int) and 5 (string) are inferred and unused.
-            _ => return None,
-        })
-    }
-}
-
-/// Fields shared by the preference metadata entries.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UiPreferenceItem {
-    /// The preference name — the `Category.Name` key.
-    pub preference: String,
-    /// The data type.
-    pub data_type: PreferenceDataType,
-    /// The string table — **always** `0x10000003`, the UI string table.
-    pub string_table: u32,
-    /// The name token — the string hash of the localisation id.
-    pub token_name: u32,
-    /// The tooltip token.
-    pub token_tooltip: u32,
-    /// The preference's range, set and asked for by the options surface.
-    pub range: Option<(f32, f32)>,
-    /// The enumerated choices — the string-id list.
-    pub choices: Vec<u32>,
-}
-
-/// The string table every preference attach passes.
-pub const UI_STRING_TABLE: u32 = 0x1000_0003;
-
-impl UiPreferenceItem {
-    /// Attach a preference with its name, type, string-table enum, label token, and tooltip token.
-    pub fn new(
-        preference: &str,
-        data_type: u32,
-        string_table: u32,
-        token_name: u32,
-        token_tooltip: u32,
-    ) -> Result<Self, PersistError> {
-        let data_type = PreferenceDataType::from_u32(data_type).ok_or_else(|| {
-            PersistError(format!(
-                "UI preferences dataType {data_type} is not implemented: its layout is not known"
-            ))
-        })?;
-        Ok(Self {
-            preference: preference.to_string(),
-            data_type,
-            string_table,
-            token_name,
-            token_tooltip,
-            range: None,
-            choices: Vec::new(),
-        })
-    }
-}
-
-/// The options surface: a map from narrow-string names to preference metadata entries.
-#[derive(Debug, Default, Clone)]
-pub struct UiPreferences {
-    items: BTreeMap<String, UiPreferenceItem>,
-}
-
-impl UiPreferences {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn attach(&mut self, item: UiPreferenceItem) {
-        self.items.insert(item.preference.clone(), item);
-    }
-
-    /// Detach a preference.
-    pub fn detach(&mut self, key: &str) {
-        self.items.remove(key);
-    }
-
-    /// Ask for a preference.
-    #[must_use]
-    pub fn inq(&self, key: &str) -> Option<&UiPreferenceItem> {
-        self.items.get(key)
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.items.len()
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-}
-
 /// Whether a kept line is a `[Section]` header, as [`UserPreferences::parse`] reads one.
 fn is_header(line: &str) -> bool {
     let t = line.trim_start_matches('\u{feff}').trim();
@@ -486,9 +351,8 @@ mod tests {
             None,
             "the bare key is not a registry name"
         );
-        assert_eq!(p.get_f32(keys::TOOLTIP_DELAY), Some(0.5));
-        assert_eq!(p.get_bool(keys::TOOLTIP_ENABLE), Some(true));
-        assert_eq!(p.get_bool(keys::USE_IME), Some(false));
+        assert_eq!(p.get(keys::TOOLTIP_ENABLE), Some("1"));
+        assert_eq!(p.get(keys::USE_IME), Some("0"));
         assert_eq!(p.get(keys::CHAT_FONT_SIZE), Some("Medium"));
         assert_eq!(p.get("Nope.Missing"), None);
         assert_eq!(p.sections.len(), 3);
@@ -544,31 +408,6 @@ mod tests {
 
     /// Oracle: §3.2 — "`dataType`: 2 = enum, 3 = float, 4 = bool",
     /// No shipped call site registers a preference of type 1 or 5, so those are refused.
-    #[test]
-    fn only_the_three_shipped_data_types_are_accepted() {
-        for (v, t) in [
-            (2, PreferenceDataType::Enum),
-            (3, PreferenceDataType::Float),
-            (4, PreferenceDataType::Bool),
-        ] {
-            assert_eq!(PreferenceDataType::from_u32(v), Some(t));
-            assert!(UiPreferenceItem::new("Misc.X", v, UI_STRING_TABLE, 0, 0).is_ok());
-        }
-        for v in [0, 1, 5, 6] {
-            assert_eq!(PreferenceDataType::from_u32(v), None);
-            assert!(UiPreferenceItem::new("Misc.X", v, UI_STRING_TABLE, 0, 0).is_err());
-        }
-    }
-
-    /// Oracle: the client's one write call,
-    /// `WritePrivateProfileStringA(<before the last dot>, <after it>, value, path)`, and Win32's
-    /// merge semantics for it.
-    ///
-    /// The three cases are the three a real profile hits: a key that is already there, a key that
-    /// is new inside a section that exists, and a section that does not exist yet. The second is
-    /// the one that matters and the one a naive `set` gets wrong — appending `SoundVolume` to the
-    /// end of the file would put it under `[Camera]`, and it would come back as
-    /// `Camera.SoundVolume`.
     #[test]
     fn write_profile_string_merges_rather_than_rewriting() {
         let text = "[Sound]\r\nSoundVolume=1.00\r\n[Camera]\r\nStiffness=0.45\r\n";

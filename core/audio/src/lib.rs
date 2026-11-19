@@ -1,5 +1,5 @@
 //! The client's sound engine short of the output device: the mixer, attenuation and pan, the
-//! trigger paths, ambience and the audio and video codecs.
+//! trigger paths, ambience and the audio codecs.
 //!
 //! **Depends on** `pyreal-primitives` and the decoded sound tables and waves of `pyreal-assets`.
 //! **Used by** the client runtime (`pyreal-client-runtime`) and the client, which supplies
@@ -57,7 +57,6 @@ pub mod stage;
 pub mod table;
 pub mod testing;
 pub mod trigger;
-pub mod video;
 pub mod voices;
 pub mod wave;
 
@@ -163,8 +162,6 @@ pub struct AudioSystem {
     listener: Listener,
     focus: Focus,
     muted: Arc<AtomicBool>,
-    /// The intro movie's soundtrack. **Not a voice**: see [`Self::play_movie_audio`].
-    movie: Option<MovieVoice>,
     /// The enhanced sound's voices, at the device's rate.
     stage: Stage,
     /// What makes the next sound played, for the enhanced sound; taken by that play.
@@ -179,15 +176,6 @@ pub struct AudioSystem {
 
 /// The rate the enhanced sound mixes at until the device names its own.
 const STAGE_RATE: u32 = 48_000;
-
-/// The AVI soundtrack, playing outside the sixteen-slot pool.
-#[derive(Debug)]
-struct MovieVoice {
-    /// Interleaved stereo at [`MIX_RATE`], already widened by [`video::Movie::audio`].
-    frames: Arc<[f32]>,
-    /// Sample index, advancing by 2 per frame exactly as [`mixer::Voice::pos`] does.
-    pos: usize,
-}
 
 impl AudioSystem {
     /// Start the sound system, minus the device setup and MIDI setup, which has no caller.
@@ -209,7 +197,6 @@ impl AudioSystem {
             listener: Listener::default(),
             focus: Focus::new(Arc::clone(&muted)),
             muted,
-            movie: None,
             stage: Stage::new(STAGE_RATE),
             emitter: Emitter::default(),
             last_tick: None,
@@ -467,60 +454,14 @@ impl AudioSystem {
     /// Fill one interleaved stereo block at [`MIX_RATE`].
     pub fn mix(&mut self, out: &mut [f32]) {
         self.pool.mix(out);
-        self.mix_movie(out);
     }
 
-    /// **Start the intro movie's soundtrack.** The audio half of opening the movie.
-    ///
-    /// The retail client plays the AVI through DirectShow, whose audio renderer is a filter of its
-    /// own: the track never enters sound management, so it takes no voice slot, is not rolled against
-    /// a probability, does not pass through positional attenuation, and — as this module's header records
-    /// **bypasses every `Sound.*` preference**. Reproducing that means mixing it beside the pool
-    /// rather than through it, which is what this does.
-    ///
-    /// Replaces whatever was playing: there is only ever one movie.
-    pub fn play_movie_audio(&mut self, audio: &video::MovieAudio) {
-        self.movie = Some(MovieVoice {
-            frames: Arc::clone(&audio.frames),
-            pos: 0,
-        });
-    }
-
-    /// Close the movie audio, stopping the soundtrack wherever it had got to.
     /// The world is gone: every voice stops and the ambient set is emptied, so nothing of the last
     /// world goes on being heard and the next one starts from its own surroundings.
     pub fn end_world(&mut self) {
         self.pool.stop_all();
         self.stage.stop_all();
         self.ambient = Ambient::new();
-    }
-
-    pub fn stop_movie_audio(&mut self) {
-        self.movie = None;
-    }
-
-    /// Whether the movie's soundtrack still has samples left.
-    #[must_use]
-    pub fn movie_audio_playing(&self) -> bool {
-        self.movie.as_ref().is_some_and(|m| m.pos < m.frames.len())
-    }
-
-    /// Add the movie's block, and advance it whether or not anyone can hear it.
-    ///
-    /// The advance is unconditional for the same reason [`mixer::VoicePool::mix`]'s is: losing the
-    /// foreground silenced DirectSound's buffers but did not pause them, so a movie whose audio was
-    /// muted for two seconds comes back two seconds further in rather than two seconds behind.
-    fn mix_movie(&mut self, out: &mut [f32]) {
-        let audible = !self.muted.load(std::sync::atomic::Ordering::Relaxed);
-        let Some(m) = self.movie.as_mut() else { return };
-        let n = out.len() & !1;
-        let take = (m.frames.len() - m.pos.min(m.frames.len())).min(n);
-        if audible {
-            for (o, s) in out.iter_mut().zip(&m.frames[m.pos..m.pos + take]) {
-                *o += *s;
-            }
-        }
-        m.pos += take;
     }
 
     /// Create a sound. Errors are the caller's to ignore; the client's are.

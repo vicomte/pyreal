@@ -18,7 +18,7 @@ pub enum OverlaySpace {
     /// A font's glyph sheet, shared the same way.
     Glyphs,
     /// A texture of this front end's own that is shared with nothing: the one white texel a flat
-    /// fill samples, a movie frame. Uploading under a resident key replaces it.
+    /// fill samples. Uploading under a resident key replaces it.
     Local,
 }
 

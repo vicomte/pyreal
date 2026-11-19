@@ -5,19 +5,15 @@
 
 /// The character page's property identifiers.
 pub mod characterinfo;
-/// The contracts panel's sort criterion.
-pub mod contracts;
 /// The identify window's property identifiers.
 pub mod examination;
 /// The external-container panel's two subscribed notices.
 pub mod external_container;
 /// The housing system's thirty-day purchase wait.
 pub mod house;
-/// The information row kinds carried by panel views.
-pub mod inforegion;
 /// The paper doll's drag mask, its refusal line and the heritage property.
 pub mod inventory;
-/// The map's world-profile locations and rectangles.
+/// A press on the world map.
 pub mod map;
 /// The salvage panel's three object-carrying notices.
 pub mod salvage;

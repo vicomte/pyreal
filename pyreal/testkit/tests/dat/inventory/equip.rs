@@ -724,10 +724,11 @@ pub fn part_of_a_stack_let_go_on_the_figure_splits_and_a_whole_one_does_not() {
 
     between_gestures(&mut c);
     carrying(&mut c, ammo.item, ammo.places, 10);
-    c.when(Player::Ui(vec![UiRequest::StackSliderChanged {
-        split: 3,
-        max: 10,
-    }]));
+    // The splitter follows the selection, so the stack is selected first.
+    c.when(Player::Ui(vec![
+        UiRequest::Select(ammo.item),
+        UiRequest::StackSliderChanged { split: 3, max: 10 },
+    ]));
     assert_eq!(
         c.world_mut().split,
         SplitState {
@@ -764,10 +765,10 @@ pub fn part_of_a_stack_let_go_on_the_figure_splits_and_a_whole_one_does_not() {
 
     between_gestures(&mut c);
     carrying(&mut c, clothing.item, clothing.places, 10);
-    c.when(Player::Ui(vec![UiRequest::StackSliderChanged {
-        split: 4,
-        max: 10,
-    }]));
+    c.when(Player::Ui(vec![
+        UiRequest::Select(clothing.item),
+        UiRequest::StackSliderChanged { split: 4, max: 10 },
+    ]));
     let sent = let_go_on(&mut c, clothing.item, cloth_place);
     let worn_in_part = matches!(
         sent.as_slice(),

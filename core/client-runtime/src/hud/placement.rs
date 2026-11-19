@@ -31,28 +31,6 @@ impl Hud {
                         .player_system
                         .set_chat_window_option(*window, *property, *value, now);
                 }
-                pyreal_client_contract::UiRequest::SetChatWindowTitle { window, title } => {
-                    let value = match title {
-                        pyreal_client_contract::ChatWindowTitle::Literal(text) => {
-                            pyreal_protocol::property::StringInfo {
-                                over: 1,
-                                literal: Some(text.clone()),
-                                ..Default::default()
-                            }
-                        }
-                        pyreal_client_contract::ChatWindowTitle::Table {
-                            string_id,
-                            table_id,
-                        } => pyreal_protocol::property::StringInfo {
-                            string_id: *string_id,
-                            table_id: *table_id,
-                            ..Default::default()
-                        },
-                    };
-                    wrote |= world
-                        .player_system
-                        .set_chat_window_title(*window, value, now);
-                }
                 pyreal_client_contract::UiRequest::SetChatWindowFilter { window, mask } => {
                     wrote |= world
                         .player_system

@@ -79,8 +79,6 @@ pub struct AudioStats {
     /// A `Sound.*` name written with the wrong value type. Counted rather than dropped, so a
     /// mis-typed seam is a number instead of a silence.
     pub preference_type_errors: u64,
-    /// Movie soundtracks handed to the mixer. Zero here means the Turbine logo plays silently.
-    pub movie_tracks_started: u64,
 }
 
 /// Audio-system state, the device, and the dat reads that feed them.
@@ -347,48 +345,6 @@ impl Audio {
         }
     }
 
-    /// Play a layout media sound through either the direct-wave or sound-table arm.
-    /// A missing descriptor or owning element refuses. The invalid sound type (0) selects a
-    /// nonzero wave id at volume 1.0; every other sound type selects a loaded sound table.
-    ///
-    /// Two of the twelve places the retail client plays audio from are these two,
-    /// and they are the **only** ones a button, a panel or a slider ever reaches. Which UI event
-    /// plays which sound is a property of the `0x21xxxxxx` layout data and not of the executable,
-    /// so nothing here names a sound.
-    ///
-    /// **Table loading is on the play path and is reproduced.** Reading a sound table loads every
-    /// wave id in it, so the table arm makes its own waves resident while the wave arm does
-    /// **not**: playing a wave id at a volume looks it up in the resident-sound hash and returns in
-    /// silence if nothing put the wave there. That asymmetry is retail's and is kept. It costs
-    /// nothing in practice: all three sound media records in the shipped layouts take the
-    /// table arm.
-    pub fn play_media_sound(
-        &mut self,
-        store: &pyreal_dat::RetailDatStore,
-        file: DataId,
-        sound_type: u32,
-    ) {
-        // The invalid sound type has numeric value 0.
-        if sound_type == 0 {
-            // Only when the descriptor's file is non-zero.
-            if file.0 != 0 {
-                self.play_ui_sound(UiSoundRef::Wave(file));
-            }
-            return;
-        }
-        // Load the table by `QualifiedDataID(file, 0x22)`: one that will not load plays nothing.
-        if self.assets.table(file).is_none() {
-            if !self.load_sound_table(store, file) {
-                return;
-            }
-            self.create_table_waves(store, file);
-        }
-        self.play_ui_sound(UiSoundRef::Table {
-            table: file,
-            stype: sound_type,
-        });
-    }
-
     /// The ambient set the last pass left standing, as
     /// `(AmbientSTBDesc index, ambient_sound_id)` pairs.
     ///
@@ -408,24 +364,6 @@ impl Audio {
                     .collect()
             })
             .unwrap_or_default()
-    }
-
-    /// **The intro movie's soundtrack.** The movie player's audio renderer, in this build's shape.
-    ///
-    /// See [`pyreal_audio::AudioSystem::play_movie_audio`] for why this is not a voice and why it
-    /// answers to none of the eight `Sound.*` preferences.
-    pub fn play_movie_audio(&mut self, audio: &pyreal_audio::video::MovieAudio) {
-        if let Ok(mut s) = self.system.lock() {
-            s.play_movie_audio(audio);
-            self.stats.movie_tracks_started += 1;
-        }
-    }
-
-    /// The movie player stopped — its playback graph is gone.
-    pub fn stop_movie_audio(&mut self) {
-        if let Ok(mut s) = self.system.lock() {
-            s.stop_movie_audio();
-        }
     }
 
     /// `WM_ACTIVATEAPP` — `Focus::set_active`, which is what the "play only when active"
@@ -563,44 +501,6 @@ pub fn apply_preference_requests(
             }
             // The other 35 registered preferences land here and are somebody else's.
             PrefWrite::NotASoundPreference => left.push(r),
-        }
-    }
-    left
-}
-
-/// The far end of [`pyreal_client_contract::UiRequest::PlaySound`].
-///
-/// The producer is the shell's `tick_media`, which turns every media effect a real element state
-/// change raised into one of these; this is the shell's call into the sound manager. Without
-/// this consumer the effect the media machine raises would be dropped by the shell's
-/// `media_effects` drain.
-///
-/// Returns the requests this subsystem did not own, in order, exactly as
-/// [`apply_preference_requests`] does — so the host's "UI request with no owner yet" line still
-/// reports everything else.
-pub fn apply_sound_requests(
-    audio: Option<&mut Audio>,
-    store: &pyreal_dat::RetailDatStore,
-    requests: Vec<pyreal_client_contract::UiRequest>,
-) -> Vec<pyreal_client_contract::UiRequest> {
-    use pyreal_client_contract::UiRequest;
-    // With no sound subsystem the requests are still consumed rather than handed back: retail's
-    // sound updates reach the audio manager whether or not DirectSound came up, and an unbounded
-    // queue of clicks nobody will hear is the same mistake the server sound-event path avoids
-    // on the other side of this seam.
-    let Some(audio) = audio else {
-        return requests
-            .into_iter()
-            .filter(|r| !matches!(r, UiRequest::PlaySound { .. }))
-            .collect();
-    };
-    let mut left = Vec::with_capacity(requests.len());
-    for r in requests {
-        match r {
-            UiRequest::PlaySound { file, sound_type } => {
-                audio.play_media_sound(store, file, sound_type);
-            }
-            other => left.push(other),
         }
     }
     left

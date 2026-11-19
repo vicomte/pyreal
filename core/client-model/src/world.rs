@@ -185,6 +185,9 @@ pub struct World {
     pub player_initialized: bool,
     /// The current fellowship, or `None` when not in one.
     pub fellowship: Option<pyreal_rules::fellowship::Fellowship>,
+    /// The AI Players in the player's company and their modes, from the world's `0xF7F0`; empty
+    /// from a world without the extension.
+    pub ai_fellows: Vec<crate::dereth_extensions::AiFellow>,
     /// The secure-trade mirror and the ids needed to reject a second partner and defer an
     /// item-on-player gesture until registration.
     pub trade: crate::trade::TradeSystem,
@@ -195,8 +198,6 @@ pub struct World {
     /// Shared stack quantity used by inventory actions and both toolbars.
     pub split: crate::inventory::SplitState,
     pub(crate) split_selection: Option<ObjectId>,
-    /// Category position retained between shops in this character session.
-    pub vendor_filter: usize,
     /// The live contract trackers — see [`crate::quests`].
     pub contracts: crate::quests::ContractTrackerTable,
     /// The current book id, pages, and inscription — see [`crate::book`].
@@ -341,11 +342,11 @@ impl World {
             minigame: crate::minigame::MiniGame::new(),
             player_initialized: false,
             fellowship: None,
+            ai_fellows: Vec::new(),
             trade: crate::trade::TradeSystem::default(),
             shop: crate::vendor::Shop::default(),
             split: crate::inventory::SplitState::default(),
             split_selection: None,
-            vendor_filter: 0,
             contracts: crate::quests::ContractTrackerTable::default(),
             book: crate::book::BookState::default(),
             journal: crate::journal::JournalStore::default(),

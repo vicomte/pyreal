@@ -9,7 +9,7 @@
 //! **Must never** draw, or name the object model or the runtime: it reads the game through the
 //! contract only.
 //!
-//! - [`chargen`]: the creation tables and the turntable's model; [`barber`] the barber's edit.
+//! - [`chargen`]: the creation tables and the preview's animations; [`barber`] the barber's edit.
 //! - [`radar`]: the blips' colours and shapes. [`paper_doll`]: the doll's camera and pose.
 //! - [`icon`] and [`items`]: an object's or a spell's icon, composited from the dat.
 //! - [`house`]: the house pane's rows. [`panels`]: the panels' and dialogs' words and ids.

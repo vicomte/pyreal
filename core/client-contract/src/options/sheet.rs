@@ -1,7 +1,7 @@
-//! The options the interface shows, as one set: four pages, each a list of headings, each
+//! The options the interface shows, as one set: three pages, each a list of headings, each
 //! heading a list of rows.
 //!
-//! The Game / Support page's buttons, the Character Options page (the character's own options,
+//! The Character Options page (the character's own options,
 //! kept by the server), the Chat Options page and the Client Options page (sound, display,
 //! graphics and camera, kept in the profile). A row names where its value is kept ([`Value`]);
 //! nothing here keeps a value of its own. A row for something the world's era does not have is
@@ -12,11 +12,9 @@
 use crate::options::config::PrefValueConst;
 use crate::view::PlayerOption;
 
-/// The four pages, in the order the tabs list them.
+/// The three pages, in the order the tabs list them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PageId {
-    /// The buttons: leaving the world, the keys, the support forms.
-    GameSupport,
     /// The character's own options, kept by the server.
     Character,
     /// The chat windows' options.
@@ -141,28 +139,9 @@ impl Needs {
     }
 }
 
-/// A button on the Game / Support page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Act {
-    /// Asks, then ends the character session.
-    ExitToCharacterSelection,
-    /// Quits the client.
-    ExitGame,
-    /// The key bindings page.
-    ConfigureKeyboard,
-    /// The mouse-turning preset: six Client Options rows and the wheel on the camera zoom.
-    MouseTurningSettings,
-    /// The in-game form that sends a request for help to the server.
-    UrgentAssistance,
-    /// The in-game form that sends a complaint to the server's abuse log.
-    ReportAbuse,
-}
-
 /// Where a row's value is kept, and so what kind of control shows it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
-    /// A button.
-    Action(Act),
     /// One of the character's options, kept by the server.
     Option(PlayerOption),
     /// A bit of the character's first option word that no option of the final client names
@@ -353,27 +332,8 @@ pub fn defaults(page: PageId) -> Vec<(&'static str, PrefValueConst)> {
         .collect()
 }
 
-const fn button(caption: &'static str, act: Act) -> Row {
-    row(caption, Value::Action(act))
-}
-
 use PlayerOption as P;
 use PrefValueConst::{Bool, Float, Int};
-
-// ---- Game / Support --------------------------------------------------------------------------
-
-const GAME_SUPPORT: [Heading; 1] = [Heading {
-    title: "Game and Support",
-    text: Text::literal("Game and Support"),
-    rows: &[
-        button("Exit to Character Selection", Act::ExitToCharacterSelection),
-        button("Exit Game", Act::ExitGame),
-        button("Configure Keyboard", Act::ConfigureKeyboard),
-        button("Use Mouse Turning Settings", Act::MouseTurningSettings),
-        button("Urgent Assistance", Act::UrgentAssistance),
-        button("Report Abuse", Act::ReportAbuse),
-    ],
-}];
 
 // ---- Character Options -----------------------------------------------------------------------
 
@@ -1086,13 +1046,8 @@ const fn fidelity_box(i: usize, impact: Impact) -> Row {
     )
 }
 
-/// The four pages, in tab order.
-pub const PAGES: [Page; 4] = [
-    Page {
-        id: PageId::GameSupport,
-        title: "Game / Support",
-        headings: &GAME_SUPPORT,
-    },
+/// The three pages, in tab order.
+pub const PAGES: [Page; 3] = [
     Page {
         id: PageId::Character,
         title: "Character Options",
@@ -1114,10 +1069,9 @@ pub const PAGES: [Page; 4] = [
 #[must_use]
 pub fn page(id: PageId) -> &'static Page {
     match id {
-        PageId::GameSupport => &PAGES[0],
-        PageId::Character => &PAGES[1],
-        PageId::Chat => &PAGES[2],
-        PageId::Client => &PAGES[3],
+        PageId::Character => &PAGES[0],
+        PageId::Chat => &PAGES[1],
+        PageId::Client => &PAGES[2],
     }
 }
 
@@ -1162,29 +1116,6 @@ pub fn row_of_option(option: PlayerOption) -> Option<&'static Row> {
         .find(|r| r.value == Value::Option(option))
 }
 
-/// The captions under a slider's two ends, left then right, for the sliders the modern page
-/// labels; both interfaces draw the same words.
-pub const SLIDER_ENDS: [(&str, &str, &str); 5] = [
-    (crate::options::names::CAMERA_STIFFNESS, "Soft", "Hard"),
-    (
-        crate::options::names::CAMERA_ADJUSTMENT_SPEED,
-        "Slow",
-        "Fast",
-    ),
-    (crate::options::names::FIELD_OF_VIEW, "Narrow", "Wide"),
-    (crate::options::names::SCREEN_BRIGHTNESS, "Dark", "Bright"),
-    (crate::options::names::DEGRADE_DISTANCE, "Close", "Far"),
-];
-
-/// The two end captions of `preference`'s slider, if the modern page labels it.
-#[must_use]
-pub fn slider_ends(preference: &str) -> Option<(&'static str, &'static str)> {
-    SLIDER_ENDS
-        .iter()
-        .find(|(p, _, _)| *p == preference)
-        .map(|&(_, left, right)| (left, right))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,17 +1153,9 @@ mod tests {
     }
 
     #[test]
-    fn the_four_pages_are_in_tab_order_and_each_has_rows() {
+    fn the_three_pages_are_in_tab_order_and_each_has_rows() {
         let ids: Vec<PageId> = PAGES.iter().map(|p| p.id).collect();
-        assert_eq!(
-            ids,
-            [
-                PageId::GameSupport,
-                PageId::Character,
-                PageId::Chat,
-                PageId::Client
-            ]
-        );
+        assert_eq!(ids, [PageId::Character, PageId::Chat, PageId::Client]);
         for p in PAGES {
             assert!(rows_for(p.id).count() > 0, "{:?}", p.id);
         }

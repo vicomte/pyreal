@@ -22,7 +22,7 @@
 //!
 //! | key set | where it comes from |
 //! |---|---|
-//! | object ids | [`GameSnapshot::object_ids`] — the player, the selection, the radar, the container tree, the equipment, the shop and trade rows, the shortcut bar, the endowment and the examine target |
+//! | object ids | [`GameSnapshot::object_ids`] — the player, the selection, the radar, the container tree, the equipment, the shop and trade rows, the shortcut bar and the examine target |
 //! | spell ids | [`GameView::spellbook`] plus the eight [`GameView::spell_tab`] bars |
 //! | skill ids | [`GameView::skills`] |
 //! | spell-component ids | [`GameView::spell_components`] |
@@ -30,7 +30,7 @@
 //! Three more are closed sets that are not on the view — [`PlayerOption::ALL`], the six attribute
 //! ids, and the eighteen shortcut slots — and are captured over the constants below.
 //!
-//! **Ten methods are not captured**, because their arguments are open sets: an owned snapshot
+//! **Five methods are not captured**, because their arguments are open sets: an owned snapshot
 //! would have to guess. [`GameSnapshot`] leaves them at the trait's own default body, which is
 //! the same `None`/`0`/`false` an [`EmptyGameView`] gives, and a caller that needs one of them
 //! needs the live view:
@@ -40,20 +40,12 @@
 //!   array, which this crate cannot read.
 //! * [`GameView::cooldown_remaining`] — takes `now`, so it is a function of the clock and not a
 //!   fact about the frame (`GameView` carries no clock).
-//! * [`GameView::salvage_item_suitable`] and
-//!   [`GameView::external_container_drag_item_acceptable`] — a second open argument.
-//! * [`GameView::slumlord_payment`], [`GameView::slumlord_needs_more`] and
-//!   [`GameView::slumlord_pay`] — they take an arbitrary list of drops.
-//!
-//! [`GameView::pending_row`] is captured for the containers this snapshot knows and for the
-//! `None` container; any other container falls through to the default.
 
 use std::collections::BTreeMap;
 
 use pyreal_primitives::{DataId, ObjectId};
 
 use crate::ctime::UtcOffsetSecs;
-use crate::journal::JournalIdentity;
 use crate::statmgmt::XpHeader;
 use crate::view::{
     AllegianceRoster, AppraisalView, AttributeAdvancement, BarberView, BookView, CharacterInfo,
@@ -97,10 +89,6 @@ pub struct ObjectSnapshot {
     pub equipment: Vec<(ObjectId, u32)>,
     /// [`GameView::items_capacity`].
     pub items_capacity: Option<i32>,
-    /// [`GameView::containers_capacity`].
-    pub containers_capacity: Option<i32>,
-    /// [`GameView::item_waiting`].
-    pub item_waiting: bool,
     /// [`GameView::selection_query_facts`].
     pub selection_query_facts: Option<SelectionQueryFacts>,
     /// [`GameView::slot_decoration`].
@@ -109,41 +97,14 @@ pub struct ObjectSnapshot {
     pub equip_locations: u32,
     /// [`GameView::item_attuned`].
     pub attuned: bool,
-    /// [`GameView::plural_name`].
-    pub plural_name: Option<String>,
     /// [`GameView::appraisal`].
     pub appraisal: Option<AppraisalView>,
     /// [`GameView::inscription_mouse_facts`].
     pub inscription_mouse_facts: Option<(bool, u32)>,
-    /// [`GameView::item_owned_by_player`].
-    pub item_owned_by_player: bool,
     /// [`GameView::item_wcid`].
     pub item_wcid: u32,
-    /// [`GameView::item_trade_note_value`].
-    pub item_trade_note_value: Option<i32>,
-    /// [`GameView::item_house_payment`].
-    pub item_house_payment: i32,
-    /// [`GameView::item_material_type`].
-    pub item_material_type: u32,
-    /// [`GameView::vendor_drag_item_accepted`].
-    pub vendor_drag_item_accepted: bool,
-    /// [`GameView::trade_drag_item_acceptable`].
-    pub trade_drag_item_acceptable: bool,
-    /// [`GameView::item_valid_locations`].
-    pub item_valid_locations: Option<u32>,
-    /// Shared equipment drag feedback.
-    pub equipment_hover: crate::view::EquipmentHover,
-    /// [`GameView::item_useable_self_target`].
-    pub item_useable_self_target: bool,
-    /// [`GameView::item_target_compatible`].
-    pub item_target_compatible: bool,
     /// [`GameView::allegiance_has_member`].
     pub allegiance_has_member: bool,
-    /// [`GameView::object_is_owned_component`].
-    pub object_is_owned_component: Option<u32>,
-    /// [`GameView::pending_row`] with this object as the container, for both list halves:
-    /// `[containers_list = false, containers_list = true]`.
-    pub pending_row: [Option<(ObjectId, u32)>; 2],
 }
 
 /// Everything [`GameView`] answers about one spell id, owned.
@@ -155,10 +116,6 @@ pub struct SpellSnapshot {
     pub known: bool,
     /// [`GameView::spell_examine`].
     pub examine: Option<SpellExamineView>,
-    /// [`GameView::spell_is_untargeted`].
-    pub untargeted: bool,
-    /// [`GameView::spell_target_compatible`].
-    pub target_compatible: bool,
 }
 
 /// An owned [`GameView`], taken once per frame. See the module header.
@@ -167,8 +124,6 @@ pub struct GameSnapshot {
     // ---- the nullary reads, one field each --------------------------------------------------
     /// [`GameView::player`].
     pub player: Option<ObjectId>,
-    /// [`GameView::open_inventory_container`].
-    pub open_inventory_container: Option<ObjectId>,
     /// [`GameView::era`].
     pub era: Option<EraView>,
     /// Resolved presentation facts, including facts that a view supplies directly.
@@ -181,8 +136,6 @@ pub struct GameSnapshot {
     pub selected_object: Option<ObjectId>,
     /// [`GameView::radar_objects`].
     pub radar_objects: Vec<RadarEntry>,
-    /// [`GameView::radar_blank`].
-    pub radar_blank: bool,
     /// [`GameView::player_module_strings`].
     pub player_module_strings: Option<Vec<(u32, String)>>,
     /// [`GameView::load`].
@@ -205,8 +158,6 @@ pub struct GameSnapshot {
     pub packet_loss_percent: f32,
     /// [`GameView::portal_storm_level`].
     pub portal_storm_level: f32,
-    /// [`GameView::link_status`].
-    pub link_status: Option<f64>,
     /// [`GameView::selected_meters`].
     pub selected_meters: (Option<f32>, Option<f32>),
     /// [`GameView::player_coords`].
@@ -233,13 +184,10 @@ pub struct GameSnapshot {
     pub spell_tabs: Vec<Vec<u32>>,
     /// [`GameView::spell_components`].
     pub spell_components: Vec<ComponentCategory>,
-    /// [`GameView::component_serial`].
-    pub component_serial: u64,
     /// [`GameView::character_name`].
     pub character_name: Option<String>,
-    /// [`GameView::journal_identity`].
+    /// [`GameView::journal`].
     pub journal: crate::journal::JournalView,
-    pub journal_identity: Option<JournalIdentity>,
     /// [`GameView::experience_header`].
     pub experience_header: Option<XpHeader>,
     /// [`GameView::gender_heritage_display`].
@@ -256,8 +204,6 @@ pub struct GameSnapshot {
     pub skill_credits: i64,
     /// [`GameView::available_experience`].
     pub available_experience: i64,
-    /// [`GameView::endowment`].
-    pub endowment: Option<(ObjectId, u32)>,
     /// [`GameView::examine_request`].
     pub examine_request: Option<(ObjectId, u64)>,
     /// [`GameView::open_book`].
@@ -268,8 +214,6 @@ pub struct GameSnapshot {
     /// [`GameView::allegiance_roster`].
     pub oath_xp_cost: Option<u32>,
     pub allegiance_roster: AllegianceRoster,
-    /// [`GameView::allegiance_update_aborts`].
-    pub allegiance_update_aborts: u64,
     /// [`GameView::allegiance_monarch_quality`].
     pub allegiance_monarch_quality: Option<ObjectId>,
     /// [`GameView::fellowship`].
@@ -300,18 +244,10 @@ pub struct GameSnapshot {
     pub slumlord_notices: u64,
     /// [`GameView::minigame`].
     pub minigame: Option<MiniGameView>,
-    /// [`GameView::max_split_size`].
-    pub max_split_size: i32,
-    /// [`GameView::split_size`].
-    pub split_size: i32,
     /// [`GameView::combat_mode`].
     pub combat_mode: u32,
-    /// [`GameView::advanced_combat_ui`].
-    pub advanced_combat_ui: bool,
     /// [`GameView::combat_bar`].
     pub combat_bar: CombatBar,
-    /// [`GameView::recklessness_advancement_class`].
-    pub recklessness_advancement_class: u32,
 
     // ---- the keyed reads, one map each ------------------------------------------------------
     /// [`GameView::shortcut`] for slots `0..`[`SHORTCUT_SLOTS`].
@@ -326,14 +262,10 @@ pub struct GameSnapshot {
     pub attributes: BTreeMap<u32, i32>,
     /// [`GameView::attribute_advancement`] over [`ATTRIBUTE_IDS`] × `{primary, secondary}`.
     pub attribute_advancement: BTreeMap<(u32, bool), AttributeAdvancement>,
-    /// [`GameView::player_option`] and [`GameView::player_option_default`] over
-    /// [`PlayerOption::ALL`].
-    pub player_options: BTreeMap<PlayerOption, (bool, Option<bool>)>,
-    /// [`GameView::component_object_id`] and [`GameView::component_is_owned`] for every `wcid` in
-    /// [`GameView::spell_components`].
-    pub components: BTreeMap<u32, (Option<ObjectId>, bool)>,
-    /// [`GameView::pending_row`] with no container, `[false, true]`.
-    pub pending_row_no_container: [Option<(ObjectId, u32)>; 2],
+    /// [`GameView::player_option`] over [`PlayerOption::ALL`].
+    pub player_options: BTreeMap<PlayerOption, bool>,
+    /// [`GameView::component_is_owned`] for every `wcid` in [`GameView::spell_components`].
+    pub components: BTreeMap<u32, bool>,
 }
 
 impl GameSnapshot {
@@ -352,18 +284,10 @@ impl GameSnapshot {
                 ids.push(id);
             }
         }
-        for id in [
-            view.player(),
-            view.open_inventory_container(),
-            view.selection(),
-            view.selected_object(),
-        ]
-        .into_iter()
-        .flatten()
+        for id in [view.player(), view.selection(), view.selected_object()]
+            .into_iter()
+            .flatten()
         {
-            push(&mut ids, id);
-        }
-        if let Some((id, _)) = view.endowment() {
             push(&mut ids, id);
         }
         if let Some((id, _)) = view.examine_request() {
@@ -444,32 +368,14 @@ impl GameSnapshot {
                     contained_containers: view.contained_containers(id).to_vec(),
                     equipment: view.equipment(id).to_vec(),
                     items_capacity: view.items_capacity(id),
-                    containers_capacity: view.containers_capacity(id),
-                    item_waiting: view.item_waiting(id),
                     selection_query_facts: view.selection_query_facts(id),
                     slot_decoration: view.slot_decoration(id),
                     equip_locations: view.equip_locations(id),
                     attuned: view.item_attuned(id),
-                    plural_name: view.plural_name(id).map(str::to_owned),
                     appraisal: view.appraisal(id),
                     inscription_mouse_facts: view.inscription_mouse_facts(id),
-                    item_owned_by_player: view.item_owned_by_player(id),
                     item_wcid: view.item_wcid(id),
-                    item_trade_note_value: view.item_trade_note_value(id),
-                    item_house_payment: view.item_house_payment(id),
-                    item_material_type: view.item_material_type(id),
-                    vendor_drag_item_accepted: view.vendor_drag_item_accepted(id),
-                    trade_drag_item_acceptable: view.trade_drag_item_acceptable(id),
-                    item_valid_locations: view.item_valid_locations(id),
-                    equipment_hover: view.equipment_hover(id),
-                    item_useable_self_target: view.item_useable_self_target(id),
-                    item_target_compatible: view.item_target_compatible(id),
                     allegiance_has_member: view.allegiance_has_member(id),
-                    object_is_owned_component: view.object_is_owned_component(id),
-                    pending_row: [
-                        view.pending_row(Some(id), false),
-                        view.pending_row(Some(id), true),
-                    ],
                 },
             );
         }
@@ -478,15 +384,12 @@ impl GameSnapshot {
         let spell_ids = spellbook
             .iter()
             .map(|s| s.id)
-            .chain(spell_tabs.iter().flatten().copied())
-            .chain(view.endowment().map(|(_, spell)| spell));
+            .chain(spell_tabs.iter().flatten().copied());
         for sid in spell_ids {
             spells.entry(sid).or_insert_with(|| SpellSnapshot {
                 entry: view.spell(sid),
                 known: view.is_spell_known(sid),
                 examine: view.spell_examine(sid),
-                untargeted: view.spell_is_untargeted(sid),
-                target_compatible: view.spell_target_compatible(sid),
             });
         }
 
@@ -512,18 +415,12 @@ impl GameSnapshot {
 
         let mut player_options = BTreeMap::new();
         for o in PlayerOption::ALL {
-            player_options.insert(o, (view.player_option(o), view.player_option_default(o)));
+            player_options.insert(o, view.player_option(o));
         }
 
         let mut components = BTreeMap::new();
         for row in spell_components.iter().flat_map(|c| &c.rows) {
-            components.insert(
-                row.wcid,
-                (
-                    view.component_object_id(row.wcid),
-                    view.component_is_owned(row.wcid),
-                ),
-            );
+            components.insert(row.wcid, view.component_is_owned(row.wcid));
         }
 
         Self {
@@ -532,11 +429,9 @@ impl GameSnapshot {
             resolved_era_ui: Some(view.era_ui()),
             aetheria_slots: view.aetheria_slots(),
             player: view.player(),
-            open_inventory_container: view.open_inventory_container(),
             selection: view.selection(),
             selected_object: view.selected_object(),
             radar_objects: view.radar_objects().to_vec(),
-            radar_blank: view.radar_blank(),
             player_module_strings: view.player_module_strings(),
             load: view.load(),
             enchantment_counts: view.enchantment_counts(),
@@ -548,7 +443,6 @@ impl GameSnapshot {
             ping_returns: view.ping_returns(),
             packet_loss_percent: view.packet_loss_percent(),
             portal_storm_level: view.portal_storm_level(),
-            link_status: view.link_status(),
             selected_meters: view.selected_meters(),
             player_coords: view.player_coords(),
             player_outside: view.player_outside(),
@@ -562,10 +456,8 @@ impl GameSnapshot {
             spell_filters: view.spell_filters(),
             spell_tabs,
             spell_components,
-            component_serial: view.component_serial(),
             character_name: view.character_name().map(str::to_owned),
             journal: view.journal(),
-            journal_identity: view.journal_identity(),
             experience_header: view.experience_header(),
             gender_heritage_display: view.gender_heritage_display(),
             display_title: view.display_title(),
@@ -574,14 +466,12 @@ impl GameSnapshot {
             luminance: view.luminance(),
             skill_credits: view.skill_credits(),
             available_experience: view.available_experience(),
-            endowment: view.endowment(),
             examine_request: view.examine_request(),
             open_book: view.open_book(),
             book_session: view.book_session(),
             barber: view.barber(),
             oath_xp_cost: view.oath_xp_cost(),
             allegiance_roster: view.allegiance_roster(),
-            allegiance_update_aborts: view.allegiance_update_aborts(),
             allegiance_monarch_quality: view.allegiance_monarch_quality(),
             fellowship: view.fellowship(),
             friends: view.friends(),
@@ -598,12 +488,8 @@ impl GameSnapshot {
             slumlord: view.slumlord(),
             slumlord_notices: view.slumlord_notices(),
             minigame: view.minigame(),
-            max_split_size: view.max_split_size(),
-            split_size: view.split_size(),
             combat_mode: view.combat_mode(),
-            advanced_combat_ui: view.advanced_combat_ui(),
             combat_bar: view.combat_bar(),
-            recklessness_advancement_class: view.recklessness_advancement_class(),
             shortcuts: (0..SHORTCUT_SLOTS).map(|s| view.shortcut(s)).collect(),
             objects,
             spells,
@@ -612,7 +498,6 @@ impl GameSnapshot {
             attribute_advancement,
             player_options,
             components,
-            pending_row_no_container: [view.pending_row(None, false), view.pending_row(None, true)],
         }
     }
 
@@ -658,9 +543,6 @@ impl GameView for GameSnapshot {
     fn player(&self) -> Option<ObjectId> {
         self.player
     }
-    fn open_inventory_container(&self) -> Option<ObjectId> {
-        self.open_inventory_container
-    }
     fn name(&self, id: ObjectId) -> Option<&str> {
         self.object(id)?.name.as_deref()
     }
@@ -684,23 +566,6 @@ impl GameView for GameSnapshot {
     }
     fn items_capacity(&self, id: ObjectId) -> Option<i32> {
         self.object(id)?.items_capacity
-    }
-    fn containers_capacity(&self, id: ObjectId) -> Option<i32> {
-        self.object(id)?.containers_capacity
-    }
-    fn item_waiting(&self, id: ObjectId) -> bool {
-        self.object(id).is_some_and(|o| o.item_waiting)
-    }
-    fn pending_row(
-        &self,
-        container: Option<ObjectId>,
-        containers_list: bool,
-    ) -> Option<(ObjectId, u32)> {
-        let i = usize::from(containers_list);
-        match container {
-            None => self.pending_row_no_container[i],
-            Some(id) => self.object(id)?.pending_row[i],
-        }
     }
     fn selection(&self) -> Option<ObjectId> {
         self.selection
@@ -739,10 +604,7 @@ impl GameView for GameSnapshot {
         self.portal_storm_level
     }
     fn player_option(&self, o: PlayerOption) -> bool {
-        self.player_options.get(&o).is_some_and(|(v, _)| *v)
-    }
-    fn player_option_default(&self, o: PlayerOption) -> Option<bool> {
-        self.player_options.get(&o).and_then(|(_, d)| *d)
+        self.player_options.get(&o).copied().unwrap_or(false)
     }
     fn selection_query_facts(&self, id: ObjectId) -> Option<SelectionQueryFacts> {
         self.object(id)?.selection_query_facts
@@ -762,14 +624,8 @@ impl GameView for GameSnapshot {
     fn player_heading(&self) -> f32 {
         self.player_heading
     }
-    fn radar_blank(&self) -> bool {
-        self.radar_blank
-    }
     fn player_module_strings(&self) -> Option<Vec<(u32, String)>> {
         self.player_module_strings.clone()
-    }
-    fn link_status(&self) -> Option<f64> {
-        self.link_status
     }
     fn shortcut(&self, slot: u32) -> Option<ObjectId> {
         *self.shortcuts.get(usize::try_from(slot).ok()?)?
@@ -795,14 +651,8 @@ impl GameView for GameSnapshot {
     fn spell_examine(&self, spell_id: u32) -> Option<SpellExamineView> {
         self.spells.get(&spell_id)?.examine.clone()
     }
-    fn component_object_id(&self, scid: u32) -> Option<ObjectId> {
-        self.components.get(&scid)?.0
-    }
     fn component_is_owned(&self, scid: u32) -> bool {
-        self.components.get(&scid).is_some_and(|c| c.1)
-    }
-    fn component_serial(&self) -> u64 {
-        self.component_serial
+        self.components.get(&scid).copied().unwrap_or(false)
     }
     fn attribute(&self, id: u32) -> Option<i32> {
         self.attributes.get(&id).copied()
@@ -818,9 +668,6 @@ impl GameView for GameSnapshot {
     }
     fn journal(&self) -> crate::journal::JournalView {
         self.journal.clone()
-    }
-    fn journal_identity(&self) -> Option<JournalIdentity> {
-        self.journal_identity.clone()
     }
     fn experience_header(&self) -> Option<XpHeader> {
         self.experience_header
@@ -852,9 +699,6 @@ impl GameView for GameSnapshot {
     fn spell_tab(&self, tab: usize) -> &[u32] {
         self.spell_tabs.get(tab).map_or(&[], Vec::as_slice)
     }
-    fn endowment(&self) -> Option<(ObjectId, u32)> {
-        self.endowment
-    }
     fn slot_decoration(&self, id: ObjectId) -> Option<SlotDecoration> {
         self.object(id)?.slot_decoration
     }
@@ -863,9 +707,6 @@ impl GameView for GameSnapshot {
     }
     fn item_attuned(&self, id: ObjectId) -> bool {
         self.object(id).is_some_and(|o| o.attuned)
-    }
-    fn plural_name(&self, id: ObjectId) -> Option<&str> {
-        self.object(id)?.plural_name.as_deref()
     }
     fn appraisal(&self, id: ObjectId) -> Option<AppraisalView> {
         self.object(id)?.appraisal.clone()
@@ -890,9 +731,6 @@ impl GameView for GameSnapshot {
     }
     fn allegiance_roster(&self) -> AllegianceRoster {
         self.allegiance_roster.clone()
-    }
-    fn allegiance_update_aborts(&self) -> u64 {
-        self.allegiance_update_aborts
     }
     fn fellowship(&self) -> Option<FellowshipView> {
         self.fellowship.clone()
@@ -927,9 +765,6 @@ impl GameView for GameSnapshot {
     fn trade(&self) -> TradeView {
         self.trade.clone()
     }
-    fn item_owned_by_player(&self, item: ObjectId) -> bool {
-        self.object(item).is_some_and(|o| o.item_owned_by_player)
-    }
     fn payment_lists(&self) -> crate::panels::slumlord::PaymentListsView {
         self.payment_lists.clone()
     }
@@ -948,48 +783,6 @@ impl GameView for GameSnapshot {
     fn item_wcid(&self, item: ObjectId) -> u32 {
         self.object(item).map_or(0, |o| o.item_wcid)
     }
-    fn item_trade_note_value(&self, item: ObjectId) -> Option<i32> {
-        self.object(item)?.item_trade_note_value
-    }
-    fn item_house_payment(&self, item: ObjectId) -> i32 {
-        self.object(item).map_or(0, |o| o.item_house_payment)
-    }
-    fn max_split_size(&self) -> i32 {
-        self.max_split_size
-    }
-    fn item_material_type(&self, item: ObjectId) -> u32 {
-        self.object(item).map_or(0, |o| o.item_material_type)
-    }
-    fn vendor_drag_item_accepted(&self, item: ObjectId) -> bool {
-        self.object(item)
-            .is_some_and(|o| o.vendor_drag_item_accepted)
-    }
-    fn trade_drag_item_acceptable(&self, item: ObjectId) -> bool {
-        self.object(item)
-            .is_some_and(|o| o.trade_drag_item_acceptable)
-    }
-    fn item_valid_locations(&self, item: ObjectId) -> Option<u32> {
-        self.object(item)?.item_valid_locations
-    }
-    fn equipment_hover(&self, item: ObjectId) -> crate::view::EquipmentHover {
-        self.object(item)
-            .map_or_else(Default::default, |o| o.equipment_hover)
-    }
-    fn spell_is_untargeted(&self, spell_id: u32) -> bool {
-        self.spells.get(&spell_id).is_some_and(|s| s.untargeted)
-    }
-    fn spell_target_compatible(&self, spell_id: u32) -> bool {
-        self.spells
-            .get(&spell_id)
-            .is_some_and(|s| s.target_compatible)
-    }
-    fn item_useable_self_target(&self, item: ObjectId) -> bool {
-        self.object(item)
-            .is_some_and(|o| o.item_useable_self_target)
-    }
-    fn item_target_compatible(&self, item: ObjectId) -> bool {
-        self.object(item).is_some_and(|o| o.item_target_compatible)
-    }
     fn selected_object(&self) -> Option<ObjectId> {
         self.selected_object
     }
@@ -999,26 +792,14 @@ impl GameView for GameSnapshot {
     fn allegiance_monarch_quality(&self) -> Option<ObjectId> {
         self.allegiance_monarch_quality
     }
-    fn split_size(&self) -> i32 {
-        self.split_size
-    }
     fn spell_components(&self) -> Vec<ComponentCategory> {
         self.spell_components.clone()
-    }
-    fn object_is_owned_component(&self, obj: ObjectId) -> Option<u32> {
-        self.object(obj)?.object_is_owned_component
     }
     fn combat_mode(&self) -> u32 {
         self.combat_mode
     }
-    fn advanced_combat_ui(&self) -> bool {
-        self.advanced_combat_ui
-    }
     fn combat_bar(&self) -> CombatBar {
         self.combat_bar
-    }
-    fn recklessness_advancement_class(&self) -> u32 {
-        self.recklessness_advancement_class
     }
 }
 
@@ -1062,60 +843,5 @@ mod tests {
         };
         assert_eq!(snap.player(), None);
         assert_eq!(snap.character_name(), None);
-    }
-    #[test]
-    fn an_unlearned_endowment_keeps_its_spell_and_quiet_target_facts_in_a_snapshot() {
-        #[derive(Debug)]
-        struct Wand;
-        impl GameView for Wand {
-            fn endowment(&self) -> Option<(ObjectId, u32)> {
-                Some((ObjectId(2), 99))
-            }
-            fn selected_object(&self) -> Option<ObjectId> {
-                Some(ObjectId(3))
-            }
-            fn name(&self, _: ObjectId) -> Option<&str> {
-                Some("Wand")
-            }
-            fn item_target_compatible(&self, _: ObjectId) -> bool {
-                true
-            }
-            fn spell_target_compatible(&self, _: u32) -> bool {
-                true
-            }
-            fn spell(&self, id: u32) -> Option<crate::SpellEntry> {
-                (id == 99).then(|| crate::SpellEntry {
-                    id,
-                    name: "Endowed spell".into(),
-                    icon: None,
-                    school: 3,
-                    level: 8,
-                    icon_power: 10,
-                    display_order: 0,
-                    bitfield: 0,
-                })
-            }
-            fn spell_examine(&self, _: u32) -> Option<crate::SpellExamineView> {
-                Some(crate::SpellExamineView {
-                    name: "Endowed spell".into(),
-                    level: 8,
-                    icon_power: 10,
-                    ..Default::default()
-                })
-            }
-        }
-        let snapshot = GameSnapshot::from_view(&Wand);
-        assert!(!snapshot.is_spell_known(99));
-        assert_eq!(snapshot.spell(99), Wand.spell(99));
-        assert_eq!(snapshot.spell_examine(99), Wand.spell_examine(99));
-        assert!(snapshot.spell_target_compatible(99));
-        assert_eq!(
-            crate::spellbook::readiness(&snapshot, 0, Some(ObjectId(2))),
-            crate::spellbook::SpellReadiness::ReadyOnTarget
-        );
-        assert_eq!(
-            crate::spellbook::readiness(&snapshot, 99, None),
-            crate::spellbook::SpellReadiness::ReadyOnTarget
-        );
     }
 }

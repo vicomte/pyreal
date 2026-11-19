@@ -698,7 +698,7 @@ impl<H: Host> App<H> {
             tracing::info!(target: "pyreal_client",
                 "audio -- device {}, {} wave(s) created, {} decode failure(s), \
                  {} sound(s) started, {} voice(s) still playing, {} under-run(s), \
-                 {} block(s) submitted, {} movie track(s), peak {:.4}",
+                 {} block(s) submitted, peak {:.4}",
                 if audio.has_device() { "up" } else { "silent" },
                 audio.stats.waves_created,
                 audio.stats.wave_decode_failures,
@@ -712,7 +712,6 @@ impl<H: Host> App<H> {
                     .stats
                     .blocks_filled
                     .load(std::sync::atomic::Ordering::Relaxed),
-                audio.stats.movie_tracks_started,
                 audio.peak_output()
             );
             let (stage, (pool_started, pool_dropped)) = audio.engine_stats();

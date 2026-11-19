@@ -100,7 +100,6 @@ pub fn shop(w: &pyreal_client_model::World) -> ShopView {
         .collect();
     ShopView {
         open: true,
-        filter: w.vendor_filter,
         vendor: s.vendor_id,
         sell_mode: s.mode == pyreal_client_model::vendor::ShopMode::Sell,
         stock,

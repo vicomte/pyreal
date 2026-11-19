@@ -29,7 +29,3 @@ pub mod store;
 pub mod update_check;
 pub mod water_detail;
 pub mod weather_sound;
-
-/// The title of the error box shown when opening a support URL fails (the shell's result is 32
-/// or less). The Options page's support buttons raise the request; the host makes the call.
-pub const SHELL_EXECUTE_ERROR_TITLE: &str = "Asheron's Call Error";

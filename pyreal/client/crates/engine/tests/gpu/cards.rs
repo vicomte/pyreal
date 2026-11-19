@@ -21,11 +21,16 @@ fn a_card_level_turns_to_the_eye() {
     // Forty times its size, 30 m away is 0.75 m over its scale; at a 75th of the dats'
     // distances that is 56 degrade metres, the card's, short of its fading out from 60.
     engine.renderer.lod_bias = 1.0 / 75.0;
-    // A fixed exposure: the frames differ only where the plant is.
+    // A fixed exposure and no bloom: the frames differ only where the plant is.
     engine.renderer.exposure = pyreal_engine::renderer::Exposure::Manual(0.2);
+    engine.renderer.bloom = 0.0;
     let at = Affine3A::from_scale(Vec3::splat(40.0));
     let mut loader = AssetLoader::default();
     let size = (240, 240);
+    // The first frame has nothing of a last frame's to go on.
+    engine
+        .render_to_rgba(&Camera::default(), &SkyLight::default(), size)
+        .expect("a frame");
     // The pixels the plant changes: the frame with it against the frame without it.
     let mut covered = |position: Vec3, yaw: f32| {
         let camera = Camera {

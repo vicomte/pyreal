@@ -85,18 +85,8 @@ use crate::{
 pub use lifecycle::SessionStart;
 
 // -------------------------------------------------------------------------------------------
-// The shell seam, and the two host calls the Options page's support buttons make
+// The shell seam: the host's URL launch
 // -------------------------------------------------------------------------------------------
-
-/// One host call made while consuming an open-URL request, as recorded by
-/// `record_shell_calls`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShellCall {
-    /// The URL launch. `result` is the value returned by the host or the armed recorder.
-    Open { url: String, result: i32 },
-    /// The error dialog requested after an unsuccessful launch.
-    ErrorBox { title: String, text: String },
-}
 
 thread_local! {
     /// `Some` once a test has called `record_shell_calls`: the two host calls are then recorded
@@ -144,16 +134,6 @@ fn armed_shell_answer(url: &str) -> Option<i32> {
             *result
         })
     })
-}
-
-/// Build the failure dialog text from the launch result and URL.
-#[must_use]
-pub fn shell_error_text(result: i32, url: &str) -> String {
-    format!(
-        "An error occurred while trying to launch your web browser. (Error code {result})\n\
-         The web site to submit an urgent assistance request is listed below. Please go there to \
-         complete your request.\n{url}\n"
-    )
 }
 
 /// One `--set-at` setting, `Section.Name=value`, as the preference it names and the value the
@@ -232,52 +212,6 @@ pub(crate) fn kept_for_the_next_world(name: &str) -> bool {
         || pyreal_client_contract::options::names::fidelity::NAMES.contains(&name)
 }
 
-/// Consume `UiRequest::OpenUrl` requests from the two support-ticket buttons.
-///
-/// Each URL is passed to the desktop's registered handler. A signed result greater than `32`
-/// succeeds; every other result, including zero for a missing association, requests an error
-/// dialog. The dialog repeats the URL so the player can type the support address by hand.
-///
-/// Every other request is handed back, the way [`crate::audio::apply_preference_requests`] and
-/// the three filters beside it do. The second half of the answer is **every host call this made**,
-/// in order, so the caller can see what happened and a station can assert it without a browser
-/// window or a modal dialog appearing on the desktop.
-///
-/// The launcher is installed through [`crate::platform::shell::install_uri_launcher`]. The runtime
-/// preserves its signed result and records each [`ShellCall`] in order. The caller handles
-/// the returned error-box request; this layer opens no browser or dialog itself. Tests can
-/// install a recording launcher and inspect the same result path.
-pub fn apply_open_url_requests(
-    requests: Vec<pyreal_client_contract::UiRequest>,
-) -> (Vec<pyreal_client_contract::UiRequest>, Vec<ShellCall>) {
-    let mut rest = Vec::with_capacity(requests.len());
-    let mut calls = Vec::new();
-    for r in requests {
-        match r {
-            pyreal_client_contract::UiRequest::OpenUrl(url) => open_url(url, &mut calls),
-            other => rest.push(other),
-        }
-    }
-    (rest, calls)
-}
-
-/// Apply the open-URL behavior to one URL.
-fn open_url(url: &str, calls: &mut Vec<ShellCall>) {
-    let result = shell_execute_open(url);
-    calls.push(ShellCall::Open {
-        url: url.to_owned(),
-        result,
-    });
-    // The comparison is signed, so every error value and zero take the dialog leg.
-    if result > 32 {
-        return;
-    }
-    calls.push(ShellCall::ErrorBox {
-        title: pyreal_client_contract::options::SHELL_EXECUTE_ERROR_TITLE.to_owned(),
-        text: shell_error_text(result, url),
-    });
-}
-
 /// `ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL)`'s answer, through the seam.
 fn shell_execute_open(url: &str) -> i32 {
     if let Some(answer) = armed_shell_answer(url) {
@@ -287,12 +221,12 @@ fn shell_execute_open(url: &str) -> i32 {
 }
 
 /// Hand a chat link the player agreed to open to the host's launch, through the same seam the
-/// support buttons use, and answer its result: greater than 32 when the browser was started.
+/// browser seam uses, and answer its result: greater than 32 when the browser was started.
 pub(crate) fn launch_link(url: &str) -> i32 {
     shell_execute_open(url)
 }
 
-/// Open `url` in the system's browser, through the seam the support buttons use: whether the
+/// Open `url` in the system's browser, through the shell seam: whether the
 /// browser was started.
 #[must_use]
 pub fn open_in_browser(url: &str) -> bool {
@@ -940,9 +874,6 @@ pub struct App<S: Shell> {
     /// ([`Self::bring_up_with_store`]): the base a reopen lays the world's overlay over again, in
     /// place of opening [`crate::config::Config::dat_dir`].
     base_store: Option<std::sync::Arc<pyreal_dat::RetailDatStore>>,
-    /// `0x0013` has arrived and the automatic screen layout has not been applied
-    /// yet. The front end's UI step ([`Shell::ui_frame`]) is where the notice's own arm runs.
-    pub pending_auto_layout: bool,
     /// The presentation the window is *currently* wearing, against which
     /// full-screen preference (`self.pump.state.full_screen`) is compared once a frame. A
     /// difference triggers presentation replacement.

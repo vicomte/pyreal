@@ -83,36 +83,6 @@ fn the_effects_fallback_row_is_reached_for_zero_and_missing_effect_rows() {
     }
 }
 
-/// Spell tint selection is group 0x10000007 row `2 - (Reversed != 0)`, where Reversed
-/// is bit 0x10. Badge selection tests Fellowship 0x2000 first (row 4), then SelfTargeted 0x8
-/// (row 3), otherwise none. A spell with both flags gets only row 4. The combined-flags assertion
-/// distinguishes that precedence from swapping the two branches.
-#[test]
-fn the_spell_overlay_rows_are_the_clients_and_fellowship_outranks_self_targeted() {
-    assert_eq!(icon_background::spell_tint_index(0), 2, "not reversed");
-    assert_eq!(
-        icon_background::spell_tint_index(icon_background::SPELL_REVERSED),
-        1,
-        "reversed"
-    );
-    assert_eq!(icon_background::spell_overlay_index(0), None);
-    assert_eq!(
-        icon_background::spell_overlay_index(icon_background::SPELL_SELF_TARGETED),
-        Some(3)
-    );
-    assert_eq!(
-        icon_background::spell_overlay_index(icon_background::SPELL_FELLOWSHIP),
-        Some(4)
-    );
-    assert_eq!(
-        icon_background::spell_overlay_index(
-            icon_background::SPELL_FELLOWSHIP | icon_background::SPELL_SELF_TARGETED
-        ),
-        Some(4),
-        "the client tests 0x2000 first and returns; it never reaches the 0x8 arm"
-    );
-}
-
 /// Walk master DidMapper 0x25000000 to secondary mappers 0x25000009, 0x2500000A and 0x2500000B
 /// in client_portal.dat. Indexed rows must resolve RenderSurface ids (type 0x06).
 /// The effects surfaces are opaque washes sampled through the icon's exact-white contour;

@@ -38,17 +38,4 @@ impl XpHeader {
     pub fn shows_infinity(&self) -> bool {
         self.at_cap || self.to_level == 0
     }
-
-    /// The experience meter's fraction: `into_level / level_span`, 0 on a zero
-    /// span. Both operands go through `float`.
-    #[must_use]
-    pub fn meter_fill(&self) -> f32 {
-        if self.level_span == 0 {
-            return 0.0;
-        }
-        #[allow(clippy::cast_precision_loss)]
-        {
-            self.into_level as f32 / self.level_span as f32
-        }
-    }
 }

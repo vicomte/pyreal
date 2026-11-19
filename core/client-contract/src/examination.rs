@@ -1,21 +1,4 @@
-//! Appraisal pane selection and permission to edit a live object's inscription.
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppraisalPane {
-    Item,
-    Creature,
-    Character,
-}
-
-pub fn appraisal_pane(creature: bool, template: bool, character_title: bool) -> AppraisalPane {
-    if !creature {
-        AppraisalPane::Item
-    } else if template || character_title {
-        AppraisalPane::Character
-    } else {
-        AppraisalPane::Creature
-    }
-}
+//! Permission to edit a live object's inscription.
 
 /// Displayed hook contents cannot grant permission to write on the live object.
 pub fn inscription_editable(

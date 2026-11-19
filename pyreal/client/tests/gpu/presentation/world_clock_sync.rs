@@ -17,13 +17,15 @@
 //! begin at day `0, 30, 60, ...`; the 16 times of day begin at `i/16`. The day-boundary
 //! calculation uses `y = t + 3600`, `year = floor(y / 2743200) + 10`, and
 //! `day = floor((y mod 2743200) / 7620)`; time-of-day selection picks the last `i`
-//! with `i/16 <= fraction`.
+//! with `i/16 <= fraction`. The map names the day of the month, `day - season begin + 1`.
 //!
 //! | server time | y = t + 3600 | year | day | fraction | time of day |
 //! |---|---|---|---|---|---|
 //! | `107080` | `110680` | `0 + 10` | `14` (`110680 - 14*7620 = 4000`) | `4000/7620 = 0.5249` | `8` Midsong |
 //! | `114700` | `118300` | `0 + 10` | `15` (`118300 - 15*7620 = 4000`) | `0.5249` | `8` Midsong |
 //! | `2850280` | `2853880` | `1 + 10` | `14` (`2853880 - 2743200 = 110680`) | `0.5249` | `8` Midsong |
+//!
+//! Day `14` of the year is Morningthaw `15`, day `15` Morningthaw `16`.
 //!
 //! These integer server times and day remainders are exact in `f32` as well as `f64`, so the
 //! day-boundary calculation's two narrowings
@@ -33,7 +35,7 @@
 //! Unsynchronised timer time is local elapsed seconds -- under `--headless`, `n/30` after
 //! `n` frames. `y = 3600 + n/30` stays inside day `0` and inside Morntide-and-Half
 //! (`[0.4375, 0.5000)` is `3334.5 s .. 3810 s`) for the first 6,300 frames, so the unsynchronised
-//! date is exactly `"Date: Morningthaw 0, 10 P.Y."` / `"Time: Morntide-and-Half"`: the
+//! date is exactly `"Date: Morningthaw 1, 10 P.Y."` / `"Time: Morntide-and-Half"`: the
 //! process-local epoch a client without time sync shows.
 #![cfg(gpu)]
 
@@ -203,17 +205,17 @@ fn pump(app: &mut App, frames: u32) {
 const REDRAW_FRAMES: u32 = 154;
 
 /// With no sync, timer time is this process's elapsed seconds and the date uses that epoch.
-const EPOCH_DATE: &str = "Date: Morningthaw 0, 10 P.Y.\nTime: Morntide-and-Half";
+const EPOCH_DATE: &str = "Date: Morningthaw 1, 10 P.Y.\nTime: Morntide-and-Half";
 
 /// Shard time `107080` -- see the table in the module doc.
 const DAY_14: f64 = 107_080.0;
-const DAY_14_DATE: &str = "Date: Morningthaw 14, 10 P.Y.\nTime: Midsong";
+const DAY_14_DATE: &str = "Date: Morningthaw 15, 10 P.Y.\nTime: Midsong";
 /// `DAY_14 + 7620`, one Derethian day later.
 const DAY_15: f64 = 114_700.0;
-const DAY_15_DATE: &str = "Date: Morningthaw 15, 10 P.Y.\nTime: Midsong";
+const DAY_15_DATE: &str = "Date: Morningthaw 16, 10 P.Y.\nTime: Midsong";
 /// `DAY_14 + 2_743_200`, one Derethian year later.
 const YEAR_11: f64 = 2_850_280.0;
-const YEAR_11_DATE: &str = "Date: Morningthaw 14, 11 P.Y.\nTime: Midsong";
+const YEAR_11_DATE: &str = "Date: Morningthaw 15, 11 P.Y.\nTime: Midsong";
 
 /// The `REDRAW_FRAMES` of `cur_time` this adds are `154/30 = 5.13 s` out of a `7620 s` day, i.e.
 /// `0.00067` of the day -- far inside one of the sixteen `476.25 s` bands, so every date in the
@@ -501,11 +503,11 @@ fn with_nothing_on_the_wire_the_clock_is_still_the_fixed_step_alone() {
 /// Worked through by hand from the region constants, not read off this build:
 /// `y = 302584400.756`, `years = floor(y / 2743200) = 110` so the year is `110 + 10 = 120`;
 /// `rem = 832400.75` (exact in `f32`, being under 2^24), `day = floor(832400.75 / 7620) = 109`;
-/// `seasons` puts day 109 in `Leafdawning` (begins 90, next begins 120);
+/// `seasons` puts day 109 in `Leafdawning` (begins 90, next begins 120), its day 20;
 /// `(float)302580800.756 = 302580800` and `302580800 - 1820.75` rounds to `302578976`, so
 /// `fraction = 1824.756 / 7620 = 0.2395`, which is `Foredawn-and-Half`'s band `[0.1875, 0.25)`.
 const SHARD_CAPTURE: f64 = 302_580_800.756_162;
-const SHARD_CAPTURE_DATE: &str = "Date: Leafdawning 109, 120 P.Y.\nTime: Foredawn-and-Half";
+const SHARD_CAPTURE_DATE: &str = "Date: Leafdawning 20, 120 P.Y.\nTime: Foredawn-and-Half";
 
 #[test]
 fn a_timesync_value_captured_from_the_owners_own_shard_renders_its_real_date() {
@@ -531,6 +533,6 @@ fn a_timesync_value_captured_from_the_owners_own_shard_renders_its_real_date() {
     assert_eq!((year, day), (120, 110), "exactly one day later");
     assert_eq!(
         rendered_date(&mut app),
-        "Date: Leafdawning 110, 120 P.Y.\nTime: Foredawn-and-Half"
+        "Date: Leafdawning 21, 120 P.Y.\nTime: Foredawn-and-Half"
     );
 }

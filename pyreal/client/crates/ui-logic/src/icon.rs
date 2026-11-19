@@ -3,38 +3,13 @@
 
 use pyreal_primitives::DataId;
 
-/// A **runtime-generated** UI surface: a dat image with one pixel operation applied to it before it
-/// is shown.
-///
-/// One half of the "generated surface" support — `UiFill` is the other. Two of the
-/// client's UI surfaces are not a picture out of the dat and are not a flat fill either: they are a
-/// *derivation* of a picture, made in a local render surface at run time.
-///
-/// For each appearance-page color spot, the client creates a local surface in the UI format,
-/// copies the template onto it, replaces black with the spot color, and installs the generated
-/// image on the region. The gradient disk instead copies the shade ring with the spot color as a
-/// multiply tint.
-///
-/// The client makes a page of pixels; this rebuild has no CPU page and uploads a texture, so the
-/// operation rides on the image reference and the host derives the texture once per distinct
-/// `(DataId, SurfaceOp)` pair. That is the same caching the combined-texture builder
-/// does for a `(palette, image)` pair.
+/// A pixel operation on a dat image, and the blits the icon composite is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SurfaceOp {
     /// Behavior: every texel whose **whole 32-bit ARGB value**
     /// equals `from` becomes `to`. An exact match, not a tolerance and not a hue shift: the loop is
     /// `if (*p == from) *p = to;` over the locked surface.
     ReplaceColor { from: u32, to: u32 },
-    /// Multiply every channel of every texel
-    /// multiplied by `colour`'s, which is what turns the grey shade ring into a coloured one.
-    Multiply(u32),
-    /// The target indicator's image copy, selector 4:
-    /// Normal copy, then an unmasked colorize blit at full strength. Retains the source
-    /// alpha/value and replaces hue/saturation using retail's integer colour conversion.
-    Colorize(u32),
-    /// **Several** dat surfaces blitted into one local surface, which is what an inventory slot's
-    /// picture actually is. See [`IconRecipe`].
-    Icon(IconRecipe),
 }
 
 /// The surface the weenie's icon accessor answers, described rather than drawn.
@@ -57,11 +32,6 @@ pub enum SurfaceOp {
 /// the icon's normal blit straight onto the background tile and erase it — the tile is the opaque
 /// base, and it is only visible at all because the icon reaches it through the drag surface's own
 /// alpha. Two stages is not an implementation detail; it is the picture.
-///
-/// # Why this rides on [`SurfaceOp`]
-///
-/// The host keys its texture cache on `(DataId, Option<SurfaceOp>)` and composites once per
-/// distinct recipe, as the client's icon data is built once per object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IconRecipe {
     /// The object icon, as the icon renderer builds it.
@@ -97,33 +67,6 @@ pub enum IconRecipe {
 }
 
 impl IconRecipe {
-    /// The id this composite **is about**, which is what an image's id carries.
-    ///
-    /// **The object's own icon, not the surface the composite happens to start from.** The two are
-    /// different — the bottom blit is the item-type tile — and the icon is the right answer for
-    /// both of `did`'s jobs: a consumer that does not understand the recipe draws the object's
-    /// picture rather than a bare coloured square, and a reader of a draw list (or of a failing
-    /// assertion) sees the id that names the thing in the slot. Dozens of assertions across this
-    /// workspace already read `did` off the icon element and mean *"this slot draws that object's
-    /// icon"*; two of the quickbar's caught this the moment it was the tile instead.
-    ///
-    /// The **pixels** do not come from here at all: the host builds them from the whole recipe, so
-    /// nothing about the composite depends on which layer this names.
-    #[must_use]
-    pub const fn base(self) -> Option<DataId> {
-        match self {
-            Self::Object {
-                background, icon, ..
-            }
-            | Self::Spell {
-                background, icon, ..
-            } => match icon {
-                Some(d) => Some(d),
-                None => background,
-            },
-        }
-    }
-
     /// The *first* of the two surfaces the icon renderer builds,
     /// as a recipe of its own.
     ///
@@ -156,36 +99,6 @@ impl IconRecipe {
                 underlay: None,
             },
             Self::Spell { .. } => self,
-        }
-    }
-
-    /// How many of the recipe's surfaces are present. **One** is exactly the plain image and the
-    /// host may skip the compositor — but it must still key on the recipe, because the icon alone
-    /// and the icon under a tile are different pictures. **Zero** is the client's
-    /// null image: nothing at all.
-    #[must_use]
-    pub fn layer_count(self) -> usize {
-        let present = |v: Option<DataId>| usize::from(v.is_some());
-        match self {
-            Self::Object {
-                background,
-                effects,
-                icon,
-                overlay,
-                underlay,
-            } => {
-                present(background)
-                    + present(effects)
-                    + present(icon)
-                    + present(overlay)
-                    + present(underlay)
-            }
-            Self::Spell {
-                background,
-                icon,
-                tint,
-                overlay,
-            } => present(background) + present(icon) + present(tint) + present(overlay),
         }
     }
 }
@@ -221,76 +134,6 @@ impl SurfaceOp {
                     texel
                 }
             }
-            Self::Multiply(c) => {
-                let ch = |sh: u32| ((texel >> sh) & 0xFF) * ((c >> sh) & 0xFF) / 255;
-                (ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)
-            }
-            Self::Colorize(c) => Self::colorize(texel, c),
-            // A composite is a function of **several** surfaces and cannot be a function of one
-            // texel. The host recognises this variant before it reaches here; see
-            // [`composite`]. Returning the texel unchanged keeps a caller that
-            // does not from corrupting the base image, which is what a `todo!()` here would not.
-            Self::Icon(_) => texel,
-        }
-    }
-
-    /// Full-strength, unmasked ARGB colorize. The blit-and-color entry point performs the
-    /// preceding Normal copy.
-    /// The 1..256 channel representation, integer hue/saturation, and signed nearest
-    /// division (ties toward zero) are observable on grey antialiased bracket texels.
-    #[must_use]
-    pub fn colorize(texel: u32, color: u32) -> u32 {
-        let channel = |c: u32, shift: u32| {
-            let v = ((c >> shift) & 255u32) as i32;
-            v + i32::from(v != 0)
-        };
-        let (r, g, b) = (channel(color, 16), channel(color, 8), channel(color, 0));
-        let max = r.max(g).max(b);
-        let delta = max - r.min(g).min(b);
-        let value = channel(texel, 16)
-            .max(channel(texel, 8))
-            .max(channel(texel, 0));
-        let (rr, gg, bb) = if delta == 0 {
-            (value, value, value)
-        } else {
-            let hue = if r == max {
-                (g - b) * 4096 / delta + if g < b { 24576 } else { 0 }
-            } else if g == max {
-                (b - r) * 4096 / delta + 8192
-            } else {
-                (r - g) * 4096 / delta + 16384
-            };
-            let saturation = delta * 256 / max;
-            let chroma = value * saturation / 256;
-            let low = value - chroma;
-            let sector = hue / 4096;
-            let product = (hue - ((sector + 1) / 2) * 8192) * chroma;
-            let mut middle = product / 4096;
-            if product % 4096 > 2048 {
-                middle += 1;
-            }
-            if product % 4096 < -2048 {
-                middle -= 1;
-            }
-            match sector {
-                0 => (value, low + middle, low),
-                1 => (low - middle, value, low),
-                2 => (low, value, low + middle),
-                3 => (low, low - middle, value),
-                4 => (low + middle, low, value),
-                _ => (value, low, low - middle),
-            }
-        };
-        let pack = |v: i32| u32::try_from(v - i32::from(v != 0)).unwrap_or(0);
-        (texel & 0xFF00_0000) | (pack(rr) << 16) | (pack(gg) << 8) | pack(bb)
-    }
-
-    /// The pair a per-texel [`Self::apply`] cannot answer: the recipe, when this operation is one.
-    #[must_use]
-    pub const fn icon_recipe(self) -> Option<IconRecipe> {
-        match self {
-            Self::Icon(r) => Some(r),
-            _ => None,
         }
     }
 

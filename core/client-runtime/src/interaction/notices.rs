@@ -79,7 +79,6 @@ impl Interaction {
         let mut req = RecordingRequests::default();
         match request {
             UiRequest::QueryHealth(id) => game.query_health(&mut req, *id),
-            UiRequest::QueryItemMana(id) => game.query_item_mana(&mut req, *id),
             _ => return false,
         }
         self.stats.vital_queries += 1;

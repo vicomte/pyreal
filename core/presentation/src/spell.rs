@@ -233,6 +233,24 @@ impl SpellIconLayers {
 }
 
 #[cfg(test)]
+mod icon_layer_tests {
+    use super::*;
+
+    /// The tint row is `2 - (Reversed != 0)`; the badge tests Fellowship `0x2000` (row 4) before
+    /// SelfTargeted `0x8` (row 3), so a spell with both flags gets row 4.
+    #[test]
+    fn the_spell_overlay_rows_are_the_clients_and_fellowship_outranks_self_targeted() {
+        let at = |bits| SpellIconLayers::new(0, bits);
+        assert_eq!(at(0).tint_key(), 2, "not reversed");
+        assert_eq!(at(0x10).tint_key(), 1, "reversed");
+        assert_eq!(at(0).badge_key(), None);
+        assert_eq!(at(0x8).badge_key(), Some(3));
+        assert_eq!(at(0x2000).badge_key(), Some(4));
+        assert_eq!(at(0x2000 | 0x8).badge_key(), Some(4));
+    }
+}
+
+#[cfg(test)]
 mod era_text_tests {
     use super::*;
 

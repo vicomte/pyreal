@@ -79,7 +79,7 @@ pub fn runtime_level_count(source: &TextureData, supported: bool) -> usize {
 /// are numerically ported from bundled D3DX. DXT2/4 preserve source provenance
 /// and filter through their unpremultiply/BOX/premultiply codec wrappers.
 /// Provided chains are a no-op. Only the explicit image-texture upload owner calls this
-/// before its device copy; generic UI/font/movie uploads do not call it.
+/// before its device copy; generic UI/font uploads do not call it.
 ///
 /// # Errors
 /// Invalid dimensions or short block data return the normal source error.

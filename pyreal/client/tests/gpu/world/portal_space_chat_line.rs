@@ -3,10 +3,11 @@
 //! re-aim draws exactly two random doubles, a duration from `[0.6, 1.8]` and then a target angle
 //! from `[0.0, 360.0]`, and fires again once `start + duration <= now`; leaving the tunnel emits
 //! nothing. Station: a headless `App` with the gameplay UI, taken through a login tunnel and a held
-//! portal tunnel by a synthetic `PlayerCreated`, `Effects_PlayerTeleport 0xF751` (body `[0, 0]`)
-//! and a `Movement_PositionEvent 0xF748` carrying only the player id, applied straight to
-//! `Teleport::apply_events`. Each line's frame, type, text, prefix and window is compared with a
-//! schedule rebuilt on the client's fixed seed 1, and the HUD scroll counter is checked.
+//! portal tunnel by a synthetic `PlayerCreated` and `Effects_PlayerTeleport 0xF751` (body `[0, 0]`)
+//! applied straight to `Teleport::apply_events`, then ended by `player_position_accepted`, the
+//! object stream's word that it took the player's `0xF748`. Each line's frame, type, text, prefix
+//! and window is compared with a schedule rebuilt on the client's fixed seed 1, and the HUD scroll
+//! counter is checked.
 //! Fixture: the retail dats; application or GPU setup failures fail the test.
 
 #![cfg(gpu)]
@@ -242,7 +243,7 @@ fn a_portal_says_in_portal_space_on_entry_and_at_every_re_aim() {
     );
 
     // ---- Portal seam: directly apply an `0xF751` event with the two-byte synthetic body. The
-    // tunnel holds until the synthetic player-position event arrives.
+    // tunnel holds until the player's position is accepted.
     st.app
         .probe_mut()
         .teleport_mut()
@@ -270,14 +271,8 @@ fn a_portal_says_in_portal_space_on_entry_and_at_every_re_aim() {
     );
     let held = st.expected.len() - after_login;
     assert!(held >= 4, "the held portal interval contributes its entry line and at least three re-aims; got {held}");
-    // Apply `0xF748` with only the player id; the tunnel then unwinds to the world.
-    st.app
-        .probe_mut()
-        .teleport_mut()
-        .apply_events(&[SessionEvent::WorldObject {
-            opcode: Opcode::MOVEMENT_POSITION_EVENT,
-            body: player.0.to_le_bytes().to_vec(),
-        }]);
+    // The object stream accepts the player's `0xF748`; the tunnel then unwinds to the world.
+    st.app.probe_mut().teleport_mut().player_position_accepted();
     assert!(
         st.run(600, |s| s == TeleportAnimState::Off),
         "the portal ends on the world"

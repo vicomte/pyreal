@@ -328,9 +328,7 @@ fn downmix_to_stereo(interleaved: &[f32], channels: u16) -> Vec<f32> {
 ///
 /// Mono is duplicated into both channels, which is what the DirectSound mixer does before applying
 /// the pan. Stereo keeps its channels.
-/// `pub(crate)` because [`crate::video`] widens the intro movie's 48 kHz stereo PCM track with the
-/// same two lines; the alternative was a second resampler that could drift from this one.
-pub(crate) fn to_stereo_at_mix_rate(interleaved: &[f32], channels: u16, rate: u32) -> Arc<[f32]> {
+fn to_stereo_at_mix_rate(interleaved: &[f32], channels: u16, rate: u32) -> Arc<[f32]> {
     if channels > 2 {
         return to_stereo_at_mix_rate(&downmix_to_stereo(interleaved, channels), 2, rate);
     }

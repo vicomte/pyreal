@@ -56,8 +56,7 @@ pyreal-physics.workspace = true
 # nav_proof.rs -- `--nav-proof`'s route planner.
 pyreal-navigation.workspace = true
 # `camera.rs`'s `apply_preference_requests` filters `UiRequest::SetPreference`, which is
-# `pyreal-client-contract`'s type; `dereth_ui_screens::{PrefValue, UiRequest}` are re-exports of
-# these.
+# `pyreal-client-contract`'s type.
 pyreal-client-contract.workspace = true
 # `teleport.rs` names the two portal sound ids. `pyreal-audio` is the mixer and the
 # decoders; the device is `cpal`, which is `pyreal-desktop`'s dependency and not this crate's.

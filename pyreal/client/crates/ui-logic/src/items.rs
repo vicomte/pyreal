@@ -112,27 +112,6 @@ pub mod icon_background {
     ) -> Option<pyreal_primitives::DataId> {
         lookup(EFFECT_GROUP, effect_index(effects)).or_else(|| lookup(EFFECT_GROUP, DEFAULT_INDEX))
     }
-
-    /// The spell bitfield's `SelfTargeted` bit.
-    pub const SPELL_SELF_TARGETED: u32 = 0x0000_0008;
-    /// The spell bitfield's `Reversed` bit — the harmful-spell tint.
-    pub const SPELL_REVERSED: u32 = 0x0000_0010;
-    /// The spell bitfield's `FellowshipSpell` bit.
-    pub const SPELL_FELLOWSHIP: u32 = 0x0000_2000;
-
-    /// `2 - (Reversed ? 1 : 0)` — row 1 reversed, row 2 not, as the retail client
-    /// computes the row.
-    #[must_use]
-    pub const fn spell_tint_index(bitfield: u32) -> u32 {
-        pyreal_presentation::spell::SpellIconLayers::new(0, bitfield).tint_key()
-    }
-
-    /// `if (bitfield & 0x2000) 4; else if (bitfield & 8) 3; else none` — **in that order**, and the
-    /// order is the client's: a fellowship spell that is also self-targeted takes row 4.
-    #[must_use]
-    pub const fn spell_overlay_index(bitfield: u32) -> Option<u32> {
-        pyreal_presentation::spell::SpellIconLayers::new(0, bitfield).badge_key()
-    }
 }
 
 /// The object icon's recipe: the five surfaces, resolved through an enum lookup `(group, value)`.

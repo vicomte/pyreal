@@ -598,31 +598,6 @@ impl InputShell {
     }
 }
 
-/// The input-pump step called by the UI manager's per-frame update.
-///
-/// the retired UI framework's `UiSystem::use_time` calls `InputPump::use_time` at exactly the point the client calls
-/// the input manager's per-frame update, so the two crates meet here and nowhere else.
-impl pyreal_client_contract::InputPump for InputShell {
-    fn use_time(&mut self, now: LocalTime) {
-        InputShell::use_time(self, now);
-    }
-
-    /// Test the Shift meta-key bit using the keymap's mapping for the left Shift scan code.
-    ///
-    /// This is the real implementation of [`pyreal_client_contract::InputPump::shift_key_down`],
-    /// whose default is `false`. It is latched once a frame into `UiSystem::shift_key_down` and
-    /// read by `mouse_move_element`, `mouse_resize_element` and text selection's shift-extends
-    /// arm; without it the ten-pixel grid snap on a dragged or resized window never fires.
-    ///
-    /// `DIK_RSHIFT` is folded onto `DIK_LSHIFT` by [`pyreal_input::win32`] before the map sees it,
-    /// so both shift keys set the bit; `pyreal-input`'s `right_shift_sets_the_shift_bit` pins that.
-    /// The mask comes from the **merged keymap's own** meta-key table rather than a constant,
-    /// which is what `meta_mode_from_key` does and is why a rebound shift would still work.
-    fn shift_key_down(&self) -> bool {
-        self.manager.shift_held()
-    }
-}
-
 impl InputShell {
     /// Hand this frame's input events on to the runtime as actions: what the UI declined, for the
     /// movement, camera and interaction stages. The queue here is empty afterwards.

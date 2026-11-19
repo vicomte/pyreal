@@ -9,6 +9,7 @@ use pyreal_art_pack::{ArtPack, Ground, Image, PackGround};
 use pyreal_engine::asset::material::{flags, MaterialRecord, TextureKey, NO_TEXTURE};
 use pyreal_engine::asset::mesh::{MeshData, Sides, SubMesh, Vertex};
 use pyreal_engine::asset::texture::{PixelLayout, TexturePixels};
+use pyreal_engine::ground_tint;
 use pyreal_engine::renderer::{Exposure, Surfaces, RELIEF_HIGH, TRIPLANAR_FROM, TRIPLANAR_WHOLE};
 use pyreal_engine::scene::{Instance, PipelineKind};
 use pyreal_engine::world::{ground_height, load_area, Area, AssetLoader};
@@ -80,6 +81,8 @@ fn wall_frames(height: bool) -> (Vec<u8>, Vec<u8>, Vec<bool>) {
     let mut e = engine();
     e.renderer.exposure = Exposure::Manual(0.3);
     e.renderer.bounce = false;
+    // The occlusion gathers over the frames, so no two frames would match.
+    e.renderer.ambient_occlusion = false;
     let stripes = picture(64, |x, _| {
         let v = if striped(x) { 230 } else { 20 };
         [v, v, v, 255]
@@ -482,10 +485,18 @@ fn the_retail_road_takes_its_relief_from_its_own_picture() {
     let id = get_terrain_tex(tm, ROAD_TERRAIN_TYPE)
         .expect("the road's picture")
         .tex_gid;
-    let key = TextureKey::Dat {
-        id,
-        clip_map: false,
-        swap: None,
+    // Under Classic Ground Coloring (the default) the road is laid in its tint.
+    let tint = ground_tint::tint_for(ground_tint::coloring(), ROAD_TERRAIN_TYPE);
+    let key = match tint {
+        Some(_) => TextureKey::ClassicGround {
+            id,
+            terrain_type: ROAD_TERRAIN_TYPE,
+        },
+        None => TextureKey::Dat {
+            id,
+            clip_map: false,
+            swap: None,
+        },
     };
     let slot = loader.texture(&mut e, &store, &key).expect("its slot");
     let c = e.materials.companions(slot).expect("its companions");
@@ -560,6 +571,8 @@ fn slope_frames(
     let mut e = engine();
     e.renderer.exposure = Exposure::Manual(0.3);
     e.renderer.bounce = false;
+    // The occlusion gathers over the frames, so no two frames would match.
+    e.renderer.ambient_occlusion = false;
     let mut loader = AssetLoader::default();
     load_area(
         &mut e,

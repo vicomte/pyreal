@@ -1,15 +1,11 @@
 //! `ChatInterface`'s three vocabularies: the window ids, one delivered line, and the two opacity
 //! attributes.
 //!
-//! Cut out of the retired retail UI's `chat::interface`, which keeps everything that routes, filters,
-//! scrolls or fades. What is here is what crosses the seam: `pyreal_client_runtime::hud` composes a
+//! `pyreal_client_runtime::hud` composes a
 //! `ChatMessage` for every inbound final display string (the notice that carries a finished chat
 //! line into the UI is one of the three process globals the client owns), names `window::MAIN` when it seeds a placement, and
 //! reads `opacity_attr`'s two property ids off the retained `PlayerModule`. None of the three
 //! draws anything.
-//!
-//! `the retired retail UI's chat::interface::{window, ChatMessage, opacity_attr}` resolve through
-//! `pub use` lines at the lines the definitions were on.
 
 /// The five window ids the client's switch on the window id knows.
 ///
@@ -53,8 +49,6 @@ pub mod opacity_attr {
     pub const DEFAULT: u32 = 0x1000_0080;
     /// The active opacity — focused or moused-over.
     pub const ACTIVE: u32 = 0x1000_0081;
-    /// What the attribute setter uses when the property is absent.
-    pub const FALLBACK: f32 = 1.0;
 }
 
 /// The default 64-bit text-type filter per window id, set by the post-init's window-id switch.
@@ -72,68 +66,6 @@ pub fn default_filter(window_id: u32) -> u64 {
         // The `switch` has no default arm; an unknown window id leaves the filter at its
         // constructed value, which is zero — the window accepts nothing on a broadcast.
         _ => 0,
-    }
-}
-
-/// One check box on the chat-options page: a label string id and the mask it owns.
-///
-/// The chat options panel's checkbox bitfield64 option insert.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FilterGroup {
-    pub label: &'static str,
-    pub mask: u64,
-}
-
-const fn fg(label: &'static str, mask: u64) -> FilterGroup {
-    FilterGroup { label, mask }
-}
-
-/// The thirteen filter groups, in the order the options page adds them.
-///
-/// **Twelve of the thirteen are always offered**; *Gameplay* is the one that is not. Which
-/// windows get it is easy to get backwards — see [`filter_groups_for`].
-pub const FILTER_GROUPS: [FilterGroup; 13] = [
-    fg("ID_ChatOption_TextFilter_Gameplay", 0x8391_2021),
-    fg("ID_ChatOption_TextFilter_Combat", 0x0060_0040),
-    fg("ID_ChatOption_TextFilter_Magic", 0x0002_0080),
-    fg("ID_ChatOption_TextFilter_AreaSpeech", 0x0000_1004),
-    fg("ID_ChatOption_TextFilter_Tells", 0x0000_0018),
-    fg("ID_ChatOption_TextFilter_Allegience", 0x0004_0C00),
-    fg("ID_ChatOption_TextFilter_Fellowship", 0x0008_0000),
-    fg("ID_ChatOption_TextFilter_General", 0x0800_0000),
-    fg("ID_ChatOption_TextFilter_Trade", 0x1000_0000),
-    fg("ID_ChatOption_TextFilter_LFG", 0x2000_0000),
-    fg("ID_ChatOption_TextFilter_Roleplay", 0x4000_0000),
-    fg("ID_ChatOption_TextFilter_Society", 0x1_0000_0000),
-    fg("ID_ChatOption_TextFilter_Error", 0x0400_0000),
-];
-
-/// The groups offered for one window: all thirteen for **every floaty**, the last twelve
-/// (starting at Combat) for the **main** window.
-///
-/// The client switches on the window id, and window **8** is the one case that skips the
-/// *Gameplay* check box:
-///
-/// ```text
-///   window 8:        default 0xFBFFFFFF; no Gameplay child
-///   windows 2/3/4/5: default = that window's mask; add Gameplay (mask 0x83912021)
-///   every window:    add Combat (mask 0x600040) and the eleven after it
-/// ```
-///
-/// The chat-options page's two per-window blocks agree: the main-window block (window 8) goes
-/// from setting the default straight to adding Combat (`0x600040`), while the floaty-4 block
-/// (window 5) adds Gameplay with mask `0x83912021` first.
-/// So the page shows **12 + 13 · 4 = 64** check boxes.
-///
-/// An unknown window id falls past the switch's range check to the common
-/// tail, i.e. twelve groups and **no default value at all** — which is why
-/// [`default_filter`] answers 0 there.
-#[must_use]
-pub fn filter_groups_for(window_id: u32) -> &'static [FilterGroup] {
-    match window_id {
-        window::MAIN | window::MAIN_ALT => &FILTER_GROUPS[1..],
-        window::FLOATY_1 | window::FLOATY_2 | window::FLOATY_3 | window::FLOATY_4 => &FILTER_GROUPS,
-        _ => &FILTER_GROUPS[1..],
     }
 }
 

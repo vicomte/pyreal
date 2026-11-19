@@ -1,11 +1,10 @@
-//! Sound reaches the device buffer audibly: the startup UI sound and the intro movie's soundtrack
-//! are measured on the block the resampler hands the endpoint (after the 11 025 -> 48 000
-//! conversion), against absolute levels rather than values the test stored, and the movie's
-//! soundtrack plays whatever the sound preferences say.
+//! Sound reaches the device buffer audibly: the startup UI sound is measured on the block the
+//! resampler hands the endpoint (after the 11 025 -> 48 000 conversion), against absolute levels
+//! rather than values the test stored.
 //!
-//! Fixture: the retail UI sound table and waves, and the shipped `turbine_logo_ac.avi` beside the
-//! dats. The output stream cannot be opened on a headless runner, so the resampler is driven with
-//! the same closure the device start installs; the device open itself is not exercised here.
+//! Fixture: the retail UI sound table and waves. The output stream cannot be opened on a headless
+//! runner, so the resampler is driven with the same closure the device start installs; the device
+//! open itself is not exercised here.
 
 use pyreal_dat::RetailDatStore;
 use pyreal_primitives::num::math;
@@ -237,104 +236,5 @@ fn the_endpoint_receives_the_waves_amplitude_times_the_rows_own_volume() {
         matched,
         "the endpoint got peak {submitted:.5}; the dat's rows {rows:?} predict {expected:?} \
          -- the client is losing level between the dat and the device"
-    );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Station 4 — the intro movie's soundtrack.
-// ---------------------------------------------------------------------------------------------
-
-/// The shipped logo movie, beside the retail dats.
-fn logo_avi(test: &str) -> Option<std::path::PathBuf> {
-    let p = pyreal_dat::testing::dat_dir().join("turbine_logo_ac.avi");
-    // Not part of every install: skipped where it is missing, as the movie's own tests are.
-    if p.exists() {
-        Some(p)
-    } else {
-        eprintln!("{test}: skipped, no intro movie at {}", p.display());
-        None
-    }
-}
-
-/// **`turbine_logo_ac.avi` has an audio stream, and this client decodes it.**
-///
-/// The file ships `WAVE_FORMAT_PCM, 2 ch, 16 bit, 48000 Hz`, 7.31 seconds of it — confirmed
-/// independently with `ffmpeg -i`. A demuxer that walks only the `vids` stream and collects only
-/// `##dc`/`##db` chunks plays the logo in silence, leaving a 25 ms button click at -23 dBFS as the
-/// loudest sound of the first ten seconds.
-#[test]
-fn the_intro_movie_has_a_soundtrack_and_it_decodes() {
-    let Some(path) = logo_avi("the_intro_movie_has_a_soundtrack_and_it_decodes") else {
-        return;
-    };
-    let movie = std::fs::read(&path)
-        .ok()
-        .and_then(pyreal_audio::video::Movie::from_bytes)
-        .unwrap_or_else(|| panic!("{} opens", path.display()));
-
-    let info = movie
-        .audio_info()
-        .expect("the AVI declares an audio stream");
-    assert_eq!(info.format_tag, pyreal_audio::video::WAVE_FORMAT_PCM);
-    assert_eq!(info.channels, 2, "stereo");
-    assert_eq!(info.sample_rate, 48_000);
-    assert_eq!(info.bits_per_sample, 16);
-
-    let track = movie.audio().expect("the soundtrack decodes");
-    // A demuxer that found the `strf` but none of the `##wb` chunks would return an empty track,
-    // and every assertion above it would still hold.
-    let seconds = (track.frames.len() / 2) as f64 / f64::from(pyreal_audio::MIX_RATE);
-    assert!(
-        seconds > 7.0 && seconds < 7.6,
-        "the decoded soundtrack is {seconds:.2} s, not the file's 7.31 s"
-    );
-    let p = peak(&track.frames);
-    assert!(
-        p > 0.5,
-        "the decoded soundtrack peaks at {p:.4}, which is not a logo sting"
-    );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Station 5 — and it reaches the device.
-// ---------------------------------------------------------------------------------------------
-
-/// **The soundtrack reaches the endpoint, loudly, and answers to no `Sound.*` preference.**
-///
-/// Retail plays the movie through the system's media player, whose audio renderer is its own, so
-/// the track never enters the game's sound mixer and none of the eight preferences applies to it —
-/// `pyreal_audio::video`'s module header records exactly that. The second half of this test makes
-/// that falsifiable: with **all three volumes at zero and all three categories disabled**, a state
-/// in which no game sound can be heard at all, the logo must still play.
-#[test]
-fn the_movie_soundtrack_reaches_the_device_and_ignores_the_sound_preferences() {
-    let Some(path) =
-        logo_avi("the_movie_soundtrack_reaches_the_device_and_ignores_the_sound_preferences")
-    else {
-        return;
-    };
-    let movie = std::fs::read(&path)
-        .ok()
-        .and_then(pyreal_audio::video::Movie::from_bytes)
-        .unwrap_or_else(|| panic!("{} opens", path.display()));
-    let track = movie.audio().expect("the soundtrack decodes");
-
-    let silenced = pyreal_audio::Prefs {
-        effect_volume: 0.0,
-        ambient_volume: 0.0,
-        interface_volume: 0.0,
-        effects_enabled: false,
-        ambient_enabled: false,
-        interface_enabled: false,
-        ..pyreal_audio::Prefs::default()
-    };
-    let mut a = Audio::new(silenced, 1, false);
-    a.play_movie_audio(&track);
-
-    let p = submitted_peak(&a, 20);
-    assert!(
-        p >= 0.5,
-        "with every Sound.* preference off the movie's soundtrack reached the endpoint at peak \
-         {p:.5} -- the logo is silent"
     );
 }

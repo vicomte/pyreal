@@ -105,6 +105,7 @@ fn parse_consumes_every_payload_exactly() {
     );
     let mut expected = loaded;
     expected.create_input_map(pyreal_input::pyreal::INPUT_MAP);
+    pyreal_input::pyreal::add_default_keys(&mut expected);
     expected.did = manager.keymap.did;
     expected.name.clone_from(&manager.keymap.name);
     expected.guid = manager.keymap.guid;

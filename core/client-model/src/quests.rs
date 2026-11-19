@@ -185,9 +185,6 @@ pub fn fill_progress_string(
     }
 }
 
-/// The contracts panel's sort criteria.
-pub use pyreal_client_contract::panels::contracts::ContractSort;
-
 /// The contract-tracker table owned by player state.
 #[derive(Debug, Clone, Default)]
 pub struct ContractTrackerTable {

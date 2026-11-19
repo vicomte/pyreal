@@ -762,6 +762,7 @@ fn the_handler_names_with_no_arm_are_exactly_these() {
         H::Fog,
         H::Report,
         H::PerfCapture,
+        H::Waypoint,
         H::Sepaku,
     ];
 

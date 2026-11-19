@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use pyreal_primitives::DataId;
 
-use crate::chargen::{Cg3dView, CharGenTables, EParts, PaletteSample, HUMAN_SETUP_ID};
+use crate::chargen::{CharGenTables, EParts, PaletteSample};
 use pyreal_chargen::CharGenState;
 use pyreal_client_contract::view::{BarberAppearance, BarberView, GameView, UiRequest};
 
@@ -51,16 +51,8 @@ pub struct Barber {
     tables: Option<Rc<CharGenTables>>,
     /// The private character-generation state initialized from the notice.
     pub state: CharGenState,
-    /// The private preview view consumed by the host renderer.
-    pub view3d: Cg3dView,
     /// Last notice edge adopted. Kept after Cancel so the pull seam cannot reopen it.
     pub active_generation: Option<u64>,
-    /// Accepted appearance-arrow gestures, an explicit input denominator.
-    pub edits: u64,
-    /// Accepted Cancel gestures.
-    pub cancels: u64,
-    /// Accepted Apply gestures, including native generation failures (which still close).
-    pub applies: u64,
     /// Native option-one state for heritages 5 and 10. Their wire option remains literal zero;
     /// this chooses the sex-specific crown/no-crown setup and local transformation script.
     no_crown: bool,
@@ -74,12 +66,6 @@ impl Barber {
     /// Supply the same two dat tables character generation consumes.
     pub fn set_tables(&mut self, tables: Rc<CharGenTables>) {
         self.tables = Some(tables);
-    }
-
-    /// The host-side preview dresser needs the same table handle as character generation.
-    #[must_use]
-    pub fn tables(&self) -> Option<Rc<CharGenTables>> {
-        self.tables.clone()
     }
 
     /// Take a new Start notice, if one has arrived since the last: the appearance state is
@@ -113,17 +99,10 @@ impl Barber {
     pub fn set_special_option(&mut self, on: bool) -> bool {
         match self.state.heritage_group {
             9 => self.empyrean_earthbound = on,
-            11 => {
-                self.undead_no_flame = on;
-                self.update_special_setup();
-            }
-            5 | 10 => {
-                self.no_crown = on;
-                self.update_special_setup();
-            }
+            11 => self.undead_no_flame = on,
+            5 | 10 => self.no_crown = on,
             _ => return false,
         }
-        self.edits += 1;
         true
     }
 
@@ -153,13 +132,7 @@ impl Barber {
         if let Some(appearance) = self.finish_appearance() {
             out.push(UiRequest::BarberFinish(appearance));
         }
-        self.applies += 1;
         out
-    }
-
-    /// The Cancel gesture: nothing is sent.
-    pub fn cancel(&mut self) {
-        self.cancels += 1;
     }
 
     /// The choice `part` shows now and how many it has: hair, eyes, nose or mouth.
@@ -202,29 +175,17 @@ impl Barber {
 
     /// Choose colour `color` of `part`'s family. False when it has no such colour.
     pub fn choose_color(&mut self, part: EParts, color: i32) -> bool {
-        if !self.apply_color(Some(part), color) {
-            return false;
-        }
-        self.edits += 1;
-        true
+        self.apply_color(Some(part), color)
     }
 
     /// Choose shade `shade` (0 to 1) of `part`'s family. False when it has no shade.
     pub fn choose_shade(&mut self, part: EParts, shade: f64) -> bool {
-        if !self.apply_shade(Some(part), shade) {
-            return false;
-        }
-        self.edits += 1;
-        true
+        self.apply_shade(Some(part), shade)
     }
 
     /// Step `part`'s choice by `delta`, wrapping. False when the part has no choices.
     pub fn step(&mut self, part: EParts, delta: i32) -> bool {
-        if !self.cycle(part, delta) {
-            return false;
-        }
-        self.edits += 1;
-        true
+        self.cycle(part, delta)
     }
 
     /// The colour `color` of `part`'s family, written to the appearance state; false when the
@@ -296,7 +257,6 @@ impl Barber {
             self.state.heritage_group = start.heritage;
             self.state.gender = start.gender;
             self.state.setup_id = DataId(start.setup_id);
-            self.initialize_view();
             return;
         };
 
@@ -342,29 +302,6 @@ impl Barber {
                 self.state.hair_shade = hair_shade;
             }
         }
-        self.initialize_view();
-        let setup = self.state.get_setup_id(&tables.chargen);
-        self.view3d.setup = if setup.0 == 0 { HUMAN_SETUP_ID } else { setup };
-    }
-
-    fn initialize_view(&mut self) {
-        self.view3d = Cg3dView::default();
-        self.view3d.initialize(&self.state);
-        // Page initialisation: the initial camera, with the closer special-
-        // creature position used by Gear Knight and both Olthoi heritages.
-        self.view3d.camera_position = match self.state.heritage_group {
-            6 | 12 | 13 => [0.0, -0.8, 1.5],
-            _ => [0.0, -0.65, 1.7],
-        };
-        self.view3d.camera_direction = [0.0, 0.0, 0.0];
-        self.view3d.zoomed_in = true;
-        self.view3d.animating = false;
-        self.view3d.bg_setup = DataId(0);
-    }
-
-    /// Rotate the private preview on the same global tick as character generation.
-    pub fn tick_preview(&mut self, dt: f64) {
-        self.view3d.do_rotation(dt);
     }
 
     /// The colour wheel's colours for `part`'s family, every one of them.
@@ -496,17 +433,6 @@ impl Barber {
         Some(pair)
     }
 
-    fn update_special_setup(&mut self) {
-        let special = if self.state.heritage_group == 11 {
-            self.undead_setup_and_effect()
-        } else {
-            self.special_setup_and_effect()
-        };
-        if let Some((setup, _)) = special {
-            self.view3d.setup = setup;
-        }
-    }
-
     fn undead_setup_and_effect(&self) -> Option<(DataId, DataId)> {
         let tables = self.tables.as_ref()?;
         let generated = self.state.get_setup_id(&tables.chargen);
@@ -573,16 +499,6 @@ impl Barber {
             EParts::Nose => self.state.nose_strip = next,
             EParts::Mouth => self.state.mouth_strip = next,
             _ => return false,
-        }
-        match self.state.heritage_group {
-            // The barber panel leaves the special alternate setup latched across Hair/Next. The hair
-            // choice changes, but neither that common case nor selection writes
-            // the alternate setup id; option gestures and Apply remain the explicit remap points.
-            5 | 10 | 11 => {}
-            _ => {
-                let setup = self.state.get_setup_id(&tables.chargen);
-                self.view3d.setup = if setup.0 == 0 { HUMAN_SETUP_ID } else { setup };
-            }
         }
         true
     }

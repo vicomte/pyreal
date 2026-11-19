@@ -1,15 +1,6 @@
-//! The two identifier newtypes the contract carries.
+//! The retail UI element id the contract carries.
 //!
-//! [`UiRequest`](crate::UiRequest) names both — `DropTarget::ItemList` carry an
-//! [`ElementId`] and `UiRequest::QueueMode` carries a [`UiMode`] — so a contract crate that may
-//! not depend on `dereth-ui` has to own them. The retired UI framework's `ElementId` and the retired UI framework's `framework::UiMode`
-//! are `pub use`s of these, so every existing path still resolves.
-//!
-//! `ElementId`'s hand-written `Debug` is `dereth-ui`'s `ui_id!` macro expansion, character for
-//! character: the hex form is what every layout id in this tree is read and written in, and a
-//! derived `Debug` would print `ElementId(268435858)` where the sources say `0x10000192`. The
-//! other four `ui_id!` types (`ElementType`, `StateId`, …) stay in `dereth-ui`: the contract names
-//! none of them.
+//! `ElementId`'s hand-written `Debug` prints the hex form every layout id is written in.
 
 /// Unique **inside a layout**, and the key of the whole message system.
 ///
@@ -24,7 +15,3 @@ impl std::fmt::Debug for ElementId {
         write!(f, concat!(stringify!(ElementId), "(0x{:X})"), self.0)
     }
 }
-
-/// A UI mode id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct UiMode(pub u32);

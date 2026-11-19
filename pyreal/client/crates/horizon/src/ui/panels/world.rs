@@ -243,7 +243,6 @@ impl Windows {
             self.open(WindowId::Barber, ctx.time);
         } else if self.world.barber_shown && !self.is_open(WindowId::Barber) {
             // Closed without Apply: the barber's Cancel, which sends nothing.
-            self.world.barber.cancel();
             self.world.barber_shown = false;
         }
         // Research: a confirmed formula leaves the formula.
@@ -619,7 +618,6 @@ impl Windows {
             out.requests.extend(b.apply());
             done = true;
         } else if kit::button(p, ctx, cancel, "Cancel", true) {
-            b.cancel();
             done = true;
         }
         if done {

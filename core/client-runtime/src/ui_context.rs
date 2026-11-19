@@ -140,6 +140,23 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.objects.world.journal.set_identity(identity);
     }
 
+    /// The journal's clocks: a change saved once it has rested, and a line in chat for each timer
+    /// that ran out.
+    pub fn tick_journal(&mut self) {
+        let now = self.app.timer.cur_time;
+        let wall = crate::platform::clock::system_unix_time().map_or(0, |d| d.as_secs());
+        let world = &mut self.app.objects.world;
+        for line in world.journal.tick(now, wall) {
+            world.scroll.add_feedback_to_scroll(
+                &line,
+                pyreal_client_model::chat::text_type::SYSTEM,
+                true,
+                pyreal_client_contract::chat::interface::window::MAIN,
+                pyreal_client_contract::feedback::Feedback::LOCAL,
+            );
+        }
+    }
+
     pub fn take_journal_io(&mut self) -> Vec<pyreal_client_contract::journal::JournalIo> {
         self.app.objects.world.journal.take_io()
     }
@@ -420,11 +437,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.service_dialogs_with(presenter, now);
     }
 
-    /// The UI's sound requests, played at once; anything that is not a sound comes back.
-    pub fn play_sounds(&mut self, requests: Vec<UiRequest>) -> Vec<UiRequest> {
-        crate::audio::apply_sound_requests(self.app.audio.as_mut(), &self.app.store, requests)
-    }
-
     /// Hand the pointer events and the requests no step took this frame to the interaction step.
     pub fn queue(&mut self, mouse: Vec<UiMouseEvent>, requests: Vec<UiRequest>) {
         self.app.interaction.queue(mouse, requests);
@@ -578,17 +590,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
     /// The HUD model's once-a-frame sync. See [`App::sync_hud`].
     pub fn sync_hud(&mut self) {
         self.app.sync_hud();
-    }
-
-    /// Whether the saved screen layout is waiting to be loaded.
-    #[must_use]
-    pub fn screen_layout_pending(&self) -> bool {
-        self.app.pending_auto_layout
-    }
-
-    /// The saved screen layout was loaded, or will not be.
-    pub fn screen_layout_done(&mut self) {
-        self.app.pending_auto_layout = false;
     }
 
     /// The character screen's asks: log on, delete, restore.

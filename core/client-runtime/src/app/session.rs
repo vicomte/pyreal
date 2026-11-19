@@ -187,22 +187,6 @@ impl<S: Shell> App<S> {
         }
     }
 
-    /// Step 7's UI update and mode switch. Player-description arrival triggers
-    /// loading the automatic screen layout.
-    ///
-    /// Kept as a narrow test seam for the path-and-file stations. The production arm is
-    /// separately covered by a socket-free transport station, which delivers a wire-framed
-    /// `0x0013` through the client network, `Session` and the App event drain.
-    pub fn note_player_description(&mut self) {
-        self.pending_auto_layout = true;
-    }
-
-    /// Whether [`Self::note_player_description`]'s load is still outstanding.
-    #[must_use]
-    pub fn auto_layout_pending(&self) -> bool {
-        self.pending_auto_layout
-    }
-
     /// Request character logoff through `pyreal_client_net::client_session::Session::log_off`.
     ///
     /// **The client's function takes a `bool` and this one does not, which is a declared
@@ -534,6 +518,7 @@ impl<S: Shell> App<S> {
                 // the player id. Like Reset above,
                 // this is local work owed by the already-decoded event, not by a surviving
                 // packet controller.
+                self.read_toggle_run();
                 self.movement.enable(&mut self.char_input);
             }
             if let SessionEvent::CharacterSet(set) = e {
@@ -622,6 +607,10 @@ impl<S: Shell> App<S> {
         let mut tables_stale = false;
         for e in events {
             match e {
+                SessionEvent::Extensions(names) => {
+                    tracing::info!("the world has Dereth's extensions {names:?}");
+                    self.interaction.set_extensions(names.clone());
+                }
                 SessionEvent::CharacterSet(set) => {
                     // The persistent-data object's character-set notice is the hinge between
                     // the network and the flow. The session decodes `0xF658` and the pre-game
@@ -918,11 +907,6 @@ impl<S: Shell> App<S> {
                 }
                 SessionEvent::PlayerDescription(_) => {
                     tracing::info!("0x0013 player description -- in world");
-                    // Player-description delivery raises the notice answered with
-                    // loading the `"#auto"` screen layout. The field is used rather than
-                    // [`Self::note_player_description`] because `link` is borrowed here; the
-                    // method exists so the same decision is reachable from a test.
-                    self.pending_auto_layout = true;
                 }
                 SessionEvent::StateChanged(SessionState::Playable) => {
                     // In the world, in every session: the travel carries a journey out from where

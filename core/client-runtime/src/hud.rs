@@ -574,13 +574,6 @@ pub struct Hud {
     barber_generation: u64,
     /// `None` until the player has a cell.
     pub coords: Option<(f32, f32)>,
-    /// The journal path's three inputs, composed by `App::frame` out
-    /// of the same three sources `auto_load_screen_layout` uses:
-    /// the settings directory is `--prefs`' parent,
-    /// the world name is `HostState::world_name` (`0xF7E1 Login_WorldInfo`) and the
-    /// character is `HostState::entered_character`, which is set on all three log-on edges.
-    /// `None` until all three exist, and the journal is then memory-only.
-    pub journal_identity: Option<pyreal_client_contract::journal::JournalIdentity>,
     /// The `(date, time-of-day name)` pair supplied by the simulation clock.
     ///
     /// Fed from `App::frame` out of `crate::present::Scene::game_date_time`, beside the

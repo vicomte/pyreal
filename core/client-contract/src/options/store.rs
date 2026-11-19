@@ -135,37 +135,6 @@ thread_local! {
     /// for the same reason [`crate::env`] and [`crate::requests`] are.
     // ORDER-OK: a by-name registry; nothing iterates it for order.
     static REGISTRY: RefCell<BTreeMap<String, Variable>> = const { RefCell::new(BTreeMap::new()) };
-
-    /// How many times a preference carrying the font-change callback has been written. See
-    /// [`font_preference_epoch`].
-    static FONT_PREFERENCE_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// The two preferences the client registers with the font-change callback.
-///
-/// Both are registered with five choices, the font callback, the choice-string list, the
-/// preference name and the address of the client's own font variable — `UI.ChatFontFace` against
-/// the font-face variable and `UI.ChatFontSize` against the font-size one. These are the only two
-/// of the 27 attached preferences that carry that callback.
-pub const FONT_PREFERENCE_NAMES: [&str; 2] = [
-    crate::persist::preferences::keys::CHAT_FONT_FACE,
-    crate::persist::preferences::keys::CHAT_FONT_SIZE,
-];
-
-/// The store's `if (callback) callback(name)`, as an edge a
-/// screen can watch.
-///
-/// The client's callback is a synchronous call out of the store into the font-settings-changed
-/// notice, which broadcasts to
-/// every notice handler. This crate's store has no notice bus and no back-reference to a
-/// screen, so what it publishes is the *fact of the write*: a counter every writer of either
-/// [`FONT_PREFERENCE_NAMES`] bumps, which the retired retail UI's `screens::gameplay::GamePlayScreen` compares
-/// against the one it last answered. Same edge, one frame later at worst — and it catches the
-/// three writers the notice catches, because all three go through [`set_value`]: a live menu
-/// choice, *Cancel* (restoring the saved values) and *Restore Defaults*.
-#[must_use]
-pub fn font_preference_epoch() -> u64 {
-    FONT_PREFERENCE_EPOCH.with(std::cell::Cell::get)
 }
 
 /// Bind a name to a variable holding `default`.
@@ -238,7 +207,7 @@ pub fn inq_value_as(name: &str, want: DataType) -> Option<PrefValue> {
 /// Preference updates pass through one entry point per type before reaching the stored variable.
 ///
 /// The variable store's whole body is: if the stored type matches, store the value through the
-/// variable pointer and call the change callback if there is one — so a type mismatch is a **silent no-op** in the client, and `false` here.
+/// variable pointer — so a type mismatch is a **silent no-op** in the client, and `false` here.
 pub fn set_value(name: &str, v: PrefValue) -> bool {
     REGISTRY.with(|r| {
         let mut r = r.borrow_mut();
@@ -250,14 +219,7 @@ pub fn set_value(name: &str, v: PrefValue) -> bool {
         }
         slot.value = v;
         true
-    }) && {
-        // `if (callback) callback(name)` — the write happened, so the registered change callback
-        // runs. Only the two font preferences have one.
-        if FONT_PREFERENCE_NAMES.contains(&name) {
-            FONT_PREFERENCE_EPOCH.with(|c| c.set(c.get().wrapping_add(1)));
-        }
-        true
-    }
+    })
 }
 
 /// Register every preference [`super::preferences::UI_PREFERENCES`] names, with the value

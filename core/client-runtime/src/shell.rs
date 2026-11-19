@@ -196,9 +196,6 @@ pub trait Shell: Sized {
     fn talk_focus_notice(&mut self, talk_focus: TalkFocus, notice: TalkFocusNotice) -> bool {
         false
     }
-    /// Start a tell to `name`: fill the chat entry with the tell, ready for the text. Nothing goes
-    /// to the server. Raised by [`pyreal_client_contract::UiRequest::StartTell`].
-    fn start_tell(&mut self, name: String) {}
     /// Power-bar notices, synchronous with the jump or control change that raised them.
     fn deliver_power_bar_notices(&mut self, hud: &mut Self::Hud, notices: Vec<PowerBarNotice>) {}
     /// An object notice, offered to the panels that watch objects. Answers the requests the

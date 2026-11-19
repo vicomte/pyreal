@@ -381,7 +381,6 @@ impl<S: Shell> App<S> {
             ddd_invalidation: None,
             store_generation: 0,
             base_store,
-            pending_auto_layout: false,
             duties: FrameDuties::default(),
             applied_full_screen: started_full_screen,
             applied_resolution: (client_w, client_h),

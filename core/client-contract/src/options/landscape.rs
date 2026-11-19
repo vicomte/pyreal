@@ -69,35 +69,6 @@ impl RegionStyle {
             _ => None,
         }
     }
-
-    /// The ground's name for it, as the options list it.
-    #[must_use]
-    pub const fn ground_label(self) -> &'static str {
-        match self {
-            Self::LegacySoftware => "Palette Shift",
-            Self::LegacyHardware => "Classic Blend",
-            Self::Late => "Modern Blend",
-        }
-    }
-
-    /// The sky's name for it, as the options list it.
-    #[must_use]
-    pub const fn sky_label(self) -> &'static str {
-        match self {
-            Self::LegacySoftware => "Classic Software",
-            Self::LegacyHardware => "Classic Hardware",
-            Self::Late => "Modern",
-        }
-    }
-
-    /// The files it is read from.
-    #[must_use]
-    pub const fn required_files(self) -> RequiredFiles {
-        match self {
-            Self::LegacySoftware | Self::LegacyHardware => RequiredFiles::Classic,
-            Self::Late => RequiredFiles::Modern,
-        }
-    }
 }
 
 /// Which dat set a style needs: the one from before Throne of Destiny, or a later one.
@@ -175,40 +146,6 @@ impl Landscape {
         }
     }
 
-    /// The styles this preference offers, in the order the options list them. The objects have
-    /// one older look (both older regions name the same objects), stored as
-    /// [`RegionStyle::LegacyHardware`].
-    #[must_use]
-    pub const fn styles(self) -> &'static [RegionStyle] {
-        match self {
-            Self::Ground | Self::Sky => &RegionStyle::ALL,
-            Self::Objects => &[RegionStyle::LegacyHardware, RegionStyle::Late],
-        }
-    }
-
-    /// The row's caption on an options page.
-    #[must_use]
-    pub const fn caption(self) -> &'static str {
-        match self {
-            Self::Ground => "Terrain Mode",
-            Self::Sky => "Sky Mode",
-            Self::Objects => "Object Mode",
-        }
-    }
-
-    /// A style's name for this preference.
-    #[must_use]
-    pub const fn label(self, style: RegionStyle) -> &'static str {
-        match self {
-            Self::Ground => style.ground_label(),
-            Self::Sky => style.sky_label(),
-            Self::Objects => match style {
-                RegionStyle::LegacySoftware | RegionStyle::LegacyHardware => "Classic",
-                RegionStyle::Late => "Modern",
-            },
-        }
-    }
-
     /// The notice for a refused style.
     #[must_use]
     pub const fn notice(self, files: RequiredFiles) -> &'static str {
@@ -216,24 +153,6 @@ impl Landscape {
             Self::Ground => files.ground_notice(),
             Self::Sky => files.sky_notice(),
             Self::Objects => files.objects_notice(),
-        }
-    }
-
-    /// How the preferences file spells a value: one word per choice.
-    #[must_use]
-    pub const fn file_word(self, style: Option<RegionStyle>) -> &'static str {
-        match (self, style) {
-            (_, None) => "World",
-            (Self::Ground, Some(RegionStyle::LegacySoftware)) => "PaletteShift",
-            (Self::Ground, Some(RegionStyle::LegacyHardware)) => "ClassicBlend",
-            (Self::Ground, Some(RegionStyle::Late)) => "ModernBlend",
-            (Self::Sky, Some(RegionStyle::LegacySoftware)) => "ClassicSoftware",
-            (Self::Sky, Some(RegionStyle::LegacyHardware)) => "ClassicHardware",
-            (Self::Sky, Some(RegionStyle::Late)) => "Modern",
-            (Self::Objects, Some(RegionStyle::LegacySoftware | RegionStyle::LegacyHardware)) => {
-                "Classic"
-            }
-            (Self::Objects, Some(RegionStyle::Late)) => "Modern",
         }
     }
 }
@@ -275,12 +194,15 @@ mod tests {
     /// not.
     #[test]
     fn every_spelling_of_a_style_reads_and_the_older_three_keep_their_meaning() {
-        for s in RegionStyle::ALL {
-            for which in [Landscape::Ground, Landscape::Sky] {
-                assert_eq!(parse(which.file_word(Some(s))), Some(Some(s)));
-                assert_eq!(parse(which.label(s)), Some(Some(s)));
-                assert_eq!(parse(&which.label(s).to_ascii_uppercase()), Some(Some(s)));
-            }
+        for (word, s) in [
+            ("PaletteShift", RegionStyle::LegacySoftware),
+            ("Classic Software", RegionStyle::LegacySoftware),
+            ("ClassicBlend", RegionStyle::LegacyHardware),
+            ("CLASSIC HARDWARE", RegionStyle::LegacyHardware),
+            ("Modern Blend", RegionStyle::Late),
+            ("Modern", RegionStyle::Late),
+        ] {
+            assert_eq!(parse(word), Some(Some(s)));
         }
         assert_eq!(parse("software"), Some(Some(RegionStyle::LegacySoftware)));
         assert_eq!(parse("Later"), Some(Some(RegionStyle::Late)));

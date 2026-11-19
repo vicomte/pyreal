@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-audio"
-description = "The client's sound engine short of the output device: the mixer, attenuation and pan, the trigger paths, ambience and the audio and video codecs."
+description = "The client's sound engine short of the output device: the mixer, attenuation and pan, the trigger paths, ambience and the audio codecs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -108,20 +108,6 @@ pub enum UiRequest {
     /// fill when both are already zero, so a spell right-click with nothing in flight puts nothing
     /// on the wire.
     CancelAppraisal,
-    /// A click on the paper doll's **body**, carrying the `INVENTORY_LOC` mask
-    /// the paper doll's hit test resolved the pixel under the cursor to.
-    ///
-    /// The mask, not an object: the closing upper-inventory-object walk goes over the player's
-    /// inventory-placement list with the placement priority rule and
-    /// falls back to the player's own id, and the panel holds neither the list nor the player.
-    ///
-    /// `secondary` is action `8` rather than `7` — the two arms
-    ///  the paper doll's element-message handler has for message `0x1C` on element
-    /// `0x100001D6`, and the only two. A middle click, or any other action, does nothing at all.
-    PaperDollRegion {
-        mask: u32,
-        secondary: bool,
-    },
     /// Set the target mode — the toolbar's Use and Examine buttons with
     /// **nothing selected**, which is what arms the "use on…" cursor.
     ///
@@ -170,6 +156,11 @@ pub enum UiRequest {
         text: String,
         window: u32,
     },
+    /// Tell `target` `text` (`0x0032 Communication_TalkDirect`), as a tell to the selection would.
+    Tell {
+        target: ObjectId,
+        text: String,
+    },
     /// Sends `0x01E9 Character_RequestPing`.
     ///
     /// The link-status panel's update is the **only** thing in the client that sends it, and
@@ -184,25 +175,6 @@ pub enum UiRequest {
     /// the retired retail UI's `panels::examination::ExaminationPanel::handle_inscription_losing_focus`.
     SetInscription {
         object: ObjectId,
-        text: String,
-    },
-    /// Sends `0x0140`, the target name, literal status `1`, and complaint. The abuse panel's report
-    /// button is its sole producer.
-    AbuseLog {
-        target: String,
-        complaint: String,
-    },
-    /// Broadcast `text` on `channel` with communication event `0x0147`.
-    ///
-    /// Added for the urgent-assistance window. Its Send button is the original
-    /// client's only producer on Help channel `0x400`: ordinary chat excludes that
-    /// value, so `@help` is a command rather than a channel send. See
-    /// the retired retail UI's `panels::urgent_assistance::HELP_CHANNEL`.
-    ///
-    /// The variant carries a general channel/text pair because allegiance chat rows
-    /// and talk-focus destinations use the same broadcast operation.
-    ChannelBroadcast {
-        channel: u32,
         text: String,
     },
     /// `0x00AC`, one book id.
@@ -317,22 +289,6 @@ pub enum UiRequest {
     RemoveFriend {
         target: ObjectId,
     },
-    /// The start-tell notice is broadcast to every
-    /// notice handler and overridden by exactly one class, the main chat
-    /// window, whose handler is a bare jump to the chat interface's start-tell.
-    ///
-    /// Three raisers in retail: the friends panel's element-message handler on its
-    /// `0x10000516` arm (the Send Tell button, the text of the selected row's `0x1000051A`),
-    /// the chat interface's action handler on its `0x10000119` arm (the selected object, when it
-    /// is a player) and the main chat window's id-string-click notice (a click on a
-    /// `<Tell:IIDString>` name in the log, when the entry is not already focused -- that one
-    /// starts the tell directly rather than raising the notice).
-    ///
-    /// A notice, not a send: nothing goes to the shard. The receiver lives on the screen, so the
-    /// host routes it in `UiShell::handle_request` the way `SetLockUi` travels.
-    StartTell {
-        name: String,
-    },
     /// The contracts panel's element-message handler on its `0x100005DC` arm -- the **Abandon**
     /// button, which reads the selected contract id and sends the abandon-contract event
     /// (`0x0316`).
@@ -365,21 +321,6 @@ pub enum UiRequest {
     /// what fills the selected object's health meter — without this request the meter draws a
     /// number nobody ever supplies.
     QueryHealth(ObjectId),
-    /// Query the selected item's mana with event `0x0263` — the same handler
-    /// and the same two sites, on the other side of that arm's own branch.
-    QueryItemMana(ObjectId),
-    /// The player option page's save-current-values **first line**:
-    /// save the current player module with the immediate flag false.
-    ///
-    /// The page overrides its save-current-values step for exactly this, and its visibility change
-    /// calls that step on **show**. So the whole
-    /// module goes out when the page comes up carrying un-flushed changes, and not once per tick:
-    /// a tick updates the option, and the module's changed hook only
-    /// marks the module dirty unless the option is one of the twenty-one auto-save options.
-    ///
-    /// This is a request because the module, dirty flag and wire sender belong to the
-    /// host, not the option page.
-    SavePlayerOptions,
     /// Set a text property at the top of the player module's gameplay-options collection, which
     /// the server keeps for the character, and send the module to the server a few seconds after
     /// the last such change (once the character has entered the world). `property` must be one
@@ -388,58 +329,15 @@ pub enum UiRequest {
         property: u32,
         value: String,
     },
-    /// Save the current keymap file without prompting, from the Key Bindings page's
-    /// *OK* arm in its element-message handler when the page reports itself changed.
-    ///
-    /// The client's body sets the keymap file name, saves the keymap in its directory, updates the
-    /// filename label, and saves preferences. With its prompt flag false and the current file name,
-    /// the file-name assignment and dialogs are no-ops, so what is left for the host is the write —
-    /// `pyreal_client_shell::input::InputShell::save_keymap`, the same writer the client's exit
-    /// clean-up uses.
-    ///
-    /// This is a request because the host owns the input manager and keymap writer;
-    /// the screen has no handle to them, just as [`Self::SavePlayerOptions`] has none
-    /// to the `PlayerModule`.
-    SaveKeyMap,
     SetPreference(&'static str, PrefValue),
     /// A player-initiated screen-size change or a tagged prompt answer.
     Resolution(crate::resolution::ResolutionAction),
-    /// The sound portion of one media-playback step.
-    ///
-    /// The fields retain the step's file id and sound type. Type 0 (invalid)
-    /// selects direct playback of a `0x0Axxxxxx` wave; other values select a row of a
-    /// `0x20xxxxxx` sound table.
-    ///
-    /// UI-layout data determines which UI events play sounds. Of the twelve observed
-    /// original sound-play calls, buttons can reach only the media machine's two
-    /// paths. The producer is therefore the retired UI frameworks media machine, handed across this
-    /// seam by the shell; screens in this crate do not emit it.
-    PlaySound {
-        file: DataId,
-        sound_type: u32,
-    },
-    /// Queue a UI mode change.
-    QueueMode(UiMode),
-    /// Set a panel's visibility — the *only* channel between a
-    /// toolbar button and a panel page.
-    SetPanelVisibility {
-        panel: u32,
-        visible: bool,
-    },
-    /// The radar's lock button state.
-    SetLockUi(bool),
     /// Set one chat-window property — the per-window position,
     /// filter and opacity blob.
     SetChatWindowOption {
         window: u32,
         property: u32,
         value: i32,
-    },
-    /// The floaty-chat title property `0x1000008D`, retaining its literal or table-reference
-    /// form. Separate from the numeric variant so a command title survives a rebuild.
-    SetChatWindowTitle {
-        window: u32,
-        title: ChatWindowTitle,
     },
     /// Set chat-window property `0x1000007F` with a `Bitfield64` —
     /// the Chat Options page's per-window text-type filter.
@@ -480,47 +378,13 @@ pub enum UiRequest {
         split: u32,
         max: u32,
     },
-    /// The UI item's failed-owner drag completion.
-    /// Clear only; it neither changes contents nor releases a request.
-    ClearItemWaiting(ObjectId),
-    /// The **pick-up** ghost, and the other half of [`Self::ClearItemWaiting`].
-    ///
-    /// The item list's begin-drag ghosts the icon the
-    /// moment it leaves the slot, past the three list-kind refusals — a vendor list, a salvage
-    /// list and a shortcut list each refuse it — and then sets the waiting state to 1.
-    ///
-    /// Vendor, salvage, and shortcut lists refuse this path. Every other item list sets the
-    /// object's waiting state to true after the drag begins.
-    ///
-    /// The waiting-state setter writes the flag **onto the object**, not onto the element. It
-    /// changes the object only when the requested flag differs, while the element keeps a mirror
-    /// that its per-frame update re-derives and applies on every edge.
-    ///
-    /// **That is why the flag has to cross this seam.** The list flush clears each slot's local
-    /// identity, geometry, and waiting mirror before every refill. In retail a refill therefore
-    /// *cannot* lose a ghost: the authoritative flag was never on the slot.
-    /// Here `ItemSlot::clear` does put `waiting` back to `false`, so a pick-up ghost that lived
-    /// only on the widget would be wiped by the next `InventoryPanels::update` -- and that pass
-    /// re-applies ghosts from `GameView::item_waiting`, i.e. from the object, which is where this
-    /// request puts it.
-    ///
-    /// This crate has no access to the object table, so the write goes out as a request; it is
-    /// applied inside the frame's own dispatch hook (`dispatch_ui_owner_requests`), before
-    /// `Hud::drive` refills anything.
-    SetItemWaiting(ObjectId),
-    /// `ShellExecuteA("open", url)` from the Game/Support page.
-    OpenUrl(&'static str),
     /// A web address in a chat line was clicked: the player is asked first, and only a yes hands
     /// it to the host to open ([`crate::chat::links`]).
     ChatLinkClicked(String),
-    /// Shut down the device — the epilogue screen's only job.
-    DeviceDone,
     /// The player opened (`true`) or closed (`false`) character creation: the one game phase a UI
     /// enters by asking (`crate::pregame::GamePhase::CharacterCreation`).
     CharacterCreation(bool),
-    /// Leave the game: end the character session and then shut down, what the epilogue screen's
-    /// [`Self::EndCharacterSession`] and [`Self::DeviceDone`] do between them, with no screen in
-    /// between. Without the character session's end the account stays logged in on the server
+    /// Leave the game: end the character session and then shut down. Without the character session's end the account stays logged in on the server
     /// until its own timeout.
     Quit,
     /// A player-session operation the character-management screen asks for (log on, delete,
@@ -530,14 +394,6 @@ pub enum UiRequest {
     /// What the character-generation wizard owes the session (the creation result, the
     /// post-creation log-on). Routed by the shell's drain like [`Self::CharacterAction`].
     CharGenAction(crate::pregame::CharGenAction),
-    /// The character-management screen's selected character, mirrored into the UI flow's
-    /// persistent selected avatar by the shell's drain before the frame's mode switch.
-    SelectedAvatar(ObjectId),
-    /// The character-generation slot, mirrored into the UI flow's persistent data by the shell's
-    /// drain: the selected character's index in the character set (server order) when the
-    /// character screen selects a row, `-1` when its selection is reset, and `-1` when the server
-    /// refuses a creation. The creation request carries it.
-    CharGenSlot(i32),
     /// Train a skill with `(skill, xp)` — `0x0046 Train_TrainSkill`.
     ///
     /// Both the skill panel's "raise" and its "raise 10" send **this**
@@ -642,8 +498,6 @@ pub enum UiRequest {
         item: ObjectId,
         split: i32,
     },
-    /// case `0x100000C3` ("Add to List"). Local only.
-    VendorFilter(usize),
     VendorAddToBuyList {
         item: ObjectId,
         split: i32,
@@ -761,18 +615,6 @@ pub enum UiRequest {
         target: ObjectId,
         amount: u32,
     },
-    /// Enter a combat mode (`1` peace, `2` melee, `4` missile, `8` magic), or with `0` the mode
-    /// the wielded weapon calls for; refused, with the world's own words, when the player cannot
-    /// change mode now.
-    SetCombatMode(u32),
-    /// Wear `item` where it goes, as a double click on armour or clothing does.
-    AutoWear(ObjectId),
-    /// Wield `item` in its slot; `side` picks a hand for a one-handed item (`0` either, `1` left,
-    /// `2` right).
-    AutoWield {
-        item: ObjectId,
-        side: u32,
-    },
     /// The privileged player's map teleport: to the middle of the outdoor block at (`x`, `y`) in
     /// the 2040-block world grid.
     MapTeleport {
@@ -781,22 +623,6 @@ pub enum UiRequest {
     },
     /// Ask the server for the house the player owns.
     QueryHouse,
-    /// Open trade negotiations with `partner`; refused outside peace mode.
-    OpenTrade(ObjectId),
-    /// Switch the abuse log on `target` on or off, with the complaint.
-    AbuseLogStatus {
-        target: String,
-        enabled: bool,
-        complaint: String,
-    },
-    /// Set both character option words at once (the classic interface's Character page), and
-    /// the chat timestamp format; `save` sends them to the server.
-    SetOptionWords {
-        options: u32,
-        options2: u32,
-        timestamp_format: Option<String>,
-        save: bool,
-    },
 
     /// The combat system's set-requested-attack-height — the arm
     /// that makes the combat window's three attack-height buttons do anything.
@@ -899,12 +725,6 @@ pub enum UiRequest {
     /// answered within milliseconds by `0x0020` and then `0x01C8`.
     AllegianceUpdateRequest {
         on: bool,
-    },
-    /// A window started (`raised`) or stopped waiting on the server's answer to something it
-    /// asked for: the busy count goes up or down by one, and the pointer is the hourglass while
-    /// it is not zero. The allegiance panel's busy latch is the one window that raises it.
-    Busy {
-        raised: bool,
     },
 
     /// The allegiance panel's three confirmation dialogs: the question, before any
@@ -1068,15 +888,6 @@ pub enum UiRequest {
     HousePaymentConfirmationAnswer {
         rent: bool,
         confirmed: Option<bool>,
-    },
-    /// Query `target`'s landlord with event `0x0258`, and it is a **retry**, not an opener.
-    ///
-    /// The slumlord window's failed-transaction notice is retail's only sender:
-    /// when it holds a house profile, a query-lord request on the owner. A failed `0x021C`/`0x0221` arrives as
-    /// `0x0226`/`0x0259`, and the window re-asks the lord so its prices and paid counts come back
-    /// in step with the shard's.
-    HouseQueryLord {
-        slumlord: ObjectId,
     },
 
     // -----------------------------------------------------------------------------------------

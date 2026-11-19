@@ -10,7 +10,6 @@
 //! anywhere: a panel physically cannot write the value it is about to ask the server for, so an
 //! inventory move ghosts the icon and waits for `Item_ServerSaysMoveItem`.
 
-use crate::ids::UiMode;
 use pyreal_primitives::{DataId, ObjectId};
 
 mod request;
@@ -183,33 +182,6 @@ pub struct SkillAdvancement {
     pub vitae: i32,
 }
 
-impl SkillAdvancement {
-    /// The trained footer's meter fraction, transcribed:
-    ///
-    /// ```text
-    /// lo = skill_xp_total(sac, level);
-    /// hi = skill_xp_total(sac, level + 1);
-    /// span = hi - lo;
-    /// fill = span == 0 ? 0.0f : (float)(pp - lo) / (float)span;
-    /// ```
-    ///
-    /// Both operands go through **`float`**, and both are converted with the unsigned fix-up
-    /// (`+ 4.2949673e9` when the `int` reading is negative) that the compiler emits for a `ulong`,
-    /// so a `pp` below `lo` does not produce a negative fill.
-    #[must_use]
-    pub fn meter_fill(&self) -> f32 {
-        let span = self.xp_at_next_level.wrapping_sub(self.xp_at_level);
-        if span == 0 {
-            return 0.0;
-        }
-        let num = self.pp.wrapping_sub(self.xp_at_level);
-        #[allow(clippy::cast_precision_loss)]
-        {
-            num as f32 / span as f32
-        }
-    }
-}
-
 /// Everything the attribute footer needs about one of its nine rows, already joined; the
 /// counterpart of [`SkillAdvancement`] for the skill footer.
 ///
@@ -247,35 +219,6 @@ pub struct AttributeAdvancement {
     /// and subtracted from the raw side of the buff comparison. Primary attributes
     /// always contribute zero.
     pub vitae: i32,
-}
-
-impl AttributeAdvancement {
-    /// The attribute footer's font index for the value appended to the title:
-    /// `0` plain, `1` buffed, `2` debuffed.
-    ///
-    /// It is a three-way compare of the two `Inq*` answers: a positive difference uses the
-    /// `"+"` prefix and index 1, a negative difference uses index 2, and
-    /// equal falls through with the index still 0. The identical shape is in the skill row
-    /// and used by the information-row presentation.
-    #[must_use]
-    pub const fn title_font(&self) -> u32 {
-        let base = self.value - self.vitae;
-        if base < self.effective {
-            1
-        } else if self.effective < base {
-            2
-        } else {
-            0
-        }
-    }
-
-    /// `enchanted - raw` -- the number the title's parenthesised suffix carries, and 0 when there
-    /// is no suffix at all. The attribute footer computes it as one subtraction and skips the
-    /// whole append when it is zero.
-    #[must_use]
-    pub const fn title_delta(&self) -> i32 {
-        self.effective - self.value
-    }
 }
 
 /// The three outcomes of the stat panel's PK-status line.
@@ -695,11 +638,6 @@ pub enum DropTarget {
     /// the client's place-in-backpack logic, so it cannot be represented by a
     /// [`Self::Container`] id on this side of the object-table boundary.
     BackpackButton,
-    /// An item-list slot, identified by the list element id and slot index.
-    ItemList {
-        list: crate::ids::ElementId,
-        slot: u32,
-    },
     /// One of the eighteen shortcut slots, reached by a drag whose proxy carries
     /// **no** drop-item alias bit, i.e. a real item off some other list.
     /// The toolbar's drop handler takes this on its first arm.
@@ -734,8 +672,7 @@ pub enum DropTarget {
     /// reads from the element tree. The panel that filled the list has already
     /// translated element ids into object ids.
     ///
-    /// [`Self::ItemList`] carries a list element and a slot number, which
-    /// `pyreal_client_runtime::interaction` cannot map to anything. Converting it to a bare
+    /// Converting it to a bare
     /// [`Self::Container`] would **lose the slot index altogether**: every drag into a pack would
     /// be sent as a put-item-in-container of `(item, container, 0)` — the head of the list,
     /// whatever slot the player aimed at — and a drop onto a plain item as a put-into-*that-item*,
@@ -919,8 +856,8 @@ impl PlayerOption {
     /// Every option, in declaration order.
     ///
     /// It exists so [`GameSnapshot`](crate::GameSnapshot) can copy
-    /// [`GameView::player_option`] and [`GameView::player_option_default`] for *all* of them:
-    /// the two methods are keyed by this enum and an owned snapshot has no other way to
+    /// [`GameView::player_option`] for *all* of them:
+    /// the method is keyed by this enum and an owned snapshot has no other way to
     /// enumerate the keys. The order is the declaration order and carries no wire meaning --
     /// the wire ordinal is `pyreal_client_runtime::hud::option_ordinal`, which is a different number.
     pub const ALL: [Self; 52] = [
@@ -1075,7 +1012,7 @@ pub struct HouseDataView {
 /// compose-text helpers and its paid-in-full test run over the window's **current** payment
 /// state — i.e. the pristine profile with every dropped item paid into it, which is what
 /// the slumlord window's add-item mutates. The host does that arithmetic because
-/// `HousePaymentList` lives in `pyreal-client-model`; see [`GameView::slumlord_payment`].
+/// `HousePaymentList` lives in `pyreal-client-model`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SlumlordView {
     /// The owner id — the slumlord object the profile answered for, and the target of every
@@ -1516,8 +1453,6 @@ pub struct ShopRow {
 /// build implements the pyreal arm only.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShopView {
-    /// Selected category position, retained between shops by the client.
-    pub filter: usize,
     /// Whether the client has a nonzero vendor id.
     pub open: bool,
     pub vendor: Option<ObjectId>,
@@ -1690,26 +1625,6 @@ impl TradeButtonState {
             (Self::Disabled, n) if n > 0 => Self::Enabled,
             (state, _) => state,
         }
-    }
-
-    /// Toggle agreement using the counts the player actually saw.
-    pub fn press(&mut self, displayed_self: usize, displayed_partner: usize) -> Option<UiRequest> {
-        let request = match self {
-            Self::Enabled => {
-                *self = Self::Accepted;
-                Some(UiRequest::TradeAccept {
-                    displayed_self,
-                    displayed_partner,
-                })
-            }
-            Self::Accepted => {
-                *self = Self::Enabled;
-                Some(UiRequest::TradeDecline)
-            }
-            Self::Disabled => None,
-        };
-        *self = self.with_displayed_rows(displayed_self + displayed_partner);
-        request
     }
 }
 

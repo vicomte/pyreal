@@ -29,12 +29,13 @@ pub(super) fn each_of_this_clients_actions_works_on_a_key_a_saved_key_map_gives_
 
     // One run gives the keys and saves its key map, the file the client writes on the way out.
     // Its settings directory goes with it, so what it wrote is carried to the next run's.
-    let (file, saved) = {
+    let (file, saved, given) = {
         let mut first = HeadlessClient::new(spec());
         let input = first
             .app_mut()
             .input_manager_mut()
             .expect("the input shell");
+        let mut given = Vec::new();
         for (action, code) in free {
             // None of these keys is an extended one, so the scan code is the key map's number.
             let chord =
@@ -46,13 +47,18 @@ pub(super) fn each_of_this_clients_actions_works_on_a_key_a_saved_key_map_gives_
                 None,
                 chord
             ));
+            // The free key, beside any default key the action has.
+            let mut keys = input.keys_for_action(ActionId(action), pyreal_input::pyreal::INPUT_MAP);
+            assert!(keys.contains(&chord));
+            keys.sort_unstable();
+            given.push(keys);
         }
         // The interface's own key map is the one that holds this client's actions.
         assert!(input.save_horizon_keymap().expect("the key map is written"));
         let file = dir.join(pyreal_client_shell::input::horizon_scheme::HORIZON_KEYMAP_FILE);
         let saved = std::fs::read(&file).expect("the saved key map");
         first.shutdown();
-        (file, saved)
+        (file, saved, given)
     };
 
     // The next run reads it back.
@@ -60,18 +66,19 @@ pub(super) fn each_of_this_clients_actions_works_on_a_key_a_saved_key_map_gives_
     std::fs::write(&file, saved).expect("the saved key map is in place");
     let mut c = HeadlessClient::new(spec());
     let mut hands = Hands::new();
-    let bound: Vec<(u32, usize)> = free
+    let bound: Vec<_> = free
         .iter()
         .map(|(action, _)| {
-            let keys = c
+            let mut keys = c
                 .app_mut()
                 .input_manager_mut()
                 .expect("the input shell")
                 .keys_for_action(ActionId(*action), pyreal_input::pyreal::INPUT_MAP);
-            (*action, keys.len())
+            keys.sort_unstable();
+            keys
         })
         .collect();
-    let all_bound = bound.iter().all(|(_, n)| *n == 1);
+    let all_bound = bound == given;
 
     let flips = |c: &mut HeadlessClient, hands: &mut Hands, code, name: &str| {
         let was = pref_on(name);

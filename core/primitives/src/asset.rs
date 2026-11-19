@@ -121,7 +121,7 @@ pub struct TextureData {
     pub format: TextureFormat,
     /// Provided/system-memory levels, level 0 first. Retail caps compressed system chains at four;
     /// eligible one-level uncompressed image resources separately request runtime GPU autogen
-    /// when the texture is created. UI, font and movie resources do not inherit that policy.
+    /// when the texture is created. UI and font resources do not inherit that policy.
     pub levels: Vec<Vec<u8>>,
 }
 

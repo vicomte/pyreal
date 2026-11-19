@@ -387,25 +387,7 @@ impl<S: Shell> App<S> {
             self.world.as_mut().and_then(|w| w.character.as_mut()),
             unowned,
         );
-        // `UiRequest::OpenUrl`, from the Options *Game / Support* page's two support-ticket
-        // buttons. Without this filter it would fall past every filter above and only be printed
-        // by the line below. See
-        // [`apply_open_url_requests`] for the complete consume-and-launch behavior.
-        let (unowned, shell_calls) = apply_open_url_requests(unowned);
-        for c in shell_calls {
-            // Deviation 2 in [`apply_open_url_requests`]: retail's `MessageBoxA` is out
-            // of reach of a `forbid(unsafe_code)` crate, so its **own text** goes to the scroll.
-            if let ShellCall::ErrorBox { text, .. } = c {
-                self.objects.world.scroll.add_feedback_to_scroll(
-                    &text,
-                    pyreal_client_model::scroll::LOCAL_ERROR_TYPE,
-                    true,
-                    0,
-                    pyreal_client_contract::feedback::Feedback::LOCAL,
-                );
-            }
-        }
-        let unowned = self.apply_session_requests(shell, unowned);
+        let unowned = self.apply_session_requests(unowned);
         for r in unowned {
             if self.unowned_gate.ready() {
                 let more = std::mem::take(&mut self.unowned_suppressed);
@@ -422,13 +404,11 @@ impl<S: Shell> App<S> {
         }
     }
 
-    /// The requests about the session and the process rather than the world: leaving, the
-    /// character list's operations, the selected character, the key bindings and the start of a
-    /// tell. A front end that handles one itself never passes it on; whatever it passes on is done
+    /// The requests about the session and the process rather than the world: leaving and the
+    /// character list's operations. A front end that handles one itself never passes it on; whatever it passes on is done
     /// here, the same way for every front end. Everything else is handed back.
     fn apply_session_requests(
         &mut self,
-        shell: &mut S,
         requests: Vec<pyreal_client_contract::UiRequest>,
     ) -> Vec<pyreal_client_contract::UiRequest> {
         use pyreal_client_contract::UiRequest;
@@ -437,15 +417,8 @@ impl<S: Shell> App<S> {
             match r {
                 UiRequest::CharacterAction(a) => self.run_character_actions(vec![a]),
                 UiRequest::CharGenAction(a) => self.run_chargen_actions(vec![a]),
-                UiRequest::SelectedAvatar(id) => self.host_state.selected_avatar = Some(id),
                 UiRequest::EndCharacterSession { .. } => self.log_off_character(),
-                UiRequest::DeviceDone => self.pump.done(),
                 UiRequest::Quit => self.quit_game(),
-                UiRequest::SaveKeyMap => {
-                    let outcome = shell.save_bindings();
-                    tracing::debug!("key bindings saved: {outcome:?}");
-                }
-                UiRequest::StartTell { name } => shell.start_tell(name),
                 UiRequest::CharacterCreation(open) => self.duties.creating_character = open,
                 other => rest.push(other),
             }

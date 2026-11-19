@@ -1,49 +1,21 @@
-//! Persistence: what survives a mode switch, a session and a re-install.
-//!
-//! Four stores keep UI state and each has a different lifetime:
+//! Persistence: what survives a session and a re-install.
 //!
 //! | Store | Lives in | Survives | Here |
 //! |---|---|---|---|
-//! | persistent UI state | memory, owned by the UI flow | a UI **mode switch** | state module |
-//! | The screen-layout file | `<prefs dir>\UI-<char>-<world>-<h>-<w>.txt` | a session and a resolution change | [`screen_layout`] |
 //! | `UserPreferences.ini` | `<install dir>` | everything | [`preferences`] |
 //! | `PlayerModule` | the **server** | account-wide | not in this crate |
 //!
-//! ## Where this lives, and why
-//!
-//! It cannot live in `pyreal-client`: eleven call sites in `dereth-ui-screens`' library and one in
-//! `dereth-ui`'s own `framework.rs` consume these types, and all of them sit *above* `dereth-ui`
-//! and *below* `pyreal-client`, so a move into the application crate would make two dependency
-//! cycles. `pyreal-client-contract` is the home below them all. The retired UI framework's `persist` is a
-//! re-export of this module.
-//!
-//! **The file I/O did not come with the types.** `ScreenLayout`'s `fopen` pair and the path
-//! builder its caller reaches through are `pyreal_client_shell::persist`, because opening a file is the
-//! application's job and a contract crate that touches `std::fs` is not a contract any more. What
-//! is here is the shape of the data, the text format, and the parse/serialise pair either side of
-//! it — all of which a server, a tool or a test can use with no disk at all.
+//! The file I/O is the application's: what is here is the shape of the data, the text format, and
+//! the parse/serialise pair either side of it.
 
 pub mod overlay_blocklist;
 pub mod persistent_data;
 pub mod preferences;
-pub mod screen_layout;
 
-pub use persistent_data::{CharacterIdentity, CharacterSet, UiPersistentData};
-pub use preferences::{
-    PreferenceDataType, UiPreferenceItem, UiPreferences, UserPreferences, FILE_NAME,
-};
-pub use screen_layout::{SavedWindow, ScreenLayout, WindowSlot, WINDOWS};
+pub use persistent_data::{CharacterIdentity, CharacterSet};
+pub use preferences::{UserPreferences, FILE_NAME};
 
-/// Everything the persistence parsers here can refuse to do.
-///
-/// At every `dereth-ui` call site this *is* `the retired UI framework's UiError::Persist(String)`: `dereth-ui`
-/// keeps the variant and converts (`impl From<PersistError> for UiError`), so a `?` there yields a
-/// `UiError::Persist`. The split is forced rather than
-/// chosen — `UiError`'s other variants carry `dereth-ui`'s own `ElementType` and `LayoutEnum`, which
-/// a crate whose one dependency is `pyreal-primitives` cannot name.
-///
-/// The `Display` text is `UiError::Persist`'s, `"persistence: {0}"`, character for character, so a
-/// message that reaches a log or a chat line reads the same whichever type carried it.
+/// Everything the persistence parsers here can refuse to do. `Display` reads `"persistence: {0}"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistError(pub String);
 

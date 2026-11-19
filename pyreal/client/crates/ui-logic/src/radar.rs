@@ -85,21 +85,9 @@ pub mod semantic {
     pub const PK_LITE: RadarColor = PINK;
 }
 
-/// The object bitfield bits the radar reads.
-///
-/// Defined in [`pyreal_client_contract::radar::bitfield`], because `pyreal_client_runtime::hud` reads `PK`,
-/// `PK_LITE` and `PLAYER` from here and both sides must name the same mask.
-pub use pyreal_client_contract::radar::bitfield;
-
 // -------------------------------------------------------------------------------------------
 // The filter
 // -------------------------------------------------------------------------------------------
-
-/// `RadarEnum`, the value an object's radar field carries.
-///
-/// Defined in [`pyreal_client_contract::radar::radar_enum`], beside [`bitfield`], for the same
-/// reason: `pyreal_client_runtime::hud` reads `UNDEF`.
-pub use pyreal_client_contract::radar::radar_enum;
 
 /// **The radar's filter**, and the reason a
 /// retail radar plots a handful of blips in a scene holding hundreds of objects.
@@ -171,6 +159,9 @@ pub enum BlipShape {
     Fellowship = 6,
     /// 7 `XBox` / `ThreatAllegiance` — the draw x box.
     ThreatAllegiance = 7,
+    /// 8 `Diamond` / `Staff` — Pyreal's own: a 5×5 diamond for advocates, sentinels and admins,
+    /// so their pink and cyan stand apart from PK-lite players and creatures.
+    Staff = 8,
 }
 
 impl BlipShape {
@@ -186,6 +177,7 @@ impl BlipShape {
             Self::FellowshipLeader => "Triangle",
             Self::Fellowship => "InvertedTriangle",
             Self::ThreatAllegiance => "XBox",
+            Self::Staff => "Diamond",
         }
     }
 
@@ -210,11 +202,34 @@ impl BlipShape {
                 .collect(),
             Self::FellowshipLeader => vec![(0, 0), (-1, 1), (0, 1), (1, 1)],
             Self::Fellowship => vec![(0, 0), (-1, -1), (0, -1), (1, -1)],
+            Self::Staff => vec![
+                (0, 0),
+                (0, -2),
+                (1, -1),
+                (2, 0),
+                (1, 1),
+                (0, 2),
+                (-1, 1),
+                (-2, 0),
+                (-1, -1),
+            ],
         }
     }
 }
 
-/// The radar panel's blip shape, in the client's exact decision order.
+/// Whether a player blip is one of the game's staff: an advocate wearing the aegis (the pink blip
+/// colour the server sends) or a sentinel or admin (cyan, sent or from the admin flag).
+#[must_use]
+pub fn is_staff(o: &RadarEntry) -> bool {
+    o.is_player
+        && matches!(
+            shared::color_role(Some(o)),
+            shared::ColorRole::Admin | shared::ColorRole::Override(6 | 9)
+        )
+}
+
+/// The radar panel's blip shape, in the client's exact decision order, except that staff who are
+/// not in the fellowship take [`BlipShape::Staff`].
 ///
 /// `player` is the player's own entry, or `None` before `PlayerDescReceived`.
 #[must_use]
@@ -225,6 +240,11 @@ pub fn get_blip_shape(o: Option<&RadarEntry>, player: Option<&RadarEntry>) -> Bl
     });
     match shared::shape_role(o, viewer) {
         shared::ShapeRole::Hidden => BlipShape::Undef,
+        shared::ShapeRole::Ordinary | shared::ShapeRole::Allegiance | shared::ShapeRole::Threat
+            if o.is_some_and(is_staff) =>
+        {
+            BlipShape::Staff
+        }
         shared::ShapeRole::Ordinary => BlipShape::Default,
         shared::ShapeRole::Allegiance => BlipShape::AllegianceMember,
         shared::ShapeRole::Threat => BlipShape::Threat,
@@ -244,6 +264,7 @@ pub use pyreal_client_contract::radar::radar_range;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyreal_client_contract::radar::bitfield;
 
     fn obj(bitfield: u32) -> RadarEntry {
         RadarEntry {
@@ -452,6 +473,52 @@ mod tests {
             get_blip_shape(Some(&obj(0)), Some(&obj(0))),
             BlipShape::Default
         );
+    }
+
+    /// Advocates, sentinels and admins take the staff diamond in their own colours; a PK-lite
+    /// player, pink too, keeps the plain cross, and a fellow keeps the fellowship triangle.
+    #[test]
+    fn staff_blips_take_the_diamond_in_their_retail_colours() {
+        let player = |f: u32| {
+            let mut o = obj(f | bitfield::PLAYER);
+            o.is_player = true;
+            o
+        };
+        let mut advocate = player(0);
+        advocate.blip_color = 6;
+        assert_eq!(get_blip_color(Some(&advocate)).hex, semantic::ADVOCATE.hex);
+        assert_eq!(get_blip_shape(Some(&advocate), None), BlipShape::Staff);
+
+        let mut sentinel = player(0);
+        sentinel.blip_color = 9;
+        assert_eq!(get_blip_color(Some(&sentinel)).hex, semantic::SENTINEL.hex);
+        assert_eq!(get_blip_shape(Some(&sentinel), None), BlipShape::Staff);
+
+        let admin = player(bitfield::ADMIN);
+        assert_eq!(get_blip_color(Some(&admin)).hex, semantic::ADMIN.hex);
+        assert_eq!(
+            get_blip_shape(Some(&admin), Some(&obj(0))),
+            BlipShape::Staff
+        );
+
+        let mut lite = player(bitfield::PK_LITE);
+        lite.is_pk_lite = true;
+        assert_eq!(get_blip_color(Some(&lite)).hex, semantic::PK_LITE.hex);
+        assert_eq!(get_blip_shape(Some(&lite), None), BlipShape::Default);
+
+        // A lifestone sending blue, or an NPC sending cyan, is not staff.
+        let mut npc = obj(0);
+        npc.blip_color = 9;
+        assert_eq!(get_blip_shape(Some(&npc), None), BlipShape::Default);
+
+        let mut fellow = advocate;
+        fellow.is_fellow = true;
+        assert_eq!(get_blip_shape(Some(&fellow), None), BlipShape::Fellowship);
+
+        // The diamond is 5×5, centre filled, and no other shape is.
+        let px = BlipShape::Staff.pixels();
+        assert_eq!(px.len(), 9);
+        assert!(px.contains(&(0, 0)) && px.contains(&(2, 0)) && px.contains(&(0, -2)));
     }
 
     /// the exact pixel offsets of all eight shapes, and the

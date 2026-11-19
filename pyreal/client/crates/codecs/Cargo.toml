@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-codecs"
-description = "The game's picture codecs with no device: DXT and BC blocks, JPEG, palettes, mip chains, surface decodes, the bitmap fonts' atlas and the cursor's pictures."
+description = "The game's picture codecs with no device: DXT and BC blocks, JPEG, palettes, mip chains, surface decodes and the cursor's pictures."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

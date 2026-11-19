@@ -682,6 +682,12 @@ fn the_window_title_carries_the_account_as_typed() {
     assert_eq!(parse(&[]).unwrap().window_title(), "Dereth");
     // An account of blanks is not an account. `-a` takes the next token whatever it is.
     assert_eq!(parse(&["-a", "   "]).unwrap().window_title(), "Dereth");
+    // `-a account:password` with no `-v` carries the password: the title names the account alone.
+    let c = parse(&["-a", "Tester:Secret"]).unwrap();
+    assert_eq!(c.window_title(), "Dereth | Tester");
+    assert_eq!(c.account_name(), "tester");
+    let c = parse(&["-a", "Tester:Secret", "-v", "pw"]).unwrap();
+    assert_eq!(c.window_title(), "Dereth | Tester:Secret");
 }
 
 /// `--no-console` parses like any other arity-`None` rebuild switch, and records itself.
@@ -887,11 +893,6 @@ fn everything_the_client_saves_hangs_off_the_preferences_files_directory() {
         journal.client_path().file_name().and_then(|n| n.to_str()),
         Some("Journal-Frostfell-Tester.txt")
     );
-
-    // The gameplay screen-layout path.
-    let layout =
-        pyreal_client_contract::persist::ScreenLayout::default_path(&dir.to_string_lossy());
-    assert!(layout.starts_with("root/dir"), "{layout}");
 }
 
 #[test]

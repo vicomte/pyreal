@@ -1,9 +1,8 @@
-//! The game's picture codecs with no device: DXT and BC blocks, JPEG, palettes, mip chains, surface decodes, the bitmap fonts' atlas and the cursor's pictures.
+//! The game's picture codecs with no device: DXT and BC blocks, JPEG, palettes, mip chains, surface decodes and the cursor's pictures.
 //!
 //! The modules: DXT and the BC formats (`dxt`, `d3dx_bc`, `block_codec`), JPEG (`jpeg`), palettes
 //! (`palette`), mip chains (`mip`), the pixel formats and a surface's decode to the formats a GPU
-//! takes (`pixel_format`, `texture`, `surface`, `sampler`), the bitmap fonts' glyph atlas (`font`)
-//! and the cursor's pictures (`cursor`).
+//! takes (`pixel_format`, `texture`, `surface`, `sampler`) and the cursor's pictures (`cursor`).
 //!
 //! **Depends on** `pyreal-primitives` and the contract (`pyreal-client-contract`). **Used by** the
 //! engine (`pyreal-engine`), the art pack's reader (`pyreal-art-pack`), the scene
@@ -19,7 +18,6 @@ pub mod block_codec;
 pub mod cursor;
 mod d3dx_bc;
 pub mod dxt;
-pub mod font;
 pub mod jpeg;
 pub mod mip;
 pub mod palette;
@@ -60,10 +58,6 @@ pub enum RenderError {
     /// The JPEG decoder rejected the stream, or produced something the client would not accept.
     #[error("jpeg decode failed: {0}")]
     Jpeg(String),
-    /// The glyph sheet does not fit a 256x256 atlas, which is what the client's font-texture
-    /// setup returns false for.
-    #[error("font atlas overflow: the glyph range does not fit 256x256")]
-    FontAtlasOverflow,
     /// A path the decoder deliberately does not implement; see the message for which and why.
     #[error("unsupported: {0}")]
     Unsupported(&'static str),

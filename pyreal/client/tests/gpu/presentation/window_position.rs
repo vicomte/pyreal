@@ -21,8 +21,10 @@ mod wired {
 
     use pyreal_client::app::App;
     use pyreal_client_contract::options::store;
-    use pyreal_client_contract::window_proc::Rect;
+    use pyreal_client_contract::window_proc::{Rect, ScreenMetrics};
     use pyreal_client_contract::{PrefValue, UiRequest};
+    use pyreal_client_runtime::app::Platform;
+    use pyreal_client_runtime::platform::window::{NullWindow, WindowHost};
     use {pyreal_client_runtime::config::Config, pyreal_client_runtime::config::Preferences};
 
     const RESOLUTION: &str = "Display.Resolution";
@@ -36,6 +38,43 @@ mod wired {
     }
 
     fn app_with(resolution: Option<&str>) -> App {
+        let mut a = App::new(config(resolution)).expect("an application");
+        a.start_shell().expect("the shell starts");
+        a
+    }
+
+    /// The headless window, but one the setting really makes full screen, as on Windows. A Mac's
+    /// window has its own button and offers none (721e2290).
+    struct OffersFullScreen(NullWindow);
+
+    impl WindowHost for OffersFullScreen {
+        fn client_size(&self) -> (u32, u32) {
+            self.0.client_size()
+        }
+        fn screen_metrics(&self, frame: (i32, i32, i32)) -> ScreenMetrics {
+            self.0.screen_metrics(frame)
+        }
+        fn offers_full_screen(&self) -> bool {
+            true
+        }
+    }
+
+    /// [`app_with`] in a window that offers full screen.
+    fn app_offering_full_screen(resolution: Option<&str>) -> App {
+        let cfg = config(resolution);
+        let (w, h) = (cfg.width, cfg.height);
+        let mut renderer = pyreal_client_shell::gpu::Renderer::new(None, w, h).expect("a device");
+        renderer.set_presentation_sync(false, cfg.display.sync_to_refresh);
+        let platform = Platform {
+            window: Box::new(OffersFullScreen(NullWindow::new(w, h))),
+            ..Platform::headless(w, h)
+        };
+        let mut a = App::with_platform(cfg, Box::new(renderer), platform).expect("an application");
+        a.start_shell().expect("the shell starts");
+        a
+    }
+
+    fn config(resolution: Option<&str>) -> Config {
         assert!(
             pyreal_dat::testing::have_dats(),
             "the retail dats are this file's oracle: none at {} -- set PYREAL_TEST_DAT_DIR",
@@ -60,9 +99,7 @@ mod wired {
         // These tests explicitly request windowed mode so they measure a windowed rectangle
         // rather than the borderless whole-monitor placement.
         cfg.display.full_screen = false;
-        let mut a = App::new(cfg).expect("an application");
-        a.start_shell().expect("the shell starts");
-        a
+        cfg
     }
 
     /// Allow two frames for request draining and the subsequent presentation poll (the apply lags
@@ -228,10 +265,10 @@ mod wired {
     /// Emit the full-screen preference request the options page sends, on and then off, in the
     /// world with the window moved off the screen centre. While full screen the computed rectangle
     /// is the whole monitor; leaving it restores the top-left the window had before, where retail
-    /// centres the window on the screen.
+    /// centres the window on the screen. The window offers full screen, as on Windows.
     #[test]
     fn leaving_full_screen_puts_the_window_back_where_it_was() {
-        let mut a = app_with(Some("1600x900"));
+        let mut a = app_offering_full_screen(Some("1600x900"));
         enter_game(&mut a);
         // The saved 1600x900 does not fit at the creation centre, so the clamp moved it to
         // (320, 180): a position that is neither the creation centre nor the 1600x900 centre.

@@ -1,7 +1,6 @@
 //! Shared radar visibility, semantic roles, projection and world range.
 
 use crate::view::RadarEntry;
-use pyreal_primitives::num::to_i32;
 
 /// The object-description bitfield values read by the radar.
 ///
@@ -199,53 +198,6 @@ pub fn showable(entry: &RadarEntry) -> bool {
             entry.radar_enum,
             radar_enum::SHOW_MOVEMENT | radar_enum::SHOW_ATTACKING | radar_enum::SHOW_ALWAYS
         )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Geometry {
-    pub radius: i32,
-    pub center: (f32, f32),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Projection {
-    pub x: i32,
-    pub y: i32,
-    pub bright: bool,
-}
-
-pub const DIM_HEIGHT: f32 = 5.0;
-pub const DIM_FACTOR: f32 = 0.65;
-
-/// Filter and project one candidate. Both drawing and picking consume these surviving pixels.
-#[must_use]
-#[allow(clippy::cast_precision_loss)] // Pixel dimensions are exactly representable.
-pub fn project(entry: &RadarEntry, geometry: Geometry, range: f32) -> Option<Projection> {
-    if entry.is_self || !showable(entry) || entry.bitfield & bitfield::HIDDEN != 0 {
-        return None;
-    }
-    let (px, py, pz) = entry.player_space;
-    let range_sq = (range - 1.0) * (range - 1.0);
-    if px * px + py * py >= range_sq {
-        return None;
-    }
-    let scale = geometry.radius as f32 / range;
-    let x = to_i32(px * scale + geometry.center.0);
-    let y = to_i32(geometry.center.1 - py * scale);
-    let cx = to_i32(geometry.center.0);
-    let cy = to_i32(geometry.center.1);
-    if x < cx - geometry.radius
-        || x > cx + geometry.radius
-        || y < cy - geometry.radius
-        || y > cy + geometry.radius
-    {
-        return None;
-    }
-    Some(Projection {
-        x,
-        y,
-        bright: pz.abs() < DIM_HEIGHT,
-    })
 }
 
 #[cfg(test)]

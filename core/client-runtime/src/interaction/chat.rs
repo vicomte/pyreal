@@ -1414,7 +1414,7 @@ impl Interaction {
                     return;
                 }
                 let name = if auto {
-                    pyreal_client_contract::persist::ScreenLayout::AUTO_NAME.to_owned()
+                    "#auto".to_owned()
                 } else {
                     args.first().cloned().unwrap_or_default()
                 };

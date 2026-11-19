@@ -50,12 +50,6 @@ impl HudView<'_> {
 }
 
 impl GameView for HudView<'_> {
-    fn split_size(&self) -> i32 {
-        i32::try_from(self.world.split.split_size).unwrap_or(i32::MAX)
-    }
-    fn max_split_size(&self) -> i32 {
-        i32::try_from(self.world.split.max_split_size).unwrap_or(i32::MAX)
-    }
     fn era(&self) -> Option<&pyreal_client_contract::EraView> {
         Some(&self.hud.era)
     }
@@ -74,10 +68,6 @@ impl GameView for HudView<'_> {
     /// admin-hidden object. A salvage bag is named `Salvage (100)` by the shard and carries the
     /// material beside it, so the prefix is the whole difference between the shard's name and what
     /// retail draws. See [`Hud::refresh_display_names`] for why the answer is cached.
-    ///
-    /// The `NAME_APPROPRIATE` fork is not here: this seam hands out the singular and the plural
-    /// separately ([`Self::plural_name`]) and the widget picks by stack size, moving that test one
-    /// level out.
     fn name(&self, id: ObjectId) -> Option<&str> {
         if let Some(d) = self.hud.display_names.get(&id) {
             return (!d.singular.is_empty()).then_some(d.singular.as_str());
@@ -226,9 +216,6 @@ impl GameView for HudView<'_> {
         ))
     }
 
-    fn open_inventory_container(&self) -> Option<ObjectId> {
-        self.world.open_container.or_else(|| self.player())
-    }
     /// The loose items in server order, which is the grid order.
     fn container_contents(&self, id: ObjectId) -> &[ObjectId] {
         self.world.inventory(id).map_or(&[][..], |i| &i.items)
@@ -257,30 +244,6 @@ impl GameView for HudView<'_> {
             .map_or(&[], Vec::as_slice)
     }
 
-    /// The three conditions for the spellcasting endowment icon.
-    ///
-    /// There is no endowment unless the player holds an object at location `0x1000000`, that
-    /// object is known, its item type has the `0x8000` bit, and its spell id is non-zero.
-    ///
-    /// `0x8000` is `ITEM_TYPE::Caster`. Retail tests it as the sign of the type's second byte,
-    /// which reads like a range check and is not one.
-    fn endowment(&self) -> Option<(ObjectId, u32)> {
-        use pyreal_client_contract::panels::spellcasting::ENDOWMENT_LOCATION;
-        const CASTER: u32 = pyreal_rules::weenie::item_type::CASTER;
-        let (item, _) = self
-            .hud
-            .equipment
-            .iter()
-            .find(|(_, loc)| *loc == ENDOWMENT_LOCATION)
-            .copied()?;
-        let w = self.world.weenie(item)?;
-        if w.inq_type() & CASTER == 0 {
-            return None;
-        }
-        let spell = u32::from(w.pwd.spell_id.unwrap_or(0));
-        (spell != 0).then_some((item, spell))
-    }
-
     /// The paper doll's `(object, location)` pairs.
     ///
     /// `pyreal_client_model` keeps the inventory placements as
@@ -299,32 +262,6 @@ impl GameView for HudView<'_> {
         Some(pyreal_rules::capacity::capacity(
             self.world.weenie(id)?.pwd.items_capacity.unwrap_or(0),
         ))
-    }
-
-    /// The number of container slots this object supplies.
-    fn containers_capacity(&self, id: ObjectId) -> Option<i32> {
-        Some(pyreal_rules::capacity::capacity(
-            self.world.weenie(id)?.pwd.containers_capacity.unwrap_or(0),
-        ))
-    }
-
-    /// `set_waiting_state(1)` set it and only
-    /// the server's move-item and attempt-failed answers clear it. **There is no timeout**,
-    /// which is why the ghost can sit there for ever.
-    fn item_waiting(&self, id: ObjectId) -> bool {
-        self.world.weenie(id).is_some_and(|w| w.waiting)
-    }
-
-    /// The pending row, matched on the pair that names a list in
-    /// this build: the parent container id and the container list.
-    fn pending_row(
-        &self,
-        container: Option<ObjectId>,
-        containers_list: bool,
-    ) -> Option<(ObjectId, u32)> {
-        let p = self.world.pending_row?;
-        (Some(p.container) == container && p.containers_list == containers_list)
-            .then_some((p.item, p.index))
     }
 
     fn selection(&self) -> Option<ObjectId> {
@@ -358,19 +295,6 @@ impl GameView for HudView<'_> {
     /// with no branch.
     fn player_option(&self, o: pyreal_client_contract::PlayerOption) -> bool {
         self.world.player_system.options.get(option_ordinal(o))
-    }
-
-    /// Query the compiled-in default-option true-list, which
-    /// `pyreal_client_model::player::options::default_option_value` already represents. It is the
-    /// Character page's *Restore Defaults* button's only source.
-    ///
-    /// `Some` unconditionally: the client's function answers for every ordinal, so a `None` here
-    /// would mean *this host cannot say*, and this host can. The world is not consulted — the
-    /// default belongs to the option, not to the character.
-    fn player_option_default(&self, o: pyreal_client_contract::PlayerOption) -> Option<bool> {
-        Some(pyreal_client_model::player::options::default_option_value(
-            option_ordinal(o),
-        ))
     }
 
     /// `(property)` for a `Float` gameplay option — the Chat Options page's
@@ -430,10 +354,6 @@ impl GameView for HudView<'_> {
 
     fn radar_objects(&self) -> &[RadarEntry] {
         &self.hud.radar
-    }
-
-    fn radar_blank(&self) -> bool {
-        self.hud.radar_blank
     }
 
     // The enchantment counts and the portal storm level are deliberately left at the trait's
@@ -730,30 +650,12 @@ impl GameView for HudView<'_> {
             .cooldown_held(cooldown_id + 0x8000, pyreal_primitives::LocalTime(now))
     }
 
-    /// The plural-name query with flag 0 returns the stored `_plural_name`,
-    /// with the material prefix, applied to singular and plural names alike.
-    ///
-    /// `None` still means "no `_plural_name`", which is the condition the widget's fallback keys
-    /// on; the cached row carries `None` in exactly that case, so a cache hit cannot invent one.
-    fn plural_name(&self, id: ObjectId) -> Option<&str> {
-        if let Some(d) = self.hud.display_names.get(&id) {
-            return d.plural.as_deref();
-        }
-        let n = self.world.weenie(id)?.pwd.plural_name.as_deref()?;
-        (!n.is_empty()).then_some(n)
-    }
-
     fn player_coords(&self) -> Option<(f32, f32)> {
         self.hud.coords
     }
 
-    /// The identity the journal's page save needs. Composed in `App::frame`; see
-    /// [`Hud::journal_identity`].
     fn journal(&self) -> pyreal_client_contract::journal::JournalView {
         self.world.journal.view()
-    }
-    fn journal_identity(&self) -> Option<pyreal_client_contract::journal::JournalIdentity> {
-        self.hud.journal_identity.clone()
     }
 
     /// See [`Hud::game_date_time`].
@@ -777,11 +679,6 @@ impl GameView for HudView<'_> {
     /// and the chat sweep's radius cannot disagree.
     fn player_outside(&self) -> bool {
         self.hud.player_outside()
-    }
-
-    /// Current link status; see [`Hud::link_status`].
-    fn link_status(&self) -> Option<f64> {
-        self.hud.link_status
     }
 
     /// Current UI time as of this frame's `Hud::drive`.
@@ -1018,24 +915,9 @@ impl GameView for HudView<'_> {
         })
     }
 
-    /// Resolve the object carrying one spell component.
-    ///
-    /// Unlike [`Self::spell_examine`] above, this one reads the player's component tracker, **not**
-    /// [`Hud::component_catalogue`]: the answer is about what the player is *carrying*, which only
-    /// the tracker knows, and the tracker's rows were bucketed with the world's own copy of the
-    /// SCID map.
-    fn component_object_id(&self, scid: u32) -> Option<pyreal_primitives::ObjectId> {
-        self.world.component_object_id(scid)
-    }
-
     /// Test ownership of the component keyed by the row's SCID.
     fn component_is_owned(&self, scid: u32) -> bool {
         self.world.spell_component_is_owned(scid)
-    }
-
-    /// The component-tracker change edge, represented as a serial.
-    fn component_serial(&self) -> u64 {
-        self.world.magic.component_serial
     }
 
     /// `(id, &v, raw = 0)` — one of the six primary attributes, for
@@ -1367,70 +1249,6 @@ impl GameView for HudView<'_> {
         crate::trade_view::trade(self.world)
     }
 
-    /// Test whether the vendor accepts a dragged item `(id, true)`. Same
-    /// declared crossing: one line, and the whole decision is the inventory predicate.
-    fn vendor_drag_item_accepted(&self, item: ObjectId) -> bool {
-        self.world.drag_item_accepted(item)
-    }
-
-    /// `(id, quiet = 1)`'s ownership half.
-    /// The same declared crossing the line above is: one line, and the whole
-    /// decision is the inventory predicate -- which the drop path also calls, so the hint and the
-    /// drop cannot disagree about ownership.
-    fn trade_drag_item_acceptable(&self, item: ObjectId) -> bool {
-        self.world.trade_item_acceptable(item).is_none()
-    }
-
-    /// `(id, quiet = 1)` over the window's
-    /// own ground-object id.
-    ///
-    /// The hook-acceptance predicate is transcribed here rather than in `pyreal_client_model`
-    /// because both of its inputs are `PublicWeenieDesc` fields this file already reads the same
-    /// way for `item_valid_locations`, and because its two callers on the *drop* side
-    /// (the container-placement attempt and the drag-into-container legality check)
-    /// take the `OPENABLE` route the game model already owns -- adding a
-    /// second entry point there would duplicate that logic.
-    ///
-    /// `Weenie::is_hook` reproduces the native hook predicate's pair of tests: a
-    /// container that is not a hook accepts everything, which is every chest, corpse and ground
-    /// pack in the game.
-    fn external_container_drag_item_acceptable(&self, item: ObjectId, ground: ObjectId) -> bool {
-        // An unknown ground object accepts; an unknown item refuses.
-        let Some(container) = self.world.weenie(ground) else {
-            return true;
-        };
-        let Some(carried) = self.world.weenie(item) else {
-            return false;
-        };
-        if !container.is_hook() {
-            return true; // the accept arm, and the only one a chest or a corpse can reach.
-        }
-        // The next test: a hook with no house owner refuses, and sets the out-parameter nothing in
-        // this path reads.
-        if container.pwd.house_owner_iid.unwrap_or(ObjectId(0)).0 == 0 {
-            return false;
-        }
-        let valid = u32::from(carried.pwd.hook_type.unwrap_or(0));
-        let hook = u32::from(container.pwd.hook_type.unwrap_or(0));
-        // Test the carried object's own hook-type mask against the
-        // hook's location, then the item type against the hook's `_hook_item_types`.
-        valid != 0
-            && hook & valid != 0
-            && carried.pwd.obj_type & container.pwd.hook_item_types.unwrap_or(0) != 0
-    }
-
-    /// The item's `pwd._valid_locations`, for the equipment-slot check.
-    /// `None` when the object is not in the table.
-    fn item_valid_locations(&self, item: ObjectId) -> Option<u32> {
-        self.world
-            .weenie(item)
-            .map(|w| w.pwd.valid_locations.unwrap_or(0))
-    }
-
-    fn equipment_hover(&self, item: ObjectId) -> pyreal_client_contract::view::EquipmentHover {
-        self.world.equipment_hover(item)
-    }
-
     /// The client predicate, answered by
     /// `pyreal_client_model::inventory::salvage::is_item_suitable`.
     ///
@@ -1442,47 +1260,12 @@ impl GameView for HudView<'_> {
     fn salvage_list(&self) -> pyreal_client_contract::panels::salvage::SalvageListView {
         self.world.salvage_list_view()
     }
-    fn salvage_item_suitable(&self, item: ObjectId, panel_material: u32) -> bool {
-        let Some(w) = self.world.weenie(item) else {
-            return false;
-        };
-        let multiple = character_option(
-            self.world,
-            pyreal_client_contract::PlayerOption::SalvageMultiple,
-        )
-        .unwrap_or(false);
-        pyreal_client_model::inventory::salvage::is_item_suitable(w, multiple, panel_material)
-    }
-
-    /// The client predicate -- `drag_item_acceptable`.
-    fn item_owned_by_player(&self, item: ObjectId) -> bool {
-        self.world.is_owned_by_player(item)
-    }
-
-    /// The item's material type, for the window's material latch.
-    fn item_material_type(&self, item: ObjectId) -> u32 {
-        self.world
-            .weenie(item)
-            .and_then(|w| w.pwd.material_type)
-            .unwrap_or(0)
-    }
 
     /// The item's class id —
     /// `drag_item_acceptable` hands it to the needs-more check and the item add puts it in
     /// the `HousePayment` it builds.
     fn item_wcid(&self, item: ObjectId) -> u32 {
         self.world.weenie(item).map_or(0, |w| w.pwd.wcid)
-    }
-
-    /// A single unstacked item pays **one**, while a stack pays its stack size.
-    /// Note what this is *not*:
-    /// it does not consult the item's value, which is why a trade note needs
-    /// a trade note's value, which is handled further down in `HousePaymentList`.
-    fn item_house_payment(&self, item: ObjectId) -> i32 {
-        self.world
-            .weenie(item)
-            .and_then(|w| w.pwd.stack_size)
-            .map_or(1, |n| if n == 0 { 1 } else { i32::from(n) })
     }
 
     /// The slumlord and its owner id, projected for the window.
@@ -1548,156 +1331,14 @@ impl GameView for HudView<'_> {
         self.hud.stats.house_profile_notices
     }
 
-    /// Copy the payment profile, apply every dropped payment, then compose the
-    /// requirements and paid-in-full result over that updated copy.
-    ///
-    /// The replay is the payment: retail mutates the working profile when a row is added and
-    /// reverses it when a row is removed, while preserving a pristine backup. Here `p` begins as
-    /// that pristine clone and the panel's row list supplies the mutations, so the two cannot drift.
-    fn slumlord_payment(
-        &self,
-        rent: bool,
-        drops: &[(u32, i32, Option<i32>)],
-    ) -> pyreal_client_contract::SlumlordPayment {
-        use pyreal_client_model::housing::HouseOp;
-        let Some((_, p)) = self.world.slumlord.as_ref() else {
-            return pyreal_client_contract::SlumlordPayment::default();
-        };
-        let op = if rent { HouseOp::Rent } else { HouseOp::Buy };
-        let mut p = p.clone();
-        for (wcid, amount, trade_note_value) in drops {
-            p.pay(op, *wcid, *amount, *trade_note_value);
-        }
-        pyreal_client_contract::SlumlordPayment {
-            // The house refresh uses `compose_text` for the buy tab and
-            // `compose_text2` for the rent tab. The asymmetry is retail's.
-            requirements: if rent {
-                p.compose_text2(op)
-            } else {
-                p.compose_text(op)
-            },
-            // The button update always asks about **`HouseOp::Buy`**, whichever tab is up.
-            paid_in_full: p.op_is_paid_in_full(HouseOp::Buy),
-        }
-    }
-
-    /// `(op, wcid)` over the same replay.
-    fn slumlord_needs_more(
-        &self,
-        rent: bool,
-        drops: &[(u32, i32, Option<i32>)],
-        wcid: u32,
-        trade_note_value: Option<i32>,
-    ) -> bool {
-        use pyreal_client_model::housing::HouseOp;
-        let Some((_, p)) = self.world.slumlord.as_ref() else {
-            return false;
-        };
-        let op = if rent { HouseOp::Rent } else { HouseOp::Buy };
-        let mut p = p.clone();
-        for (w, amount, note) in drops {
-            p.pay(op, *w, *amount, *note);
-        }
-        p.needs_more(op, wcid, trade_note_value) != 0
-    }
-
-    /// `(op, {wcid, num})` over the same replay.
-    fn slumlord_pay(
-        &self,
-        rent: bool,
-        drops: &[(u32, i32, Option<i32>)],
-        wcid: u32,
-        amount: i32,
-        trade_note_value: Option<i32>,
-    ) -> bool {
-        use pyreal_client_model::housing::HouseOp;
-        let Some((_, p)) = self.world.slumlord.as_ref() else {
-            return false;
-        };
-        let op = if rent { HouseOp::Rent } else { HouseOp::Buy };
-        let mut p = p.clone();
-        for (w, a, note) in drops {
-            p.pay(op, *w, *a, *note);
-        }
-        p.pay(op, wcid, amount, trade_note_value)
-    }
-
-    fn item_trade_note_value(&self, item: ObjectId) -> Option<i32> {
-        let wcid = self.world.weenie(item)?.pwd.wcid;
-        self.hud
-            .trade_note_values
-            .iter()
-            .find(|(_, mapped_wcid)| *mapped_wcid == wcid)
-            .and_then(|(value, _)| i32::try_from(*value).ok())
-    }
-
     /// Same declared crossing.
     fn selected_object(&self) -> Option<ObjectId> {
         self.world.selected
     }
 
-    /// The client predicate: the spell formula's targeting type is zero.
-    ///
-    /// `pyreal_client_model::magic::spell_target_type` is that walk (on the decrypted formula, and only
-    /// when its first five slots are filled: the last filled slot of the run that starts at slot 5,
-    /// or slot 4 when slot 5 is empty, through the component target-type lookup), and it is the same
-    /// result the
-    /// cast path branches on at its untargeted arm — so the button lights for
-    /// exactly the spells the cast path will send the untargeted-cast request `0x0048` for.
-    fn spell_is_untargeted(&self, spell_id: u32) -> bool {
-        let Some(base) = self
-            .hud
-            .spell_table
-            .as_ref()
-            .and_then(|t| t.spells.get(&spell_id))
-        else {
-            return false;
-        };
-        pyreal_client_model::magic::spell_target_type(base) == 0
-    }
-
-    /// Check whether the selected object is compatible with the spell, quietly —
-    /// the **quiet** call, unlike the spell-casting path's.
-    fn spell_target_compatible(&self, spell_id: u32) -> bool {
-        let Some(target) = self.world.selected else {
-            return false;
-        };
-        let Some(base) = self
-            .hud
-            .spell_table
-            .as_ref()
-            .and_then(|t| t.spells.get(&spell_id))
-        else {
-            return false;
-        };
-        let mask = pyreal_client_model::magic::spell_target_type(base);
-        // `quiet = 1`: the sink is a local nobody reads, as in the
-        // client. Building a tooltip must not put a line in the chat.
-        let mut quiet = pyreal_client_model::NullSink;
-        self.world
-            .object_compatible_with_spell_target_type(&mut quiet, Some(target), mask, true)
-            .is_ok()
-    }
-
     /// Whether the item's target-use flags permit using it on the player.
     fn useability(&self, object: ObjectId) -> Option<u32> {
         self.world.weenie(object)?.pwd.useability
-    }
-
-    fn item_useable_self_target(&self, item: ObjectId) -> bool {
-        let Some(w) = self.world.weenie(item) else {
-            return false;
-        };
-        crate::cursor::ItemUses(w.pwd.useability.unwrap_or(0)).is_useable_self_target()
-    }
-
-    /// Check whether the selected target is compatible with the item, quietly —
-    /// target first, source second.
-    fn item_target_compatible(&self, item: ObjectId) -> bool {
-        let Some(target) = self.world.selected else {
-            return false;
-        };
-        self.world.target_compatible_with_object(target, item)
     }
 
     /// The allegiance hierarchy, walked. The whole of the conversion, including
@@ -1727,18 +1368,6 @@ impl GameView for HudView<'_> {
             self.player_desc(),
             self.hud.quality_filter.as_ref(),
         )
-    }
-
-    /// `0x0003`'s count, straight off the world — see
-    /// [`pyreal_client_contract::GameView::allegiance_update_aborts`].
-    fn allegiance_update_aborts(&self) -> u64 {
-        self.world.allegiance_aborts
-    }
-
-    /// `0x0020`'s count, straight off the world — see
-    /// [`pyreal_client_contract::GameView::allegiance_updates`].
-    fn allegiance_updates(&self) -> u64 {
-        self.world.allegiance_updates
     }
 
     /// **The Portal Storm indicator's one input.**
@@ -1968,6 +1597,19 @@ impl GameView for HudView<'_> {
     /// With no experience table loaded the third arm cannot be taken and the share reads `0`,
     /// which is the same number the *share off* arm produces — the two are not distinguishable in
     /// the panel and are not meant to be: the client shows one integer.
+    fn ai_fellows(&self) -> Vec<pyreal_client_contract::AiFellowView> {
+        self.world
+            .ai_fellows
+            .iter()
+            .map(|f| pyreal_client_contract::AiFellowView {
+                id: ObjectId(f.guid),
+                name: f.name.clone(),
+                mode: f.mode.clone(),
+                in_fellowship: f.in_fellowship,
+            })
+            .collect()
+    }
+
     fn fellowship(&self) -> Option<pyreal_client_contract::FellowshipView> {
         use pyreal_client_contract::{FellowEntry, FellowshipView};
         let f = self.world.fellowship.as_ref()?;
@@ -2743,14 +2385,6 @@ impl GameView for HudView<'_> {
         component_categories(self.world)
     }
 
-    /// Look up a carried spell-component object in the tracker's object-id map.
-    ///
-    /// `.components` already keeps that map, filled by the component tracker's writers; this is
-    /// the only reader of it outside `pyreal-client-model`.
-    fn object_is_owned_component(&self, obj: pyreal_primitives::ObjectId) -> Option<u32> {
-        self.world.magic.components.object_is_owned_component(obj)
-    }
-
     /// `(0x18)` — available skill credits.
     fn skill_credits(&self) -> i64 {
         self.player_desc()
@@ -2775,12 +2409,6 @@ impl GameView for HudView<'_> {
         self.world.player_system.spell_filters
     }
 
-    /// `UNDEF` is mapped to `NONCOMBAT` because the toolbar has
-    /// no picture for "no mode" — all four stance buttons would be hidden — and a character in the
-    /// world is always in one of the four.
-    fn default_combat_mode(&self) -> u32 {
-        self.world.get_default_combat_mode(true).0.raw()
-    }
     fn combat_mode(&self) -> u32 {
         let m = self.world.combat.combat_mode.raw();
         if m == 0 {
@@ -2788,34 +2416,6 @@ impl GameView for HudView<'_> {
         } else {
             m
         }
-    }
-
-    /// The advanced-combat option gate read before combat UI updates.
-    ///
-    /// This is the option word the client reads, not `CombatState::advanced_combat_mode`: the
-    /// handler calls the accessor itself, while the combat system's cached copy is a separate read.
-    /// Both exist and both come from the same bit.
-    fn advanced_combat_ui(&self) -> bool {
-        self.world.player_system.options.advanced_combat_ui()
-    }
-
-    /// The local player's skill-advancement query for skill `0x32`.
-    ///
-    /// `Sac::Undef` (0) when no local player description has arrived, which is what the client's
-    /// null check produces: the handler still runs the comparison and
-    /// `0 < 2`, so the recklessness meter stays hidden.
-    fn recklessness_advancement_class(&self) -> u32 {
-        // A world whose rules hide the marker answers as an untrained character does, whatever
-        // the character holds.
-        if !self.hud.era.world_rules.recklessness_marker {
-            return 0;
-        }
-        self.player_desc().map_or(0, |q| {
-            pyreal_rules::skills::inq_skill_advancement_class(
-                q,
-                pyreal_client_contract::combat_notice::RECKLESSNESS_SKILL,
-            ) as u32
-        })
     }
 
     /// The producer for the Combat window's three read-back notices, with all four fields taken

@@ -41,6 +41,20 @@ pub enum Prompt {
     HouseBuyAs(String),
     /// Pay the house's rent on the owner's behalf.
     HouseRentByProxy,
+    /// An Advocate, `from`, offers a waypoint labelled `label` at `place` (as the game writes one).
+    AdvocateWaypoint {
+        from: String,
+        label: String,
+        place: String,
+    },
+    /// An Advocate, `from`, offers a note titled `title` for the journal.
+    AdvocateNote { from: String, title: String },
+    /// An Advocate, `from`, offers `count` journal pages with the way to `to`.
+    AdvocatePages {
+        from: String,
+        count: u32,
+        to: String,
+    },
 }
 
 /// A question as a UI shows it.
@@ -114,6 +128,11 @@ enum Rule {
         confirmation_type: i32,
         context_id: u32,
     },
+    /// An Advocate's offer, the server's Yes/No question in its own slot: answered either way.
+    AdvocateOffer {
+        confirmation_type: i32,
+        context_id: u32,
+    },
     /// The allegiance panel's swear, break and kick: a yes acts.
     Allegiance {
         action: AllegianceAction,
@@ -146,6 +165,9 @@ pub struct DialogService {
     next: QuestionId,
     generation: Option<u64>,
     open: Vec<(QuestionId, Rule)>,
+    /// Advocate offers waiting behind the one on screen, oldest first:
+    /// `(type, context, prompt)`.
+    offers: std::collections::VecDeque<(i32, u32, Prompt)>,
 }
 
 impl DialogService {
@@ -156,6 +178,7 @@ impl DialogService {
             world.minigame.cancel_resign_dialog();
         }
         self.open.clear();
+        self.offers.clear();
         self.generation = None;
     }
 
@@ -233,6 +256,7 @@ impl DialogService {
                 interaction.answer_travel(false);
             }
             self.open.clear();
+            self.offers.clear();
             ui.reset();
             self.generation = Some(ui.generation());
         }
@@ -303,6 +327,10 @@ impl DialogService {
                     context_id: c,
                 } => confirmation_type != 4 && t == confirmation_type && c == context_id,
                 Rule::AcceptSwear { context_id: c } => confirmation_type == 1 && c == context_id,
+                Rule::AdvocateOffer {
+                    confirmation_type: t,
+                    context_id: c,
+                } => t == confirmation_type && c == context_id,
                 _ => false,
             });
             let Some(at) = found else {
@@ -312,6 +340,12 @@ impl DialogService {
                     fellowship.first().map(|(c, _)| *c).inspect(|_| {
                         fellowship.remove(0);
                     })
+                } else if let Some(at) = self
+                    .offers
+                    .iter()
+                    .position(|(t, c, _)| *t == confirmation_type && *c == context_id)
+                {
+                    self.offers.remove(at).map(|(_, c, _)| c)
                 } else {
                     requests
                         .iter()
@@ -386,6 +420,16 @@ impl DialogService {
         // guard, so a second question while one is up takes over the open box's pair: nothing
         // new is shown, and answering the box answers the second question. Retail's own, kept.
         for (confirmation_type, context_id, text) in requests {
+            // An Advocate's offer, from a world with the extension, waits its turn in its own slot.
+            if let Some(prompt) = (confirmation_type == YES_NO
+                && interaction.has_extension(pyreal_protocol::extensions::ADVOCATE_OFFERS))
+            .then(|| advocate_prompt(&text))
+            .flatten()
+            {
+                self.offers
+                    .push_back((confirmation_type, context_id, prompt));
+                continue;
+            }
             if let Some((_, slot)) = self
                 .open
                 .iter_mut()
@@ -407,6 +451,21 @@ impl DialogService {
                 (false, true, false),
                 (None, None),
             );
+        }
+        // **An Advocate's offer**: one at a time in its own slot, not modal, the rest waiting.
+        if !self.has(|r| matches!(r, Rule::AdvocateOffer { .. })) {
+            if let Some((confirmation_type, context_id, prompt)) = self.offers.pop_front() {
+                self.ask(
+                    &mut *ui,
+                    Rule::AdvocateOffer {
+                        confirmation_type,
+                        context_id,
+                    },
+                    prompt,
+                    (false, false, true),
+                    (None, None),
+                );
+            }
         }
         // **The fellowship invitation**: its own slot, not modal, so it can sit beside the rest.
         for (context_id, name) in fellowship {
@@ -593,6 +652,10 @@ impl DialogService {
             Rule::ServerConfirmation {
                 confirmation_type,
                 context_id,
+            }
+            | Rule::AdvocateOffer {
+                confirmation_type,
+                context_id,
             } => {
                 if let Some(accepted) = answered {
                     interaction.confirm_server_confirmation(
@@ -642,6 +705,32 @@ impl DialogService {
             | Rule::PopUp => {}
         }
     }
+}
+
+/// `ConfirmationType.Yes_No`, the type a world files an Advocate's offer under.
+const YES_NO: i32 = 7;
+
+/// The prompt for an Advocate's offer, when `text` is the world's question making one.
+#[must_use]
+pub fn advocate_prompt(text: &str) -> Option<Prompt> {
+    use pyreal_client_model::dereth_extensions::{parse_offer, Offered};
+    let offer = parse_offer(text)?;
+    Some(match offer.offered {
+        Offered::Waypoint { label, ns, ew } => Prompt::AdvocateWaypoint {
+            from: offer.from,
+            label,
+            place: pyreal_client_model::cmd::waypoint::place_text(ns, ew),
+        },
+        Offered::JournalNote { title } => Prompt::AdvocateNote {
+            from: offer.from,
+            title,
+        },
+        Offered::JournalPages { count, to } => Prompt::AdvocatePages {
+            from: offer.from,
+            count,
+            to,
+        },
+    })
 }
 
 /// What the box says for a server confirmation, by its type: four of the five append the same
@@ -738,6 +827,221 @@ mod tests {
         let id = boxes.shown[0].id;
         boxes.answers.insert(id, answer);
         service.service(Some(boxes), inter, world, LocalTime(2.0));
+    }
+
+    /// `opcode`'s body `m` as the session hands it over.
+    fn ui_event<M: pyreal_protocol::Message>(
+        m: &M,
+    ) -> pyreal_client_net::client_session::SessionEvent {
+        let blob = pyreal_protocol::write_blob(m).expect("encodes");
+        pyreal_client_net::client_session::SessionEvent::UiEvent {
+            opcode: M::OPCODE,
+            blob,
+        }
+    }
+
+    /// A Yes/No question from the world, as the server words an Advocate's offer.
+    fn yes_no(context_id: u32, text: &str) -> pyreal_client_net::client_session::SessionEvent {
+        ui_event(&pyreal_protocol::comms::CharacterConfirmationRequest {
+            confirmation_type: 7,
+            context_id,
+            text: text.into(),
+        })
+    }
+
+    const WAYPOINT_OFFER: &str =
+        "Advocate Tamsin offers you a waypoint: Holtburg square (42.1N 33.6E). Add it?";
+    const NOTE_OFFER: &str = "Advocate Tamsin offers a note for your journal: \"Drudges\". Add it?";
+
+    fn answers(inter: &mut Interaction) -> Vec<(i32, u32, i32)> {
+        inter
+            .take_pending_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                pyreal_client_model::Request::ConfirmationResponse(c) => {
+                    Some((c.confirmation_type, c.context_id, c.accepted))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn advocate_offers_queue_in_their_own_slot_and_each_answer_reaches_its_question() {
+        let mut inter = Interaction::new();
+        inter.set_extensions(vec![pyreal_protocol::extensions::ADVOCATE_OFFERS.to_owned()]);
+        let mut world = pyreal_client_model::World::new();
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &[yes_no(1, WAYPOINT_OFFER), yes_no(2, NOTE_OFFER)],
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        let mut service = DialogService::default();
+        let mut boxes = Boxes::default();
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(1.0));
+        assert_eq!(boxes.shown.len(), 1, "one offer at a time, the other waits");
+        let first = boxes.shown[0].clone();
+        assert_eq!(
+            first.prompt,
+            Prompt::AdvocateWaypoint {
+                from: "Advocate Tamsin".into(),
+                label: "Holtburg square".into(),
+                place: "42.1N 33.6E".into(),
+            }
+        );
+        assert!(!first.modal && first.all_at_once);
+
+        boxes.answers.insert(first.id, Some(true));
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(2.0));
+        assert_eq!(answers(&mut inter), [(7, 1, 1)], "Accept says yes");
+        assert_eq!(boxes.shown.len(), 1, "the next offer comes up");
+        assert_eq!(
+            boxes.shown[0].prompt,
+            Prompt::AdvocateNote {
+                from: "Advocate Tamsin".into(),
+                title: "Drudges".into(),
+            }
+        );
+        boxes.answers.insert(boxes.shown[0].id, Some(false));
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(3.0));
+        assert_eq!(answers(&mut inter), [(7, 2, 0)], "Decline says no");
+        assert!(boxes.shown.is_empty());
+    }
+
+    #[test]
+    fn an_expired_offer_closes_and_one_still_waiting_is_never_shown() {
+        let mut inter = Interaction::new();
+        inter.set_extensions(vec![pyreal_protocol::extensions::ADVOCATE_OFFERS.to_owned()]);
+        let mut world = pyreal_client_model::World::new();
+        let mut service = DialogService::default();
+        let mut boxes = Boxes::default();
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &[yes_no(1, WAYPOINT_OFFER), yes_no(2, NOTE_OFFER)],
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(1.0));
+        let done = |context_id| {
+            ui_event(&pyreal_protocol::comms::CharacterConfirmationDone {
+                confirmation_type: 7,
+                context_id,
+            })
+        };
+        // The waiting one expires first, then the one on screen.
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &[done(2), done(1)],
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(31.0));
+        assert!(boxes.shown.is_empty(), "both gone");
+        assert_eq!(
+            answers(&mut inter),
+            [(7, 2, 0), (7, 1, 0)],
+            "the world hears no for each, which releases its question"
+        );
+    }
+
+    #[test]
+    fn without_the_extension_an_offer_is_the_game_s_own_question() {
+        let mut inter = Interaction::new();
+        let mut world = pyreal_client_model::World::new();
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &[yes_no(1, WAYPOINT_OFFER)],
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        let mut service = DialogService::default();
+        let mut boxes = Boxes::default();
+        service.service(Some(&mut boxes), &mut inter, &mut world, LocalTime(1.0));
+        assert_eq!(boxes.shown[0].prompt, Prompt::Text(WAYPOINT_OFFER.into()));
+        assert!(boxes.shown[0].modal);
+    }
+
+    #[test]
+    fn accepted_offers_set_the_waypoint_and_add_the_note_and_the_fellows_list_is_kept() {
+        use pyreal_protocol::extensions::{
+            AiFellow, AiFellows, JournalEntry, Waypoint, ADVOCATE_OFFERS, AI_FELLOWS,
+        };
+        let fellows = AiFellows {
+            fellows: vec![AiFellow {
+                guid: 0x5000_0002,
+                name: "~Aerin".into(),
+                mode: "heal".into(),
+                in_fellowship: true,
+            }],
+        };
+        let waypoint = Waypoint {
+            from: 0x5000_0003,
+            from_name: "Advocate Tamsin".into(),
+            label: "Holtburg square".into(),
+            cell: 0xA9B4_0031,
+            x: 84.0,
+            y: 7.5,
+            z: 94.0,
+        };
+        let note = JournalEntry {
+            from: 0x5000_0003,
+            from_name: "Advocate Tamsin".into(),
+            title: "Drudges".into(),
+            text: "South of town.".into(),
+            location: None,
+        };
+        let events = [ui_event(&fellows), ui_event(&waypoint), ui_event(&note)];
+
+        // A world that never agreed to them: nothing is taken.
+        let mut inter = Interaction::new();
+        let mut world = pyreal_client_model::World::new();
+        world.journal.set_identity(None);
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &events,
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        assert!(world.ai_fellows.is_empty());
+        assert!(inter.take_waypoint_commands().is_empty());
+        assert_eq!(world.journal.view().draft.title, "");
+
+        inter.set_extensions(vec![AI_FELLOWS.to_owned(), ADVOCATE_OFFERS.to_owned()]);
+        crate::interaction::apply_events_at_boundary(
+            &mut inter,
+            &events,
+            &mut world,
+            None,
+            &mut |_, _, _| {},
+        );
+        assert_eq!(world.ai_fellows, fellows.fellows);
+        let set = inter.take_waypoint_commands();
+        let [(pyreal_client_model::cmd::waypoint::WaypointCommand::Set { ns, ew, name }, _)] =
+            set.as_slice()
+        else {
+            panic!("one waypoint set: {set:?}");
+        };
+        assert_eq!(name.as_deref(), Some("Holtburg square"));
+        assert!(
+            (ns - 42.1).abs() < 0.05 && (ew - 33.6).abs() < 0.05,
+            "{ns} {ew}"
+        );
+        let page = world.journal.view().draft;
+        assert_eq!(
+            (
+                page.label.as_str(),
+                page.from.as_str(),
+                page.title.as_str(),
+                page.notes.as_str()
+            ),
+            ("Advocate", "Advocate Tamsin", "Drudges", "South of town.")
+        );
     }
 
     #[test]

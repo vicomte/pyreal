@@ -40,6 +40,7 @@ pub mod comms;
 
 pub mod error;
 pub mod events;
+pub mod extensions;
 pub mod items;
 pub mod login;
 pub mod movement;

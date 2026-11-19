@@ -134,6 +134,8 @@ pub enum SessionEvent {
     TurbineChat(Vec<u8>),
     /// A DDD exchange step.
     Ddd(DddEvent),
+    /// `0xF7EF` answered: the Dereth extensions the world agreed to.
+    Extensions(Vec<String>),
     /// A UI-queue message with its ordering resolved: the blob **without** any `OrderedEventHeader`, so it
     /// begins with its own type dword.
     UiEvent { opcode: Opcode, blob: Vec<u8> },
@@ -192,6 +194,13 @@ pub struct Session<T: Transport> {
     stampers: std::collections::HashMap<ObjectId, PropertySequenceGate>,
     account: String,
     world_name: Option<String>,
+    /// Whether this connection names Dereth's extensions (`0xF7EF`); off, it sends what retail
+    /// sends and nothing more.
+    offer_extensions: bool,
+    /// Whether the handshake has gone out on this connection.
+    extensions_asked: bool,
+    /// The Dereth extensions the world answered with; empty from a world that never answers.
+    extensions: Vec<String>,
     characters: LoginCharacterSet,
     player_id: Option<ObjectId>,
     /// Whether character generation is awaiting a verification response; this is the
@@ -257,6 +266,9 @@ impl<T: Transport> Session<T> {
             stampers: std::collections::HashMap::new(),
             account: String::new(),
             world_name: None,
+            offer_extensions: false,
+            extensions_asked: false,
+            extensions: Vec::new(),
             characters: LoginCharacterSet::default(),
             player_id: None,
             chargen_pending: false,
@@ -319,6 +331,17 @@ impl<T: Transport> Session<T> {
     #[must_use]
     pub fn world_name(&self) -> Option<&str> {
         self.world_name.as_deref()
+    }
+
+    /// Name Dereth's extensions to the world once the character list comes, before entering it.
+    pub fn offer_extensions(&mut self, on: bool) {
+        self.offer_extensions = on;
+    }
+
+    /// The Dereth extensions the world agreed to (see [`pyreal_protocol::extensions`]).
+    #[must_use]
+    pub fn extensions(&self) -> &[String] {
+        &self.extensions
     }
 
     #[must_use]
@@ -926,6 +949,22 @@ impl<T: Transport> Session<T> {
                 self.characters = set.clone();
                 self.flow.character_set_received(&mut actions);
                 self.events.push(SessionEvent::CharacterSet(Box::new(set)));
+                // Once a connection, before entering the world: a world that knows Dereth's
+                // extensions answers with those it has, and any other drops it unread.
+                if self.offer_extensions && !self.extensions_asked {
+                    self.extensions_asked = true;
+                    self.send_extensions_handshake();
+                }
+            }
+            Opcode::DERETH_EXTENSIONS => {
+                let m = decode!(pyreal_protocol::extensions::DerethExtensions);
+                self.extensions = m
+                    .names
+                    .into_iter()
+                    .filter(|n| pyreal_protocol::extensions::KNOWN.contains(&n.as_str()))
+                    .collect();
+                self.events
+                    .push(SessionEvent::Extensions(self.extensions.clone()));
             }
             Opcode::LOGIN_WORLD_INFO => {
                 let w = decode!(pyreal_protocol::login::LoginWorldInfo);
@@ -1121,6 +1160,20 @@ impl<T: Transport> Session<T> {
     /// [`crate::client_session::dispatch::database::dispatch`]'s `send_end` and needs no caller.
     pub fn send_ddd_end(&mut self) {
         self.send_bare(&pyreal_protocol::admin::DddEndDdd);
+    }
+
+    /// `0xF7EF`: the Dereth extensions this client knows, on queue 5. The message has no row in
+    /// the opcode table, so it is framed here rather than by [`outbound::build`].
+    fn send_extensions_handshake(&mut self) {
+        let hello = pyreal_protocol::extensions::DerethExtensions {
+            names: pyreal_protocol::extensions::KNOWN
+                .iter()
+                .map(|n| (*n).to_owned())
+                .collect(),
+        };
+        if let Ok(payload) = pyreal_protocol::write_blob(&hello) {
+            self.transmit(NetQueue::ClientCache, false, &payload);
+        }
     }
 
     /// `0xF7EE`: the patch stream could not be taken or finished; the server sends what

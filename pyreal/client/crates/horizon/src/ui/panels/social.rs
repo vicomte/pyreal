@@ -4,6 +4,9 @@
 //! squelch off, and the allegiance with swearing, breaking and releasing (each after the game's
 //! own question).
 //! While a window is open the game is asked for its live updates, as its panels ask.
+//! On a world that tells the client its AI Players, each AI fellow's row shows its mode, and the
+//! leader sets the selected one's mode (`@aifellow`) and gives it orders (a tell); a player in no
+//! fellowship does the same for the AI Players following them.
 
 use pyreal_client_contract::view::{AllegianceAction, PlayerOption};
 use pyreal_client_contract::UiRequest;
@@ -29,6 +32,12 @@ const FIELD_H: f32 = 34.0;
 
 /// How tall a button along a window's foot is, in layout units.
 const BUTTON_H: f32 = 30.0;
+
+/// How tall the AI fellow controls are, in layout units: two rows of buttons.
+const AI_CONTROLS_H: f32 = 64.0;
+
+/// One AI fellow control: its name, what it does, whether it is lit, and what it asks.
+type ControlButton<'a> = (&'a str, &'a str, bool, UiRequest);
 
 impl Windows {
     /// While the social or allegiance window is open, or the HUD's party bars show a
@@ -115,10 +124,26 @@ impl Windows {
                     Rect::new(body.x, top + 96.0 * k, body.w, 120.0 * k),
                     out,
                 );
+                self.ai_followers(
+                    p,
+                    ctx,
+                    state,
+                    Rect::new(body.x, top + 166.0 * k, body.w, foot - top - 166.0 * k),
+                    out,
+                );
                 return;
             };
             let me = state.player_id;
             let leader = me == Some(f.leader);
+            let ai_fellow = |id: ObjectId| {
+                state
+                    .ai_fellows
+                    .iter()
+                    .find(|a| a.id == id && a.in_fellowship)
+            };
+            // The leader of a fellowship with AI Players in it has their controls.
+            let ai_controls = leader && f.members.iter().any(|m| ai_fellow(m.id).is_some());
+            let controls_h = if ai_controls { AI_CONTROLS_H * k } else { 0.0 };
             p.text(&name, body.x + 8.0 * k, top, &f.name);
             p.text_in(
                 &dim,
@@ -135,7 +160,7 @@ impl Windows {
                 body.x,
                 top + 26.0 * k,
                 body.w,
-                (foot - 78.0 * k - top - 26.0 * k).max(0.0),
+                (foot - 78.0 * k - controls_h - top - 26.0 * k).max(0.0),
             );
             let rows = kit::ScrollList::begin(
                 p,
@@ -165,7 +190,15 @@ impl Windows {
                     &dim,
                     Rect::new(row.x + 8.0 * k, y + 24.0 * k, row.w * 0.5, 20.0 * k),
                     Align::Left,
-                    &format!("Level {}  ·  {}% of shared XP", m.level, m.xp_percent),
+                    &match ai_fellow(m.id) {
+                        Some(a) => format!(
+                            "Level {}  ·  {}% of shared XP  ·  {}",
+                            m.level,
+                            m.xp_percent,
+                            mode_name(&a.mode)
+                        ),
+                        None => format!("Level {}  ·  {}% of shared XP", m.level, m.xp_percent),
+                    },
                 );
                 let gx = row.x + row.w * 0.52;
                 let gw = row.w * 0.44;
@@ -201,6 +234,27 @@ impl Windows {
             let fellow = self
                 .fellow_selected
                 .filter(|id| f.members.iter().any(|m| m.id == *id) && Some(*id) != me);
+            if ai_controls {
+                let strip = Rect::new(
+                    body.x,
+                    foot - 78.0 * k - controls_h + 4.0 * k,
+                    body.w,
+                    controls_h - 8.0 * k,
+                );
+                // The selected AI fellow, or the only one.
+                let mut ais = f
+                    .members
+                    .iter()
+                    .filter_map(|m| ai_fellow(m.id).map(|a| (m.id, a)));
+                let only = match (ais.next(), ais.next()) {
+                    (Some(one), None) => Some(one),
+                    _ => None,
+                };
+                let chosen = fellow
+                    .and_then(|id| ai_fellow(id).map(|a| (id, a)))
+                    .or(only);
+                self.ai_fellow_controls(p, ctx, strip, chosen, out);
+            }
             let recruit_target = selected_player
                 .as_ref()
                 .map(|(id, _)| *id)
@@ -374,6 +428,168 @@ impl Windows {
                 if let Some(f) = chosen {
                     out.requests.push(UiRequest::RemoveFriend { target: f.id });
                     self.friend_selected = None;
+                }
+            }
+        }
+    }
+
+    /// The AI Players following a player in no fellowship, each with its mode, and the controls
+    /// for the selected one or the only one: they take a mode and orders from whoever they follow.
+    fn ai_followers(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        r: Rect,
+        out: &mut Outcome,
+    ) {
+        let followers: Vec<_> = state
+            .ai_fellows
+            .iter()
+            .filter(|a| !a.in_fellowship)
+            .collect();
+        if followers.is_empty() {
+            return;
+        }
+        let k = p.scale;
+        let name = TextStyle::new(Family::Body, 14.0, ctx.colours.text()).edge(ctx.colours.edge());
+        let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
+        p.text(&dim, r.x + 8.0 * k, r.y, "AI Players following you");
+        let controls_h = AI_CONTROLS_H * k;
+        let list = Rect::new(
+            r.x,
+            r.y + 20.0 * k,
+            r.w,
+            (r.h - 20.0 * k - controls_h).max(0.0),
+        );
+        let rows = kit::ScrollList::begin(
+            p,
+            ctx,
+            list,
+            followers.len(),
+            (ROW_H + 2.0) * k,
+            &mut self.fellows_scroll,
+        );
+        for (i, a) in followers.iter().enumerate() {
+            let Some(row) = rows.row(i, ROW_H * k) else {
+                continue;
+            };
+            let on = self.fellow_selected == Some(a.id);
+            if on || ctx.input.hover(&row) {
+                crate::ui::pregame::list_highlight(p, row, on);
+            }
+            p.text_in(
+                &name,
+                Rect::new(row.x + 8.0 * k, row.y, row.w * 0.6, row.h),
+                Align::Left,
+                &a.name,
+            );
+            p.text_in(
+                &dim,
+                Rect::new(row.x, row.y, row.w - 8.0 * k, row.h),
+                Align::Right,
+                &mode_name(&a.mode),
+            );
+            if ctx.over(&row) && ctx.input.clicked(&row) {
+                self.fellow_selected = Some(a.id);
+            }
+        }
+        rows.end(p, ctx);
+        let chosen = self
+            .fellow_selected
+            .and_then(|id| followers.iter().find(|a| a.id == id))
+            .or_else(|| (followers.len() == 1).then(|| &followers[0]))
+            .map(|a| (a.id, *a));
+        let strip = Rect::new(r.x, list.bottom() + 4.0 * k, r.w, controls_h - 8.0 * k);
+        self.ai_fellow_controls(p, ctx, strip, chosen, out);
+    }
+
+    /// An AI fellow's mode and orders, for the fellowship's leader; a hint while there are several
+    /// and none is selected.
+    fn ai_fellow_controls(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        r: Rect,
+        chosen: Option<(ObjectId, &pyreal_client_contract::view::AiFellowView)>,
+        out: &mut Outcome,
+    ) {
+        use pyreal_client_model::dereth_extensions::{FellowMode, FellowOrder};
+        let k = p.scale;
+        let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
+        let Some((id, fellow)) = chosen else {
+            p.text_in(
+                &dim,
+                Rect::new(r.x + 8.0 * k, r.y, r.w - 16.0 * k, r.h),
+                Align::Left,
+                "Select an AI Player to set its mode or give it an order.",
+            );
+            return;
+        };
+        let label_w = 52.0 * k;
+        let row_h = (r.h - 4.0 * k) / 2.0;
+        let current = FellowMode::from_word(&fellow.mode);
+        let rows: [(&str, Vec<ControlButton<'_>>); 2] = [
+            (
+                "Mode",
+                FellowMode::ALL
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.name(),
+                            m.says(),
+                            current == Some(*m),
+                            UiRequest::ChatLineOnBehalf {
+                                text: m.command(id),
+                                window: 0,
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            (
+                "Order",
+                FellowOrder::ALL
+                    .iter()
+                    .map(|o| {
+                        (
+                            o.name(),
+                            o.says(),
+                            false,
+                            UiRequest::Tell {
+                                target: id,
+                                text: o.word().to_owned(),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+        ];
+        for (n, (label, buttons)) in rows.into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let y = r.y + n as f32 * (row_h + 4.0 * k);
+            p.text_in(
+                &dim,
+                Rect::new(r.x + 8.0 * k, y, label_w, row_h),
+                Align::Left,
+                label,
+            );
+            #[allow(clippy::cast_precision_loss)]
+            let count = buttons.len() as f32;
+            let bw = (r.w - label_w - 8.0 * k - (count - 1.0) * 4.0 * k) / count;
+            for (i, (name, says, lit, request)) in buttons.into_iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let b = Rect::new(
+                    r.x + label_w + 8.0 * k + i as f32 * (bw + 4.0 * k),
+                    y,
+                    bw,
+                    row_h,
+                );
+                if kit::button_lit(p, ctx, b, name, true, lit) && !lit {
+                    out.requests.push(request);
+                }
+                if ctx.input.hover(&b) {
+                    self.tip = Some((name.to_owned(), vec![says.to_owned()]));
                 }
             }
         }
@@ -785,6 +1001,13 @@ pub fn squelch_removal(entry: &pyreal_client_contract::view::SquelchEntry) -> Ui
 
 /// Why Swear is off, in the order the shared rule refuses: a patron already, too little
 /// experience, or no player to swear to selected.
+/// An AI fellow's mode as the window names it: the world's word, named where it is one this
+/// client knows.
+fn mode_name(word: &str) -> String {
+    pyreal_client_model::dereth_extensions::FellowMode::from_word(word)
+        .map_or_else(|| word.to_owned(), |m| m.name().to_owned())
+}
+
 fn swear_refusal(state: &GameState) -> &'static str {
     if state.roster.patron.is_some() {
         "You already have a patron."

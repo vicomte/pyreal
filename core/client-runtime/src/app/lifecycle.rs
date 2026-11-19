@@ -82,10 +82,11 @@ impl<S: Shell> App<S> {
             seq,
         )?;
         link.net.set_logon_version(&self.cfg.logon_version);
+        self.interaction.set_extensions(Vec::new());
         self.link = Some(link);
         tracing::info!(
             "session begun: {} on {}:{}",
-            self.cfg.account,
+            self.cfg.account_name(),
             self.cfg.host,
             self.cfg.port
         );
@@ -275,7 +276,6 @@ impl<S: Shell> App<S> {
         self.pending_ddd.clear();
         self.bulk = None;
         self.ddd_invalidation = None;
-        self.pending_auto_layout = false;
         self.connect_failure = None;
         self.last_net_error = None;
         self.last_link_status = None;

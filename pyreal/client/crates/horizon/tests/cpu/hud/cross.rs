@@ -147,6 +147,7 @@ fn a_pressed_with_a_question_on_screen_says_yes_to_it() {
         question: true,
         modal: true,
         waiting: 0,
+        offer: None,
         text: "Really?".into(),
     }];
     let mut h = Harness::new(Default::default());

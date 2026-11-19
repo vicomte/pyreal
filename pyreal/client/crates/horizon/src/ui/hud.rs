@@ -2464,16 +2464,37 @@ impl Hud {
                 name.clone()
             };
             let lw = p.text(&name_style, x + 22.0 * k, y + 2.0 * k, &label);
+            let mut after = x + 28.0 * k + lw;
             // The leader's mark beside the name.
             if *leader {
-                let b = Rect::new(x + 28.0 * k + lw, y + 4.0 * k, 16.0 * k, 16.0 * k);
+                let b = Rect::new(after, y + 4.0 * k, 16.0 * k, 16.0 * k);
                 p.fill(b, 0xFFE8_C060);
                 p.outline(b, 1.0 * k, 0xFF40_2808);
                 p.text_in(&badge, b, Align::Centre, "L");
                 if ctx.over(&b) {
                     self.tip("Fellowship leader", vec![]);
                 }
+                after = b.right() + 6.0 * k;
             }
+            // An AI Player's modes: all five for the leader to choose from, else only its own.
+            let ai = (i > 0)
+                .then(|| party_member(state, i, name))
+                .flatten()
+                .and_then(|id| {
+                    state
+                        .ai_fellows
+                        .iter()
+                        .find(|a| a.id == id && a.in_fellowship)
+                });
+            let leads = self_leads
+                || state
+                    .fellowship_view
+                    .as_ref()
+                    .is_some_and(|f| Some(f.leader) == state.player_id);
+            let on_icon = ai.is_some_and(|ai| {
+                let r = Rect::new(after, y + 1.0 * k, 0.0, 21.0 * k);
+                self.ai_mode_icons(p, ctx, r, ai, leads, out)
+            });
             let hpb = Rect::new(x + 22.0 * k, y + 24.0 * k, 120.0 * k, 10.0 * k);
             kit::gauge(p, hpb, hp.ratio(), health);
             let spb = Rect::new(x + 150.0 * k, y + 24.0 * k, 80.0 * k, 10.0 * k);
@@ -2484,23 +2505,84 @@ impl Hud {
             let nw = p.measure(&hp_style, &n);
             p.text(&hp_style, hpb.right() - nw, y + 30.0 * k, &n);
             // A click on a member's row selects them, as the fellowship window's rows do.
-            if ctx.over(&row) && ctx.input.clicked(&row) {
+            if !on_icon && ctx.over(&row) && ctx.input.clicked(&row) {
                 if let Some(id) = party_member(state, i, name) {
                     out.requests.push(UiRequest::Select(id));
                 }
             }
-            if ctx.over(&row) {
-                self.tip(
-                    name.clone(),
-                    vec![
+            if !on_icon && ctx.over(&row) {
+                let level = party_level(state, i, name);
+                let lines = (level > 0)
+                    .then(|| format!("Level {level}"))
+                    .into_iter()
+                    .chain([
                         format!("Health {} / {}", hp.current, hp.max),
                         format!("Stamina {} / {}", sp.current, sp.max),
                         format!("Mana {} / {}", mp.current, mp.max),
-                    ],
-                );
+                    ])
+                    .collect();
+                self.tip(name.clone(), lines);
             }
             y += 54.0 * k;
         }
+    }
+
+    /// An AI fellow's mode icons from `r`'s left, each `r.h` square: the five modes, its own lit,
+    /// a click setting another (`@aifellow`) when the player leads; else its own alone. Whether
+    /// the pointer is on one.
+    fn ai_mode_icons(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        r: Rect,
+        ai: &pyreal_client_contract::view::AiFellowView,
+        leads: bool,
+        out: &mut Outcome,
+    ) -> bool {
+        use pyreal_client_model::dereth_extensions::FellowMode;
+        let k = p.scale;
+        let current = FellowMode::from_word(&ai.mode);
+        let shown: Vec<FellowMode> = if leads {
+            FellowMode::ALL.to_vec()
+        } else {
+            current.into_iter().collect()
+        };
+        let mut over_any = false;
+        for (n, mode) in shown.into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let b = Rect::new(r.x + n as f32 * (r.h + 3.0 * k), r.y, r.h, r.h);
+            let lit = current == Some(mode);
+            let over = ctx.over(&b);
+            over_any |= over;
+            let (ground, glyph_colour) = if lit {
+                (0xFFE8_C060, 0xFF20_1000)
+            } else if over && leads {
+                (0xC040_3420, 0xFFFF_F0D0)
+            } else {
+                (0xA010_0C08, 0xFFC8_BCA0)
+            };
+            p.fill(b, ground);
+            p.outline(b, 1.0 * k, 0xFF40_2808);
+            let inner = Rect::new(b.x + 2.0 * k, b.y + 2.0 * k, b.w - 4.0 * k, b.h - 4.0 * k);
+            // Lit, the glyph's cut-outs show the gold under it.
+            let dark = if lit { ground } else { 0xE020_1810 };
+            glyphs::draw(p, mode_glyph(mode), inner, glyph_colour, dark);
+            if over {
+                let title = format!("{}: {}", ai.name, mode.name());
+                let mut lines = vec![mode.says().to_owned()];
+                if leads && !lit {
+                    lines.push("Click to set this mode.".to_owned());
+                }
+                self.tip(title, lines);
+                if leads && !lit && ctx.input.clicked(&b) {
+                    out.requests.push(UiRequest::ChatLineOnBehalf {
+                        text: mode.command(ai.id),
+                        window: 0,
+                    });
+                }
+            }
+        }
+        over_any
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3010,7 +3092,12 @@ pub enum LinkTarget {
     Name(String),
     /// Asks to open this web address in the browser.
     Web(String),
+    /// Starts a journal page's timer for this many seconds: a quest timer the world gave.
+    QuestTimer(u32),
 }
+
+/// The link put after a line that gives a quest timer.
+pub const TRACK_LINK: &str = "Track in Journal";
 
 /// A link in a chat line: its first and last-plus-one character, and what clicking it does.
 pub type Link = (usize, usize, LinkTarget);
@@ -3049,6 +3136,18 @@ pub fn chat_links(raw: &str) -> (String, Vec<Link>) {
         }
         links.sort_by_key(|(s, _, _)| *s);
     }
+    // A quest timer the world gave can be followed in the journal.
+    let mut text = text;
+    if let Some(seconds) = pyreal_presentation::journal::heard_quest_seconds(&text) {
+        let s = text.chars().count() + 1;
+        text.push(' ');
+        text.push_str(TRACK_LINK);
+        links.push((
+            s,
+            s + TRACK_LINK.chars().count(),
+            LinkTarget::QuestTimer(seconds),
+        ));
+    }
     (text, links)
 }
 
@@ -3064,6 +3163,7 @@ fn blip_pixels(shape: u8) -> Vec<(i32, i32)> {
         5 => S::FellowshipLeader,
         6 => S::Fellowship,
         7 => S::ThreatAllegiance,
+        8 => S::Staff,
         _ => return vec![(0, 0), (1, 0), (0, 1), (1, 1)],
     };
     shape.pixels()
@@ -3173,6 +3273,18 @@ fn sweep(p: &mut Painter<'_>, r: Rect, done: f32) {
     }
 }
 
+/// The glyph for an AI fellow's mode.
+fn mode_glyph(mode: pyreal_client_model::dereth_extensions::FellowMode) -> glyphs::Glyph {
+    use pyreal_client_model::dereth_extensions::FellowMode;
+    match mode {
+        FellowMode::Aggressive => glyphs::SWORD,
+        FellowMode::Defensive => glyphs::SHIELD,
+        FellowMode::Assist => glyphs::TARGET,
+        FellowMode::Heal => glyphs::CROSS,
+        FellowMode::Passive => glyphs::DOVE,
+    }
+}
+
 /// The object of the party list's row `row` named `name`: the player's own first, then the
 /// fellow of that name.
 #[must_use]
@@ -3191,6 +3303,18 @@ pub fn party_member(
         .iter()
         .find(|m| m.name == name)
         .map(|m| m.id)
+}
+
+/// The level of the party list's `row` (0 the player), or 0 when it is not known.
+fn party_level(state: &GameState, row: usize, name: &str) -> u32 {
+    if row == 0 {
+        return state.level;
+    }
+    state
+        .fellowship_view
+        .as_ref()
+        .and_then(|f| f.members.iter().find(|m| m.name == name))
+        .map_or(0, |m| m.level)
 }
 
 /// The fellowship's member `n` (0 the first, as the party list shows them), when they are within
@@ -3274,6 +3398,14 @@ mod tests {
             ui.hud.level_banner_at.is_some(),
             "a level gained in the world"
         );
+    }
+
+    /// Shape 8 is the staff diamond, five pixels across, not the fallback square.
+    #[test]
+    fn radar_shape_eight_draws_the_staff_diamond() {
+        let px = blip_pixels(8);
+        assert_eq!(px, pyreal_ui_logic::radar::BlipShape::Staff.pixels());
+        assert!(px.contains(&(-2, 0)) && px.contains(&(0, 2)));
     }
 
     /// At the cap the EXP bar says "Infinity!" where the experience still owed would stand.
@@ -3431,5 +3563,18 @@ mod tests {
         super::push_notice(&mut notices, "You cannot do that", 1.3);
         let shown: Vec<&str> = notices.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(shown, ["Using Corpse of a Drudge", "You cannot do that"]);
+    }
+
+    #[test]
+    fn a_quest_timer_line_ends_in_a_link_that_tracks_it() {
+        let (text, links) = super::chat_links("You may complete this quest again in 19h 40m.");
+        assert_eq!(
+            text,
+            "You may complete this quest again in 19h 40m. Track in Journal"
+        );
+        assert_eq!(
+            links,
+            vec![(46, 62, super::LinkTarget::QuestTimer(19 * 3_600 + 40 * 60))]
+        );
     }
 }

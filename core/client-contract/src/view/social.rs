@@ -38,6 +38,17 @@ pub struct FellowEntry {
     pub max_mana: u32,
 }
 
+/// An AI Player in the player's company, from a world with Dereth's `ai_fellows` extension.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AiFellowView {
+    pub id: ObjectId,
+    pub name: String,
+    /// Its mode as the world names it: `aggressive`, `defensive`, `assist`, `heal` or `passive`.
+    pub mode: String,
+    /// In the player's fellowship, rather than only following them.
+    pub in_fellowship: bool,
+}
+
 /// What the fellowship panel shows when a fellowship exists.
 ///
 /// `None` from [`GameView::fellowship`] means that no current fellowship exists, which

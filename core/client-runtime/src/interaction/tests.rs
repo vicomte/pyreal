@@ -1657,3 +1657,39 @@ fn a_loadfile_that_loads_itself_stops_at_the_nesting_cap() {
     assert_eq!(capped, 1);
     std::fs::remove_dir_all(&dir).expect("remove this test's disposable directory");
 }
+
+#[test]
+fn percent_t_in_a_typed_line_names_the_selection_and_history_keeps_it_as_typed() {
+    const ROCK: ObjectId = ObjectId(0x8000_0042);
+    let mut game = pyreal_client_model::World::new();
+    let mut rock = pyreal_client_model::weenie::Weenie::new(ROCK);
+    rock.pwd.name = "Rock".to_owned();
+    game.tables.weenies.insert(ROCK, rock);
+    game.selected = Some(ROCK);
+    let mut inter = Interaction::new();
+    inter.queue(
+        Vec::new(),
+        vec![UiRequest::ChatLine {
+            window: 1,
+            text: "@tell Alba, look at <t> and %T".into(),
+        }],
+    );
+    inter.run_ui_requests(&mut game, false, ServerTime(1.0));
+    let sent = format!("{:?}", inter.take_pending_requests());
+    assert!(sent.contains("look at Rock and Rock"), "{sent}");
+    assert_eq!(
+        game.chat.entries[&1].history(),
+        ["@tell Alba, look at <t> and %T"]
+    );
+    assert_eq!(game.chat.recent_tells, ["Alba"]);
+}
+
+/// Dereth's extensions are the connection's: entering the world, which ends the last character's
+/// session, keeps them.
+#[test]
+fn the_world_s_extensions_outlive_a_character_session() {
+    let mut interaction = Interaction::new();
+    interaction.set_extensions(vec![pyreal_protocol::extensions::AI_FELLOWS.to_owned()]);
+    interaction.on_end_character_session();
+    assert!(interaction.has_extension(pyreal_protocol::extensions::AI_FELLOWS));
+}

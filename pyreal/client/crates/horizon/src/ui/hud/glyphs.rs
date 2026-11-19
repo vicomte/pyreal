@@ -1,6 +1,7 @@
 //! Small one-colour glyphs the HUD draws itself, as polygons in a unit box filled a pixel row at a
 //! time: the stance button's dove for peace, axe across a shield for melee, bow and arrow for
-//! missile, and wand and star for magic; and a Mac's modifier signs, drawn as strokes.
+//! missile, and wand and star for magic; the AI fellow modes' sword, shield, target and cross
+//! (and the dove for passive); and a Mac's modifier signs, drawn as strokes.
 
 use crate::draw::{Argb, Rect};
 use crate::ui::paint::Painter;
@@ -271,6 +272,115 @@ pub const WAND_AND_STAR: Glyph = &[
         Tone::Light,
     ),
 ];
+
+/// Aggressive: a sword, point up.
+pub const SWORD: Glyph = &[
+    (
+        &[
+            (0.42, 0.10),
+            (0.50, 0.00),
+            (0.58, 0.10),
+            (0.58, 0.62),
+            (0.42, 0.62),
+        ],
+        Tone::Light,
+    ),
+    (
+        &[(0.20, 0.62), (0.80, 0.62), (0.80, 0.73), (0.20, 0.73)],
+        Tone::Light,
+    ),
+    (
+        &[(0.44, 0.73), (0.56, 0.73), (0.56, 0.88), (0.44, 0.88)],
+        Tone::Light,
+    ),
+    (
+        &[(0.38, 0.88), (0.62, 0.88), (0.62, 0.99), (0.38, 0.99)],
+        Tone::Light,
+    ),
+];
+
+/// Defensive: a shield.
+pub const SHIELD: Glyph = &[
+    (
+        &[
+            (0.14, 0.12),
+            (0.50, 0.02),
+            (0.86, 0.12),
+            (0.86, 0.48),
+            (0.74, 0.74),
+            (0.50, 0.98),
+            (0.26, 0.74),
+            (0.14, 0.48),
+        ],
+        Tone::Light,
+    ),
+    (
+        &[(0.46, 0.16), (0.54, 0.16), (0.54, 0.84), (0.46, 0.84)],
+        Tone::Fine(false),
+    ),
+];
+
+/// Assist: a target, rings round a mark.
+pub const TARGET: Glyph = &[
+    (
+        &[
+            (0.925, 0.676),
+            (0.676, 0.925),
+            (0.324, 0.925),
+            (0.075, 0.676),
+            (0.075, 0.324),
+            (0.324, 0.075),
+            (0.676, 0.075),
+            (0.925, 0.324),
+        ],
+        Tone::Light,
+    ),
+    (
+        &[
+            (0.777, 0.615),
+            (0.615, 0.777),
+            (0.385, 0.777),
+            (0.223, 0.615),
+            (0.223, 0.385),
+            (0.385, 0.223),
+            (0.615, 0.223),
+            (0.777, 0.385),
+        ],
+        Tone::Dark,
+    ),
+    (
+        &[
+            (0.64, 0.56),
+            (0.56, 0.64),
+            (0.44, 0.64),
+            (0.36, 0.56),
+            (0.36, 0.44),
+            (0.44, 0.36),
+            (0.56, 0.36),
+            (0.64, 0.44),
+        ],
+        Tone::Light,
+    ),
+];
+
+/// Heal: a cross.
+pub const CROSS: Glyph = &[(
+    &[
+        (0.36, 0.06),
+        (0.64, 0.06),
+        (0.64, 0.36),
+        (0.94, 0.36),
+        (0.94, 0.64),
+        (0.64, 0.64),
+        (0.64, 0.94),
+        (0.36, 0.94),
+        (0.36, 0.64),
+        (0.06, 0.64),
+        (0.06, 0.36),
+        (0.36, 0.36),
+    ],
+    Tone::Light,
+)];
 
 /// Lines drawn a stroke wide, each a run of points in a unit box.
 pub type Strokes = &'static [&'static [(f32, f32)]];

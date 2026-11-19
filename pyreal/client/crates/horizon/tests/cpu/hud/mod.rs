@@ -7,6 +7,7 @@ mod keys;
 mod layout;
 mod nameplates;
 mod pad_mode;
+mod party_modes;
 mod retail_ui;
 mod selection;
 mod waypoint;

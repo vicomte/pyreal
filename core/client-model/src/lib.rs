@@ -38,6 +38,7 @@ pub mod chat_entry;
 /// up in the table of client-side handlers, and anything unrecognised is forwarded verbatim.
 pub mod cmd;
 pub mod combat;
+pub mod dereth_extensions;
 pub mod emotes;
 pub mod enchant;
 pub mod fellowship;

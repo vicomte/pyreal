@@ -363,6 +363,9 @@ pub struct Interaction {
     /// interface keeps the waypoint and answers in that window.
     pending_waypoints: Vec<(pyreal_client_model::cmd::waypoint::WaypointCommand, u32)>,
 
+    /// The Dereth extensions the world agreed to on this connection.
+    extensions: Vec<String>,
+
     /// The report commands typed this frame, each the chat window it came from. App has the
     /// world, the camera and the presentation the report describes, and answers in that window.
     pending_reports: Vec<u32>,
@@ -966,6 +969,7 @@ impl Interaction {
     ///   `@version` and the version line would name that instead from the next session on.
     /// * **The extension command verbs** — they belong to the installed frame hook, which lives as
     ///   long as the process, not to the character.
+    /// * **The Dereth extensions** — the connection's, agreed before any character enters.
     /// * **[`Interaction::chat_pose_table`]** — a process-lifetime cached dat table.
     ///   The original pose path re-fetches enum
     ///   `(7, 2, 0x11)` on every call and fails when absent; session cleanup does not
@@ -991,8 +995,10 @@ impl Interaction {
         // session reset; see the lifetime list above.
         let chat_pose_table = self.chat_pose_table.take();
         let extension_verbs = std::mem::take(&mut self.extension_verbs);
+        let extensions = std::mem::take(&mut self.extensions);
         *self = Self {
             extension_verbs,
+            extensions,
             chat,
             stats,
             cursor,
@@ -1126,6 +1132,26 @@ impl Interaction {
         &mut self,
     ) -> Vec<(pyreal_client_model::cmd::waypoint::WaypointCommand, u32)> {
         std::mem::take(&mut self.pending_waypoints)
+    }
+
+    /// Set the waypoint as `@way` typed in chat window `window` would.
+    pub fn push_waypoint_command(
+        &mut self,
+        command: pyreal_client_model::cmd::waypoint::WaypointCommand,
+        window: u32,
+    ) {
+        self.pending_waypoints.push((command, window));
+    }
+
+    /// The Dereth extensions the world agreed to; none for a new connection.
+    pub fn set_extensions(&mut self, names: Vec<String>) {
+        self.extensions = names;
+    }
+
+    /// Whether the world agreed to Dereth extension `name`.
+    #[must_use]
+    pub fn has_extension(&self, name: &str) -> bool {
+        self.extensions.iter().any(|n| n == name)
     }
 
     /// The moon commands typed since the last call, in command order, each with the chat window

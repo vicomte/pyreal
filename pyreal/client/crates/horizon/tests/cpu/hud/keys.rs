@@ -357,6 +357,7 @@ fn yes_on_a_question_over_a_window_answers_it_whatever_lies_under_it() {
         question: true,
         modal: false,
         waiting: 0,
+        offer: None,
     }];
     let yes_at = |windows: &[WindowId], y: f32| {
         let mut h = Harness::new(Default::default());

@@ -211,7 +211,6 @@ fn a_world_without_housing_or_chess_offers_neither_window() {
 fn without(off: fn(&mut EraFeatures)) -> GameState {
     let mut state = in_world();
     state.world_services.features = EraFeatures::ALL;
-    state.notebook = true;
     off(&mut state.world_services.features);
     state
 }
@@ -274,14 +273,14 @@ fn a_refused_trade_or_salvage_window_does_not_answer_the_game_every_frame() {
     }
 }
 
-/// The journal's keys follow the journal and the contract key the contracts, though one window
-/// holds both.
+/// The journal's key opens the Journal in every world, the notebook being the client's own; the
+/// contract key follows the contracts.
 #[test]
-fn the_journal_and_contract_keys_each_follow_their_own_system() {
+fn the_journal_key_opens_it_everywhere_and_the_contract_key_follows_the_contracts() {
     const JOURNAL: u32 = 0x1000_0128;
     const CONTRACTS: u32 = 0x1000_012E;
     for (state, key, opens) in [
-        (without(|f| f.journal = false), JOURNAL, false),
+        (without(|f| f.journal = false), JOURNAL, true),
         (without(|f| f.journal = false), CONTRACTS, true),
         (without(|f| f.contracts = false), CONTRACTS, false),
         (without(|f| f.contracts = false), JOURNAL, true),
@@ -294,9 +293,10 @@ fn the_journal_and_contract_keys_each_follow_their_own_system() {
     }
 }
 
-/// With one page the Journal draws it and has nothing to turn to.
+/// The notebook is the client's own, so every world has it; the contracts come first where the
+/// world has them.
 #[test]
-fn the_journal_window_shows_only_the_pages_the_world_has() {
+fn the_journal_window_has_the_notebook_in_every_world() {
     use pyreal_client_contract::journal::JournalAction;
     let shows_notebook = |state: &GameState| {
         let mut h = Harness::new(Default::default());
@@ -306,17 +306,14 @@ fn the_journal_window_shows_only_the_pages_the_world_has() {
             .requests
             .contains(&UiRequest::Journal(JournalAction::Visibility(true)))
     };
-    let mut no_notebook = without(|_| {});
-    no_notebook.notebook = false;
-    assert!(!shows_notebook(&no_notebook));
     assert!(
-        shows_notebook(&without(|f| f.contracts = false)),
-        "the notebook is the one page there is"
+        shows_notebook(&without(|f| {
+            f.contracts = false;
+            f.journal = false;
+        })),
+        "the notebook is the first page there is"
     );
-    assert!(
-        !shows_notebook(&without(|_| {})),
-        "both pages: the contracts first"
-    );
+    assert!(!shows_notebook(&without(|_| {})), "the contracts first");
 }
 
 /// The Allegiance window's Swear button, at a layout scale of one.
@@ -400,6 +397,129 @@ fn the_fellowship_window_has_an_open_button_only_with_open_fellowships() {
     let without_it = press_fourth_button(false);
     assert!(!without_it.contains(&UiRequest::FellowshipToggleOpenness));
     assert!(without_it.contains(&UiRequest::FellowshipQuit { disband: false }));
+}
+
+/// The leader of a fellowship with an AI Player in it sets its mode with `@aifellow` and gives it
+/// orders by tell; its current mode's button does nothing; a member who does not lead has neither.
+#[test]
+fn the_fellowship_s_leader_sets_an_ai_fellow_s_mode_and_gives_it_orders() {
+    use pyreal_client_contract::view::{AiFellowView, FellowEntry, FellowshipView};
+    let me = ObjectId(0x5000_0001);
+    let aerin = ObjectId(0x5000_0002);
+    let state_led_by = |leader: ObjectId| {
+        let mut state = without(|_| {});
+        state.era = Some(EraFeatures::ALL);
+        state.player_id = Some(me);
+        state.fellowship_view = Some(FellowshipView {
+            leader,
+            members: [me, aerin]
+                .into_iter()
+                .map(|id| FellowEntry {
+                    id,
+                    ..FellowEntry::default()
+                })
+                .collect(),
+            ..FellowshipView::default()
+        });
+        state.ai_fellows = vec![AiFellowView {
+            id: aerin,
+            name: "~Aerin".into(),
+            mode: "heal".into(),
+            in_fellowship: true,
+        }];
+        state
+    };
+    let ((w, height), (x, y)) = WindowId::Social.geometry();
+    let foot = y + height - 10.0 - 30.0;
+    let (left, room) = (x + 12.0 + 60.0, w - 24.0 - 60.0);
+    let mode_at = |i: f32| {
+        let bw = (room - 16.0) / 5.0;
+        (left + i * (bw + 4.0) + bw / 2.0, foot - 125.0)
+    };
+    let order_at = |i: f32| {
+        let bw = (room - 12.0) / 4.0;
+        (left + i * (bw + 4.0) + bw / 2.0, foot - 95.0)
+    };
+    let press = |state: &GameState, (px, py): (f32, f32)| {
+        let mut h = Harness::new(Default::default());
+        h.frame(state);
+        h.ui.windows.open(WindowId::Social, 0.0);
+        h.frame(state);
+        h.move_to(px, py);
+        h.frame(state);
+        click(&mut h, px, py, state).requests
+    };
+    let led = state_led_by(me);
+    assert!(
+        press(&led, mode_at(2.0)).contains(&UiRequest::ChatLineOnBehalf {
+            text: "@aifellow 0x50000002 assist".into(),
+            window: 0,
+        })
+    );
+    let heal = press(&led, mode_at(3.0));
+    assert!(
+        !heal
+            .iter()
+            .any(|r| matches!(r, UiRequest::ChatLineOnBehalf { .. })),
+        "already healing: {heal:?}"
+    );
+    assert!(press(&led, order_at(1.0)).contains(&UiRequest::Tell {
+        target: aerin,
+        text: "follow".into(),
+    }));
+    let not_led = state_led_by(aerin);
+    for at in [mode_at(2.0), order_at(1.0)] {
+        let asked = press(&not_led, at);
+        assert!(
+            !asked.iter().any(|r| matches!(
+                r,
+                UiRequest::ChatLineOnBehalf { .. } | UiRequest::Tell { .. }
+            )),
+            "a member who does not lead has no controls: {asked:?}"
+        );
+    }
+}
+
+/// A player in no fellowship sets the mode of an AI Player following them and gives it orders.
+#[test]
+fn a_player_in_no_fellowship_commands_the_ai_player_following_them() {
+    use pyreal_client_contract::view::AiFellowView;
+    let tamsin = ObjectId(0x5000_0003);
+    let mut state = without(|_| {});
+    state.era = Some(EraFeatures::ALL);
+    state.player_id = Some(ObjectId(0x5000_0001));
+    state.ai_fellows = vec![AiFellowView {
+        id: tamsin,
+        name: "~Tamsin".into(),
+        mode: "defensive".into(),
+        in_fellowship: false,
+    }];
+    let ((w, height), (x, y)) = WindowId::Social.geometry();
+    let foot = y + height - 10.0 - 30.0;
+    let (left, room) = (x + 12.0 + 60.0, w - 24.0 - 60.0);
+    let press = |(px, py): (f32, f32)| {
+        let mut h = Harness::new(Default::default());
+        h.frame(&state);
+        h.ui.windows.open(WindowId::Social, 0.0);
+        h.frame(&state);
+        h.move_to(px, py);
+        h.frame(&state);
+        click(&mut h, px, py, &state).requests
+    };
+    let bw = (room - 16.0) / 5.0;
+    assert!(
+        press((left + bw / 2.0, foot - 47.0)).contains(&UiRequest::ChatLineOnBehalf {
+            text: "@aifellow 0x50000003 aggressive".into(),
+            window: 0,
+        })
+    );
+    let bw = (room - 12.0) / 4.0;
+    assert!(
+        press((left + 2.0 * (bw + 4.0) + bw / 2.0, foot - 17.0)).contains(&UiRequest::Tell {
+            target: tamsin,
+            text: "stay".into(),
+        })
+    );
 }
 
 /// A full fellowship's rows keep to the list above the options: Quit, the options and the ground

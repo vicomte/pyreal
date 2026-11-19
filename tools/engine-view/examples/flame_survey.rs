@@ -1,7 +1,7 @@
 //! Lists every setup Pyreal draws flames for: its flames' kinds and pictures, and how many times
 //! the landblocks place it, most placed first.
 //!
-//! Usage: `flame_survey DAT_DIR`
+//! Usage: `flame_survey DAT_DIR` (End of Retail's files, or an older portal.dat and cell.dat)
 
 use std::collections::HashMap;
 
@@ -17,7 +17,14 @@ fn read<T: Decode>(store: &RetailDatStore, kind: DbType, id: DataId) -> Option<T
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let store = RetailDatStore::open_dir(std::path::Path::new(&a[1])).expect("dats");
+    let dir = std::path::Path::new(&a[1]);
+    // End of Retail's files, or an older portal.dat and cell.dat.
+    let store = if pyreal_dat::holds_modern_dats(dir) {
+        RetailDatStore::open_dir(dir)
+    } else {
+        RetailDatStore::open_classic_dir(dir)
+    }
+    .expect("dats");
     // ORDER-OK: counted, then sorted.
     let mut placed: HashMap<u32, (u32, u32)> = HashMap::new();
     for id in store.ids_of(DbType::Lbi) {

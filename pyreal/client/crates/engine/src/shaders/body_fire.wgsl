@@ -3,10 +3,16 @@
 // where an emitter rides its parts (or a trail's particle hangs), swinging round as it rises.
 // The eye's ray through the ball is marched: the cones merged, torn by noise rising through them,
 // glowing from the picture's colour at the edges to white-hot at the heart, added to the frame.
+// A hearth's body (kind 7) burns yellower at its heart, on its coals, throws sparks and flickers
+// as its lamp does. A wreath's (kind 8) burns as a hearth's does, whirling round its object.
 
 // Steps through a body's ball; how much light its fire gives, and how much of what is behind it
 // a depth of its fire hides (a flame's width hides most).
 const FIRE_STEPS: u32 = 36u;
+// A wreath's ray crosses its whole ring: its steps held to a share of its flames' width, at most
+// this many, so their edges do not band.
+const WREATH_STEPS: u32 = 48u;
+const WREATH_STEP: f32 = 0.4;
 // The most of a body's cones one ray passes near.
 const FIRE_NEAR: u32 = 24u;
 const FIRE_GLOW: f32 = 0.5;
@@ -126,6 +132,83 @@ fn body_fire_colour(t: f32, tint: vec3<f32>) -> vec3<f32> {
     return c * luma(warm) / max(luma(c), 1e-4);
 }
 
+// A hearth's fire at temperature `t`: a creature's deep orange at its edges, yellowing toward
+// the torches' white-yellow only at its hottest heart, on its coals.
+fn hearth_colour(t: f32) -> vec3<f32> {
+    let warm = fire_colour(t) * mix(0.35, 1.0, smoothstep(0.0, 0.5, t));
+    let deep = mix(vec3<f32>(1.0, BODY_FIRE_ORANGE, BODY_FIRE_ORANGE * 0.1), vec3<f32>(1.0),
+                   smoothstep(0.55, 0.95, t));
+    let c = fire_colour(t * 0.9) * deep;
+    return c * sqrt(luma(warm) / max(luma(c), 1e-4));
+}
+
+// A wreath's fire at `p`: one band of flame round its ring (its middle `ring`, `around` metres
+// out, its foot at height `foot`), `wide` at its foot and licking `high`, fuller where its puffs
+// are born, east of its middle, as they set off round, and rising and falling round it as it
+// turns (`turn` radians): the distance to it and how near its foot.
+fn wreath_field(p: vec3<f32>, ring: vec2<f32>, around: f32, foot: f32, wide: f32, high: f32,
+                turn: f32) -> vec2<f32> {
+    let w = p.xy - ring;
+    let a = atan2(w.y, w.x);
+    let full = 0.85 + 0.4 * pow(0.5 + 0.5 * cos(a - 0.6), 3.0);
+    let b = a - turn;
+    let swell = fire_noise3(vec3<f32>(cos(b) * 1.6, sin(b) * 1.6, frame.sun_light.w * 0.4));
+    let h = high * full * mix(0.55, 1.35, swell);
+    let q = vec3<f32>(length(w) - around, 0.0, p.z - foot);
+    return vec2<f32>(fire_cone(q, wide * full, wide * 0.15, h), 1.0 - clamp(q.z / h, 0.0, 1.0));
+}
+
+// How much cooler a wreath burns than a creature: a wide fire, deep orange through, yellow at its
+// feet.
+const WREATH_COOL: f32 = 0.62;
+// How much more a wreath's band is torn than a creature's fire, so it breaks into flames.
+const WREATH_TORN: f32 = 1.5;
+
+// A hearth's sparks: how many may be in the air, and how bright one is on screen at its hottest,
+// in multiples of white.
+const HEARTH_SPARKS: u32 = 18u;
+const SPARK_GAIN: f32 = 3.0;
+
+// The light of a hearth's sparks (its record at `index`, its `n` flames) the eye's ray from `eye`
+// along `dir` passes near before `solid`: motes thrown up off its coals now and then, rising out of
+// its flames, swaying and slowing, yellow cooling to red as they die.
+fn hearth_sparks(index: u32, n: u32, seed: u32, eye: vec3<f32>, dir: vec3<f32>, solid: f32) -> vec3<f32> {
+    let t = frame.sun_light.w;
+    let s = f32(seed & 1023u);
+    var light = vec3<f32>(0.0);
+    for (var i = 0u; i < HEARTH_SPARKS; i++) {
+        let fi = f32(i);
+        let life = mix(0.9, 2.0, fire_hash3(vec3<f32>(fi, s, 1.0)));
+        let cycle = t / life + fire_hash3(vec3<f32>(fi, s, 2.0));
+        let round = floor(cycle);
+        let age = cycle - round;
+        // Only now and then is one thrown.
+        if (fire_hash3(vec3<f32>(fi, round, s + 3.0)) > 0.4) {
+            continue;
+        }
+        let h = vec3<f32>(fire_hash3(vec3<f32>(fi, round, s + 4.0)), fire_hash3(vec3<f32>(fi, round, s + 5.0)),
+                          fire_hash3(vec3<f32>(fi, round, s + 6.0)));
+        let pt = flames[index + 1u + min(u32(h.x * f32(n)), n - 1u)];
+        let a = h.y * 6.2831853;
+        let rise = 1.0 - (1.0 - age) * (1.0 - age);
+        let sway = vec2<f32>(sin(age * 7.0 + a), cos(age * 5.0 + a * 1.7)) * 0.06 * age;
+        let p = pt.base + vec3<f32>(vec2<f32>(cos(a), sin(a)) * pt.reach * h.z + sway,
+                                    pt.height * (0.3 + 1.2 * mix(0.6, 1.0, h.z) * rise));
+        let v = p - eye;
+        let along = dot(v, dir);
+        if (along <= 0.0 || along > solid) {
+            continue;
+        }
+        // A pixel or so wide however far, glowing a little round its point.
+        let w = max(0.006, along * 0.0012);
+        let d = length(v - dir * along) / w;
+        let fade = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.5, 1.0, age));
+        let twinkle = 0.75 + 0.25 * sin(t * 23.0 + fi * 3.1);
+        light += fire_colour(1.0 - age * 0.9) * (exp(-d * d) + 0.12 * exp(-d * 0.6)) * fade * twinkle;
+    }
+    return light * SPARK_GAIN;
+}
+
 // The light a body of fire adds along the eye's ray through pixel `in.clip`.
 fn body_fire_light(in: FlameOut) -> vec3<f32> {
     let body = flames[in.index];
@@ -141,8 +224,11 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
     let dir = normalize(far.xyz / far.w - eye);
     // The fire's scale (its flames' mean width, from its emitters) and its whirl.
     let size = max(body.reach, 0.02);
-    let spin = f32((body.flags >> 10u) & 63u) * 0.25;
-    let twist = size * 8.0;
+    let hearth = (body.flags & 255u) == 7u;
+    let wreath = (body.flags & 255u) == 8u;
+    let spin = select(f32((body.flags >> 10u) & 63u) * 0.25, 0.0, hearth);
+    // A wreath's turns whole round its object, unwound: wound, its wide ring would shear to stripes.
+    let twist = select(size * 8.0, 1e4, wreath);
     let blend = size * 1.4;
     let tear = size * 1.8;
     // The cones the ray passes near, and where it is near any, cut short by what stands there.
@@ -150,8 +236,12 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
     var m = 0u;
     var t0 = 1e9;
     var t1 = -1e9;
+    var ring = vec2<f32>(0.0);
+    var high = 0.0;
     for (var k = 1u; k <= n; k++) {
         let pt = flames[in.index + k];
+        ring += pt.base.xy / f32(n);
+        high += pt.height / f32(n);
         var mid = pt.base + vec3<f32>(0.0, 0.0, pt.height * 0.5);
         var reach = pt.height * 0.5 + pt.reach + bitcast<f32>(pt.seed) + tear + blend * 0.25;
         if ((pt.flags & 255u) == 6u) {
@@ -177,25 +267,42 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
         solid = distance(s.xyz / s.w, eye);
         t1 = min(t1, solid);
     }
+    var sparks = vec3<f32>(0.0);
+    if (hearth) {
+        sparks = hearth_sparks(in.index, n, body.seed, eye, dir, solid) * in.flick.rgb;
+    }
     if (m == 0u || t1 <= t0) {
-        return vec3<f32>(0.0);
+        return sparks * (1.0 - fog_amount(distance(centre.xy, frame.camera.xy)));
     }
     let s = f32(body.seed & 1023u) * 0.731;
     // Noise rising through it, stretched upright, so it licks, as fast as a flame that wide
     // rises (about the root of its width times gravity): a big one rolls slowly.
     let stretch = vec3<f32>(1.0, 1.0, 0.5) / (size * 1.3);
     let rise = t * 0.45 * sqrt(19.6 * size) * stretch.z;
-    let dt = (t1 - t0) / f32(FIRE_STEPS);
+    var dt = (t1 - t0) / f32(FIRE_STEPS);
+    var steps = FIRE_STEPS;
+    if (wreath) {
+        dt = min(dt, size * WREATH_STEP);
+        steps = WREATH_STEPS;
+    }
     let jitter = fract(52.9829189 * fract(dot(in.clip.xy, vec2<f32>(0.06711056, 0.00583715))) + t * 7.31);
     var light = vec3<f32>(0.0);
     var through = 1.0;
     var at = t0 + dt * jitter;
-    for (var k = 0u; k < FIRE_STEPS; k++) {
+    // A wreath's ring: its points stand round it, their feet on it.
+    let first = flames[in.index + 1u];
+    let around = length(first.base.xy - ring);
+    for (var k = 0u; k < steps; k++) {
         if (at >= t1) {
             break;
         }
         let p = eye + dir * at;
-        let f = fire_field(p, &near, m, blend, spin, twist);
+        var f: vec2<f32>;
+        if (wreath) {
+            f = wreath_field(p, ring, around, first.base.z, first.reach, high, spin * t);
+        } else {
+            f = fire_field(p, &near, m, blend, spin, twist);
+        }
         // Far outside the fire: on toward it.
         if (f.x > tear) {
             at += max(dt, (f.x - tear) * 0.8);
@@ -203,8 +310,9 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
         }
         var o = p - centre;
         // A whirling fire's noise turns round its axis, wound into a spiral up it.
+        // A wreath's goes round anticlockwise, as its puffs do.
         if (spin > 0.0) {
-            let a = spin * t - o.z * 6.2831853 / twist;
+            let a = select(spin, -spin, wreath) * t - o.z * 6.2831853 / twist;
             let cs = vec2<f32>(cos(a), sin(a));
             o = vec3<f32>(o.x * cs.x - o.y * cs.y, o.x * cs.y + o.y * cs.x, o.z);
         }
@@ -213,17 +321,24 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
         let n2 = fire_noise3(q * 2.3 + vec3<f32>(0.0, rise * 0.45, -rise * 0.7));
         let n3 = fire_noise3(q * 5.1 + vec3<f32>(rise * 0.55, 0.0, -rise * 1.3));
         let turb = n1 * 0.55 + n2 * 0.3 + n3 * 0.15 - 0.5;
-        // Torn more the higher it licks; a whirling fire wound in two bands up it.
-        var d = f.x + turb * tear * (0.4 + 1.3 * (1.0 - f.y));
-        if (spin > 0.0) {
+        // Torn more the higher it licks; a whirling creature's fire wound in two bands up it.
+        var d = f.x + turb * tear * (0.4 + 1.3 * (1.0 - f.y)) * select(1.0, WREATH_TORN, wreath);
+        if (spin > 0.0 && !wreath) {
             d += sin(2.0 * atan2(o.y, o.x) + n1 * 2.0) * size * 0.5;
         }
         let dense = clamp(-d / (size * 0.3), 0.0, 1.0);
         if (dense > 0.0) {
-            let heat = clamp(f.y * 0.45 + dense * 0.55 - 0.4 + (n2 - 0.5) * 0.6, 0.0, 1.0);
+            // A hearth burns hottest on its coals, a wreath at its flames' feet.
+            let heat = clamp(f.y * select(0.45, 0.58, hearth || wreath) + dense * 0.55
+                             - select(0.4, WREATH_COOL, wreath) + (n2 - 0.5) * 0.6,
+                             0.0, 1.0);
             // Fading where it meets what stands in it.
             let k = dense * dt / size * clamp((solid - at) / (size * 0.6), 0.0, 1.0);
-            light += through * body_fire_colour(heat, tint) * (0.06 + 2.6 * pow(heat, 2.5)) * k;
+            var c = body_fire_colour(heat, tint);
+            if (hearth || wreath) {
+                c = hearth_colour(heat);
+            }
+            light += through * c * (0.06 + 2.6 * pow(heat, 2.5)) * k;
             through *= exp(-FIRE_THICK * k);
             if (through < 0.02) {
                 break;
@@ -234,5 +349,5 @@ fn body_fire_light(in: FlameOut) -> vec3<f32> {
     light *= FIRE_GLOW * in.flick.rgb * FLAME_GAIN;
     // Rolled off toward FIRE_PEAK with its hue kept, so its heart blooms without paling to white.
     light /= 1.0 + max(light.r, max(light.g, light.b)) / FIRE_PEAK;
-    return light * (1.0 - fog_amount(distance(centre.xy, frame.camera.xy)));
+    return (light + sparks) * (1.0 - fog_amount(distance(centre.xy, frame.camera.xy)));
 }

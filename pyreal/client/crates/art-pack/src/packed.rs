@@ -32,6 +32,7 @@
 //!   base color (empty for the two), normal, roughness, occlusion and height, its normal scale,
 //!   how damp it is and the path of its damp map where it names one;
 //! - a grit picture: `grit` and its path;
+//! - a material's metal map: `metal` and its path;
 //! - a ground's detail grain: `detail` and its path;
 //! - a moon's picture: `moon` and its path;
 //! - a model's card's two, colour and normal: `card`, the cards' make ([`super::cards::MAKE`]) and
@@ -320,6 +321,12 @@ pub fn material_key(entry: &ManifestMaterial) -> String {
         Some(map) => format!("{key}:{map}"),
         None => key,
     }
+}
+
+/// What a packed pack keeps a material's metal map under, whichever materials share it.
+#[must_use]
+pub fn metal_key(path: &str) -> String {
+    format!("metal:{path}")
 }
 
 /// What a packed pack keeps a grit picture under, whichever materials share it.
@@ -1217,6 +1224,71 @@ distance = 30
         assert_eq!(opened.ground_cover, folder.ground_cover);
         assert_eq!(opened.models, folder.models);
         assert_eq!(opened.models[0].wind, 1.5);
+    }
+
+    /// A material's metal map is packed once under its own key, beside its material's pictures,
+    /// and leaves every other material's record as it was.
+    #[test]
+    fn a_metal_map_packs_under_its_own_key() {
+        let manifest = |metal: &str| {
+            format!(
+                r#"
+[pack]
+name = "Iron"
+format = 1
+[[material]]
+texture = "0x05002620"
+base_color = "m/fallback.png"
+keep_retail_picture = true
+normal = "m/wall_n.png"
+{metal}author = "a"
+tool = "t"
+license = "CC0-1.0"
+[[material]]
+texture = "0x05002621"
+base_color = "m/fallback.png"
+keep_retail_picture = true
+normal = "m/wall.png"
+author = "a"
+tool = "t"
+license = "CC0-1.0"
+"#
+            )
+        };
+        let banded = manifest("metal_map = \"m/metal.png\"\nbrighten = 2\n");
+        let mut files = files();
+        files.insert(
+            "m/metal.png".to_owned(),
+            png_of(8, 8, &ramp(8, 8, [0, 0, 0, 255])),
+        );
+        let folder = ArtPack::open(&banded, &mut reader(&files)).expect("the folder opens");
+        assert!(folder.problems.is_empty(), "{:?}", folder.problems);
+        let metal = folder.materials[0].metal.as_ref().expect("a metal map");
+        assert_eq!(metal.format, Some(BlockFormat::Bc4));
+        assert_eq!(folder.materials[0].matter.metal, Some(2.0));
+        assert!(folder.materials[1].metal.is_none());
+        let packed = pack(&banded, &mut reader(&files), PLAIN).expect("the pack packs");
+        let file = PackedFile::from_storage("test.dat", Box::new(packed.bytes)).expect("opens");
+        let records = &file.contents().records;
+        assert!(records.iter().any(|r| r.key == metal_key("m/metal.png")));
+        let opened = ArtPack::from_packed(&file).expect("the packed pack opens");
+        assert_eq!(opened.materials, folder.materials);
+        assert_eq!(
+            opened.material_picture(0, crate::MaterialPart::Metal),
+            Some(metal.clone())
+        );
+        // Without the metal map the plain material's pictures pack into the same record.
+        let plain = pack(&manifest(""), &mut reader(&files), PLAIN).expect("the pack packs");
+        let plain = PackedFile::from_storage("plain.dat", Box::new(plain.bytes)).expect("opens");
+        let hash =
+            |records: &[Record], key: &str| records.iter().find(|r| r.key == key).map(|r| r.sha256);
+        let key = material_key(
+            &pyreal_assets::art_pack::ArtPackManifest::parse(&banded)
+                .expect("reads")
+                .materials[1],
+        );
+        assert!(hash(records, &key).is_some());
+        assert_eq!(hash(records, &key), hash(&plain.contents().records, &key));
     }
 
     #[test]

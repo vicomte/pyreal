@@ -28,6 +28,9 @@ pub struct TextureMaterial {
     pub surface: Image,
     /// Which of the pack's grit pictures ([`super::ArtPack::grits`]) lies over it, if any.
     pub grit: Option<usize>,
+    /// Where it is a metal, in red (white metal, black not), with its levels, in BC4: its metal
+    /// map ([`ManifestMaterial::metal_map`]), if it names one.
+    pub metal: Option<Image>,
     /// How many times the grit repeats across one repeat of the retail picture.
     pub grit_repeat: [f32; 2],
     /// Whether it is wet on floors too, not only on walls.
@@ -119,6 +122,7 @@ pub(super) fn with_pictures(
         normal,
         surface,
         grit: None,
+        metal: None,
         grit_repeat: entry.grit_repeat,
         damp_floors: entry.damp_floors,
         slime: entry.slime,
@@ -143,6 +147,22 @@ pub(super) fn grit(bytes: &[u8], path: &str) -> Result<Image, String> {
     Ok(images::compressed(
         images::with_levels(w, h, rgba, false, None),
         BlockFormat::Bc7,
+    ))
+}
+
+/// A material's metal map from its file, its red with its levels, in BC4.
+pub(super) fn metal(bytes: &[u8], path: &str) -> Result<Image, String> {
+    let (w, h, mut rgba) = images::decode_png(bytes).map_err(|e| format!("{path}: {e}"))?;
+    if w == 0 || h == 0 {
+        return Err(format!("{path}: an empty picture"));
+    }
+    for px in rgba.as_chunks_mut::<4>().0 {
+        *px = [px[0], px[0], px[0], 255];
+    }
+    let (w, h, rgba) = images::to_whole_blocks(w, h, rgba);
+    Ok(images::compressed(
+        images::with_levels(w, h, rgba, false, None),
+        BlockFormat::Bc4,
     ))
 }
 

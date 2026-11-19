@@ -854,6 +854,8 @@ pub enum MaterialPart {
     Albedo,
     Normal,
     Surface,
+    /// Where it is a metal ([`TextureMaterial::metal`]).
+    Metal,
 }
 
 /// How many materials' pictures [`MaterialSource`] keeps after reading them.
@@ -1626,6 +1628,28 @@ impl ArtPack {
                     .collect(),
             )
         });
+        // The metal maps, each held by its material.
+        for (m, entry) in retextured.iter_mut().zip(&named) {
+            let Some(path) = entry.metal_map.as_deref() else {
+                continue;
+            };
+            let made = match pictures {
+                Pictures::Made => reader
+                    .for_picture(path)
+                    .and_then(|bytes| materials::metal(&bytes, path)),
+                Pictures::Packed(file) => file.picture(&packed::metal_key(path)),
+            };
+            match made {
+                Ok(image) => {
+                    if let Some(r) = recording.as_deref_mut() {
+                        r.pictures
+                            .insert(packed::metal_key(path), vec![image.clone()]);
+                    }
+                    m.metal = Some(image);
+                }
+                Err(e) => problems.push(format!("metal map {path}: {e}")),
+            }
+        }
         // The grit pictures, one each however many materials share it.
         let mut grits: Vec<Image> = Vec::new();
         let mut grit_names: Vec<String> = Vec::new();
@@ -1995,6 +2019,8 @@ impl ArtPack {
             MaterialPart::Albedo => m.albedo.as_ref()?,
             MaterialPart::Normal => &m.normal,
             MaterialPart::Surface => &m.surface,
+            // Always held: small, and never read again.
+            MaterialPart::Metal => return m.metal.clone(),
         };
         if !held.levels.is_empty() {
             return Some(held.clone());
@@ -2009,6 +2035,7 @@ impl ArtPack {
             (MaterialPart::Surface, true) => 2,
             (MaterialPart::Normal, false) => 0,
             (MaterialPart::Surface, false) => 1,
+            (MaterialPart::Metal, _) => return None,
         };
         pictures.get(at).cloned()
     }
@@ -2166,6 +2193,7 @@ mod tests {
             normal: image(4),
             surface: image(4),
             grit,
+            metal: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,
@@ -2257,6 +2285,7 @@ mod tests {
             normal: flat.clone(),
             surface: flat.clone(),
             grit: None,
+            metal: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,
@@ -2339,6 +2368,7 @@ mod tests {
             normal: flat.clone(),
             surface: flat.clone(),
             grit: None,
+            metal: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,

@@ -335,6 +335,7 @@ fn a_served_record_replaces_a_retail_one_a_new_one_is_added_and_the_pack_still_l
         normal: image(4),
         surface: image(4),
         grit: None,
+        metal: None,
         grit_repeat: [1.0, 1.0],
         damp_floors: false,
         slime: false,

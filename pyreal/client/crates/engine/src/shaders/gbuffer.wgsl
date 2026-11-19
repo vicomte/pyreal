@@ -193,7 +193,8 @@ fn vs_main(v: VsIn, @builtin(instance_index) entry: u32) -> VsOut {
     out.cur = out.clip;
     out.prev = frame.prev_view_proj * vec4<f32>(prev, 1.0);
     out.material = e.y & 0xFFFFu;
-    out.extra = v.extra;
+    // A posed body's word is where it stood; any other's, the ground's cell or a polygon's hold.
+    out.extra = select(v.extra, 0u, posed);
     out.cell = inst.cell & 0xFFFFFFu;
     out.fade = fade_word(inst.cell >> 24u, (e.y >> 16u) & 0xFFu, e.x);
     out.object = inst.object + 1u;
@@ -227,7 +228,7 @@ fn motion(cur: vec4<f32>, prev: vec4<f32>) -> vec2<f32> {
 // The sky's motion, drawn over the depth's clear value alone: the camera's turn, as for a point
 // infinitely far off.
 @vertex
-fn vs_sky_motion(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+fn vs_sky_motion(@builtin(vertex_index) i: u32) -> @builtin(position) @invariant vec4<f32> {
     let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     return vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
 }
@@ -341,8 +342,8 @@ const RELIEF_FULL_AT: f32 = 0.45;
 const RELIEF_SHADOW: f32 = 0.8;
 
 // A material's height at `uv` (1 the surface, 0 its deepest), at mip `level`.
-fn relief_height(m: Material, uv: vec2<f32>, level: f32) -> f32 {
-    let t = textureSampleLevel(textures[m.tex_height], samp_repeat, uv, level);
+fn relief_height(m: Material, uv: vec2<f32>, level: f32, hold: u32) -> f32 {
+    let t = pic_level(m.tex_height, uv, level, hold);
     return select(t.r, t.b, (m.flags & M_PACKED_SURFACE) != 0u);
 }
 
@@ -375,7 +376,7 @@ fn key_light(p: vec3<f32>, indoor: bool) -> vec4<f32> {
 }
 
 fn relief(m: Material, in: VsOut, n: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, dx: vec2<f32>,
-          dy: vec2<f32>) -> Relief {
+          dy: vec2<f32>, hold: u32) -> Relief {
     var r: Relief;
     r.uv = in.uv;
     r.lit = 1.0;
@@ -411,7 +412,7 @@ fn relief(m: Material, in: VsOut, n: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, 
     var depth = 0.0;
     var hit = 0.0;
     for (var k = 0; k < 32; k++) {
-        let under = 1.0 - relief_height(m, in.uv + span * depth, level);
+        let under = 1.0 - relief_height(m, in.uv + span * depth, level, hold);
         if (depth >= under || depth >= 1.0) {
             let a = was_under - was_depth;
             let b = depth - under;
@@ -442,7 +443,7 @@ fn relief(m: Material, in: VsOut, n: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, 
         }
         let t = f32(k) / walk;
         let ray = hit * (1.0 - t);
-        let under = 1.0 - relief_height(m, r.uv + lspan * hit * t, level);
+        let under = 1.0 - relief_height(m, r.uv + lspan * hit * t, level, hold);
         shade = max(shade, (ray - under) * 7.0 * (1.0 - t * 0.5));
     }
     r.lit = 1.0 - RELIEF_SHADOW * clamp(shade, 0.0, 1.0) * fade;
@@ -451,10 +452,11 @@ fn relief(m: Material, in: VsOut, n: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, 
 
 @fragment
 fn fs_object(in: VsOut, @builtin(front_facing) front: bool) -> GOut {
-    return object_surface(in, front);
+    return object_surface(in, front, in.extra);
 }
 
-fn object_surface(in: VsOut, front: bool) -> GOut {
+// `hold`: the axes the polygon's picture is held to its edge along (`HOLD_U`, `HOLD_V`).
+fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
     if (screened(in.clip.xy, in.fade)) {
         discard;
     }
@@ -474,17 +476,17 @@ fn object_surface(in: VsOut, front: bool) -> GOut {
         n = -n;
     }
     // Every picture is read where the view meets the height (the surface's own place without one).
-    let at = relief(m, in, n, wdx, wdy, dx, dy);
+    let at = relief(m, in, n, wdx, wdy, dx, dy, hold);
     let uv = at.uv;
     var c = m.base_color;
     if ((m.flags & M_HAS_BASE) != 0u) {
-        c *= textureSampleGrad(textures[m.tex_base], samp_repeat, uv, dx, dy);
+        c *= pic_grad(m.tex_base, uv, dx, dy, hold);
     }
     if ((m.flags & M_CUTOUT) != 0u && c.a < m.alpha_cutoff) {
         discard;
     }
     if ((m.flags & M_HAS_NORMAL) != 0u) {
-        let t = textureSampleGrad(textures[m.tex_normal], samp_repeat, uv, dx, dy).rg;
+        let t = pic_grad(m.tex_normal, uv, dx, dy, hold).rg;
         // A pack material's bend on a retail picture is depth mapping's.
         let k = select(1.0, frame.relief.y, (m.flags & M_PACKED_SURFACE) != 0u);
         n = bend(n, unpack_normal(0.5 + (t - 0.5) * k), wdx, wdy, dx, dy);
@@ -493,7 +495,7 @@ fn object_surface(in: VsOut, front: bool) -> GOut {
     var metal = m.metal;
     var occlusion = 1.0;
     if ((m.flags & M_HAS_ROUGH_METAL) != 0u) {
-        let rm = textureSampleGrad(textures[m.tex_rough_metal], samp_repeat, uv, dx, dy);
+        let rm = pic_grad(m.tex_rough_metal, uv, dx, dy, hold);
         if ((m.flags & M_PACKED_SURFACE) != 0u) {
             // A pack material's surface: roughness, occlusion, height.
             rough = rm.r;
@@ -503,8 +505,14 @@ fn object_surface(in: VsOut, front: bool) -> GOut {
             metal = rm.b;
         }
     }
+    // A metal map: a metal only where it says, its picture brightened there alone.
+    if ((m.flags & M_HAS_METAL) != 0u) {
+        let k = textureSampleGrad(textures[m.tex_metal], samp_repeat, uv, dx, dy).r;
+        metal *= k;
+        c = vec4<f32>(c.rgb * mix(1.0, m.emissive.w, k), c.a);
+    }
     if ((m.flags & (M_HAS_OCCLUSION | M_PACKED_SURFACE)) == M_HAS_OCCLUSION) {
-        occlusion = textureSampleGrad(textures[m.tex_occlusion], samp_repeat, uv, dx, dy).r;
+        occlusion = pic_grad(m.tex_occlusion, uv, dx, dy, hold).r;
     }
     var heat = vec2<f32>(0.0);
     if (m.kind == KIND_MOLTEN) {

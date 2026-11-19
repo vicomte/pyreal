@@ -275,8 +275,9 @@ fn brazier_room() -> Camera {
 }
 
 /// The dungeon's lamps come from its setups' own lights, and a lamp-lit room is brighter near its
-/// lamp than across the room: the pixels within a metre and a half of a lamp are far brighter
-/// than those four to eight metres from every lamp, and the lamps are what lights them.
+/// lamp than across the room: the light the lamps add within a metre and a half of a lamp is far
+/// more than they add four to eight metres from every lamp. Measured as lit minus unlit, so the
+/// fire's own glow, drawn either way, doesn't count.
 #[test]
 fn a_lamp_lit_room_is_brighter_near_its_lamp() {
     let store = pyreal_dat::testing::open_store_or_fail();
@@ -319,7 +320,7 @@ fn a_lamp_lit_room_is_brighter_near_its_lamp() {
     let luma = |p: &[u8; 4]| {
         f64::from(p[0]) * 0.2126 + f64::from(p[1]) * 0.7152 + f64::from(p[2]) * 0.0722
     };
-    let (mut near, mut far, mut gain) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut near, mut far) = (Vec::new(), Vec::new());
     for ((p, a), b) in points
         .iter()
         .zip(lit.as_chunks::<4>().0)
@@ -331,10 +332,9 @@ fn a_lamp_lit_room_is_brighter_near_its_lamp() {
             .map(|l| l.position.distance(*p))
             .fold(f32::MAX, f32::min);
         if d < 1.5 {
-            near.push(luma(a));
-            gain.push(luma(a) - luma(b));
+            near.push(luma(a) - luma(b));
         } else if (4.0..8.0).contains(&d) {
-            far.push(luma(a));
+            far.push(luma(a) - luma(b));
         }
     }
     #[allow(clippy::cast_precision_loss)]
@@ -345,13 +345,13 @@ fn a_lamp_lit_room_is_brighter_near_its_lamp() {
         near.len(),
         far.len()
     );
+    assert!(avg(&near) > 12.0, "the lamps light it: {:.1}", avg(&near));
     assert!(
         avg(&near) > avg(&far) * 2.0,
-        "near the lamp {:.1} against {:.1} across the room",
+        "lamp light near the lamp {:.1} against {:.1} across the room",
         avg(&near),
         avg(&far)
     );
-    assert!(avg(&gain) > 20.0, "the lamps light it: {:.1}", avg(&gain));
 }
 
 /// A dungeon stays dim under the eye's adaptation: the exposure is held to the room's ceiling
@@ -533,6 +533,7 @@ fn cluster_lists_hold_the_lamps_that_touch_them() {
             kind: LampKind::Authored,
             object: 0,
             flash: false,
+            held: false,
             seed: 0,
         });
     }

@@ -272,6 +272,7 @@ fn frost_cover() -> f32 {
             Vec3::ZERO,
             at,
             false,
+            false,
         );
         if frame >= 90 {
             drawn = engine

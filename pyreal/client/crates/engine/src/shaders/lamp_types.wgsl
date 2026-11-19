@@ -8,7 +8,8 @@ struct Lamp {
     // Bits 0-7 the flicker (0 steady, 1 flame, 2 embers); bit 8 indoors; bit 9 shadowed; bit 10
     // the dats' own (its light held within a metre); bit 11 a flame found without a light; bit 12
     // magic, the dats' light of a colour no lamp burns (a portal's, a spell's); bit 13 an acid
-    // body's glow; bit 14 a strike of lightning; bit 15 a portal's own light (`gates::lamp`).
+    // body's glow; bit 14 a strike of lightning; bit 15 a portal's own light (`gates::lamp`); bit
+    // 16 a held thing's light (`glow::HELD_SHARE`).
     flags: u32,
     // The client's light: colour times intensity.
     retail: vec3<f32>,
@@ -50,6 +51,8 @@ const OUTDOOR_GAIN: f32 = 12.0;
 const ACID_LAMP: f32 = 0.45;
 // How bright a portal's own light is outdoors.
 const PORTAL_LAMP: f32 = 0.5;
+// A held thing's light's share of its kind's outdoors (`glow::HELD_SHARE`).
+const HELD_SHARE: f32 = 0.25;
 const OUTDOOR_CORE: f32 = 0.6;
 // A strike's lamp's intensity (the client's units) that lights as a bright lamp does.
 const LIGHTNING_UNITS: f32 = 40.0;
@@ -121,6 +124,9 @@ fn outdoor_lamp(l: Lamp, d: f32) -> vec3<f32> {
         // A strike of lightning: as bright as its flash, for a moment.
         bright = top / LIGHTNING_UNITS * LIGHTNING_GAIN;
         reach = clamp(falloff, 4.0, 16.0);
+    }
+    if ((l.flags & 65536u) != 0u) {
+        bright *= HELD_SHARE;
     }
     reach = min(reach, l.range);
     let x = d / reach;

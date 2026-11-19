@@ -119,6 +119,8 @@
 //!                            # picture, along its width and up it; [1, 1] unless named
 //! metal = true               # a metal: its colour is what it mirrors
 //! brighten = 4.5             # how many times brighter than its picture its colour is drawn
+//! metal_map = "materials/0x05002620_metal.png"     # red: white metal, black not; a metal
+//!                            # (brightened) only where it says, without `metal`
 //! gloss = 0.8                # 0 to 1: how smooth it is where no roughness picture says
 //! clear = 0.5                # 0 to 1: clear as ice or a gem in its picture's own colour, this
 //!                            # much of the world behind it seen through it, bent
@@ -484,6 +486,9 @@ pub struct ManifestMaterial {
     pub damp: f32,
     /// A picture of where it is wet, in its red: white as wet as [`Self::damp`] says, black dry.
     pub damp_map: Option<String>,
+    /// A picture of where it is a metal, in its red: white metal, black not. A material that names
+    /// one is a metal ([`Matter::metal`]) only where the picture says.
+    pub metal_map: Option<String>,
     /// Whether it is wet on floors too, not only on walls.
     pub damp_floors: bool,
     /// Whether a film of slime lies on it where it is damp.
@@ -1277,7 +1282,8 @@ fn material(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
     let draws_on = draws_on(t)?;
     let palettes = palettes_of(t.get("palettes"))?;
     let matter = Matter {
-        metal: flag("metal")?.then_some(number("brighten", 0.1, 20.0)?.unwrap_or(1.0)),
+        metal: (flag("metal")? || t.contains_key("metal_map"))
+            .then_some(number("brighten", 0.1, 20.0)?.unwrap_or(1.0)),
         gloss: number("gloss", 0.0, 1.0)?,
         clear: number("clear", 0.0, 1.0)?,
         refraction: number("refraction", 1.0, 3.0)?.unwrap_or(1.31),
@@ -1294,6 +1300,7 @@ fn material(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
         keep_retail_picture: flag("keep_retail_picture")?,
         damp,
         damp_map: picture("damp_map")?,
+        metal_map: picture("metal_map")?,
         damp_floors: flag("damp_floors")?,
         slime: flag("slime")?,
         ice: flag("ice")?,
@@ -2514,6 +2521,21 @@ license = \"CC0-1.0\"
         assert_eq!((m.damp_map.as_deref(), m.damp_floors), (None, false));
         assert!(ArtPackManifest::parse(&wall_with("damp_floors = 1")).is_err());
         assert!(ArtPackManifest::parse(&wall_with("damp_map = \"../w.png\"")).is_err());
+    }
+
+    #[test]
+    fn a_metal_map_makes_a_metal_where_it_says() {
+        let pack = ArtPackManifest::parse(&wall_with("metal_map = \"m.png\"\nbrighten = 3"))
+            .expect("reads");
+        let m = pack.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!(
+            (m.metal_map.as_deref(), m.matter.metal),
+            (Some("m.png"), Some(3.0))
+        );
+        let plain = ArtPackManifest::parse(&wall_with("brighten = 3")).expect("reads");
+        let m = plain.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!((m.metal_map.as_deref(), m.matter.metal), (None, None));
+        assert!(ArtPackManifest::parse(&wall_with("metal_map = \"../m.png\"")).is_err());
     }
 
     #[test]

@@ -74,7 +74,18 @@ fn script(a: &dyn AnimAssets, id: DataId, at: &str, depth: u32) {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let store = Arc::new(RetailDatStore::open_dir(std::path::Path::new(&args[1])).expect("dats"));
+    let store = {
+        // End of Retail's files, or an older portal.dat and cell.dat.
+        let dir = std::path::Path::new(&args[1]);
+        Arc::new(
+            if pyreal_dat::holds_modern_dats(dir) {
+                RetailDatStore::open_dir(dir)
+            } else {
+                RetailDatStore::open_classic_dir(dir)
+            }
+            .expect("dats"),
+        )
+    };
     let a: Arc<dyn AnimAssets> = Arc::new(pyreal_world_data::anim_assets::DatAnimAssets::new(
         Arc::clone(&store),
     ));

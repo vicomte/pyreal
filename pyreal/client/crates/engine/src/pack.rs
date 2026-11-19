@@ -5,7 +5,8 @@
 //!   with one of them takes the material's maps ([`PackOverrides`]), each optional, and keeps
 //!   the dat's for any it lacks. A material's surface map packs roughness, occlusion and height
 //!   in red, green and blue ([`flags::PACKED_SURFACE`](crate::asset::material::flags)); its kind
-//!   (for its metal) comes from its grit ([`material_kind`]).
+//!   (for its metal) comes from its grit ([`material_kind`]), and its metal map says where it is
+//!   a metal ([`flags::HAS_METAL`](crate::asset::material::flags)).
 //! - **Models**: a pack model is drawn in place of the retail object of the same id (alongside it
 //!   for the few that lie over one, [`lays_over`]), its levels of detail linked as a degrade chain
 //!   at the pack's distances.
@@ -103,6 +104,7 @@ impl EnginePack {
             ("material", "albedo") => Some((MaterialPart::Albedo, true)),
             ("material", "normal") => Some((MaterialPart::Normal, false)),
             ("material", "surface") => Some((MaterialPart::Surface, false)),
+            ("material", "metal") => Some((MaterialPart::Metal, false)),
             _ => None,
         };
         if let Some((part, srgb)) = material {
@@ -374,7 +376,7 @@ impl MaterialOverrides for PackOverrides {
             height: surface.clone(),
             roughness_metal: surface.clone(),
             occlusion: surface.clone(),
-            emissive: None,
+            metal: m.metal.as_ref().and_then(|_| key("metal")),
             kind: material_kind(&self.0, i),
             packed_surface: surface.is_some(),
             ice: m.ice,

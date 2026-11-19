@@ -178,7 +178,8 @@ struct Material {
     tex_height: u32,
     tex_rough_metal: u32,
     tex_occlusion: u32,
-    tex_emissive: u32,
+    // Where a metal is, in red (M_HAS_METAL).
+    tex_metal: u32,
     flags: u32,
     kind: u32,
     roughness: f32,
@@ -211,7 +212,7 @@ const M_HAS_NORMAL: u32 = 512u;
 const M_HAS_HEIGHT: u32 = 1024u;
 const M_HAS_ROUGH_METAL: u32 = 2048u;
 const M_HAS_OCCLUSION: u32 = 4096u;
-const M_HAS_EMISSIVE: u32 = 8192u;
+const M_HAS_METAL: u32 = 8192u;
 // The roughness, occlusion and height maps are one picture: red, green and blue.
 const M_PACKED_SURFACE: u32 = 16384u;
 const M_IMPOSTOR: u32 = 32768u;
@@ -227,6 +228,8 @@ const M_ICE: u32 = 262144u;
 const M_SMOKE: u32 = 524288u;
 // Ice in its picture's own colour (`flags::TINTED_ICE`): a creature's body of ice.
 const M_TINTED_ICE: u32 = 1048576u;
+// A basin's water, `flags::POOL`.
+const M_POOL: u32 = 2097152u;
 const NO_TEXTURE: u32 = 0xFFFFFFFFu;
 
 // The G-buffer's shading bits, in the material target's alpha.

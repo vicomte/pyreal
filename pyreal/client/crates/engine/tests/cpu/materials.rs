@@ -263,6 +263,7 @@ fn pack() -> std::sync::Arc<pyreal_art_pack::ArtPack> {
         normal: picture(64, Bc5),
         surface: picture(surface, Bc7),
         grit: None,
+        metal: None,
         grit_repeat: [1.0, 1.0],
         damp_floors: false,
         slime: false,
@@ -380,4 +381,39 @@ fn the_lava_cells_are_molten_in_every_era() {
             "{id:#010X}"
         );
     }
+}
+
+/// A metal map makes a surface a metal only where it says: its picture is not brightened whole,
+/// and the record carries the brightening and the map for the shader to lay where it is metal.
+#[test]
+fn a_metal_map_makes_a_metal_only_where_it_says() {
+    let matter = pyreal_assets::art_pack::Matter {
+        metal: Some(2.0),
+        ..Default::default()
+    };
+    let banded = PackMaps {
+        metal: Some(TextureKey::Pack("material:0:metal".into())),
+        matter,
+        ..PackMaps::default()
+    };
+    let d = describe_surface(&surface(IMAGE), false, None, &KindTable::default(), banded);
+    assert_eq!((d.kind, d.metal), (SurfaceKind::Metal, 1.0));
+    assert_eq!(d.base_color, [1.0; 4]);
+    assert_ne!(d.flags & flags::HAS_METAL, 0);
+    let r = MaterialRecord::new(&d, |k| match k {
+        TextureKey::Pack(_) => Some(9),
+        TextureKey::Dat { .. } => Some(7),
+        TextureKey::ClassicGround { .. } | TextureKey::LaterGround { .. } => None,
+    });
+    assert_eq!((r.textures[5], r.emissive[3]), (9, 2.0));
+    // Wholly metal, it is brightened whole and names no map.
+    let iron = PackMaps {
+        matter,
+        ..PackMaps::default()
+    };
+    let d = describe_surface(&surface(IMAGE), false, None, &KindTable::default(), iron);
+    assert_eq!(d.base_color, [2.0, 2.0, 2.0, 1.0]);
+    assert_eq!(d.flags & flags::HAS_METAL, 0);
+    let r = MaterialRecord::new(&d, |_| Some(7));
+    assert_eq!((r.textures[5], r.emissive[3]), (NO_TEXTURE, 1.0));
 }

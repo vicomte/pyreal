@@ -137,8 +137,11 @@ pub struct AssetLoader {
     /// Each pack body's materials, by its place in the pack, made once for every object.
     // ORDER-OK: looked up by place.
     skin_draws: HashMap<usize, Vec<Option<(u32, PipelineKind)>>>,
-    /// The fingerprint of each world picture and object the pack was asked about, by id.
-    prints: Mutex<HashMap<u32, Option<Fingerprint>>>,
+    /// The fingerprint of each world picture and object the pack was asked about, by id, and of
+    /// each end-of-retail ground picture an older world lays ([`LaterGround`]) apart from those.
+    prints: Mutex<HashMap<(u32, bool), Option<Fingerprint>>>,
+    /// End of retail's ground beside an older world, read once.
+    later_ground: Option<Option<Arc<LaterGround>>>,
     /// Where a pack model's level of pictures takes over from its last level of shape: its
     /// shape's own end where it has one, else this many times where that level began; zero
     /// keeps the shape to the horizon.
@@ -147,6 +150,20 @@ pub struct AssetLoader {
     pack_cards: HashMap<u32, Option<MeshId>>,
     /// Each terrain type's pack ground (picture slot, metres a repeat), when the pack has one.
     pack_grounds: HashMap<u32, Option<(u32, f32)>>,
+    /// Each placed setup's basin water faces ([`crate::fountains::pool_faces`]) and where its
+    /// streams meet them ([`crate::fountains::spills`]), read once.
+    // ORDER-OK: looked up by setup, never iterated.
+    pool_faces: HashMap<
+        u32,
+        (
+            Vec<crate::fountains::PoolFace>,
+            Vec<crate::fountains::Spill>,
+        ),
+    >,
+    /// The forges and fire pits of the room whose objects are being placed, each where
+    /// ([`crate::flames::firebox_of`]); none outdoors, where a body of fire shows faintly by day
+    /// and darkens the night round it as the eye adjusts to it.
+    fireboxes: Vec<(u32, Affine3A)>,
     /// Each terrain type's ground colour (linear) once its picture is laid, for the cover's tint.
     ground_colours: [Option<[f32; 3]>; crate::cover::GROUND_TYPES],
     // ORDER-OK: these caches are looked up by key and never iterated.
@@ -215,6 +232,8 @@ const CARD_LEAST: f32 = 60.0;
 pub fn pipeline_for(material_flags: u32, sides: Sides) -> PipelineKind {
     if material_flags & flags::ICE != 0 {
         PipelineKind::Ice
+    } else if material_flags & flags::POOL != 0 {
+        PipelineKind::Pool
     } else if material_flags & flags::ADDITIVE != 0 {
         PipelineKind::Additive
     } else if material_flags & flags::TRANSLUCENT != 0 {
@@ -241,7 +260,10 @@ impl AssetLoader {
             cards_from: CARDS_FROM,
             pack_cards: HashMap::new(),
             prints: Mutex::new(HashMap::new()),
+            later_ground: None,
             pack_grounds: HashMap::new(),
+            pool_faces: HashMap::new(),
+            fireboxes: Vec::new(),
             ground_colours: [None; crate::cover::GROUND_TYPES],
             textures: HashMap::new(),
             materials: HashMap::new(),
@@ -451,7 +473,9 @@ impl AssetLoader {
                 .as_ref()
                 .and_then(|p| p.pixels(name))
                 .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
-            TextureKey::Dat { .. } | TextureKey::ClassicGround { .. } => None,
+            TextureKey::Dat { .. }
+            | TextureKey::ClassicGround { .. }
+            | TextureKey::LaterGround { .. } => None,
         };
         if slot.is_some() {
             self.stats.textures += 1;
@@ -508,6 +532,10 @@ impl AssetLoader {
                     .ok()
             })
             .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
+            TextureKey::LaterGround { id } => TextureSource::new(store)
+                .decode(*id, false, None)
+                .ok()
+                .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
         };
         if slot.is_some() {
             self.stats.textures += 1;
@@ -668,17 +696,35 @@ impl AssetLoader {
         store: Option<&RetailDatStore>,
         id: DataId,
     ) -> Option<Fingerprint> {
+        self.print_in(store, id, false)
+    }
+
+    /// [`Self::print_of`] for a picture of `store`, which is end of retail's files beside an older
+    /// world when `later` ([`LaterGround`]): those hold other pictures under the world's ids.
+    fn print_in(
+        &self,
+        store: Option<&RetailDatStore>,
+        id: DataId,
+        later: bool,
+    ) -> Option<Fingerprint> {
         let mut prints = self
             .prints
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(p) = prints.get(&id.0) {
+        if let Some(p) = prints.get(&(id.0, later)) {
             return *p;
         }
         let store = store?;
         let print = pyreal_art_pack::fingerprint::of_record(store, id);
-        prints.insert(id.0, print);
+        prints.insert((id.0, later), print);
         print
+    }
+
+    /// End of retail's ground beside the older world `store`, read the first time it is asked for.
+    fn later_ground(&mut self, store: &RetailDatStore) -> Option<Arc<LaterGround>> {
+        self.later_ground
+            .get_or_insert_with(|| LaterGround::of(store).map(Arc::new))
+            .clone()
     }
 
     /// Whether the pack has entries for picture `texture` and none drew on `maps`.
@@ -1065,12 +1111,13 @@ impl AssetLoader {
             .pack
             .as_ref()
             .and_then(|p| crate::lamps::pack_sources(&p.pack, id, cell == OUTSIDE, &retail))
-            .unwrap_or(retail);
+            .unwrap_or(retail)
+            .into_iter()
+            .map(|s| crate::lamps::fixture(s, cell != OUTSIDE));
         // The object number the placement about to be made takes.
         let object = self.next_object;
         let placed: Vec<crate::lamps::Lamp> = sources
-            .iter()
-            .map(|s| crate::lamps::place(s, at, cell, object))
+            .map(|s| crate::lamps::place(&s, at, cell, object))
             .collect();
         let flames = engine.flames.sources(store, id).to_vec();
         let (carded, beds): (Vec<_>, Vec<_>) = flames.iter().partition(|f| f.kind.carded());
@@ -1079,6 +1126,28 @@ impl AssetLoader {
                 .iter()
                 .map(|f| crate::flames::place(f, at, cell, object, &placed)),
         );
+        // A hearth's fire is a body of fire flickering with its lamp, and throws its own light;
+        // so is a forge's or a fire pit's.
+        let mut glows = Vec::new();
+        for f in beds
+            .iter()
+            .filter(|f| f.kind == crate::flames::FlameKind::Hearth)
+        {
+            let lamp = crate::flames::hearth_lamp_of(at.transform_point3(f.offset), &placed);
+            engine.flames.hearths.push(crate::body_fire::hearth(
+                f, at, cell, object, lamp.0, lamp.1,
+            ));
+            glows.push(crate::body_fire::hearth_lamp(f, at, cell, object, lamp));
+        }
+        for f in &beds {
+            let Some((b, there)) = crate::flames::firebox_of(f, at, &self.fireboxes) else {
+                continue;
+            };
+            let flicker = crate::flames::flicker_of(at.transform_point3(f.offset), &placed);
+            let (fire, glow) = crate::body_fire::in_firebox(f, b, &there, cell, object, flicker);
+            engine.flames.hearths.push(fire);
+            glows.push(glow);
+        }
         engine
             .particles
             .flamed
@@ -1087,7 +1156,25 @@ impl AssetLoader {
             .particles
             .puffed
             .extend(beds.iter().map(|f| f.sprite));
+        // A wreath's fire is a body of fire whirling round its object, flickering on its lamp's
+        // seed. It brings its own light, so the lamp made up for its puffs, inside its object, goes.
+        let mut placed = placed;
+        for f in beds
+            .iter()
+            .filter(|f| f.kind == crate::flames::FlameKind::Wreath)
+        {
+            let base = at.transform_point3(f.offset);
+            let (seed, _) = crate::flames::flicker_of(base, &placed);
+            engine
+                .flames
+                .hearths
+                .push(crate::body_fire::wreath(f, at, cell, object, seed));
+            placed.retain(|l| {
+                l.kind != crate::lamps::LampKind::Flame || l.position.distance(base) > 0.5
+            });
+        }
         engine.lamps.extend(placed);
+        engine.lamps.extend(glows);
     }
 
     /// Object `id`'s lamps at `at` in cell slot `cell`, belonging to object number `object`: the
@@ -1139,7 +1226,17 @@ impl AssetLoader {
             && assets
                 .setup(id)
                 .is_some_and(|s| s.default_animation.is_some());
-        if sprites.is_empty() && !animated {
+        let (pools, spills) = self
+            .pool_faces
+            .entry(id.0)
+            .or_insert_with(|| {
+                let faces = crate::fountains::pool_faces(store, id);
+                let spills = crate::fountains::spills(store, id, &faces);
+                (faces, spills)
+            })
+            .clone();
+        let still = sprites.is_empty() && !animated;
+        if still && spills.is_empty() {
             return None;
         }
         for g in sprites {
@@ -1157,14 +1254,26 @@ impl AssetLoader {
         );
         let object = self.next_object;
         let flames = engine.flames.sources(store, id);
+        let wreath = flames
+            .iter()
+            .any(|f| f.kind == crate::flames::FlameKind::Wreath);
         let flamed = flames.iter().any(|f| f.kind.carded());
         let puffed = flames.iter().any(|f| !f.kind.carded());
-        let k = engine
-            .particles
-            .spawn(id, frame, scale.x, cell, object)
-            .then(|| engine.particles.hosts.len() - 1)?;
+        let hearth = flames.iter().any(|f| {
+            f.kind == crate::flames::FlameKind::Hearth
+                || crate::flames::firebox_of(f, at, &self.fireboxes).is_some()
+        });
+        let k = if still {
+            engine.particles.hold(id, frame, scale.x, cell, object)
+        } else {
+            engine.particles.spawn(id, frame, scale.x, cell, object)
+        }
+        .then(|| engine.particles.hosts.len() - 1)?;
         engine.particles.hosts[k].flamed = flamed;
         engine.particles.hosts[k].puffed = puffed;
+        engine.particles.hosts[k].pools = pools;
+        engine.particles.hosts[k].spills = spills;
+        engine.particles.hosts[k].hearth = hearth || wreath;
         engine.particles.hosts[k].animated.then_some(k)
     }
 
@@ -1625,10 +1734,35 @@ impl AssetLoader {
             }
         }
         self.stats.cells += 1;
+        let first = self.placed.len();
+        self.fireboxes = fireboxes_of(
+            d.cell
+                .static_objects
+                .iter()
+                .map(|o| (o.id, at_block * object_affine(&o.frame, 1.0))),
+        );
         for o in d.cell.static_objects.iter().filter(|o| o.id.0 != 0) {
             let placed = at_block * object_affine(&o.frame, 1.0);
             self.place_object_in(engine, store, o.id, placed, false, slot);
             self.stats.cell_statics += 1;
+        }
+        self.fireboxes.clear();
+        // Furniture reaching past the room's walls is seen through the rooms it reaches too.
+        for &id in &self.placed[first..] {
+            let Some((center, radius)) = engine.scene.instance(id).and_then(|i| {
+                let m = engine.scene.mesh(i.mesh)?;
+                let t = i.transform.matrix3;
+                let scale = t
+                    .x_axis
+                    .length()
+                    .max(t.y_axis.length())
+                    .max(t.z_axis.length());
+                Some((i.transform.transform_point3(m.center), m.radius * scale))
+            }) else {
+                continue;
+            };
+            let seen_through = engine.cells.furniture_slot(slot, center, radius);
+            engine.scene.set_cell(id, seen_through);
         }
         slot
     }
@@ -2046,6 +2180,54 @@ struct Ground<'a> {
     engine: &'a mut Engine,
     store: &'a RetailDatStore,
     region: &'a Region,
+    later: Option<&'a LaterGround>,
+}
+
+/// End of retail's region and files beside an older world: its pictures lay the older world's
+/// terrain types, which Ground Coloring tints toward 1999 as it does end of retail's own.
+#[derive(Debug)]
+pub struct LaterGround {
+    store: RetailDatStore,
+    region: Region,
+}
+
+impl LaterGround {
+    /// `None` on a later world, or on an older one with no later files beside it.
+    #[must_use]
+    pub fn of(store: &RetailDatStore) -> Option<Self> {
+        if store.era() != pyreal_dat::ContainerEra::Classic {
+            return None;
+        }
+        let store = store.modern_files()?;
+        let region = pyreal_world_data::landblock::load_region(&store).ok()?;
+        Some(Self { store, region })
+    }
+}
+
+/// The picture terrain type `terrain_type` is laid with and the files that hold it: end of
+/// retail's beside an older world (`later`, and true), else the world's own.
+fn ground_picture<'a>(
+    store: &'a RetailDatStore,
+    region: &'a Region,
+    later: Option<&'a LaterGround>,
+    terrain_type: u32,
+) -> Option<(
+    &'a RetailDatStore,
+    &'a pyreal_assets::region::TerrainDesc,
+    bool,
+)> {
+    let desc = |r: &'a Region| {
+        r.land_surf
+            .tex_merge
+            .as_ref()
+            .and_then(|tm| get_terrain_tex(tm, terrain_type))
+    };
+    if let Some(l) = later {
+        if let Some(d) = desc(&l.region) {
+            return Some((&l.store, d, true));
+        }
+    }
+    Some((store, desc(region)?, false))
 }
 
 impl Ground<'_> {
@@ -2080,14 +2262,19 @@ impl Ground<'_> {
 
     /// A pack material's normal and surface (with its height) for the retail ground picture
     /// `texture` in `slot`, as the picture's companions, where the pack has one.
-    fn pack_material_maps(&mut self, slot: u32, texture: DataId) {
+    fn pack_material_maps(
+        &mut self,
+        slot: u32,
+        texture: DataId,
+        store: &RetailDatStore,
+        later: bool,
+    ) {
         let Some(pack) = self.loader.pack.as_ref().map(Arc::clone) else {
             return;
         };
-        let store = self.store;
         let maps =
             PackOverrides(Arc::clone(&pack.pack)).maps_for(texture, Some(texture), &[], &|t| {
-                self.loader.print_of(Some(store), t)
+                self.loader.print_in(Some(store), t, later)
             });
         if maps.normal.is_none() && maps.height.is_none() {
             return;
@@ -2112,7 +2299,7 @@ impl Ground<'_> {
 
     /// A normal and surface (with its height) worked out from the retail road picture `texture`
     /// in `slot`, as the picture's companions, where the pack gave it none.
-    fn road_maps(&mut self, slot: u32, texture: DataId) {
+    fn road_maps(&mut self, slot: u32, texture: DataId, store: &RetailDatStore) {
         let none = crate::asset::material::NO_TEXTURE;
         if self
             .engine
@@ -2122,7 +2309,7 @@ impl Ground<'_> {
         {
             return;
         }
-        let Ok((w, h, bgra)) = TextureSource::new(self.store).bgra(texture) else {
+        let Ok((w, h, bgra)) = TextureSource::new(store).bgra(texture) else {
             return;
         };
         let rgba: Vec<u8> = bgra
@@ -2151,9 +2338,9 @@ impl Ground<'_> {
     /// The fingerprint of the picture the region lays `terrain_type` with, which a pack ground
     /// must match to be drawn for it.
     fn ground_record(&self, terrain_type: u32) -> Option<Fingerprint> {
-        let tm = self.region.land_surf.tex_merge.as_ref()?;
-        let desc = get_terrain_tex(tm, terrain_type)?;
-        self.loader.print_of(Some(self.store), desc.tex_gid)
+        let (store, desc, later) =
+            ground_picture(self.store, self.region, self.later, terrain_type)?;
+        self.loader.print_in(Some(store), desc.tex_gid, later)
     }
 
     /// The pack's ground for `terrain_type`: its picture's slot and metres a repeat, with its
@@ -2251,11 +2438,11 @@ impl GroundTextures for Ground<'_> {
             });
             return Some((slot, -size, kind.index()));
         }
-        let tm = self.region.land_surf.tex_merge.as_ref()?;
-        let desc = get_terrain_tex(tm, terrain_type)?;
-        let tint = classic_tint(self.store, terrain_type, desc.tex_gid);
-        self.note_colour(terrain_type, |g| {
-            let source = TextureSource::new(g.store);
+        let (store, desc, later) =
+            ground_picture(self.store, self.region, self.later, terrain_type)?;
+        let tint = classic_tint(store, terrain_type, desc.tex_gid);
+        self.note_colour(terrain_type, |_| {
+            let source = TextureSource::new(store);
             match tint {
                 Some(t) => {
                     let px = source
@@ -2270,22 +2457,26 @@ impl GroundTextures for Ground<'_> {
             }
         });
         let kind = self.kind_of(terrain_type);
-        self.loader.kinds.insert(desc.tex_gid, kind);
+        // The world's own objects may name an id the later files hold other pictures under.
+        if !later {
+            self.loader.kinds.insert(desc.tex_gid, kind);
+        }
         let key = match tint {
             Some(_) => TextureKey::ClassicGround {
                 id: desc.tex_gid,
                 terrain_type,
             },
+            None if later => TextureKey::LaterGround { id: desc.tex_gid },
             None => TextureKey::Dat {
                 id: desc.tex_gid,
                 clip_map: false,
                 swap: None,
             },
         };
-        let slot = self.loader.texture(self.engine, self.store, &key)?;
-        self.pack_material_maps(slot, desc.tex_gid);
+        let slot = self.loader.texture(self.engine, store, &key)?;
+        self.pack_material_maps(slot, desc.tex_gid, store, later);
         if terrain_type == ROAD_TERRAIN_TYPE {
-            self.road_maps(slot, desc.tex_gid);
+            self.road_maps(slot, desc.tex_gid, store);
         }
         Some((
             slot,
@@ -2428,23 +2619,25 @@ pub fn far_field_round(
     (cx, cy): (i32, i32),
     radius: i32,
 ) -> crate::far::FarField {
-    let near = (
-        area.block_origin(cx - area.radius, cy - area.radius)
-            .truncate(),
-        area.block_origin(cx + area.radius + 1, cy + area.radius + 1)
-            .truncate(),
+    let (x, y) = (
+        crate::far::near_blocks(cx, area.radius),
+        crate::far::near_blocks(cy, area.radius),
     );
-    let src = TextureSource::new(store);
+    let near = (
+        area.block_origin(x.0, y.0).truncate(),
+        area.block_origin(x.1, y.1).truncate(),
+    );
+    let later = LaterGround::of(store);
     let mut colour = |terrain_type: u32| -> [u8; 4] {
-        let picture = region
-            .land_surf
-            .tex_merge
-            .as_ref()
-            .and_then(|tm| get_terrain_tex(tm, terrain_type))
-            .and_then(|d| match classic_tint(store, terrain_type, d.tex_gid) {
-                Some(t) => tinted_average(&src, d.tex_gid, t),
-                None => src.average(d.tex_gid).ok(),
-            });
+        let picture = ground_picture(store, region, later.as_ref(), terrain_type).and_then(
+            |(store, d, _)| {
+                let src = TextureSource::new(store);
+                match classic_tint(store, terrain_type, d.tex_gid) {
+                    Some(t) => tinted_average(&src, d.tex_gid, t),
+                    None => src.average(d.tex_gid).ok(),
+                }
+            },
+        );
         let [r, g, b] = picture.unwrap_or_else(|| {
             let name = region
                 .terrain_types
@@ -3201,11 +3394,13 @@ fn pinned_ground(
         .iter()
         .position(|t| t.terrain_name.eq_ignore_ascii_case(name))
         .unwrap_or(fallback);
+    let later = loader.later_ground(store);
     let (slot, tiling, _) = Ground {
         loader,
         engine: &mut *engine,
         store,
         region,
+        later: later.as_deref(),
     }
     .ground(u32::try_from(terrain_type).ok()?)?;
     let none = crate::asset::material::NO_TEXTURE;
@@ -3407,11 +3602,13 @@ pub fn place_ground(
     };
     let material = loader.terrain_material(engine)?;
     let ground = {
+        let later = loader.later_ground(store);
         let mut g = Ground {
             loader: &mut *loader,
             engine: &mut *engine,
             store,
             region,
+            later: later.as_deref(),
         };
         build_block(
             lb,
@@ -3605,6 +3802,15 @@ pub fn place_statics_run(
     if last {
         loader.write_cut_reaches(engine, Some(rooms));
     }
+}
+
+/// The forges and fire pits among a room's `objects` (each placed where), for
+/// [`crate::flames::firebox_of`].
+fn fireboxes_of(objects: impl Iterator<Item = (DataId, Affine3A)>) -> Vec<(u32, Affine3A)> {
+    objects
+        .filter(|(id, _)| crate::flames::holds_fire(id.0))
+        .map(|(id, at)| (id.0, at))
+        .collect()
 }
 
 /// Places `plan`'s scenery `range` (a block whose south-west corner is at `origin`).

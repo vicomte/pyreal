@@ -2,7 +2,8 @@
 //! and default script.
 //!
 //! Usage: `place_probe DAT_DIR BLOCK X Y RADIUS` (BLOCK as 0xAAB1), or `place_probe DAT_DIR BLOCK
-//! SETUP` for where the block places one setup.
+//! SETUP` for where the block places one setup. A last `--scenery` lists the block's generated
+//! scenery within the radius too.
 
 use pyreal_assets::world::LandblockInfo;
 use pyreal_assets::{Decode, Setup};
@@ -16,7 +17,16 @@ fn read<T: Decode>(store: &RetailDatStore, kind: DbType, id: DataId) -> Option<T
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let store = RetailDatStore::open_dir(std::path::Path::new(&a[1])).expect("dats");
+    let store = {
+        // End of Retail's files, or an older portal.dat and cell.dat.
+        let dir = std::path::Path::new(&a[1]);
+        if pyreal_dat::holds_modern_dats(dir) {
+            RetailDatStore::open_dir(dir)
+        } else {
+            RetailDatStore::open_classic_dir(dir)
+        }
+        .expect("dats")
+    };
     let block = u32::from_str_radix(a[2].trim_start_matches("0x"), 16).expect("block");
     let only = a[3]
         .strip_prefix("0x")
@@ -64,5 +74,34 @@ fn main() {
             }
         }
         println!();
+    }
+    if a.last().is_some_and(|l| l == "--scenery") {
+        let region = pyreal_world_data::landblock::load_region(&store).expect("region");
+        let (bx, by) = (
+            i32::try_from(block >> 8).unwrap_or(0),
+            i32::try_from(block & 0xFF).unwrap_or(0),
+        );
+        let mut planner = pyreal_engine::world::Planner::new(&region);
+        for (id, at) in planner.scenery(&store, &region, (bx, by)) {
+            let o = at.translation;
+            if !near(pyreal_primitives::Vec3 {
+                x: o.x,
+                y: o.y,
+                z: o.z,
+            }) {
+                continue;
+            }
+            print!("scenery {:#010X} at {o:?}", id.0);
+            if divine_type(id) == Some(DbType::Setup) {
+                if let Some(s) = read::<Setup>(&store, DbType::Setup, id) {
+                    print!(
+                        " script {:#010X} lights {}",
+                        s.default_script_id.0,
+                        s.lights.len()
+                    );
+                }
+            }
+            println!();
+        }
     }
 }

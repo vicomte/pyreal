@@ -62,6 +62,9 @@ pub enum LampKind {
     Glow,
     /// A portal's light ([`crate::gates::lamp`]): magic, washing the ground round it.
     Portal,
+    /// A room's own authored light of a colour no lamp burns (a dungeon's green, blue or
+    /// magenta), lit at retail's colour and intensity ([`fixture`]).
+    Mood,
 }
 
 /// One light of an object, in the object's own space.
@@ -101,6 +104,8 @@ pub struct Lamp {
     pub flash: bool,
     /// Its flicker's seed; nought takes one from where it stands (a lamp that moves keeps one).
     pub seed: u32,
+    /// A held thing's light ([`crate::glow::HELD_INTENSITY`]), as soft outdoors too.
+    pub held: bool,
 }
 
 /// The client's range for a light of `falloff`: Direct3D's `Range = falloff * 1.5`.
@@ -184,6 +189,16 @@ fn magic(kind: LampKind, colour: Vec3) -> bool {
         || (kind == LampKind::Authored && !warm(colour))
 }
 
+/// `s` as a dungeon's placed object lights with: indoors, an authored light that is not warm is a
+/// mood light, not a portal's or spell's.
+#[must_use]
+pub fn fixture(mut s: LampSource, indoors: bool) -> LampSource {
+    if indoors && s.kind == LampKind::Authored && !warm(s.colour) {
+        s.kind = LampKind::Mood;
+    }
+    s
+}
+
 /// A colour temperature's linear colour, brightest channel one (Helland's fit of the Planckian
 /// locus).
 #[must_use]
@@ -238,7 +253,7 @@ pub(crate) fn parts(setup: &Setup) -> Vec<(DataId, Affine3A)> {
 }
 
 /// The lowest and highest corners of an object's parts.
-fn bounds(store: &RetailDatStore, parts: &[(DataId, Affine3A)]) -> Option<(Vec3, Vec3)> {
+pub(crate) fn bounds(store: &RetailDatStore, parts: &[(DataId, Affine3A)]) -> Option<(Vec3, Vec3)> {
     let mut lo = Vec3::splat(f32::MAX);
     let mut hi = Vec3::splat(f32::MIN);
     for (gid, at) in parts {
@@ -293,6 +308,32 @@ pub(crate) fn burns_on(e: &ParticleEmitterInfo) -> bool {
     e.total_particles <= 0 && e.total_seconds <= 0.0
 }
 
+/// Whether an emitter is a broad glow, not a fire: still particles four metres or more across (a
+/// dungeon's warm haze, a swirling orb, a sheet of light on the floor). Retail's fire puff is fire
+/// at any size.
+pub(crate) fn broad_glow(store: &RetailDatStore, e: &ParticleEmitterInfo) -> bool {
+    if e.a.z > 0.05 {
+        return false;
+    }
+    let gid = if e.hw_gfxobj_id.0 != 0 {
+        e.hw_gfxobj_id
+    } else {
+        e.gfxobj_id
+    };
+    let Some(gfx) = decode::<GfxObj>(store, DbType::GfxObj, gid) else {
+        return false;
+    };
+    let (lo, hi) = gfx.vertex_array.vertices.iter().fold(
+        (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+        |(lo, hi), v| {
+            let p = Vec3::new(v.position.x, v.position.y, v.position.z);
+            (lo.min(p), hi.max(p))
+        },
+    );
+    (hi - lo).max_element() * e.start_scale.max(e.final_scale) >= 4.0
+        && crate::body_fire::fire_picture(store, gid).is_none()
+}
+
 /// The colour of a fire-coloured additive sprite, or `None` for any other.
 pub(crate) fn flame_colour(store: &RetailDatStore, e: &ParticleEmitterInfo) -> Option<Vec3> {
     let gid = if e.hw_gfxobj_id.0 != 0 {
@@ -321,8 +362,23 @@ pub(crate) fn flame_colour(store: &RetailDatStore, e: &ParticleEmitterInfo) -> O
         sum += c.unwrap_or(Vec3::ZERO);
     }
     let (h, s) = hue_saturation(sum);
-    (glows && sum.max_element() > 0.0 && s >= 0.3 && (8.0..=60.0).contains(&h))
-        .then(|| normalised(sum))
+    if glows && sum.max_element() > 0.0 && s >= 0.3 && (8.0..=60.0).contains(&h) {
+        return Some(normalised(sum));
+    }
+    coloured_flame(store, e)
+}
+
+/// The colour of a torch's flame of another colour than fire's (blue, green, violet): retail's
+/// torch flame recoloured. `None` for any other sprite.
+pub(crate) fn coloured_flame(store: &RetailDatStore, e: &ParticleEmitterInfo) -> Option<Vec3> {
+    let gid = if e.hw_gfxobj_id.0 != 0 {
+        e.hw_gfxobj_id
+    } else {
+        e.gfxobj_id
+    };
+    let c = crate::body_fire::torch_picture(store, gid)?;
+    let (h, _) = hue_saturation(c);
+    (!(8.0..=60.0).contains(&h)).then_some(c)
 }
 
 /// A sprite's tone: grey or white (smoke's), cool (blue to cyan, mist's), a strong green (acid's),
@@ -336,7 +392,7 @@ pub struct Tone {
 }
 
 /// Picture `gid`'s [`Tone`].
-pub(crate) fn tone(store: &RetailDatStore, gid: DataId) -> Tone {
+pub fn tone(store: &RetailDatStore, gid: DataId) -> Tone {
     let Some(gfx) = decode::<GfxObj>(store, DbType::GfxObj, gid) else {
         return Tone::default();
     };
@@ -382,14 +438,15 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
     };
     let parts = parts(&setup);
     let emitters = script_emitters(store, &setup, &parts);
-    let flames: Vec<(Vec3, Vec3)> = emitters
+    // Each fire's place and colour, and whether it is a broad glow, which lights steadily.
+    let flames: Vec<(Vec3, Vec3, bool)> = emitters
         .iter()
         .filter(|(e, _)| burns_on(e))
         .filter_map(|(e, at)| {
             let c = flame_colour(store, e)?;
             // The flame's light sits a little above where its particles are born.
             let rise = (e.a.z * e.max_a.max(e.min_a) * 0.15).clamp(0.0, 0.4);
-            Some((*at + Vec3::Z * rise, c))
+            Some((*at + Vec3::Z * rise, c, broad_glow(store, e)))
         })
         .collect();
     let mut out = Vec::new();
@@ -406,7 +463,9 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
                 })
                 .unwrap_or(at);
         }
-        let near_flame = flames.iter().any(|(p, _)| (*p - at).length() < 1.5);
+        let near_flame = flames
+            .iter()
+            .any(|(p, _, glow)| !glow && (*p - at).length() < 1.5);
         out.push(LampSource {
             kind: LampKind::Authored,
             offset: at,
@@ -422,14 +481,18 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         });
     }
     if out.is_empty() {
-        for (p, c) in flames {
+        for (p, c, glow) in flames {
             out.push(LampSource {
                 kind: LampKind::Flame,
                 offset: p,
                 colour: c,
                 intensity: 1.0,
                 falloff: 8.0,
-                flicker: Flicker::Flame,
+                flicker: if glow {
+                    Flicker::Steady
+                } else {
+                    Flicker::Flame
+                },
                 shadows: true,
             });
         }
@@ -508,7 +571,10 @@ pub fn glows(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
             light: e.max_particles <= 2
                 && (e.start_scale - e.final_scale).abs() < 0.5
                 && (e.start_trans - e.final_trans).abs() < 0.02,
-            rise: e.a.z * e.max_a + e.b.z * e.max_b + e.c.z * e.max_c,
+            rise: crate::puffs::rise(
+                pyreal_animation::data::ParticleType::from_i32(e.particle_type),
+                [e.a.z * e.max_a, e.b.z * e.max_b, e.c.z * e.max_c],
+            ),
         };
         if crate::puffs::steam_of(tone(store, gid), true, &stream).is_some() {
             continue;
@@ -641,6 +707,9 @@ pub fn place(s: &LampSource, at: &Affine3A, cell: u32, object: u32) -> Lamp {
         let luma = s.colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));
         let (grey, paling) = if magic(s.kind, s.colour) {
             (luma.min(MAGIC_GREY * s.colour.max_element()), MAGIC_PALING)
+        } else if s.kind == LampKind::Mood {
+            // A dungeon's mood light keeps retail's colour whole, its room being dark.
+            (luma, 0.0)
         } else {
             (luma, RETAIL_PALING)
         };
@@ -658,6 +727,7 @@ pub fn place(s: &LampSource, at: &Affine3A, cell: u32, object: u32) -> Lamp {
         kind: s.kind,
         object,
         flash: false,
+        held: false,
         seed: 0,
     }
 }
@@ -785,7 +855,8 @@ pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
                         < 1e-4,
             ) << 13)
             | (u32::from(l.flash) << 14)
-            | (u32::from(l.kind == LampKind::Portal) << 15),
+            | (u32::from(l.kind == LampKind::Portal) << 15)
+            | (u32::from(l.held) << 16),
         l.retail.x.to_bits(),
         l.retail.y.to_bits(),
         l.retail.z.to_bits(),

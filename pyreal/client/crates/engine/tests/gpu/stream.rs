@@ -641,6 +641,7 @@ fn translate_moves_the_flames_with_their_lamps() {
         kind: pyreal_engine::lamps::LampKind::Flame,
         object: 7,
         flash: false,
+        held: false,
         seed: 0,
     });
     let seed = |l: &pyreal_engine::lamps::Lamp| {

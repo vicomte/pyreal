@@ -85,6 +85,9 @@ const FIRE_PUFF_TINT: vec3<f32> = vec3<f32>(1.0, 0.22, 0.058);
 // A lamp's light sprite: its picture's brightness in firelight, at this share.
 const LIGHT_SPRITE: vec3<f32> = vec3<f32>(1.0, 0.5, 0.2);
 const LIGHT_SPRITE_GAIN: f32 = 1.0;
+// A magic lamp's halo (a blue or purple light sprite): its share of its picture, so the night's
+// lifted toe shows it as faint as retail does.
+const MAGIC_HALO: f32 = 0.5;
 
 // A mote of dust drawn into a portal (`gates.rs`): the purple it turns as it enters, how bright,
 // and how much brighter as it crosses; the sun it scatters; the fewest pixels across it is drawn,
@@ -474,8 +477,19 @@ fn particle_seen(in: PartOut) -> Seen {
     if (out.additive) {
         var light = c.rgb;
         if ((in.flags & 1u) != 0u) {
-            // Warm and dim, flickering with its flame.
-            let seed = bitcast<u32>(floor(in.world.x * 4.0)) ^ (bitcast<u32>(floor(in.world.y * 4.0)) * 7919u);
+            if (((in.flags >> 13u) & 1u) == 0u) {
+                // A magic lamp's halo: its own colour at retail's strength, never raised by the night.
+                light = c.rgb * (1.0 + m.emissive.x) * (1.0 - fog_amount(distance(in.world.xy, frame.camera.xy)));
+                if (has(F_PHYSICAL)) {
+                    light *= MAGIC_HALO;
+                } else {
+                    light = min(light * pre_exposure(), vec3<f32>(HDR_MOST));
+                }
+                out.colour = vec4<f32>(light, a);
+                return out;
+            }
+            // Warm and dim, the whole sprite flickering with its flame.
+            let seed = bitcast<u32>(floor(in.center.x * 4.0)) ^ (bitcast<u32>(floor(in.center.y * 4.0)) * 7919u);
             light = luma(c.rgb) * LIGHT_SPRITE * LIGHT_SPRITE_GAIN * flicker(1u, seed, 6.0);
         }
         out.colour = vec4<f32>(additive_light(light * glow, m.emissive.x, in.world), a);

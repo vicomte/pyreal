@@ -307,6 +307,7 @@ pub fn lamp(at: Vec3, colour: Vec3, flash: f32, cell: u32) -> crate::lamps::Lamp
         kind: crate::lamps::LampKind::Authored,
         object: u32::MAX,
         flash: true,
+        held: false,
         seed: 0,
     }
 }

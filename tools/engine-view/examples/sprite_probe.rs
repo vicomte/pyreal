@@ -69,7 +69,16 @@ fn surface(store: &RetailDatStore, out: &std::path::Path, id: DataId) {
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let store = RetailDatStore::open_dir(std::path::Path::new(&a[1])).expect("dats");
+    let store = {
+        // End of Retail's files, or an older portal.dat and cell.dat.
+        let dir = std::path::Path::new(&a[1]);
+        if pyreal_dat::holds_modern_dats(dir) {
+            RetailDatStore::open_dir(dir)
+        } else {
+            RetailDatStore::open_classic_dir(dir)
+        }
+        .expect("dats")
+    };
     let out = std::path::Path::new(&a[2]);
     std::fs::create_dir_all(out).expect("out dir");
     for s in &a[3..] {

@@ -57,6 +57,32 @@ impl Glow {
 /// The lamp a creature's light carries: a magic light's most, reaching a few metres.
 pub const LAMP_INTENSITY: f32 = crate::lamps::MAGIC_INTENSITY;
 pub const LAMP_FALLOFF: f32 = 5.0;
+/// A held thing's light (a staff's crystal): a quarter of a creature's, a glow and not a torch.
+pub const HELD_SHARE: f32 = 0.25;
+pub const HELD_INTENSITY: f32 = LAMP_INTENSITY * HELD_SHARE;
+
+/// The lamp a body's light carries, of `colour`: a creature's, or a held thing's (`held`).
+#[must_use]
+pub fn carried_source(colour: Vec3, held: bool) -> crate::lamps::LampSource {
+    crate::lamps::LampSource {
+        kind: crate::lamps::LampKind::Glow,
+        offset: Vec3::ZERO,
+        colour: colour / colour.max_element().max(1e-6),
+        intensity: if held { HELD_INTENSITY } else { LAMP_INTENSITY },
+        falloff: LAMP_FALLOFF,
+        flicker: crate::lamps::Flicker::Steady,
+        shadows: false,
+    }
+}
+
+/// `lamp` as a held thing's light: its sprite's own `colour`, unpaled, so a purple crystal lights
+/// purple.
+#[must_use]
+pub fn held_lamp(mut lamp: crate::lamps::Lamp, colour: Vec3) -> crate::lamps::Lamp {
+    lamp.held = true;
+    lamp.colour = colour;
+    lamp
+}
 
 /// Rings from the middle a picture is measured in, and sectors round its middle band.
 const RINGS: usize = 8;
@@ -184,6 +210,34 @@ pub fn measure(w: u32, h: u32, px: &[u8]) -> Option<Glow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A held thing's light (Ethangar's Staff's crystal) lights a quarter as brightly as a
+    /// creature's, over the same reach, in its own colour, and says so to the outdoor shading.
+    #[test]
+    fn a_held_things_light_is_a_quarter_of_a_creatures() {
+        let at = glam::Affine3A::IDENTITY;
+        let purple = Vec3::new(0.4, 0.09, 1.0);
+        let creature = crate::lamps::place(&carried_source(purple, false), &at, 0, u32::MAX);
+        let source = carried_source(purple, true);
+        let held = held_lamp(
+            crate::lamps::place(&source, &at, 0, u32::MAX),
+            source.colour,
+        );
+        assert!((held.candela - creature.candela * HELD_SHARE).abs() < 1e-6 * creature.candela);
+        assert!((held.range - creature.range).abs() < 1e-6);
+        // Its own purple, where a creature's is paled toward grey.
+        assert_eq!(held.colour, purple / purple.max_element());
+        let spread = |c: Vec3| (c.max_element() - c.min_element()) / c.max_element();
+        assert!(spread(held.colour) > spread(creature.colour) + 0.2);
+        let flags = |l: &crate::lamps::Lamp| {
+            let b = crate::lamps::lamp_bytes(l, 0, 0);
+            u32::from_le_bytes([b[28], b[29], b[30], b[31]])
+        };
+        assert_eq!(flags(&held) & !(1 << 16), flags(&creature) & !(1 << 16));
+        assert_ne!(flags(&held) & (1 << 16), 0);
+        let wgsl = include_str!("shaders/lamp_types.wgsl");
+        assert!(wgsl.contains(&format!("const HELD_SHARE: f32 = {HELD_SHARE:?};")));
+    }
 
     /// A 32-texel square picture of `f` over its card (-1 to 1 across), blue-green.
     fn picture(f: impl Fn(f32, f32) -> f32) -> Vec<u8> {

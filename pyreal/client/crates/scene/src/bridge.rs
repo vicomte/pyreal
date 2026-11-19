@@ -471,7 +471,17 @@ impl Bridge {
             Self::draw_skin(
                 engine, loader, &mut drawn, &driver, &o.frame, offset, cell, dt,
             );
-            self.gather(engine, loader, &driver, cell, offset, eye, smoke.is_some());
+            let held = o.sim.parent.is_some();
+            self.gather(
+                engine,
+                loader,
+                &driver,
+                cell,
+                offset,
+                eye,
+                smoke.is_some(),
+                held,
+            );
             if at.distance(eye) < 40.0 {
                 engine.bodies.push(at);
             }
@@ -552,7 +562,7 @@ impl Bridge {
                 Self::draw_skin(
                     engine, loader, &mut drawn, &driver, &frame, offset, cell, dt,
                 );
-                self.gather(engine, loader, &driver, cell, offset, eye, false);
+                self.gather(engine, loader, &driver, cell, offset, eye, false, false);
                 drop(driver);
                 self.player = Some(drawn);
                 engine.bodies.push(frame_point(&c.render_frame()) + offset);
@@ -785,7 +795,7 @@ impl Bridge {
     }
 
     /// `driver`'s live particles into the next frame's, their pictures made ready first; a
-    /// `shadow`'s eyes glow.
+    /// `shadow`'s eyes glow, and a `held` thing's light lights as a held thing's.
     #[allow(clippy::too_many_arguments)]
     fn gather(
         &mut self,
@@ -796,6 +806,7 @@ impl Bridge {
         offset: Vec3,
         eye: Vec3,
         shadow: bool,
+        held: bool,
     ) {
         if driver.particles.is_empty() || !engine.particles.on {
             return;
@@ -803,7 +814,9 @@ impl Bridge {
         for g in engine.particles.missing_sprites(driver) {
             pyreal_engine::particles::prepare_sprite(engine, loader, &self.store, g);
         }
-        engine.particles.gather(driver, cell, offset, eye, shadow);
+        engine
+            .particles
+            .gather(driver, cell, offset, eye, shadow, held);
     }
 }
 

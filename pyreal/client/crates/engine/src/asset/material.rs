@@ -58,6 +58,14 @@ pub mod flags {
     /// A basin's water ([`super::is_pool`]): drawn as water over what lies under it while water
     /// is drawn as water ([`crate::fountains`]), else as its picture.
     pub const POOL: u32 = 1 << 21;
+    /// A player's face or hair picture: the shader draws skin and hair detail over it from its
+    /// face map and edge map, whose texture slots the record's views word holds, and the shared
+    /// tile in the metal map's slot ([`crate::face_detail`]).
+    pub const FACE: u32 = 1 << 22;
+    /// An untextured surface's pack material (`[[solid]]`): its maps laid along the world's three
+    /// axes, one repeat over as many metres of the object at its own size as the record's
+    /// cut-out word says, so it grows with the object.
+    pub const PROJECTED: u32 = 1 << 23;
 }
 
 /// How much darker a surface under a film of water is drawn, and the film's roughness.
@@ -148,23 +156,37 @@ impl SurfaceKind {
 /// 3,500 placed fountains, basins, troughs, wells and tubs, and no room; and a horned fountain's.
 pub const POOL_PICTURES: [u32; 2] = [0x0500_01B6, 0x0500_2921];
 
-/// Whether a surface is a basin's or a tub's water: retail's water picture, seen through or not.
+/// The melted snowman's puddle (0x02000FF7): retail's one see-through cyan with no picture.
+const PUDDLE: (u32, f32) = (0xFF00_FFFF, 0.65);
+
+/// Whether a surface is a basin's or a tub's water: retail's water picture, seen through or not,
+/// or the melted snowman's puddle ([`PUDDLE`]).
 #[must_use]
 pub fn is_pool(surface: &Surface) -> bool {
-    surface.surface_type & (st::BASE1_IMAGE | st::BASE1_CLIPMAP) != 0
+    let pictured = surface.surface_type & (st::BASE1_IMAGE | st::BASE1_CLIPMAP) != 0
         && surface
             .orig_texture_id
-            .is_some_and(|t| POOL_PICTURES.contains(&t.0))
+            .is_some_and(|t| POOL_PICTURES.contains(&t.0));
+    let puddle = surface.surface_type & st::BASE1_SOLID != 0
+        && surface.surface_type & st::TRANSLUCENT != 0
+        && surface.color_value == Some(PUDDLE.0)
+        && (surface.translucency - PUDDLE.1).abs() < 0.005;
+    pictured || puddle
 }
 
 /// Retail's pictures of molten rock beside the volcano ground: the dungeons' lava cells, and the
 /// smaller picture the 1999 and 2005 files lay there (`docs/ERAS.md`).
 const MOLTEN_PICTURES: [u32; 2] = [0x0500_2A45, 0x0500_1824];
 
-/// Pictures molten only in one palette, by id, the picture's fingerprint and the palette: the 1999
-/// golems' one picture in the magma golem's palette (`docs/ERAS.md`).
-const MOLTEN_DRESSES: [(u32, &str, u32); 1] =
-    [(0x0500_1310, "picture 128x128 0c1966a006f9ffae", 0x0400_0BA5)];
+/// Pictures molten only in one palette (0: any), by id, the picture's fingerprint and the palette:
+/// the 1999 golems' one picture in the magma golem's palette (`docs/ERAS.md`), and end of retail's
+/// Magma Golem 0x020007CB, whose cracks glow in place of its core's fire.
+const MOLTEN_DRESSES: [(u32, &str, u32); 4] = [
+    (0x0500_1310, "picture 128x128 0c1966a006f9ffae", 0x0400_0BA5),
+    (0x0500_18B4, "picture 128x128 b2a82a60277c2808", 0),
+    (0x0500_18B5, "picture 128x128 b2a902642d3e2420", 0),
+    (0x0500_18B6, "picture 64x64 fc0428dad040317f", 0),
+];
 
 /// Whether `texture` drawn in `palettes` is molten rock, where the world's files hold that picture
 /// (`print` reads a record's fingerprint from them).
@@ -179,7 +201,7 @@ pub fn molten_dress(
     };
     MOLTEN_DRESSES.iter().any(|&(id, made_from, palette)| {
         id == t.0
-            && palettes.contains(&DataId(palette))
+            && (palette == 0 || palettes.contains(&DataId(palette)))
             && Fingerprint::parse(made_from)
                 .zip(print(t))
                 .is_some_and(|(a, b)| a.matches(&b))
@@ -240,6 +262,25 @@ pub enum TextureKey {
     /// End of retail's ground picture beside an older world, untinted: the later files hold other
     /// pictures than the world's under the same ids ([`crate::world::LaterGround`]).
     LaterGround { id: DataId },
+    /// End of Retail's room picture beside an older world, tinted toward the older picture by
+    /// `fit` under Classic Ground Coloring ([`crate::later_rooms`]).
+    LaterPicture {
+        id: DataId,
+        fit: Option<crate::later_rooms::FitKey>,
+    },
+    /// A face or hair picture's face map ([`crate::face_detail::face_map`]).
+    FaceMap { id: DataId },
+    /// A face or hair picture's edge map ([`crate::face_detail::edge_map`]).
+    FaceEdges { id: DataId },
+    /// The face detail's shared tile ([`crate::face_detail::tile`]).
+    FaceTile,
+    /// A picture of End of Retail's model beside an older world, with its clip-map keying, tinted
+    /// toward the older model by `fit` under Classic Ground Coloring ([`crate::later_models`]).
+    LaterModel {
+        id: DataId,
+        clip_map: bool,
+        fit: Option<crate::later_rooms::FitKey>,
+    },
 }
 
 /// The maps the art pack supplies for one surface. Every one is optional.
@@ -261,12 +302,21 @@ pub struct PackMaps {
     pub ice: bool,
     /// What it is made of: a metal, how smooth, or clear as ice in its own colour.
     pub matter: Matter,
+    /// An untextured surface's material: the metres one repeat of its maps covers on the object at
+    /// its own size, laid along the world's axes, its base map a grain over the surface's own colour.
+    pub projected: Option<f32>,
 }
 
 /// The art pack's hook into the material table: given a surface and its dat texture, the maps the
 /// pack has for it ([`NoOverrides`] without a pack; `crate::pack::PackOverrides` with one).
 pub trait MaterialOverrides {
     fn maps(&self, surface: DataId, texture: Option<DataId>) -> PackMaps;
+
+    /// The pack's `[[solid]]` maps for the untextured surface `surface` of solid colour `colour`
+    /// (ARGB), laid along the world's axes ([`PackMaps::projected`]).
+    fn solid_maps(&self, _surface: DataId, _colour: u32) -> PackMaps {
+        PackMaps::default()
+    }
 
     /// [`Self::maps`] for a world whose pictures' fingerprints `record` gives, so the pack's
     /// entry for that era's picture is drawn (`docs/ERAS.md`), the picture drawn in `palettes`.
@@ -313,6 +363,18 @@ pub struct MaterialDesc {
     pub clear: [f32; 2],
     /// How many times brighter its picture is drawn where its metal map says it is a metal.
     pub brighten: f32,
+    /// A face or hair picture's face map, edge map and the shared tile ([`flags::FACE`]).
+    pub face: Option<[TextureKey; 3]>,
+    /// The metres one repeat of a projected material covers ([`flags::PROJECTED`]).
+    pub projected: Option<f32>,
+}
+
+/// The solid colour (ARGB) of a surface drawn with no picture, `None` for one with a picture.
+#[must_use]
+pub fn untextured_colour(surface: &Surface) -> Option<u32> {
+    (surface.surface_type & (st::BASE1_IMAGE | st::BASE1_CLIPMAP) == 0)
+        .then_some(surface.color_value)
+        .flatten()
 }
 
 /// An sRGB byte as linear light.
@@ -362,11 +424,19 @@ pub fn describe_surface(
         .base
         .or_else(|| texture.map(|id| TextureKey::Dat { id, clip_map, swap }));
     let mut base_color = [1.0, 1.0, 1.0, 1.0];
-    if base.is_some() {
+    // A projected material's grain multiplies the surface's own colour.
+    let grain = pack.projected.is_some() && texture.is_none();
+    if base.is_some() && !grain {
         flags |= flags::HAS_BASE;
     } else if let Some(argb) = surface.color_value {
         let [b, g, r, _] = argb.to_le_bytes();
         base_color = [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), 1.0];
+        if grain && base.is_some() {
+            flags |= flags::HAS_BASE;
+        }
+    }
+    if grain {
+        flags |= flags::PROJECTED;
     }
     if translucent {
         base_color[3] = (1.0 - surface.translucency).clamp(0.0, 1.0);
@@ -456,6 +526,8 @@ pub fn describe_surface(
         } else {
             1.0
         },
+        face: None,
+        projected: pack.projected.filter(|_| grain),
     }
 }
 
@@ -504,6 +576,25 @@ impl MaterialRecord {
             take(&desc.occlusion, flags::HAS_OCCLUSION),
             take(&desc.metal_map, flags::HAS_METAL),
         ];
+        // A face's two slots share the views word, which only an impostor reads otherwise.
+        // The shared tile takes the metal map's slot, which a face has none for.
+        let mut pad = 0;
+        let mut textures = textures;
+        if flags & flags::FACE != 0 {
+            match desc
+                .face
+                .as_ref()
+                .map(|[m, e, t]| (slot(m), slot(e), slot(t)))
+            {
+                Some((Some(m), Some(e), Some(t)))
+                    if m < 0x1_0000 && e < 0x1_0000 && flags & flags::HAS_METAL == 0 =>
+                {
+                    pad = m | (e << 16);
+                    textures[5] = t;
+                }
+                _ => flags &= !flags::FACE,
+            }
+        }
         Self {
             base_color: desc.base_color,
             // Clear ice keeps its clearness and refraction beside its luminosity, and a metal map
@@ -514,8 +605,12 @@ impl MaterialRecord {
             kind: desc.kind.index(),
             roughness: desc.roughness,
             metal: desc.metal,
-            alpha_cutoff: 0.5,
-            pad: 0,
+            // An untextured surface never cuts out: a projected one's repeat takes the word.
+            alpha_cutoff: desc
+                .projected
+                .filter(|_| flags & flags::PROJECTED != 0)
+                .unwrap_or(0.5),
+            pad,
         }
     }
 
@@ -556,5 +651,16 @@ mod tests {
         assert!(!molten_dress(golem, &magma, &other));
         assert!(!molten_dress(golem, &magma, &|_| None));
         assert!(!molten_dress(Some(DataId(0x0500_1311)), &magma, &as_1999));
+    }
+
+    #[test]
+    fn the_magma_golems_pictures_are_molten_in_any_palette_as_end_of_retail_drew_them() {
+        let core = Some(DataId(0x0500_18B4));
+        let as_eor = |_| Fingerprint::parse("picture 128x128 b2a82a60277c2808");
+        let other = |_| Fingerprint::parse("picture 128x128 f3e6995ff9060051");
+        assert!(molten_dress(core, &[], &as_eor));
+        assert!(molten_dress(core, &[DataId(0x0400_0B9E)], &as_eor));
+        assert!(!molten_dress(core, &[], &other));
+        assert!(!molten_dress(core, &[], &|_| None));
     }
 }

@@ -591,6 +591,36 @@ fn a_vents_green_gas_is_gas_and_other_laid_over_puffs_are_not() {
     assert_eq!(kind(0x3200_04A2, 0x0100_109E), None, "a waterfall's spray");
 }
 
+/// A floor grate 0x02000469's brown haze (emitter 0x3200021C, picture 0x01001318) is a fume, not
+/// fire: it is drawn as a volume and makes no flame and no lamp. The same picture's dust
+/// 0x3200021D and the vents' gas and steam are not fume.
+#[test]
+fn a_floor_grates_brown_haze_is_fume_not_fire() {
+    use pyreal_engine::puffs::{placed_kind, FUME, GAS, STEAM};
+    use pyreal_engine::{flames, lamps};
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let assets = DatAnimAssets::new(Arc::clone(&store));
+    let kind = |emitter: u32, picture: u32| {
+        let e = assets.emitter_info(DataId(emitter)).expect("the emitter");
+        placed_kind(&store, DataId(picture), &e)
+    };
+    assert_eq!(
+        kind(0x3200_021C, 0x0100_1318),
+        Some(FUME),
+        "the grate's haze"
+    );
+    assert_eq!(kind(0x3200_021D, 0x0100_1318), None, "brown dust");
+    assert_eq!(kind(0x3200_01AC, 0x0100_0FF9), Some(GAS), "a vent's gas");
+    assert_eq!(
+        kind(0x3200_01AE, 0x0100_0FC3),
+        Some(STEAM),
+        "a vent's steam"
+    );
+    let grate = DataId(0x0200_0469);
+    assert!(flames::examine(&store, grate).is_empty(), "no flame");
+    assert!(lamps::examine(&store, grate).is_empty(), "no lamp");
+}
+
 /// A gas vent's jet 0x320001AB (and the jets 0x3200074B and 0x3200074C) falls as it swells, so it
 /// is heavy gas that pours down and pools; the vent's rising haze 0x320001AC, its kin 0x32000010
 /// and 0x320001AD, and the gas pits' clouds 0x3200055A and 0x32000760 do not pool.

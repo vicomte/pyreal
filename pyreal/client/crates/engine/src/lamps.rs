@@ -70,6 +70,9 @@ pub enum LampKind {
 /// One light of an object, in the object's own space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LampSource {
+    /// Where the client lights from, when it is not `offset`: the dats' own place of a light
+    /// that is drawn at its flame.
+    pub client_offset: Option<Vec3>,
     pub kind: LampKind,
     pub offset: Vec3,
     /// Linear colour, brightest channel 1.
@@ -93,6 +96,10 @@ pub struct Lamp {
     pub range: f32,
     /// The client's light: intensity times colour, and its range.
     pub retail: Vec4,
+    /// The client's intensity, which `retail`'s colour is multiplied by.
+    pub intensity: f32,
+    /// Where the client lights from, when it is not `position` (render space).
+    pub client: Option<Vec3>,
     pub flicker: Flicker,
     pub shadows: bool,
     /// The cell slot it stands in; zero outdoors.
@@ -106,6 +113,38 @@ pub struct Lamp {
     pub seed: u32,
     /// A held thing's light ([`crate::glow::HELD_INTENSITY`]), as soft outdoors too.
     pub held: bool,
+}
+
+impl Lamp {
+    /// Whether the client lights with it as a moving object's light, not burned into its room.
+    #[must_use]
+    pub fn moves(&self) -> bool {
+        matches!(self.kind, LampKind::Glow | LampKind::Portal) || self.held || self.flash
+    }
+}
+
+/// The client's light that follows the player in a room: white, intensity 2.25, falloff 10.
+#[must_use]
+pub fn viewer_lamp(at: Vec3, cell: u32) -> Lamp {
+    const INTENSITY: f32 = 2.25;
+    let range = 10.0 * RANGE_OF_FALLOFF;
+    Lamp {
+        position: at,
+        colour: Vec3::ONE,
+        candela: 0.0,
+        range,
+        retail: Vec3::splat(INTENSITY).extend(range),
+        intensity: INTENSITY,
+        client: None,
+        flicker: Flicker::Steady,
+        shadows: false,
+        cell,
+        kind: LampKind::Glow,
+        object: u32::MAX,
+        flash: false,
+        seed: 1,
+        held: false,
+    }
 }
 
 /// The client's range for a light of `falloff`: Direct3D's `Range = falloff * 1.5`.
@@ -130,6 +169,22 @@ pub const MAX_FRAME_LAMPS: usize = 1024;
 pub const LAMP_DISTANCE: f32 = 250.0;
 /// A lamp's bytes on the GPU.
 pub const LAMP_SIZE: u64 = 64;
+
+/// The most room boxes a frame's lamps are held to, each one lamp record after the lamps.
+pub const MAX_ROOM_BOXES: usize = 1024;
+
+/// The most rooms one lamp lights before it is left to light everywhere.
+pub const ROOMS_PER_LAMP: usize = 24;
+
+/// A room box's bytes, laid as a lamp record: its least corner, then its greatest.
+#[must_use]
+pub fn room_box_bytes(lo: Vec3, hi: Vec3) -> [u8; 64] {
+    let mut b = [0u8; 64];
+    for (k, v) in [lo.x, lo.y, lo.z, 0.0, hi.x, hi.y, hi.z].iter().enumerate() {
+        b[k * 4..k * 4 + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    b
+}
 
 pub(crate) fn decode<T: Decode>(store: &RetailDatStore, kind: DbType, id: DataId) -> Option<T> {
     let bytes = store.read_typed(kind, id).ok()?;
@@ -299,8 +354,9 @@ pub(crate) fn script_emitters(
         .collect()
 }
 
-/// Fire-coloured sprites that are not fire: the desert's drifting sand.
-const NOT_FIRE: &[u32] = &[0x0100_1645];
+/// Fire-coloured sprites that are not fire: the desert's drifting sand, and a floor grate's fume
+/// ([`crate::puffs::FUME`], its picture and its software picture).
+const NOT_FIRE: &[u32] = &[0x0100_1645, 0x0100_1318, 0x0100_1317];
 
 /// Whether an emitter keeps on: a set count or time of particles is a puff or a jet that dies
 /// away, not a standing fire.
@@ -451,7 +507,8 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         .collect();
     let mut out = Vec::new();
     for l in setup.lights.values() {
-        let mut at = Vec3::new(l.frame.origin.x, l.frame.origin.y, l.frame.origin.z);
+        let dats = Vec3::new(l.frame.origin.x, l.frame.origin.y, l.frame.origin.z);
+        let mut at = dats;
         if (at - Vec3::new(-2.0, -2.0, 2.0)).length() < 1e-3 {
             at = emitters
                 .first()
@@ -467,6 +524,7 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
             .iter()
             .any(|(p, _, glow)| !glow && (*p - at).length() < 1.5);
         out.push(LampSource {
+            client_offset: (at != dats).then_some(dats),
             kind: LampKind::Authored,
             offset: at,
             colour: normalised(argb_linear(l.color_argb)),
@@ -483,6 +541,7 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
     if out.is_empty() {
         for (p, c, glow) in flames {
             out.push(LampSource {
+                client_offset: None,
                 kind: LampKind::Flame,
                 offset: p,
                 colour: c,
@@ -562,6 +621,10 @@ pub fn glows(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         if surfs.is_empty() || !surfs.iter().all(glowing) {
             continue;
         }
+        // A glint (a gem golem's white sparkles) gives no light.
+        if crate::glow::glow_of(store, gid).is_some_and(|g| g.glint()) {
+            continue;
+        }
         // Steam drawn as a volume gives no light.
         let stream = crate::puffs::Stream {
             endless: true,
@@ -602,6 +665,7 @@ pub fn glows(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         return Vec::new();
     }
     vec![LampSource {
+        client_offset: None,
         kind: LampKind::Glow,
         offset: at / f32::from(n),
         colour: normalised(sum),
@@ -653,6 +717,7 @@ pub fn pack_sources(
     for l in mine {
         for a in &anchors {
             out.push(LampSource {
+                client_offset: None,
                 kind: LampKind::Pack,
                 offset: *a + Vec3::from(l.offset),
                 colour: kelvin(l.kelvin),
@@ -721,6 +786,12 @@ pub fn place(s: &LampSource, at: &Affine3A, cell: u32, object: u32) -> Lamp {
         candela,
         range,
         retail,
+        intensity: if s.kind == LampKind::Pack {
+            1.0
+        } else {
+            s.intensity
+        },
+        client: s.client_offset.map(|o| at.transform_point3(o)),
         flicker: s.flicker,
         shadows: s.shadows,
         cell,
@@ -834,6 +905,12 @@ pub fn probe_lamps(mut near: Vec<Lamp>, eye: Vec3) -> Vec<Lamp> {
 /// slot and a seed; its object.
 #[must_use]
 pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
+    lamp_bytes_in(l, slot, seed, (0, 0))
+}
+
+/// [`lamp_bytes`], lighting only the `rooms` (first box record, count; no count for everywhere).
+#[must_use]
+pub fn lamp_bytes_in(l: &Lamp, slot: u32, seed: u32, rooms: (u32, u32)) -> [u8; 64] {
     let mut b = [0u8; 64];
     let words: [u32; 16] = [
         l.position.x.to_bits(),
@@ -856,15 +933,16 @@ pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
             ) << 13)
             | (u32::from(l.flash) << 14)
             | (u32::from(l.kind == LampKind::Portal) << 15)
-            | (u32::from(l.held) << 16),
+            | (u32::from(l.held) << 16)
+            | (u32::from(l.moves()) << 17),
         l.retail.x.to_bits(),
         l.retail.y.to_bits(),
         l.retail.z.to_bits(),
         (slot & 0xFF) | (seed << 8),
         l.object & 0xFF_FFFF,
-        0,
-        0,
-        0,
+        rooms.0,
+        rooms.1,
+        l.intensity.to_bits(),
     ];
     for (k, w) in words.iter().enumerate() {
         b[k * 4..k * 4 + 4].copy_from_slice(&w.to_le_bytes());

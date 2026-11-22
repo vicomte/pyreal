@@ -345,6 +345,7 @@ fn a_served_record_replaces_a_retail_one_a_new_one_is_added_and_the_pack_still_l
         fingerprints: Vec::new(),
         palettes: Vec::new(),
         draws_on: Default::default(),
+        solid: None,
         credit: Default::default(),
     };
     let pack = PackOverrides(Arc::new(pyreal_art_pack::ArtPack {

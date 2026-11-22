@@ -7,7 +7,7 @@
 //! with the retail picture. Its smaller levels are still averaged in linear light, so it does not
 //! darken with distance.
 
-use pyreal_assets::art_pack::{Credit, DrawsOn, Fingerprint, ManifestMaterial, Matter};
+use pyreal_assets::art_pack::{Credit, DrawsOn, Fingerprint, ManifestMaterial, Matter, Solid};
 use pyreal_primitives::DataId;
 
 use super::images::{self, BlockFormat, Image};
@@ -50,6 +50,8 @@ pub struct TextureMaterial {
     pub draws_on: DrawsOn,
     /// The palettes it is drawn in alone; any, where it names none.
     pub palettes: Vec<DataId>,
+    /// For a `[[solid]]` entry, the untextured surfaces it is laid on, in place of [`Self::textures`].
+    pub solid: Option<Solid>,
     /// Who made it, with what, and under which license.
     pub credit: Credit,
 }
@@ -132,6 +134,7 @@ pub(super) fn with_pictures(
         fingerprints: entry.fingerprints.clone(),
         draws_on: entry.draws_on,
         palettes: entry.palettes.clone(),
+        solid: entry.solid.clone(),
         credit: entry.credit.clone(),
     }
 }

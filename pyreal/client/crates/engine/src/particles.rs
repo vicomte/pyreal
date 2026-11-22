@@ -34,7 +34,7 @@ pub const MAX_PARTICLES: usize = 16 << 10;
 pub const PARTICLE_SIZE: u64 = 64;
 /// How far from the eye a host is stepped with its particles drawn, metres (the client's
 /// particle degrade distance when its picture names none).
-pub const DRAW_DISTANCE: f32 = pyreal_world_render::particles::DEFAULT_PARTICLE_DEGRADE_DISTANCE;
+pub const DRAW_DISTANCE: f32 = 100.0;
 
 /// One emitter picture: its mesh in the pools, how it turns to the eye, and how far (over its
 /// scale) it is drawn.
@@ -914,7 +914,8 @@ impl Particles {
             }
         }
         let roles: Vec<Option<Role>> = driver.particles.iter().map(|e| self.role(e)).collect();
-        if self.fire_bodies {
+        // A molten body's fire is its glowing cracks: its flames are left out.
+        if self.fire_bodies && !crate::body_fire::molten_core(driver) {
             let burning = driver
                 .particles
                 .iter()
@@ -1002,7 +1003,9 @@ impl Particles {
             let smoke = matches!(look, Look::Puff(k) if (crate::puffs::SMOKE..crate::puffs::HAZE).contains(&k));
             let stride = crate::puffs::stride(&e.info);
             let carried = match look {
-                Look::Glow(_) if !snowy => sprite.glow.map(|g| (0, g.colour)),
+                Look::Glow(_) if !snowy => {
+                    sprite.glow.filter(|g| !g.glint()).map(|g| (0, g.colour))
+                }
                 Look::Puff(crate::puffs::ACID) => Some((1, sprite.colour)),
                 _ => None,
             };
@@ -1039,6 +1042,10 @@ impl Particles {
                     transform.matrix3 *= grown;
                     transform.matrix3.y_axis.z = e.info.start_scale.max(e.info.final_scale) * grown;
                     alpha *= crate::puffs::smoke_swell(age);
+                }
+                // A scaled body's liquid grows with it, so its balls still meet.
+                if let Look::Blob(_) = look {
+                    transform.matrix3 *= driver.scale;
                 }
                 if let Look::Puff(_) = look {
                     let b = driver.particle_parent_frame().origin;
@@ -1126,6 +1133,7 @@ impl Particles {
                 crate::glow::carried_source(colour, held)
             } else {
                 crate::lamps::LampSource {
+                    client_offset: None,
                     intensity: crate::puffs::ACID_GLOW_INTENSITY,
                     falloff: crate::puffs::ACID_GLOW_FALLOFF,
                     ..crate::glow::carried_source(colour, false)
@@ -1315,6 +1323,18 @@ impl Particles {
                             transform.matrix3.y_axis.z = crate::puffs::SPRAY_SHARE;
                         }
                     }
+                    // A grate's fume is as strong as its pictures over the strongest of them: its
+                    // thinness is the shader's.
+                    // Its balls are wider, the least of them as wide as a hatch's opening, and
+                    // stand higher, as retail's cards stand up out of the grate; its body stays.
+                    if look == Look::Puff(crate::puffs::FUME) {
+                        alpha /= crate::puffs::vent_strength(&e.info).max(1e-3);
+                        let m = &mut transform.matrix3;
+                        m.x_axis.x =
+                            (m.x_axis.x * crate::puffs::FUME_REACH).max(crate::puffs::FUME_LEAST);
+                        transform.translation.z += crate::puffs::FUME_LIFT;
+                        transform.matrix3.z_axis.y -= crate::puffs::FUME_LIFT;
+                    }
                     // Heavy gas pools as it ages: its mark rides in the same entry.
                     if look == Look::Puff(crate::puffs::GAS) && crate::puffs::gas_pools(&e.info) {
                         transform.matrix3.y_axis.z = 1.0;
@@ -1387,10 +1407,10 @@ impl Particles {
                         .total_cmp(&a.transform.matrix3.x_axis.length()),
                 )
         });
-        // Steam's, haze's and gas's seed is its picture's material (its colour); its ball is as wide as
-        // its picture.
+        // Steam's, haze's, gas's and fume's seed is its picture's material (its colour); its ball is
+        // as wide as its picture.
         for d in &mut puffs {
-            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW || k == crate::puffs::HAZE || k == crate::puffs::GAS)
+            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW || k == crate::puffs::HAZE || k == crate::puffs::GAS || k == crate::puffs::FUME)
             {
                 if let Some(Some(s)) = self.sprites.get(&d.sprite) {
                     d.seed = s.draws.first().map_or(0, |m| m.material & 0x7_FFFF);
@@ -1401,9 +1421,10 @@ impl Particles {
                     m.y_axis.y *= k;
                     m.z_axis.z *= k;
                     m.x_axis.y *= k;
-                    // Gas is born small and dense, retail's lumps: it swells by its size alone.
-                    // A placed static's steam swelled as it was gathered.
-                    if d.look != Look::Puff(crate::puffs::GAS)
+                    // Gas is born small and dense, retail's lumps, and fume faint at its grate:
+                    // each swells by its size alone. A placed static's steam swelled as it was
+                    // gathered.
+                    if !matches!(d.look, Look::Puff(crate::puffs::GAS | crate::puffs::FUME))
                         && (d.group & 0x8000_0000 == 0 || d.look != Look::Puff(crate::puffs::STEAM))
                     {
                         d.alpha *= crate::puffs::swell(d.age);

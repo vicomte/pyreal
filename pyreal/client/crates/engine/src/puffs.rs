@@ -43,6 +43,9 @@ pub const HAZE: u8 = 8;
 /// A vent's gas ([`gas_of`]): a cloud of its picture's colour blown out and swelling, laid over
 /// what is behind it, lit by the room's lamps.
 pub const GAS: u8 = 9;
+/// A grate's fume ([`fume_of`]): a column of its picture's colour rising and thinning, self-lit as
+/// retail draws it and warmest at its foot, laid over what is behind it.
+pub const FUME: u8 = 10;
 /// A ball's reach over its transform's scale (`puffs.wgsl`'s `PUFF_SIZE`).
 pub const PUFF_SIZE: f32 = 0.85;
 /// How much wider a snow ball is than its particle: the few small puffs of a frost elemental's
@@ -92,6 +95,7 @@ pub fn kind_of(sprite: &Sprite, e: &pyreal_animation::data::ParticleEmitterInfo)
     .or_else(|| steam_of(sprite.tone, sprite.additive(), &Stream::of(e)))
     .or_else(|| haze_of(sprite.tone, sprite.additive(), sprite.half, e))
     .or_else(|| gas_of(sprite.tone, sprite.additive(), e))
+    .or_else(|| fume_of(sprite.tone, sprite.additive(), sprite.colour, e))
 }
 
 /// The least a haze's picture grows to across, metres.
@@ -175,8 +179,41 @@ pub fn gas_pools(e: &pyreal_animation::data::ParticleEmitterInfo) -> bool {
     Stream::of(e).rise < GAS_POOLS_UNDER
 }
 
+/// A grate's fume: an endless stream of laid-over (not added) puffs of a warm, dim picture, born
+/// faint, that rise and swell as they fade (the floor grate 0x02000469's brown haze, emitter
+/// 0x3200021C of picture 0x01001318). `colour` is its picture's linear mean.
+#[must_use]
+pub fn fume_of(
+    tone: Tone,
+    additive: bool,
+    colour: Vec3,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> Option<u8> {
+    let s = Stream::of(e);
+    let warm = colour.x >= colour.z * 2.0 && colour.max_element() < 0.4;
+    (!additive
+        && warm
+        && !tone.grey
+        && !tone.green
+        && !tone.cool
+        && s.endless
+        && !s.light
+        && s.rise >= 0.3
+        && s.final_scale >= s.start_scale * 2.0
+        && e.start_trans >= 0.5
+        && (1.0..=4.0).contains(&s.lifespan)
+        && e.max_particles >= 8)
+        .then_some(FUME)
+}
+
+/// How much wider a fume's ball is than its particle, the least scale of one, and how far above
+/// its particle it stands, metres.
+pub const FUME_REACH: f32 = 1.1;
+pub const FUME_LEAST: f32 = 0.4;
+pub const FUME_LIFT: f32 = 0.12;
+
 /// The volume a placed object's emitter of picture `gfx` makes, if any, as [`kind_of`] reads its
-/// sprite: steam, frost, snow, haze or gas.
+/// sprite: steam, frost, snow, haze, gas or fume.
 #[must_use]
 pub fn placed_kind(
     store: &RetailDatStore,
@@ -192,6 +229,7 @@ pub fn placed_kind(
     steam_of(tone, additive, &Stream::of(e))
         .or_else(|| haze_of(tone, additive, picture_half(store, gfx), e))
         .or_else(|| gas_of(tone, additive, e))
+        .or_else(|| fume_of(tone, additive, picture(store, gfx).1, e))
 }
 
 /// The steam picture's half width (0x01000FC3's), metres a unit of scale, which the shader's

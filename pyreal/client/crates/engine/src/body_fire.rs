@@ -41,6 +41,21 @@ const LIKENESS: f32 = 0.9;
 const BRIGHTEST: u8 = 35;
 const SATURATION: f32 = 0.3;
 
+/// Default scripts whose fire is a molten body's heat, drawn by its glowing cracks instead: the
+/// Magma Golem's (0x020007CB).
+const MOLTEN_CORES: [u32; 1] = [0x3300_0866];
+
+/// Whether `driver`'s fire is left out for its molten body's glow ([`MOLTEN_CORES`]).
+#[must_use]
+pub fn molten_core(driver: &MotionDriver) -> bool {
+    driver
+        .part_array
+        .setup
+        .as_ref()
+        .and_then(|s| s.default_script)
+        .is_some_and(|s| MOLTEN_CORES.contains(&s.0))
+}
+
 /// The most bodies of fire drawn, the most points one stands on, and the most that light.
 pub const MAX_BODIES: usize = 24;
 pub const MAX_POINTS: usize = 40;
@@ -438,6 +453,7 @@ fn coal_glow(
     (cell, object, seed): (u32, u32, u32),
 ) -> Lamp {
     let source = LampSource {
+        client_offset: None,
         kind: LampKind::Flame,
         offset,
         colour: crate::lamps::kelvin(HEARTH_GLOW_KELVIN),
@@ -837,6 +853,7 @@ pub fn frame(
                 f.colour
             };
             let source = LampSource {
+                client_offset: None,
                 kind: LampKind::Flame,
                 offset: f.heart(r),
                 colour,

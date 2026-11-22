@@ -52,7 +52,18 @@ impl Glow {
             | q(g(self.colour.y), 15.0) << 24
             | q(g(self.colour.x), 15.0) << 28
     }
+
+    /// Whether it is a glint: a white star twinkling on what carries it (a gem golem's sparkles),
+    /// drawn as light but lighting nothing round it.
+    #[must_use]
+    pub fn glint(&self) -> bool {
+        self.kind == GlowKind::Star && self.colour.min_element() >= GLINT_WHITE
+    }
 }
+
+/// The least of a glint's channels, its brightest 1: retail's white stars are 0.95 or more, its
+/// palest coloured star 0.79.
+const GLINT_WHITE: f32 = 0.9;
 
 /// The lamp a creature's light carries: a magic light's most, reaching a few metres.
 pub const LAMP_INTENSITY: f32 = crate::lamps::MAGIC_INTENSITY;
@@ -65,6 +76,7 @@ pub const HELD_INTENSITY: f32 = LAMP_INTENSITY * HELD_SHARE;
 #[must_use]
 pub fn carried_source(colour: Vec3, held: bool) -> crate::lamps::LampSource {
     crate::lamps::LampSource {
+        client_offset: None,
         kind: crate::lamps::LampKind::Glow,
         offset: Vec3::ZERO,
         colour: colour / colour.max_element().max(1e-6),

@@ -94,14 +94,22 @@ impl Particles {
     }
 
     /// What `driver`'s emitters carry: whether any burns as fire, and any light of its own (a
-    /// glow, an acid cloud's).
+    /// glow other than a glint, an acid cloud's).
     #[must_use]
     pub fn carries(&self, driver: &MotionDriver) -> (bool, bool) {
         let (mut fire, mut light) = (false, false);
+        let molten = crate::body_fire::molten_core(driver);
         for e in driver.particles.iter() {
             match self.role_now(e) {
-                Some(Role::Fire(_)) => fire |= self.fire_bodies,
-                Some(Role::Glow(_)) => light = true,
+                Some(Role::Fire(_)) => fire |= self.fire_bodies && !molten,
+                Some(Role::Glow(_)) => {
+                    let glint = self
+                        .sprites
+                        .get(&sprite_of(&e.info).0)
+                        .and_then(|s| s.as_ref()?.glow)
+                        .is_some_and(|g| g.glint());
+                    light |= !glint;
+                }
                 Some(Role::Volume(crate::puffs::ACID)) => light |= self.smoke,
                 _ => {}
             }

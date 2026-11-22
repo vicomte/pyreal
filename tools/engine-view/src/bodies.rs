@@ -73,13 +73,15 @@ pub struct Pose {
     pub lift: Option<f32>,
     /// Its physics-description translucency, as its weenie gives it.
     pub translucency: Option<f32>,
+    /// Faded as the close camera fades the player, every part.
+    pub fade: Option<f32>,
     /// Walks at the height it was put at, not on the ground.
     pub keep_height: bool,
 }
 
 /// A body spec's `;KEY=VALUE` tail (`stance`, `motion`, `facing`, `time`, `stride`, `dress`,
-/// `wear`, `script=SCRIPT@SECONDS`, the last three repeated, `lift`, `translucency`), split from the
-/// rest.
+/// `wear`, `script=SCRIPT@SECONDS`, the last three repeated, `lift`, `translucency`, `fade`), split
+/// from the rest.
 fn pose(spec: &str) -> Result<(&str, Pose), String> {
     let mut it = spec.split(';');
     let head = it.next().unwrap_or_default();
@@ -96,6 +98,7 @@ fn pose(spec: &str) -> Result<(&str, Pose), String> {
             "time" => p.time = Some(f64::from(n(v)?)),
             "lift" => p.lift = Some(n(v)?),
             "translucency" => p.translucency = Some(n(v)?),
+            "fade" => p.fade = Some(n(v)?),
             "stride" => {
                 let (x, y) = v.split_once(',').ok_or("stride takes VX,VY")?;
                 p.stride = Some((n(x)?, n(y)?));

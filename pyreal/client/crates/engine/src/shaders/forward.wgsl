@@ -140,8 +140,10 @@ fn translucent_seen(in: VsOut, front: bool) -> Seen {
     let indoor = in.cell != 0u;
     var out: Seen;
     out.additive = (m.flags & M_ADDITIVE) != 0u;
+    // Its object's own fade, seen through rather than screened (a shadow's smoke is its body).
+    let shown = 1.0 - f32(in.fade & 0xFFu) / 255.0;
     if (out.additive) {
-        out.colour = vec4<f32>(additive_light(c.rgb, m.emissive.x, in.world), c.a);
+        out.colour = vec4<f32>(additive_light(c.rgb, m.emissive.x, in.world) * shown, c.a);
         return out;
     }
     var emissive = m.emissive.x;
@@ -152,6 +154,8 @@ fn translucent_seen(in: VsOut, front: bool) -> Seen {
         let eyes = smoothstep(0.12, 0.3, c.r - 2.0 * max(c.g, c.b));
         c.a = mix(smoke_cover(in, n, -dir), 1.0, eyes);
         emissive = max(emissive, SMOKE_EYES * eyes);
+    } else {
+        c.a *= shown;
     }
     let lit = forward_light(c.rgb, in.world, n, -dir, m.roughness, m.metal, emissive,
                             select(0u, G_INDOOR, indoor), in.clip.xy);
@@ -159,13 +163,10 @@ fn translucent_seen(in: VsOut, front: bool) -> Seen {
     return out;
 }
 
-// Whether a pixel is screened out: a shadow's smoke by its level's crossfade only.
+// Whether a pixel is screened out: by its level's crossfade only, its object's own fade being
+// seen through.
 fn smoke_screened(in: VsOut) -> bool {
-    var fade = in.fade;
-    if ((materials[in.material].flags & M_SMOKE) != 0u) {
-        fade &= ~0xFFu;
-    }
-    return screened(in.clip.xy, fade);
+    return screened(in.clip.xy, in.fade & ~0xFFu);
 }
 
 // A sorted translucent draw's colour, and how much it changes the pixel for the upscaler's
@@ -250,6 +251,135 @@ fn fs_translucent_oit(in: VsOut, @builtin(front_facing) front: bool) -> OitOut {
     }
     let s = translucent_seen(in, front);
     return oit_out(s.colour, s.additive, in.world);
+}
+
+// A faded object's own surfaces ([`crate::scene::Scene::sorted_faded`]), drawn after the air:
+// their depth first, so only the nearest layer is seen, then that layer lit as the G-buffer's
+// surface would be, through its own air, and laid over by its share. Its motion is kept where it
+// is the more of the pixel.
+fn faded_unscreened(in: VsOut) -> VsOut {
+    var o = in;
+    o.fade = in.fade & ~0xFFu;
+    return o;
+}
+
+// The share of what is behind a faded surface covers.
+fn faded_share(in: VsOut) -> f32 {
+    return 1.0 - f32(in.fade & 0xFFu) / 255.0;
+}
+
+@fragment
+fn fs_faded_depth(in: VsOut) {
+    let m = materials[in.material];
+    if (web_card_hidden(m.flags)) {
+        discard;
+    }
+    if ((m.flags & (M_CUTOUT | M_HAS_BASE)) == (M_CUTOUT | M_HAS_BASE)) {
+        let a = m.base_color.a * pic_grad(m.tex_base, in.uv, dpdx(in.uv), dpdy(in.uv), in.extra).a;
+        if (a < m.alpha_cutoff) {
+            discard;
+        }
+    }
+}
+
+// The faded surface's colour, pre-exposed, and its motion.
+struct Faded {
+    colour: vec3<f32>,
+    motion: vec2<f32>,
+}
+
+fn faded_seen(in: VsOut, front: bool) -> Faded {
+    var g = object_surface(faded_unscreened(in), front, in.extra);
+    let m = materials[in.material];
+    let albedo = g.albedo.rgb * (1.0 - INSIDE_SHADE * in.shade);
+    let n = oct_decode(g.normal);
+    var bits = u32(g.material.w * 255.0 + 0.5) & ~G_GLOWS;
+    // A face's metal channel carries its skin.
+    let metal = select(g.material.y, 0.0, (m.flags & M_FACE) != 0u);
+    let rough = g.material.x;
+    let dir = normalize(in.world - frame.camera.xyz);
+    let v = -dir;
+    let depth = view_depth_at(in.world);
+    var sun_vis = 1.0;
+    if (has(F_SHADOWS) && (bits & G_INDOOR) == 0u && dot(n, frame.sun_dir.xyz) > -0.2) {
+        sun_vis = sun_shadow(in.world, n, depth, in.clip.xy);
+    }
+    var lamp = LampLight(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
+    if (has(F_LAMPS)) {
+        lamp = lamp_light(in.world, n, v, rough, mix(vec3<f32>(0.04), albedo, metal), bits, depth,
+                          in.clip.xy, false);
+    } else if ((bits & G_INDOOR) != 0u && has(F_PHYSICAL)) {
+        lamp.diffuse = max(room_floor(vec3<f32>(0.0), vec3<f32>(0.0)), vec3<f32>(0.0));
+    }
+    // What its relief keeps from its key light.
+    if ((bits & G_KEY_LAMP) != 0u) {
+        lamp.diffuse *= g.albedo.a;
+        lamp.specular *= g.albedo.a;
+    } else {
+        sun_vis *= g.albedo.a;
+    }
+    var bounce = vec4<f32>(0.0);
+    if (has(F_GI)) {
+        bounce = probe_light(in.world, n);
+    }
+    let lit = shade_lit(albedo, n, v, rough, metal, g.material.z, bits, sun_vis, 1.0, lamp.diffuse,
+                        bounce)
+        + lamp.specular + albedo * lamp.glow * (LAMP_GLOW / max(pre_exposure(), 1e-6));
+    var out: Faded;
+    out.colour = through_air(lit, in.world, dir, (bits & G_INDOOR) != 0u);
+    out.motion = g.motion;
+    return out;
+}
+
+// How much a faded surface marks the reactive mask: most where it and what is behind share the
+// pixel evenly, as only one of them can lend the pixel its motion.
+fn faded_reactive(a: f32) -> f32 {
+    return FADED_REACTIVE * (1.0 - abs(2.0 * a - 1.0));
+}
+
+const FADED_REACTIVE: f32 = 0.5;
+
+struct FadedOut {
+    @location(0) colour: vec4<f32>,
+    @location(1) reactive: vec4<f32>,
+    // The motion, kept (by its alpha) where the surface is the more of the pixel.
+    @location(2) motion: vec4<f32>,
+    // Its object, for the pick.
+    @location(3) object: u32,
+}
+
+// A pre-exposed colour as the screen shows it, near enough: the neutral curve's shoulder, then
+// the display's gamma; and back.
+const FADED_KNEE: f32 = 0.76;
+const FADED_GAMMA: f32 = 2.2;
+
+fn faded_shown(c: vec3<f32>) -> vec3<f32> {
+    let d = 1.0 - FADED_KNEE;
+    let x = max(c, vec3<f32>(0.0));
+    let rolled = 1.0 - d * d / (x + vec3<f32>(d - FADED_KNEE));
+    return pow(select(x, rolled, x > vec3<f32>(FADED_KNEE)), vec3<f32>(1.0 / FADED_GAMMA));
+}
+
+fn faded_unshown(c: vec3<f32>) -> vec3<f32> {
+    let d = 1.0 - FADED_KNEE;
+    let y = pow(clamp(c, vec3<f32>(0.0), vec3<f32>(0.999)), vec3<f32>(FADED_GAMMA));
+    return select(y, d * d / (1.0 - y) - vec3<f32>(d - FADED_KNEE), y > vec3<f32>(FADED_KNEE));
+}
+
+// Laid over the frame behind it (the copy at `ice_behind`) by its share as the screen shows them
+// both, as retail blended: by light, a dark body against a bright sky would all but vanish.
+@fragment
+fn fs_faded(in: VsOut, @builtin(front_facing) front: bool) -> FadedOut {
+    let s = faded_seen(in, front);
+    let a = faded_share(in);
+    let behind = textureLoad(ice_behind, vec2<i32>(in.clip.xy), 0).rgb;
+    let shown = mix(faded_shown(behind), faded_shown(s.colour), a);
+    var o: FadedOut;
+    o.colour = vec4<f32>(min(faded_unshown(shown), vec3<f32>(HDR_MOST)), 1.0);
+    o.reactive = vec4<f32>(faded_reactive(a));
+    o.motion = vec4<f32>(s.motion, 0.0, select(0.0, 1.0, a >= 0.5));
+    o.object = in.object;
+    return o;
 }
 
 // Glacier ice (a pack material's `ice`), drawn after the water over a copy of the frame behind

@@ -480,6 +480,26 @@ pub fn graph_decl() -> GraphDecl {
             PassDecl::new("air apply", PassKind::Render)
                 .reads(&["air", "depth", "hdr"])
                 .writes(&["hdr"]),
+            PassDecl::new("faded depth", PassKind::Render)
+                .reads(&["draw-args", "visible", "depth", "materials"])
+                .writes(&["faded-depth"]),
+            PassDecl::new("faded", PassKind::Render)
+                .reads(&[
+                    "draw-args",
+                    "visible",
+                    "faded-depth",
+                    "depth",
+                    "hdr",
+                    "materials",
+                    "sky-tables",
+                    "shadow-atlas",
+                    "lamps",
+                    "clusters",
+                    "probes",
+                    "reactive",
+                    "motion",
+                ])
+                .writes(&["hdr", "reactive", "motion", "objects"]),
             PassDecl::new("exposure", PassKind::Compute)
                 .reads(&["hdr"])
                 .writes(&["exposure"]),
@@ -623,6 +643,21 @@ pub fn lod_scale(camera: &Camera, bias: f32) -> f32 {
         pyreal_primitives::num::math::tanf(camera.fov_y * 0.5)
             / pyreal_primitives::num::math::tanf(DEGRADE_FOV_Y.to_radians() * 0.5)
             / bias
+    } else {
+        0.0
+    }
+}
+
+/// The Object Detail share a room's reach from outdoors is judged at, whatever the setting: the
+/// menu's most, as the building's shell stays drawn ([`crate::cells::Cell::reach`]).
+pub const ROOM_BIAS: f32 = 4.0;
+
+/// What a distance is multiplied by before a room's reach from outdoors: [`lod_scale`] at
+/// [`ROOM_BIAS`], zero when `bias` keeps every near level.
+#[must_use]
+pub fn room_scale(camera: &Camera, bias: f32) -> f32 {
+    if bias > 0.0 {
+        lod_scale(camera, ROOM_BIAS)
     } else {
         0.0
     }
@@ -1227,6 +1262,10 @@ pub struct Renderer {
     jet_pipeline: wgpu::RenderPipeline,
     /// Translucent objects' order-independent pipelines (blended, additive).
     oit_pipelines: [wgpu::RenderPipeline; 2],
+    /// Faded objects' own surfaces ([`Scene::sorted_faded`]): their nearest layer's depth, then
+    /// that layer seen through; each one-sided, then two-sided.
+    faded_depth_pipelines: [wgpu::RenderPipeline; 2],
+    faded_pipelines: [wgpu::RenderPipeline; 2],
     oit_layout: wgpu::BindGroupLayout,
     oit_pipeline: wgpu::RenderPipeline,
     /// A pick on its way back: the buffer its texels are copied into and whether it is mapped.
@@ -2360,6 +2399,88 @@ impl Renderer {
             forward("bolts", "vs_bolt", "fs_bolt", true, false),
             forward("bolts oit", "vs_bolt", "fs_bolt_oit", true, true),
         ];
+        // Faded objects: their depth, or (`seen`) the surface seen through.
+        let faded = |label: &'static str, seen: bool, two_sided: bool| {
+            job!(
+                jobs,
+                [gpu, forward_layout, forward_module, vertex_layout],
+                {
+                    let most = wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Max,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Max,
+                        },
+                    };
+                    let target = |format, blend| {
+                        Some(wgpu::ColorTargetState {
+                            format,
+                            blend: Some(blend),
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })
+                    };
+                    let seen_targets = [
+                        target(HDR, blend_alpha),
+                        target(wgpu::TextureFormat::R8Unorm, most),
+                        target(MOTION, blend_alpha),
+                        Some(IDS.into()),
+                    ];
+                    let (fs, targets): (&str, &[Option<wgpu::ColorTargetState>]) = if seen {
+                        ("fs_faded", &seen_targets)
+                    } else {
+                        ("fs_faded_depth", &[])
+                    };
+                    gpu.render_pipeline(wgpu::RenderPipelineDescriptor {
+                        label: Some(label),
+                        layout: Some(&forward_layout),
+                        vertex: wgpu::VertexState {
+                            module: &forward_module,
+                            entry_point: Some("vs_main"),
+                            compilation_options: Default::default(),
+                            buffers: &[Some(vertex_layout.clone())],
+                        },
+                        primitive: wgpu::PrimitiveState {
+                            front_face: wgpu::FrontFace::Ccw,
+                            cull_mode: if two_sided {
+                                None
+                            } else {
+                                Some(wgpu::Face::Back)
+                            },
+                            ..Default::default()
+                        },
+                        depth_stencil: Some(wgpu::DepthStencilState {
+                            format: DEPTH,
+                            depth_write_enabled: Some(!seen),
+                            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                            stencil: Default::default(),
+                            bias: Default::default(),
+                        }),
+                        multisample: Default::default(),
+                        fragment: Some(wgpu::FragmentState {
+                            module: &forward_module,
+                            entry_point: Some(fs),
+                            compilation_options: Default::default(),
+                            targets,
+                        }),
+                        multiview_mask: None,
+                        cache: None,
+                    })
+                }
+            )
+        };
+        let faded_depth_pipelines = [
+            faded("faded depth", false, false),
+            faded("faded depth two-sided", false, true),
+        ];
+        let faded_pipelines = [
+            faded("faded", true, false),
+            faded("faded two-sided", true, true),
+        ];
         // Translucent surfaces' objects into the objects target, nearest last, for the pick.
         let translucent_object_pipeline = job!(
             jobs,
@@ -3300,6 +3421,8 @@ impl Renderer {
             .collect();
         let shadow_pipelines = shadow_pipelines.map(crate::jobs::Pending::wait);
         let oit_pipelines = oit_pipelines.map(crate::jobs::Pending::wait);
+        let faded_depth_pipelines = faded_depth_pipelines.map(crate::jobs::Pending::wait);
+        let faded_pipelines = faded_pipelines.map(crate::jobs::Pending::wait);
         let particle_pipelines = particle_pipelines.map(crate::jobs::Pending::wait);
         let particle_oit_pipelines = particle_oit_pipelines.map(crate::jobs::Pending::wait);
         let web_pipelines = web_pipelines.map(crate::jobs::Pending::wait);
@@ -3471,6 +3594,8 @@ impl Renderer {
             blob_pipeline: blob_pipeline.wait(),
             puff_pipeline: puff_pipeline.wait(),
             oit_pipelines,
+            faded_depth_pipelines,
+            faded_pipelines,
             oit_layout,
             oit_pipeline: oit_pipeline.wait(),
             pick_pending: None,
@@ -4314,7 +4439,7 @@ impl Renderer {
         for v in [
             u32::from(view.outside),
             u32::from(self.cut_ground),
-            lod_scale(camera, self.lod_bias).to_bits(),
+            room_scale(camera, self.lod_bias).to_bits(),
             features,
         ] {
             frame.extend_from_slice(&v.to_le_bytes());
@@ -4756,6 +4881,36 @@ impl Renderer {
         );
         let sorted_base = scene.sorted_base();
         self.sorted_draws = sorted.len();
+        // Faded objects' own surfaces, after the translucent in the visible list's tail.
+        let faded = scene.sorted_faded(
+            camera.position,
+            &camera.frustum(aspect),
+            view.rects,
+            &plain,
+            lod_scale,
+            usize::try_from(crate::scene::SORTED_ENTRIES).unwrap_or(0) - sorted.len(),
+        );
+        let faded_base = sorted_base + u32::try_from(sorted.len()).unwrap_or(0);
+        if !faded.is_empty() {
+            let bytes: Vec<u8> = faded
+                .iter()
+                .flat_map(|(i, d)| [*i, d.material])
+                .flat_map(u32::to_le_bytes)
+                .collect();
+            gpu.queue
+                .write_buffer(&scene.visible, u64::from(faded_base) * 8, &bytes);
+        }
+        // Runs of the same draw, each one instanced draw: its pipeline's side, indices and entries.
+        let mut faded_runs: Vec<(usize, std::ops::Range<u32>, std::ops::Range<u32>)> = Vec::new();
+        for (k, (_, d)) in faded.iter().enumerate() {
+            let entry = faded_base + u32::try_from(k).unwrap_or(0);
+            let side = usize::from(d.pipeline == PipelineKind::TwoSided);
+            let indices = d.first_index..d.first_index + d.index_count;
+            match faded_runs.last_mut() {
+                Some(r) if r.0 == side && r.1 == indices => r.2.end = entry + 1,
+                _ => faded_runs.push((side, indices, entry..entry + 1)),
+            }
+        }
         let blobs = view.particles.map_or((0, 0), |p| p.blobs);
         let puffs = view.particles.map_or((0, 0), |p| p.puffs);
         let puff_runs: &[crate::particles::PuffRun] = view.particles.map_or(&[], |p| &p.puff_runs);
@@ -5851,6 +6006,68 @@ impl Renderer {
             if air {
                 self.air
                     .encode_apply(gpu, &mut pass, &self.frame_group, &t.views[T_DEPTH]);
+            }
+        }
+        if faded_runs.is_empty() {
+            rec.skip("faded depth", PassKind::Render);
+            rec.skip("faded", PassKind::Render);
+        } else {
+            // Faded objects, over the air laid on what is behind them (they take their own): their
+            // nearest layer's depth over the frame's, in the depth behind the ice (done with).
+            rec.encoder().copy_texture_to_texture(
+                t.textures[T_DEPTH].as_image_copy(),
+                t.depth_behind.as_image_copy(),
+                t.depth_behind.size(),
+            );
+            // And the frame behind them, which they are laid over as the screen shows it.
+            rec.encoder().copy_texture_to_texture(
+                t.textures[T_HDR].as_image_copy(),
+                t.scene.as_image_copy(),
+                t.scene.size(),
+            );
+            let layer = |load| {
+                Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &t.behind_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                })
+            };
+            {
+                let mut pass = rec.render("faded depth", &[], layer(wgpu::LoadOp::Load));
+                draw(&mut pass, false);
+                pass.set_bind_group(3, &t.light_group, &[]);
+                for (side, indices, entries) in &faded_runs {
+                    pass.set_pipeline(&self.faded_depth_pipelines[*side]);
+                    pass.draw_indexed(indices.clone(), 0, entries.clone());
+                }
+            }
+            let keep = |v| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view: v,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })
+            };
+            // Their objects into the objects target too, for the pick.
+            let color = [
+                keep(&t.views[T_HDR]),
+                keep(&t.reactive_view),
+                keep(&t.views[T_MOTION]),
+                keep(&t.views[T_OBJECTS]),
+            ];
+            let mut pass = rec.render("faded", &color, layer(wgpu::LoadOp::Load));
+            draw(&mut pass, false);
+            pass.set_bind_group(3, &t.light_group, &[]);
+            for (side, indices, entries) in &faded_runs {
+                pass.set_pipeline(&self.faded_pipelines[*side]);
+                pass.draw_indexed(indices.clone(), 0, entries.clone());
             }
         }
         {

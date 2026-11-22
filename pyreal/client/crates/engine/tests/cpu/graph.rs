@@ -7,8 +7,8 @@ use pyreal_engine::renderer::graph_decl;
 /// G-buffer, the sun's cascades culled and drawn, the weather's shelter map, the lamps' clusters
 /// and shadows, occlusion gathered and blurred, probes, the water's ripples, the clouds, lighting,
 /// the water's depth, the water, its depth merged into the world's, the rain's puddles, the ice,
-/// translucency (sorted, or order-independent and
-/// laid over), the rain and snow, the air's froxels and their light laid over, exposure, bloom,
+/// translucency (sorted, or order-independent and laid over), the rain and snow, the air's
+/// froxels and their light laid over, faded bodies drawn see-through, exposure, bloom,
 /// tone map, the interface's marks in the world, the temporal resolve or upscale, the world
 /// blurred for the UI's see-through grounds and the composite with the UI, in that order.
 #[test]
@@ -49,6 +49,8 @@ fn the_engines_frame_graph_validates() {
             "weather",
             "air",
             "air apply",
+            "faded depth",
+            "faded",
             "exposure",
             "bloom",
             "tonemap",

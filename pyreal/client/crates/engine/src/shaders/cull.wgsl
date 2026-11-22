@@ -210,6 +210,11 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let shadow = params.target_list.x != 0u;
+    // An object faded by its own translucency is drawn after the translucent, seen through
+    // (crate::scene::Scene::sorted_faded); its shadow is still cast through the screen door.
+    if (!shadow && (inst.cell >> 24u) != 0u) {
+        return;
+    }
     // The sun never reaches the rooms, so nothing in them casts its shadow.
     if (params.target_list.x == 1u && (inst.cell & 0xFFFFFFu) != 0u) {
         return;

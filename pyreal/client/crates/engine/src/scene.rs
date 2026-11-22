@@ -100,6 +100,13 @@ impl PipelineKind {
     pub fn deferred(self) -> bool {
         matches!(self, Self::Opaque | Self::TwoSided | Self::Terrain)
     }
+
+    /// Drawn after the translucent, seen through, where its object is faded
+    /// ([`Scene::sorted_faded`]).
+    #[must_use]
+    pub fn faded(self) -> bool {
+        matches!(self, Self::Opaque | Self::TwoSided)
+    }
 }
 
 /// One draw of a mesh: its indices in the index pool and what draws them.
@@ -411,6 +418,8 @@ pub struct Scene {
     /// Instances with a translucent or additive draw somewhere in their degrade chain, and those
     /// that draw ground.
     translucent: std::collections::BTreeSet<u32>,
+    /// Instances faded by their own translucency (their cell word's top byte).
+    faded: std::collections::BTreeSet<u32>,
     ground_instances: std::collections::BTreeSet<u32>,
     ground_dirty: bool,
     /// The bucket layout must be made again.
@@ -524,6 +533,7 @@ impl Scene {
             buckets: Vec::new(),
             ground: Vec::new(),
             translucent: std::collections::BTreeSet::new(),
+            faded: std::collections::BTreeSet::new(),
             ground_instances: std::collections::BTreeSet::new(),
             ground_dirty: false,
             dirty: true,
@@ -806,6 +816,7 @@ impl Scene {
         self.buckets.clear();
         self.ground.clear();
         self.translucent.clear();
+        self.faded.clear();
         self.ground_instances.clear();
         self.ground_dirty = false;
         self.chain_count.iter_mut().for_each(|c| *c = 0);
@@ -846,6 +857,7 @@ impl Scene {
         self.alive += 1;
         self.static_epoch += 1;
         self.count_in(id, instance.mesh);
+        self.note_fade(id, instance.cell);
         Ok(id)
     }
 
@@ -909,6 +921,7 @@ impl Scene {
         self.alive += 1;
         let id = self.dynamic_base() + k;
         self.count_in(id, instance.mesh);
+        self.note_fade(id, instance.cell);
         self.stale_id(id);
         Ok(id)
     }
@@ -976,7 +989,17 @@ impl Scene {
             return;
         }
         inst.cell = cell;
+        self.note_fade(id, cell);
         self.stale_id(id);
+    }
+
+    /// Keeps instance `id` in the faded set while its cell word `cell` fades it.
+    fn note_fade(&mut self, id: u32, cell: u32) {
+        if cell & !CELL_BITS == 0 {
+            self.faded.remove(&id);
+        } else {
+            self.faded.insert(id);
+        }
     }
 
     /// Takes instance `id` out of the scene; its slot is written dead and reused.
@@ -996,6 +1019,7 @@ impl Scene {
         }
         self.alive -= 1;
         self.count_out(id, gone.mesh);
+        self.faded.remove(&id);
         self.stale_id(id);
     }
 
@@ -1131,56 +1155,14 @@ impl Scene {
         view_proj: &glam::Mat4,
         lod_scale: f32,
     ) -> Vec<(u32, Draw, f32)> {
-        let mut objects: Vec<(f32, u32, MeshId)> = Vec::new();
-        for &i in &self.translucent {
-            let Some(inst) = self.instance(i) else {
-                continue;
-            };
-            let Some(base) = self.meshes.get(inst.mesh.0 as usize) else {
-                continue;
-            };
-            let m = inst.transform.matrix3;
-            let scale = m
-                .x_axis
-                .length()
-                .max(m.y_axis.length())
-                .max(m.z_axis.length());
-            let center = inst.transform.transform_point3(base.center);
-            let radius = base.radius * scale;
-            if planes
-                .iter()
-                .any(|p| p.truncate().dot(center) + p.w < -radius)
-            {
-                continue;
-            }
-            let rect = rects
-                .get((inst.cell & CELL_BITS) as usize)
-                .copied()
-                .unwrap_or(crate::cells::FULL);
-            if crate::cells::is_empty(&rect) || outside_rect(&rect, view_proj, center, radius) {
-                continue;
-            }
-            let d = center.distance(eye);
-            let mut mesh = inst.mesh;
-            let measured = d / m.z_axis.length().max(1e-3) * lod_scale;
-            let mut drawn = true;
-            for _ in 0..LOD_STEPS {
-                let Some(level) = self.meshes.get(mesh.0 as usize) else {
-                    break;
-                };
-                if level.lod_next == LOD_NONE || measured < level.lod_switch {
-                    break;
-                }
-                if level.lod_next == LOD_NOTHING {
-                    drawn = false;
-                    break;
-                }
-                mesh = MeshId(level.lod_next);
-            }
-            if drawn {
-                objects.push((d, i, mesh));
-            }
-        }
+        let mut objects: Vec<(f32, u32, MeshId)> = self
+            .translucent
+            .iter()
+            .filter_map(|&i| {
+                let (d, mesh) = self.drawn_level(i, eye, planes, rects, view_proj, lod_scale)?;
+                Some((d, i, mesh))
+            })
+            .collect();
         objects.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut out = Vec::new();
         for (far, i, mesh) in objects {
@@ -1199,6 +1181,93 @@ impl Scene {
                 break;
             }
         }
+        out
+    }
+
+    /// The level instance `i` draws this frame and its distance, `None` where it is out of view
+    /// or its chain draws nothing there.
+    fn drawn_level(
+        &self,
+        i: u32,
+        eye: Vec3,
+        planes: &[glam::Vec4],
+        rects: &[crate::cells::Rect],
+        view_proj: &glam::Mat4,
+        lod_scale: f32,
+    ) -> Option<(f32, MeshId)> {
+        let inst = self.instance(i)?;
+        let base = self.meshes.get(inst.mesh.0 as usize)?;
+        let m = inst.transform.matrix3;
+        let scale = m
+            .x_axis
+            .length()
+            .max(m.y_axis.length())
+            .max(m.z_axis.length());
+        let center = inst.transform.transform_point3(base.center);
+        let radius = base.radius * scale;
+        if planes
+            .iter()
+            .any(|p| p.truncate().dot(center) + p.w < -radius)
+        {
+            return None;
+        }
+        let rect = rects
+            .get((inst.cell & CELL_BITS) as usize)
+            .copied()
+            .unwrap_or(crate::cells::FULL);
+        if crate::cells::is_empty(&rect) || outside_rect(&rect, view_proj, center, radius) {
+            return None;
+        }
+        let d = center.distance(eye);
+        let mut mesh = inst.mesh;
+        let measured = d / m.z_axis.length().max(1e-3) * lod_scale;
+        for _ in 0..LOD_STEPS {
+            let Some(level) = self.meshes.get(mesh.0 as usize) else {
+                break;
+            };
+            if level.lod_next == LOD_NONE || measured < level.lod_switch {
+                break;
+            }
+            if level.lod_next == LOD_NOTHING {
+                return None;
+            }
+            mesh = MeshId(level.lod_next);
+        }
+        Some((d, mesh))
+    }
+
+    /// This frame's faded objects' own (G-buffer) draws, which the cull pass leaves out: each
+    /// instance's draw with the material it draws by, grouped by draw so like parts go out as one
+    /// instanced draw. Only each pixel's nearest faded surface is drawn, so their order is free.
+    #[must_use]
+    pub fn sorted_faded(
+        &self,
+        eye: Vec3,
+        planes: &[glam::Vec4],
+        rects: &[crate::cells::Rect],
+        view_proj: &glam::Mat4,
+        lod_scale: f32,
+        room: usize,
+    ) -> Vec<(u32, Draw)> {
+        let mut out: Vec<(u32, Draw)> = Vec::new();
+        for &i in &self.faded {
+            let Some((_, mesh)) = self.drawn_level(i, eye, planes, rects, view_proj, lod_scale)
+            else {
+                continue;
+            };
+            if let Some(m) = self.meshes.get(mesh.0 as usize) {
+                let turn = m.billboard << BILLBOARD_SHIFT;
+                out.extend(m.draws.iter().filter(|d| d.pipeline.faded()).map(|d| {
+                    let draw = Draw {
+                        material: d.material | turn,
+                        ..*d
+                    };
+                    (i, draw)
+                }));
+            }
+        }
+        out.sort_by_key(|(_, d)| (d.pipeline, d.first_index, d.index_count));
+        out.truncate(room);
         out
     }
 

@@ -1,6 +1,6 @@
 //! Animated bodies on the GPU: motion vectors from the transforms each instance was drawn with
-//! last frame, a dressed body's palette variant, a frost elemental's body of snow, and an art
-//! pack's posed body.
+//! last frame, a faded body seen through, a dressed body's palette variant, a frost elemental's
+//! body of snow, and an art pack's posed body.
 
 use std::sync::Arc;
 
@@ -135,6 +135,72 @@ fn motion_vectors_follow_what_moved_and_nothing_else() {
     camera.yaw += 0.02;
     let (l, r) = frame(&mut engine, &camera);
     assert!(l > 1e-3 && r > 1e-3, "the camera turned: {l} {r}");
+}
+
+/// A drudge faded half away is seen through evenly: over its body each pixel lies between the
+/// drudge drawn whole and the sky behind it, where a screen door leaves each pixel one or the
+/// other.
+#[test]
+fn a_faded_body_is_seen_through_evenly() {
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let mut engine = engine();
+    engine.renderer.exposure = pyreal_engine::renderer::Exposure::Manual(1.0);
+    let mut loader = AssetLoader::default();
+    let camera = Camera {
+        position: Vec3::new(0.0, 0.0, 1.0),
+        far: 100.0,
+        ..Camera::default()
+    };
+    let light = SkyLight::default();
+    let size = (160, 90);
+    let frame = |engine: &mut Engine| {
+        engine
+            .render_to_rgba(&camera, &light, size)
+            .expect("a frame")
+    };
+    let sky = frame(&mut engine);
+    let mut body = Body::new(
+        assets(&store),
+        DRUDGE,
+        None,
+        standing(Vec3::new(0.0, 3.0, 0.0)),
+    )
+    .expect("a drudge");
+    body.place(&mut engine, &mut loader, &store);
+    let whole = frame(&mut engine);
+    body.driver.set_translucency(0.5);
+    body.update(&mut engine.scene);
+    let faded = frame(&mut engine);
+    let luma =
+        |p: &[u8]| 0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]);
+    let mut shares: Vec<f32> = sky
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(whole.as_chunks::<4>().0)
+        .zip(faded.as_chunks::<4>().0)
+        .filter_map(|((s, w), f)| {
+            let (s, w, f) = (luma(s), luma(w), luma(f));
+            ((w - s).abs() > 24.0).then(|| (f - s) / (w - s))
+        })
+        .collect();
+    assert!(
+        shares.len() > 300,
+        "the drudge covers {} pixels",
+        shares.len()
+    );
+    let either = shares
+        .iter()
+        .filter(|&&k| !(0.1..=0.9).contains(&k))
+        .count();
+    assert!(
+        either * 10 < shares.len(),
+        "{either} of {} pixels are the drudge or the sky alone",
+        shares.len()
+    );
+    shares.sort_by(f32::total_cmp);
+    let middle = shares[shares.len() / 2];
+    assert!((0.25..=0.75).contains(&middle), "the middle share {middle}");
 }
 
 /// A removed body's instances leave the scene and their slots are used again.

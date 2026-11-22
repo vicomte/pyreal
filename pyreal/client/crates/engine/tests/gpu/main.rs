@@ -347,7 +347,7 @@ fn the_ground_hides_what_is_behind_a_hill_and_nothing_else() {
 }
 
 /// The same view of Holtburg with the dats' degrade levels and without: far parts draw coarser
-/// meshes, or none past their last level, and the visible triangles fall.
+/// meshes and the visible triangles fall.
 #[test]
 fn degrade_levels_thin_the_distance() {
     let store = pyreal_dat::testing::open_store_or_fail();
@@ -392,8 +392,8 @@ fn degrade_levels_thin_the_distance() {
 }
 
 /// The tower on the hill west of Holtburg (0x01001117, 226 triangles, then 108, 14 and a card of
-/// three past 178 m, nothing past 442 m in retail): a static that large keeps its card out to the
-/// loaded land's edge, where retail's chain would leave a hole in front of the far land.
+/// three past 178 m, nothing past 442 m in retail) keeps its card out to the loaded land's edge,
+/// where retail's chain would leave a hole in front of the far land.
 #[test]
 fn a_far_tower_keeps_its_card_where_retail_drew_nothing() {
     let store = pyreal_dat::testing::open_store_or_fail();
@@ -421,6 +421,122 @@ fn a_far_tower_keeps_its_card_where_retail_drew_nothing() {
     for chain in towers {
         let card = scene.mesh(chain[3]).expect("its card");
         assert_eq!(card.lod_next, pyreal_engine::scene::LOD_NONE);
+    }
+}
+
+/// The report spot over the marsh west of Holtburg, where small rocks in the water stood at
+/// Ultra and were gone at Medium: every object placed there keeps a level drawn at the end of its
+/// chain, though retail's chains for some of them end in nothing.
+#[test]
+fn no_object_ends_its_chain_in_nothing() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = engine();
+    let mut loader = AssetLoader::default();
+    load_area(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        Area {
+            center: 0xA8B4,
+            radius: 1,
+        },
+    );
+    let scene = &engine.scene;
+    let mut placed = 0;
+    for (_, i) in scene.instances() {
+        let chain = scene.lod_chain(i.mesh);
+        let last = chain.last().and_then(|m| scene.mesh(*m)).expect("a level");
+        assert_ne!(
+            last.lod_next,
+            pyreal_engine::scene::LOD_NOTHING,
+            "{chain:?}"
+        );
+        placed += 1;
+    }
+    assert!(placed > 1000, "{placed} placed");
+    let ends = (0x0100_0000..0x0101_0000)
+        .map(pyreal_primitives::DataId)
+        .filter(|g| {
+            pyreal_engine::asset::object::degrade_chain(&store, *g)
+                .last()
+                .is_some_and(|l| l.mesh.is_none())
+        })
+        .take(1)
+        .count();
+    assert_eq!(ends, 1, "some retail chain ends in nothing");
+}
+
+/// The report view over that marsh, and the desert outside Yaraq with its houses' rooms seen
+/// through their doors, at Object Detail Low, Medium and Ultra: the same objects are drawn at each,
+/// only at other levels, and Ultra draws the most triangles.
+#[test]
+fn object_detail_changes_levels_never_what_is_drawn() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let places = [
+        (
+            0xA8B4,
+            Vec3::new(180.818_92, 51.986_71, 78.782_44),
+            -5.600_732,
+            -0.295,
+        ),
+        (
+            0x7E62,
+            Vec3::new(118.802_04, 104.172_24, 15.738_274),
+            -0.120_004,
+            -0.235,
+        ),
+    ];
+    for (center, position, yaw, pitch) in places {
+        let mut engine = engine();
+        let mut loader = AssetLoader::default();
+        load_area(
+            &mut engine,
+            &mut loader,
+            &store,
+            &region,
+            Area { center, radius: 2 },
+        );
+        let camera = Camera {
+            position,
+            yaw,
+            pitch,
+            far: 1000.0,
+            ..Camera::default()
+        };
+        let light = SkyLight::at(&region, 0, 0.5);
+        // The ground's depth from the frame before would hide a different few at each level.
+        engine.renderer.hiz = false;
+        let stats: Vec<_> = [0.75, 1.5, 3.0]
+            .into_iter()
+            .map(|bias| {
+                engine.renderer.lod_bias = bias;
+                engine
+                    .render_to_rgba(&camera, &light, (320, 180))
+                    .expect("a frame");
+                engine.renderer.read_cull_stats(&engine.gpu)
+            })
+            .collect();
+        let (low, medium, ultra) = (&stats[0], &stats[1], &stats[2]);
+        assert!(low.visible_instances > 500, "{center:04X} {low:?}");
+        assert_eq!(
+            low.visible_instances, medium.visible_instances,
+            "{center:04X} {low:?} {medium:?}"
+        );
+        assert_eq!(
+            medium.visible_instances, ultra.visible_instances,
+            "{center:04X} {medium:?} {ultra:?}"
+        );
+        assert!(
+            low.degraded > ultra.degraded,
+            "{center:04X} {low:?} {ultra:?}"
+        );
+        assert!(
+            ultra.visible_triangles > low.visible_triangles,
+            "{center:04X} {low:?} {ultra:?}"
+        );
     }
 }
 

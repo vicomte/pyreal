@@ -103,15 +103,15 @@ pub fn blade_reach(reach: f32, detail: f32) -> (f32, f32) {
     (near, far)
 }
 
-/// How far the flowers and the stones reach at a reach's share and a detail scale, metres: both
-/// with Object Detail, short of the grass's near clumps' reach.
+/// How far the flowers and the stones reach at a reach's share, metres: with Ground Cover, never
+/// Object Detail, so a change of detail adds or takes none away.
 #[must_use]
-pub fn scatter_reach(reach: f32, detail: f32) -> (f32, f32) {
-    let detail = detail.clamp(0.5, 3.0);
-    let (_, far) = blade_reach(reach, detail);
+pub fn scatter_reach(reach: f32) -> (f32, f32) {
+    let spread = (1.5 * reach).clamp(0.5, 3.0);
+    let (_, far) = blade_reach(reach, 1.0);
     (
-        (10.0 + 12.0 * detail).min(far * 0.6),
-        (8.0 + 10.0 * detail).min(far * 0.5),
+        (10.0 + 12.0 * spread).min(far * 0.6),
+        (8.0 + 10.0 * spread).min(far * 0.5),
     )
 }
 
@@ -863,7 +863,7 @@ impl Cover {
         let blades = [near, far, NEAR_CLUMPS * thick, FAR_CLUMPS * thick];
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let blade_tiles = (far * 2.0 / BLADE_TILE).ceil() as u32 + 1;
-        let (flowers, stones) = scatter_reach(reach, detail);
+        let (flowers, stones) = scatter_reach(reach);
         let scatter = [
             flowers,
             stones,

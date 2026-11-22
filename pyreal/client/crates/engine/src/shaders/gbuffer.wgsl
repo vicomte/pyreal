@@ -61,10 +61,12 @@ fn screened(p: vec2<f32>, fade: u32) -> bool {
     return (coarse && m >= t) || (!coarse && m < t);
 }
 
-// The screen door's noise at pixel `p`, moved with the jitter.
+// The screen door's noise at pixel `p`: interleaved gradient noise raised an eighth more each
+// phase of the jitter (its x, a base-2 Halton step), so a pixel's eight thresholds stand evenly
+// apart and the temporal resolve averages them to the fade.
 fn door(p: vec2<f32>) -> f32 {
-    let q = p + frame.jitter.xy * 4096.0;
-    return fract(52.9829189 * fract(dot(q, vec2<f32>(0.06711056, 0.00583715))));
+    let phase = round((frame.jitter.x * frame.params.z * 0.5 + 0.5) * 8.0) / 8.0;
+    return fract(fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715)))) + phase);
 }
 
 // An object's fade word: its own fade and its level's crossfade code, with the instance's hash.
@@ -629,7 +631,8 @@ fn inside_a_room(cell: TerrainCell, p: vec3<f32>) -> bool {
         if (any(p < lo.xyz - 0.02) || any(p > hi.xyz + 0.02)) {
             continue;
         }
-        // Past its building's reach the room is not drawn, so the ground stays.
+        // Past its building's reach at the most Object Detail the room is not drawn: the ground
+        // stays.
         if (distance(p, frame.camera.xyz) * bitcast<f32>(frame.switches.z) >= hi.w) {
             continue;
         }

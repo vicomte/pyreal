@@ -380,7 +380,7 @@ impl Engine {
             camera.position,
             camera.cell,
             camera.far,
-            crate::renderer::lod_scale(camera, self.renderer.lod_bias),
+            crate::renderer::room_scale(camera, self.renderer.lod_bias),
         );
         self.scene
             .write_cell_rects(&self.gpu.queue, &self.visibility.rects);

@@ -213,8 +213,8 @@ pub struct Cell {
     /// Its room's volume; `None` when its cell BSP is empty.
     pub volume: Option<Volume>,
     pub seen_outside: bool,
-    /// How far (in degrade metres) its building's shell is drawn: past it the shell degrades to
-    /// nothing, and the room is not looked into from outdoors.
+    /// How far (in degrade metres) retail draws its building's shell: past it the room is not
+    /// looked into from outdoors, judged at [`crate::renderer::ROOM_BIAS`].
     pub reach: f32,
 }
 
@@ -552,8 +552,8 @@ impl CellGraph {
 
     /// Walks the portals from the eye's cell or from outdoors, and from the outdoors wherever it is
     /// reached into the rooms through every opening within `reach` metres (and within its room's
-    /// own reach once scaled by `lod_scale` as the degrade levels are), and gives each slot the
-    /// screen rectangle it is seen through.
+    /// own reach once scaled by `lod_scale`, [`crate::renderer::room_scale`]), and gives each slot
+    /// the screen rectangle it is seen through.
     #[must_use]
     pub fn visibility(
         &self,

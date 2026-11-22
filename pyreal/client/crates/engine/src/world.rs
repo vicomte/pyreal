@@ -348,10 +348,6 @@ pub const CARDS_FROM: f32 = 1.0;
 /// The least distance a level of shape is taken to begin at, metres a metre of scale; the card
 /// is drawn from the level this leaves last ([`pyreal_art_pack::cards::CARD_LEAST`]).
 const CARD_LEAST: f32 = pyreal_art_pack::cards::CARD_LEAST;
-/// The least radius, metres, of a static's near level that keeps its last coarser level drawn
-/// where retail's degrade draws nothing: a building or tower stays out to the loaded land's edge,
-/// which reaches beyond where retail's own view ended.
-pub const LANDMARK_RADIUS: f32 = 5.0;
 /// A mesh variant bit: a player's head as drawn beyond arm's length.
 const FAR_HEAD: u32 = 1 << 31;
 /// A mesh variant bit: a player's head as the dats make it.
@@ -1780,9 +1776,7 @@ impl AssetLoader {
         made
     }
 
-    /// Links `mesh` (graphics object `gfxobj`'s near level) to its coarser levels, once; a
-    /// static at least [`LANDMARK_RADIUS`] in radius keeps its last coarser level where retail's
-    /// chain ends.
+    /// Links `mesh` (graphics object `gfxobj`'s near level) to its coarser levels, once.
     fn link_degrades(
         &mut self,
         engine: &mut Engine,
@@ -1791,23 +1785,12 @@ impl AssetLoader {
         gfxobj: DataId,
         foliage: bool,
     ) {
-        let landmark = !foliage
-            && engine
-                .scene
-                .mesh(mesh)
-                .is_some_and(|m| m.radius >= LANDMARK_RADIUS);
-        self.link_chain(
-            engine,
-            store,
-            mesh,
-            gfxobj,
-            foliage,
-            &Dress::default(),
-            landmark,
-        );
+        self.link_degrades_dressed(engine, store, mesh, gfxobj, foliage, &Dress::default());
     }
 
-    /// [`Self::link_degrades`] with every level dressed as `dress` says.
+    /// [`Self::link_degrades`] with every level dressed as `dress` says. Where retail's chain
+    /// ends in nothing the last level drawn stays out to the loaded land's edge: Object Detail
+    /// picks a level, never whether the object is drawn.
     pub fn link_degrades_dressed(
         &mut self,
         engine: &mut Engine,
@@ -1816,22 +1799,6 @@ impl AssetLoader {
         gfxobj: DataId,
         foliage: bool,
         dress: &Dress,
-    ) {
-        self.link_chain(engine, store, mesh, gfxobj, foliage, dress, false);
-    }
-
-    /// Links `mesh` to its coarser levels dressed as `dress` says, once; with `keep_last`, a
-    /// chain ending in nothing after a coarser level leaves that level drawn.
-    #[allow(clippy::too_many_arguments)]
-    fn link_chain(
-        &mut self,
-        engine: &mut Engine,
-        store: &RetailDatStore,
-        mesh: MeshId,
-        gfxobj: DataId,
-        foliage: bool,
-        dress: &Dress,
-        keep_last: bool,
     ) {
         if !self.linked.insert(mesh.0) {
             return;
@@ -1849,25 +1816,18 @@ impl AssetLoader {
             }
         }
         for level in degrade_chain(store, gfxobj) {
-            // A coarser level, never the near one, is kept: that is what retail drew far off.
-            if keep_last && level.mesh.is_none() && at != mesh {
-                break;
-            }
-            let next = level.mesh.and_then(|g| {
+            let Some(next) = level.mesh.and_then(|g| {
                 if dress.is_plain() {
                     self.mesh(engine, store, g, foliage)
                 } else {
                     self.mesh_dressed(engine, store, g, dress)
                 }
-            });
-            engine.scene.set_lod(at, next, level.switch);
-            if let Some(n) = next {
-                engine.scene.set_billboard(n, level.mode);
-            }
-            match next {
-                Some(n) => at = n,
-                None => break,
-            }
+            }) else {
+                break;
+            };
+            engine.scene.set_lod(at, Some(next), level.switch);
+            engine.scene.set_billboard(next, level.mode);
+            at = next;
         }
     }
 
@@ -2148,7 +2108,6 @@ impl AssetLoader {
         }
         self.pack_cards.insert(id.0, card);
         let first = meshes.first().copied().flatten();
-        let ends = model.lods.iter().all(|l| l.views.is_none());
         for (k, lod) in lods.iter().enumerate() {
             let Some(at) = meshes[k] else { continue };
             match meshes.get(k + 1) {
@@ -2164,9 +2123,7 @@ impl AssetLoader {
                     };
                     engine.scene.set_lod(at, card, from);
                 }
-                None if ends && lod.distance.is_finite() => {
-                    engine.scene.set_lod(at, None, lod.distance);
-                }
+                // Without a card the last level of shape stays out to the loaded land's edge.
                 None => {}
             }
         }
@@ -3144,7 +3101,7 @@ pub fn room_cell(d: &DecodedCell, origin: Vec3) -> Cell {
     }
 }
 
-/// How far an object is drawn before its every part has degraded to nothing (in degrade metres);
+/// How far retail draws an object before its every part has degraded to nothing (in degrade metres);
 /// infinite when one never does.
 #[must_use]
 pub fn draw_reach(store: &RetailDatStore, id: DataId) -> f32 {
@@ -4932,7 +4889,7 @@ pub fn place_statics_run(
         let Some(b) = info.buildings.get(k) else {
             continue;
         };
-        // Its rooms are looked into only while its shell is drawn.
+        // Its rooms are looked into only while retail would draw its shell.
         let reach = plan.reaches.get(k).copied().unwrap_or(f32::INFINITY);
         for p in &b.portals {
             for &c in p.stab_list.iter().chain(std::iter::once(&p.other_cell_id)) {

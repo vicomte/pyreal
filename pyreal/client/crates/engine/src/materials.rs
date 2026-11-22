@@ -79,7 +79,8 @@ impl MaterialTable {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    // The vertex stage reads a face's height (crate::face_detail).
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -95,7 +96,7 @@ impl MaterialTable {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -392,6 +393,18 @@ impl MaterialTable {
         self.records.push(record);
         self.live.push(true);
         Ok(index)
+    }
+
+    /// Writes `record` over live material `index` (a face given its detail, or losing it): every
+    /// draw naming it draws the new record from the next upload.
+    pub fn set_material(&mut self, index: u32, record: MaterialRecord) {
+        if !self.live.get(index as usize).copied().unwrap_or(false) {
+            return;
+        }
+        self.records[index as usize] = record;
+        if (index as usize) < self.uploaded {
+            self.rewritten.push(index);
+        }
     }
 
     #[must_use]

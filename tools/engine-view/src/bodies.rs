@@ -14,22 +14,102 @@ use pyreal_engine::Engine;
 use pyreal_primitives::{DataId, Frame};
 
 /// What a body is made from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
     /// A setup, and the motion table it moves by when not its own.
     Setup(u32, Option<u32>),
-    /// An Aluvian dressed by character creation: `true` for a woman.
-    Character(bool),
+    /// A character dressed by character creation.
+    Character(Character),
 }
+
+/// A character's heritage, sex and the appearance choices that override creation's fixed roll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Character {
+    pub heritage: u32,
+    pub woman: bool,
+    /// eyes, nose, mouth, hair, hair colour, eye colour, skin shade, hair shade, hat; then no hat.
+    pub picks: [Option<f64>; 9],
+    pub bare_head: bool,
+}
+
+/// The appearance keys [`Character::picks`] holds, in its order.
+const PICKS: [&str; 9] = [
+    "eyes",
+    "nose",
+    "mouth",
+    "hair",
+    "haircolor",
+    "eyecolor",
+    "skin",
+    "hairshade",
+    "cap",
+];
 
 /// One body to place: what it is and, block-local in the view's block, where (in front of the
 /// camera when not given).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Spec {
     pub kind: Kind,
     pub at: Option<(f32, f32, Option<f32>)>,
     /// The object's scale, as a creature's weenie gives it (1 its setup's own size).
     pub scale: f32,
+    /// Its own pose and dress, in place of the command line's for every body.
+    pub pose: Pose,
+}
+
+/// A body's own stance, motion, heading, time into the motion, walk, dress and worn items.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Pose {
+    pub stance: Option<MotionCommand>,
+    pub motion: Option<MotionCommand>,
+    pub facing: Option<f32>,
+    pub time: Option<f64>,
+    pub stride: Option<(f32, f32)>,
+    pub dress: Vec<Dress>,
+    pub wear: Vec<Dress>,
+    /// Scripts played on it (a spell's cast) that far into the clip, seconds.
+    pub scripts: Vec<(u32, f64)>,
+    /// Metres over the ground, kept as it walks (a missile in flight).
+    pub lift: Option<f32>,
+    /// Its physics-description translucency, as its weenie gives it.
+    pub translucency: Option<f32>,
+    /// Walks at the height it was put at, not on the ground.
+    pub keep_height: bool,
+}
+
+/// A body spec's `;KEY=VALUE` tail (`stance`, `motion`, `facing`, `time`, `stride`, `dress`,
+/// `wear`, `script=SCRIPT@SECONDS`, the last three repeated, `lift`, `translucency`), split from the
+/// rest.
+fn pose(spec: &str) -> Result<(&str, Pose), String> {
+    let mut it = spec.split(';');
+    let head = it.next().unwrap_or_default();
+    let mut p = Pose::default();
+    let n = |v: &str| v.trim().parse::<f32>().map_err(|e| format!("{v}: {e}"));
+    for kv in it.map(str::trim).filter(|kv| !kv.is_empty()) {
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or(format!("{kv}: a body's own setting is KEY=VALUE"))?;
+        match k.trim() {
+            "stance" => p.stance = Some(command(v.trim())?),
+            "motion" => p.motion = Some(command(v.trim())?),
+            "facing" => p.facing = Some(n(v)?),
+            "time" => p.time = Some(f64::from(n(v)?)),
+            "lift" => p.lift = Some(n(v)?),
+            "translucency" => p.translucency = Some(n(v)?),
+            "stride" => {
+                let (x, y) = v.split_once(',').ok_or("stride takes VX,VY")?;
+                p.stride = Some((n(x)?, n(y)?));
+            }
+            "dress" => p.dress.push(dress(v)?),
+            "wear" => p.wear.push(dress(v)?),
+            "script" => {
+                let (id, at) = v.split_once('@').ok_or("script takes SCRIPT@SECONDS")?;
+                p.scripts.push((hex(id)?, f64::from(n(at)?)));
+            }
+            other => return Err(format!("{other}: not one of a body's own settings")),
+        }
+    }
+    Ok((head, p))
 }
 
 fn hex(s: &str) -> Result<u32, String> {
@@ -47,8 +127,9 @@ fn place(s: &str) -> Result<Option<(f32, f32, Option<f32>)>, String> {
     }
 }
 
-/// `SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]]`.
+/// `SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]][;KEY=VALUE]...`.
 pub fn object(spec: &str) -> Result<Spec, String> {
+    let (spec, pose) = pose(spec)?;
     let (what, at) = spec
         .split_once('@')
         .map_or((spec, None), |(w, a)| (w, Some(a)));
@@ -71,23 +152,55 @@ pub fn object(spec: &str) -> Result<Spec, String> {
         kind: Kind::Setup(hex(setup)?, table.map(hex).transpose()?),
         at: at.map(place).transpose()?.flatten(),
         scale,
+        pose,
     })
 }
 
-/// `male|female[@X,Y[,Z]]`.
+/// `male|female[@X,Y[,Z]][;KEY=VALUE]...`.
 pub fn character(spec: &str) -> Result<Spec, String> {
+    let (spec, pose) = pose(spec)?;
     let (what, at) = spec
         .split_once('@')
         .map_or((spec, None), |(w, a)| (w, Some(a)));
-    let woman = match what.trim() {
+    let mut it = what.split(',');
+    let who = it.next().unwrap_or_default().trim();
+    let (heritage, sex) = who
+        .split_once('-')
+        .map_or((1, who), |(h, s)| (h.parse().unwrap_or(1), s));
+    let woman = match sex {
         "male" | "man" => false,
         "female" | "woman" => true,
-        other => return Err(format!("--character takes male or female, not {other}")),
+        other => {
+            return Err(format!(
+                "--character takes [HERITAGE-]male|female, not {other}"
+            ))
+        }
     };
+    let mut c = Character {
+        heritage,
+        woman,
+        picks: [None; 9],
+        bare_head: false,
+    };
+    for kv in it {
+        if kv.trim() == "bare" {
+            c.bare_head = true;
+            continue;
+        }
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or(format!("{kv}: a choice is KEY=VALUE"))?;
+        let i = PICKS
+            .iter()
+            .position(|p| *p == k.trim())
+            .ok_or(format!("{k}: one of {PICKS:?}"))?;
+        c.picks[i] = Some(v.trim().parse().map_err(|_| format!("{kv}: a number"))?);
+    }
     Ok(Spec {
-        kind: Kind::Character(woman),
+        kind: Kind::Character(c),
         at: at.map(place).transpose()?.flatten(),
         scale: 1.0,
+        pose,
     })
 }
 
@@ -131,7 +244,8 @@ pub fn command(name: &str) -> Result<MotionCommand, String> {
 
 /// An Aluvian man or woman as character creation dresses one from a fixed roll of its random
 /// draws: the setup, its object description and its sex's motion table.
-fn dressed(store: &RetailDatStore, woman: bool) -> Option<(DataId, ObjDesc, DataId)> {
+fn dressed(store: &RetailDatStore, who: Character) -> Option<(DataId, ObjDesc, DataId)> {
+    let woman = who.woman;
     use pyreal_assets::Decode;
     let tables = pyreal_chargen::CreationTables::read(store)?;
     let cg = &tables.chargen;
@@ -140,10 +254,41 @@ fn dressed(store: &RetailDatStore, woman: bool) -> Option<(DataId, ObjDesc, Data
     let seed = if woman { 9 } else { 5 };
     state.rng = pyreal_chargen::CharGenRng::new(seed, seed.unsigned_abs());
     state.reset(cg, &tables.skills);
-    state.set_heritage_group(cg, &tables.skills, 1);
+    state.set_heritage_group(cg, &tables.skills, who.heritage);
     state.set_gender(cg, if woman { 2 } else { 1 });
     state.randomize_appearance(cg, false);
     state.randomize_clothing(cg, false);
+    let int = pyreal_primitives::num::to_i32_f64;
+    let p = who.picks;
+    for (field, v) in [
+        (&mut state.eyes_strip, p[0]),
+        (&mut state.nose_strip, p[1]),
+        (&mut state.mouth_strip, p[2]),
+        (&mut state.hair_style, p[3]),
+        (&mut state.hair_color, p[4]),
+        (&mut state.eye_color, p[5]),
+    ] {
+        if let Some(v) = v {
+            *field = int(v);
+        }
+    }
+    if let Some(v) = p[6] {
+        state.skin_shade = v;
+    }
+    if let Some(v) = p[7] {
+        state.hair_shade = v;
+    }
+    if let Some(v) = p[8] {
+        state.headgear_style = int(v);
+    }
+    if who.bare_head {
+        state.headgear_style = -1;
+    }
+    println!(
+        "character {}-{}: eyes {} nose {} mouth {} hair {} colour {} eyes colour {} skin {:.3} hair shade {:.3}",
+        who.heritage, if woman { "female" } else { "male" }, state.eyes_strip, state.nose_strip,
+        state.mouth_strip, state.hair_style, state.hair_color, state.eye_color, state.skin_shade, state.hair_shade
+    );
     let setup = state.get_setup_id(cg);
     let table = state.sex(cg).map_or(DataId(0), |s| s.motion_table);
     let mut palettes = |id: DataId| -> Vec<DataId> {
@@ -193,6 +338,42 @@ fn dressed_setup(store: &RetailDatStore, setup: DataId, dress: &[Dress]) -> Opti
     Some(od)
 }
 
+/// Lays worn item `d` over `od` as the server dresses a creature in it; the parts it covers.
+fn wear(store: &RetailDatStore, setup: DataId, d: Dress, od: &mut ObjDesc) -> Vec<u32> {
+    use pyreal_assets::Decode;
+    let id = DataId(d.clothing);
+    let Some(table) = pyreal_primitives::AssetSource::read(store, id)
+        .ok()
+        .and_then(|b| {
+            pyreal_assets::ClothingTable::decode_payload_in(store.era_of(id), id, &b).ok()
+        })
+    else {
+        return Vec::new();
+    };
+    let Some(base) = table.clothing_bases.get(&setup) else {
+        return Vec::new();
+    };
+    let covered = base.iter().map(|e| e.part_num).collect();
+    // A template the table lacks is its first, as the server takes it.
+    let template = if table.palette_templates.contains_key(&d.template) {
+        d.template
+    } else {
+        table.palette_templates.keys().next().copied().unwrap_or(0)
+    };
+    let mut palettes = |id: DataId| -> Vec<DataId> {
+        pyreal_primitives::AssetSource::read(store, id)
+            .ok()
+            .and_then(|b| {
+                pyreal_assets::material::PaletteSet::decode_payload_in(store.era_of(id), id, &b)
+                    .ok()
+            })
+            .map(|s| s.palette_ids)
+            .unwrap_or_default()
+    };
+    pyreal_chargen::dress::build_obj_desc(&table, setup, template, d.shade, &mut palettes, od);
+    covered
+}
+
 /// Setup `setup` in the items `worn`, as the server dresses a creature in its equipment: each item
 /// over the last, the parts none covers its own (`own`, all but the head); with none covered, `dress`.
 fn worn_setup(
@@ -202,50 +383,13 @@ fn worn_setup(
     dress: &[Dress],
     worn: &[Dress],
 ) -> Option<ObjDesc> {
-    use pyreal_assets::Decode;
     let mut od = ObjDesc {
         palette_id: DataId(dress.first().or(worn.first())?.palette),
         ..ObjDesc::default()
     };
     let mut covered = Vec::new();
     for d in worn {
-        let id = DataId(d.clothing);
-        let Some(table) = pyreal_primitives::AssetSource::read(store, id)
-            .ok()
-            .and_then(|b| {
-                pyreal_assets::ClothingTable::decode_payload_in(store.era_of(id), id, &b).ok()
-            })
-        else {
-            continue;
-        };
-        let Some(base) = table.clothing_bases.get(&setup) else {
-            continue;
-        };
-        covered.extend(base.iter().map(|e| e.part_num));
-        // A template the table lacks is its first, as the server takes it.
-        let template = if table.palette_templates.contains_key(&d.template) {
-            d.template
-        } else {
-            table.palette_templates.keys().next().copied().unwrap_or(0)
-        };
-        let mut palettes = |id: DataId| -> Vec<DataId> {
-            pyreal_primitives::AssetSource::read(store, id)
-                .ok()
-                .and_then(|b| {
-                    pyreal_assets::material::PaletteSet::decode_payload_in(store.era_of(id), id, &b)
-                        .ok()
-                })
-                .map(|s| s.palette_ids)
-                .unwrap_or_default()
-        };
-        pyreal_chargen::dress::build_obj_desc(
-            &table,
-            setup,
-            template,
-            d.shade,
-            &mut palettes,
-            &mut od,
-        );
+        covered.extend(wear(store, setup, *d, &mut od));
     }
     if covered.is_empty() {
         return if dress.is_empty() {
@@ -307,7 +451,7 @@ fn dress_layer(store: &RetailDatStore, setup: DataId, d: Dress, od: &mut ObjDesc
 /// Makes the body `spec` names, standing at `frame` (render space), in `style` doing `motion`.
 pub fn make(
     store: &Arc<RetailDatStore>,
-    spec: Spec,
+    spec: &Spec,
     frame: Frame,
     style: Option<MotionCommand>,
     motion: Option<MotionCommand>,
@@ -335,8 +479,12 @@ pub fn make(
             };
             (DataId(s), od, t.map(DataId))
         }
-        Kind::Character(woman) => {
-            let (s, od, t) = dressed(store, woman).ok_or("the creation tables will not read")?;
+        Kind::Character(who) => {
+            let (s, mut od, t) = dressed(store, who).ok_or("the creation tables will not read")?;
+            // What it wears goes over its creation dress, its face kept.
+            for d in worn {
+                wear(store, s, *d, &mut od);
+            }
             (s, Some(od), Some(t))
         }
     };
@@ -430,7 +578,7 @@ pub fn gather(
 }
 
 /// The room holding `p`, one of the view's `block` before another block's dungeon laid over it.
-fn cell_at(engine: &Engine, p: glam::Vec3, block: u16) -> u32 {
+pub fn cell_at(engine: &Engine, p: glam::Vec3, block: u16) -> u32 {
     let cells = &engine.cells;
     cells
         .cells()

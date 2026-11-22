@@ -119,7 +119,7 @@ pub struct PreviewView {
 }
 
 const RECORD_SIZE: u64 = 64;
-const FRAME_SIZE: u64 = 112;
+const FRAME_SIZE: u64 = 128;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The pass: its pipelines and buffers.
@@ -148,9 +148,10 @@ fn material_defs() -> &'static str {
 #[must_use]
 pub fn source() -> String {
     format!(
-        "enable wgpu_binding_array;\n{}\n{}\n{}",
+        "enable wgpu_binding_array;\n{}\n{}\n{}\n{}",
         material_defs(),
         include_str!("shaders/materials.wgsl"),
+        include_str!("shaders/face.wgsl"),
         include_str!("shaders/preview.wgsl")
     )
 }
@@ -323,10 +324,18 @@ impl PreviewPass {
         for v in view.view_proj.to_cols_array() {
             frame.extend_from_slice(&v.to_le_bytes());
         }
+        // The eye: where the view's projection takes nothing to a finite place.
+        let e = view.view_proj.inverse() * glam::Vec4::new(0.0, 0.0, 1.0, 0.0);
+        let eye = if e.w.abs() > 1e-9 {
+            e.truncate() / e.w
+        } else {
+            Vec3::ZERO
+        };
         for v in [
             view.light_dir.extend(0.0),
             view.light.extend(0.0),
             view.ambient.extend(0.0),
+            eye.extend(0.0),
         ] {
             for x in v.to_array() {
                 frame.extend_from_slice(&x.to_le_bytes());

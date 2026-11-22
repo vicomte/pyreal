@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use pyreal_animation::data::AnimAssets;
-use pyreal_animation::parts::PartArray;
 use pyreal_client_contract::overlay::PreviewSpace as PreviewId;
 use pyreal_dat::RetailDatStore;
 use pyreal_engine::preview::{PreviewDraw, PreviewView};
@@ -108,11 +107,6 @@ impl Space {
     }
 
     #[must_use]
-    pub fn object(&self, i: usize) -> Option<&PreviewObject> {
-        self.objects.get(i)
-    }
-
-    #[must_use]
     pub fn object_count(&self) -> usize {
         self.objects.len()
     }
@@ -193,10 +187,6 @@ impl Space {
         for o in &mut self.objects {
             step_preview_body(&mut o.body, &o.frame, dt, self.clock);
         }
-    }
-
-    pub fn part_array_mut(&mut self, i: usize) -> Option<&mut PartArray> {
-        self.objects.get_mut(i).map(|o| &mut o.body.part_array)
     }
 }
 
@@ -334,11 +324,19 @@ impl Previews {
                     !matches!(&o.meshes[k], Some((g, d, _)) if *g == p.gfxobj_id && *d == dress);
                 if fresh {
                     // A space's meshes are drawn by no instance: pinned while held (`repin`).
+                    let own = o
+                        .body
+                        .part_array
+                        .setup
+                        .as_ref()
+                        .and_then(|s| s.parts.get(k));
                     let mesh = pyreal_engine::asset::object::near_mesh(store, p.gfxobj_id)
-                        .and_then(|g| loader.mesh_dressed(engine, store, g, &dress));
+                        .and_then(|g| loader.mesh_worn(engine, store, g, own.copied(), &dress));
                     o.meshes[k] = Some((p.gfxobj_id, dress, mesh));
                 }
                 if let Some((_, _, Some(mesh))) = &o.meshes[k] {
+                    // A face shown here is given its detail as it comes.
+                    loader.want_faces(engine, store, *mesh);
                     draws.push(PreviewDraw::part(
                         *mesh,
                         pyreal_engine::body::part_affine(&p.pos, p.gfxobj_scale),

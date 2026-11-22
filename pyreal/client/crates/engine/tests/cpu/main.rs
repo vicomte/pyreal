@@ -11,6 +11,7 @@ mod cover;
 mod far;
 mod graph;
 mod heavens;
+mod inside;
 mod land;
 mod layout;
 mod materials;

@@ -232,13 +232,17 @@ impl Body {
             .enumerate()
             .map(|(k, p)| part_hidden(p) || self.skin_parts.get(k).copied().unwrap_or(false))
             .collect();
-        for (((gfxobj, dress, word), at), &hidden) in parts.iter().zip(pose).zip(&self.hidden) {
+        let setup = self.driver.part_array.setup.clone();
+        for (k, (((gfxobj, dress, word), at), &hidden)) in
+            parts.iter().zip(pose).zip(&self.hidden).enumerate()
+        {
             if hidden {
                 self.instances.push(None);
                 continue;
             }
+            let own = setup.as_ref().and_then(|s| s.parts.get(k)).copied();
             let mesh = near_mesh(store, *gfxobj)
-                .and_then(|g| Some((g, loader.mesh_dressed(engine, store, g, dress)?)));
+                .and_then(|g| Some((g, loader.mesh_worn(engine, store, g, own, dress)?)));
             let instance = mesh.and_then(|(g, mesh)| {
                 loader.link_degrades_dressed(engine, store, mesh, g, false, dress);
                 engine

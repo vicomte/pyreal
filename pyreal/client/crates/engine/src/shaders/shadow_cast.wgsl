@@ -31,6 +31,8 @@ fn vs_shadow(v: VsIn, @builtin(instance_index) entry: u32) -> ShadowOut {
     if (mode == IMPOSTOR_MODE) {
         turn = sun_bearing(m);
         local = facing(local, turn);
+    } else if ((inst.sway & SKINNED) == 0u) {
+        local = face_push(e.y & 0xFFFFu, local, oct_decode(v.normal), v.uv, v.extra);
     }
     var world = xform(m[0], m[1], m[2], local);
     if (inst.sway != 0u && (inst.sway & SKINNED) == 0u && mode < 2u) {

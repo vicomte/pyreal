@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use pyreal_assets::geometry::CellStruct;
 use pyreal_assets::{GfxObj, Polygon, SwVertex};
+use pyreal_primitives::num::math;
 use pyreal_primitives::DataId;
 
 /// One vertex as the pools hold it (32 bytes): position, octahedral normal, texture coordinate
@@ -399,6 +400,112 @@ pub fn gfxobj_mesh(obj: &GfxObj) -> MeshData {
         .enumerate()
         .filter_map(|(i, p)| (!portals.contains(&i)).then_some(p));
     build(&obj.vertex_array.vertices, polygons, &obj.surfaces)
+}
+
+/// How far a vertex looks for what closes round it, in the model's metres.
+pub const SHADE_REACH: f32 = 0.12;
+
+/// Rays each shaded vertex casts.
+const SHADE_RAYS: usize = 32;
+
+/// Bakes into the second word of each vertex drawn with one of `own`'s surfaces (the skin a hood
+/// keeps of the head it covers) how much of its sky the rest of the mesh hides within `reach`, 0
+/// to 255; whether any vertex is shaded. The other vertices keep 0.
+pub fn shade_inside(mesh: &mut MeshData, own: &[DataId], reach: f32) -> bool {
+    let is_own = |s: &SubMesh| s.surface.is_some_and(|f| own.contains(&f));
+    let mut skin = vec![false; mesh.vertices.len()];
+    let mut cloth = Vec::new();
+    for s in &mesh.submeshes {
+        let range = s.first_index as usize..(s.first_index + s.index_count) as usize;
+        let Some(tris) = mesh.indices.get(range) else {
+            continue;
+        };
+        if is_own(s) {
+            for &i in tris {
+                if let Some(k) = skin.get_mut(i as usize) {
+                    *k = true;
+                }
+            }
+        } else {
+            for t in tris.as_chunks::<3>().0 {
+                cloth.push(t.map(|i| glam::Vec3::from(mesh.vertices[i as usize].position)));
+            }
+        }
+    }
+    if cloth.is_empty() || !skin.contains(&true) {
+        return false;
+    }
+    let dirs = hemisphere();
+    let mut any = false;
+    for (k, v) in mesh.vertices.iter_mut().enumerate() {
+        if !skin[k] {
+            continue;
+        }
+        let n = glam::Vec3::from(v.normal).normalize_or_zero();
+        let o = glam::Vec3::from(v.position) + n * 0.002;
+        // Each triangle's bounding sphere: a large one passing close counts too.
+        let near: Vec<&[glam::Vec3; 3]> = cloth
+            .iter()
+            .filter(|t| {
+                let c = (t[0] + t[1] + t[2]) / 3.0;
+                let r = t.iter().map(|p| p.distance(c)).fold(0.0, f32::max);
+                o.distance(c) - r < reach
+            })
+            .collect();
+        if near.is_empty() {
+            continue;
+        }
+        let (a, b) = n.any_orthonormal_pair();
+        let hidden = dirs
+            .iter()
+            .filter(|d| {
+                let d = a * d.x + b * d.y + n * d.z;
+                near.iter().any(|t| hit(o, d, t).is_some_and(|h| h < reach))
+            })
+            .count();
+        let shade = u32::try_from(hidden * 255 / dirs.len()).unwrap_or(255);
+        v.extra[1] = shade;
+        any |= shade > 0;
+    }
+    any
+}
+
+/// Directions over the upper hemisphere (z up), spread evenly and weighted toward the top as a
+/// diffuse surface sees its sky.
+fn hemisphere() -> Vec<glam::Vec3> {
+    let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+    (0..SHADE_RAYS)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let (i, n) = (i as f32, SHADE_RAYS as f32);
+            let r = ((i + 0.5) / n).sqrt();
+            let a = i * golden;
+            glam::Vec3::new(
+                r * math::cosf(a),
+                r * math::sinf(a),
+                (1.0 - r * r).max(0.0).sqrt(),
+            )
+        })
+        .collect()
+}
+
+/// How far along `d` from `o` the ray meets triangle `t`, either side.
+fn hit(o: glam::Vec3, d: glam::Vec3, t: &[glam::Vec3; 3]) -> Option<f32> {
+    let (e1, e2) = (t[1] - t[0], t[2] - t[0]);
+    let p = d.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let s = (o - t[0]) / det;
+    let u = s.dot(p);
+    let q = s.cross(e1);
+    let v = d.dot(q);
+    if u < 0.0 || v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let h = e2.dot(q);
+    (h > 0.0).then_some(h)
 }
 
 /// An indoor cell's drawing polygons as a mesh, against the cell's own surface list. A portal

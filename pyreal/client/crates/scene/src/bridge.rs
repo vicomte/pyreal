@@ -24,7 +24,7 @@ use pyreal_engine::body::part_affine;
 use pyreal_engine::cells::OUTSIDE;
 use pyreal_engine::scene::Instance;
 use pyreal_engine::stream::Stream;
-use pyreal_engine::world::{AssetLoader, Dress};
+use pyreal_engine::world::{AssetLoader, Dress, HeadLevel};
 use pyreal_engine::{Camera, Engine, SkyLight};
 use pyreal_primitives::{CellId, DataId, Frame, ObjectId};
 
@@ -54,11 +54,15 @@ impl Default for Reach {
 #[derive(Debug)]
 struct Drawn {
     number: u32,
-    parts: Vec<Option<(DataId, Dress)>>,
+    /// Each part as drawn: its model, its dress, and a player's head's level of detail.
+    parts: Vec<Option<(DataId, Dress, Option<HeadLevel>)>>,
     instances: Vec<Option<u32>>,
     whole: Option<(DataId, u32)>,
     /// The art pack's body drawn in place of its parts, if any.
     skinned: Option<pyreal_engine::skin::SkinnedBody>,
+    /// Its setup, where an older world draws its parts from End of Retail's files
+    /// ([`AssetLoader::later_part`]).
+    later: Option<DataId>,
 }
 
 impl Drawn {
@@ -69,6 +73,7 @@ impl Drawn {
             instances: Vec::new(),
             whole: None,
             skinned: None,
+            later: None,
         }
     }
 
@@ -257,6 +262,17 @@ impl Bridge {
             .as_ref()
             .filter(|p| self.numbers.get(&p.number) == Some(&id))
             .map(|p| p.number)
+    }
+
+    /// Every drawn object's parts taken out, to be placed again at the next sync with the meshes
+    /// they take now (Detailed Faces changed).
+    pub fn redress(&mut self, engine: &mut Engine) {
+        for d in self.objects.values_mut().chain(self.player.as_mut()) {
+            for i in d.instances.drain(..).flatten() {
+                engine.scene.remove_instance(i);
+            }
+            d.parts.clear();
+        }
     }
 
     /// Forces the world to be loaded again at the next sync (a change of reach, another pack).
@@ -450,6 +466,7 @@ impl Bridge {
                 * Affine3A::from_scale(Vec3::splat(driver.scale));
             let word = pyreal_engine::scene::faded(cell, 0.0);
             Self::pose_whole(engine, &mut drawn, whole, frame, word);
+            drawn.later = setup.filter(|&s| pyreal_engine::later_models::listed(s) == Some(false));
             if whole.is_none_or(|(s, _)| pyreal_engine::pack::lays_over(s)) {
                 let parts = &driver.part_array;
                 self.pose(
@@ -461,6 +478,7 @@ impl Bridge {
                     &skip,
                     offset,
                     cell,
+                    eye,
                 );
             } else {
                 for i in drawn.instances.drain(..).flatten() {
@@ -557,6 +575,7 @@ impl Bridge {
                     &skip,
                     offset,
                     cell,
+                    eye,
                 );
                 let frame = c.render_frame();
                 Self::draw_skin(
@@ -748,6 +767,7 @@ impl Bridge {
         skip: &[bool],
         offset: Vec3,
         cell: u32,
+        eye: Vec3,
     ) {
         let n = parts.parts.len();
         if drawn.parts.len() != n {
@@ -760,25 +780,54 @@ impl Bridge {
         for (k, p) in parts.parts.iter().enumerate() {
             let hidden =
                 pyreal_engine::body::part_hidden(p) || skip.get(k).copied().unwrap_or(false);
+            let mut at = part_affine(&p.pos, p.gfxobj_scale);
+            at.translation += glam::Vec3A::from(offset);
+            // A player's head: its detail by how near it stands (`AssetLoader::head_mesh`).
+            // A capped or hooded head keeps the mesh it is worn as, its face given detail near.
+            let was_near = matches!(drawn.parts[k], Some((_, _, Some(HeadLevel::Near))));
+            let face_at = pyreal_engine::face_detail::is_player_head(&self.store, p.gfxobj_id)
+                .then(|| (Vec3::from(at.translation) - eye).length());
+            let mut head = None;
             let want = (!hidden).then(|| {
                 let mut dress = Dress::of(p.surface_overrides.as_ref());
                 dress.smoke = smoke.and_then(|s| s.get(k)).copied().unwrap_or(false);
-                (p.gfxobj_id, dress)
+                if let (Some(d), true) = (
+                    face_at,
+                    pyreal_engine::face_detail::is_bare_head(&self.store, p.gfxobj_id),
+                ) {
+                    let own = parts.setup.as_ref().and_then(|s| s.parts.get(k)).copied();
+                    head = loader.head_mesh(
+                        engine,
+                        &self.store,
+                        p.gfxobj_id,
+                        own,
+                        &dress,
+                        d,
+                        was_near,
+                    );
+                }
+                (p.gfxobj_id, dress, head.map(|h| h.1))
             });
-            let mut at = part_affine(&p.pos, p.gfxobj_scale);
-            at.translation += glam::Vec3A::from(offset);
             let word = pyreal_engine::body::part_cell(p, cell);
             if want != drawn.parts[k] {
                 if let Some(i) = drawn.instances[k].take() {
                     engine.scene.remove_instance(i);
                 }
-                if let Some((gfx, dress)) = &want {
-                    let mesh = loader.pack_object(engine, &self.store, *gfx).or_else(|| {
-                        let g = pyreal_engine::asset::object::near_mesh(&self.store, *gfx)?;
-                        let m = loader.mesh_dressed(engine, &self.store, g, dress)?;
-                        loader.link_degrades_dressed(engine, &self.store, m, g, false, dress);
-                        Some(m)
-                    });
+                if let Some((gfx, dress, _)) = &want {
+                    let mesh = head
+                        .map(|h| h.0)
+                        .or_else(|| loader.pack_object(engine, &self.store, *gfx))
+                        .or_else(|| {
+                            let setup = drawn.later?;
+                            loader.later_part(engine, &self.store, setup, *gfx)
+                        })
+                        .or_else(|| {
+                            let g = pyreal_engine::asset::object::near_mesh(&self.store, *gfx)?;
+                            let own = parts.setup.as_ref().and_then(|s| s.parts.get(k)).copied();
+                            let m = loader.mesh_worn(engine, &self.store, g, own, dress)?;
+                            loader.link_degrades_dressed(engine, &self.store, m, g, false, dress);
+                            Some(m)
+                        });
                     drawn.instances[k] = mesh.and_then(|m| {
                         engine
                             .scene
@@ -790,6 +839,13 @@ impl Bridge {
             } else if let Some(i) = drawn.instances[k] {
                 engine.scene.set_transform(i, at);
                 engine.scene.set_cell(i, word);
+            }
+            if let (Some(d), None, Some(i)) = (face_at, head, drawn.instances[k]) {
+                if d < pyreal_engine::world::FACE_REACH {
+                    if let Some(m) = engine.scene.instance(i).map(|x| x.mesh) {
+                        loader.want_faces(engine, &self.store, m);
+                    }
+                }
             }
         }
     }

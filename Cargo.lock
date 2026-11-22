@@ -120,12 +120,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "arboard"
 version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1319,12 +1313,6 @@ checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
 ]
-
-[[package]]
-name = "id-arena"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "indexmap"
@@ -2627,7 +2615,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "pyreal-animation"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -2638,7 +2626,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-art"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glam",
  "png",
@@ -2655,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-art-pack"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "glam",
@@ -2671,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-assets"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-dat",
  "pyreal-primitives",
@@ -2683,7 +2671,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-audio"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -2695,7 +2683,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-audio-out"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cpal",
  "pyreal-audio",
@@ -2704,7 +2692,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-chargen"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -2716,7 +2704,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "embed-resource",
  "glam",
@@ -2763,7 +2751,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-contract"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glam",
  "pyreal-primitives",
@@ -2772,7 +2760,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -2787,7 +2775,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-net"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-client-net",
  "pyreal-primitives",
@@ -2800,7 +2788,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "blake3",
  "pyreal-animation",
@@ -2828,7 +2816,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-client-shell"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-animation",
  "pyreal-client-contract",
@@ -2859,14 +2847,14 @@ dependencies = [
 
 [[package]]
 name = "pyreal-clipboard"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arboard",
 ]
 
 [[package]]
 name = "pyreal-codecs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-client-contract",
  "pyreal-primitives",
@@ -2876,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-console"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
@@ -2884,7 +2872,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-dat"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-primitives",
  "sha2",
@@ -2893,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "gilrs",
@@ -2917,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glam",
  "naga",
@@ -2941,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-engine-view"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glam",
  "png",
@@ -2950,6 +2938,7 @@ dependencies = [
  "pyreal-chargen",
  "pyreal-dat",
  "pyreal-engine",
+ "pyreal-machine-lock",
  "pyreal-primitives",
  "pyreal-world-data",
  "wgpu",
@@ -2958,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-gpu-probe"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pollster",
  "serde_json",
@@ -2967,7 +2956,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-horizon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "pyreal-animation",
@@ -2997,7 +2986,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-input"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -3008,19 +2997,18 @@ dependencies = [
 
 [[package]]
 name = "pyreal-landscape"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-primitives",
 ]
 
 [[package]]
 name = "pyreal-launch"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-dat",
  "pyreal-plugin-api",
  "pyreal-plugin-package",
- "pyreal-plugin-template",
  "pyreal-primitives",
  "pyreal-rules",
  "serde",
@@ -3029,8 +3017,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyreal-machine-lock"
+version = "0.2.1"
+
+[[package]]
 name = "pyreal-navigation"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-runtime",
@@ -3043,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-physics"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-dat",
@@ -3052,30 +3044,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyreal-plugin"
-version = "0.2.0"
-dependencies = [
- "pyreal-plugin-api",
- "pyreal-plugin-lua",
- "pyreal-plugin-package",
- "pyreal-plugin-template",
- "pyreal-plugin-wasm",
- "serde_json",
- "sha2",
- "toml",
- "wit-component",
-]
-
-[[package]]
 name = "pyreal-plugin-api"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-primitives",
 ]
 
 [[package]]
 name = "pyreal-plugin-host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-client-contract",
@@ -3096,7 +3073,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-lua"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "mlua",
  "pyreal-plugin-api",
@@ -3104,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-package"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-plugin-api",
  "sha2",
@@ -3113,16 +3090,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyreal-plugin-template"
-version = "0.2.0"
-dependencies = [
- "pyreal-plugin-api",
- "toml",
-]
-
-[[package]]
 name = "pyreal-plugin-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "pyreal-client-contract",
@@ -3133,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-plugin-wasm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-plugin-api",
  "scoped-tls-hkt",
@@ -3144,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-presentation"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-client-contract",
  "pyreal-primitives",
@@ -3153,7 +3122,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-primitives"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libm",
  "pxfm",
@@ -3162,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-primitives",
  "thiserror 2.0.20",
@@ -3170,7 +3139,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-rules"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-primitives",
@@ -3179,7 +3148,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-scene"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "glam",
  "naga",
@@ -3206,7 +3175,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-terrain"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-landscape",
@@ -3215,7 +3184,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-testkit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -3249,7 +3218,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-text"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-primitives",
@@ -3258,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-transport"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-primitives",
  "thiserror 2.0.20",
@@ -3266,7 +3235,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-ui-kit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "png",
  "pyreal-client-contract",
@@ -3278,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-ui-logic"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-chargen",
@@ -3290,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-world-data"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-animation",
  "pyreal-assets",
@@ -3303,7 +3272,7 @@ dependencies = [
 
 [[package]]
 name = "pyreal-world-render"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "pyreal-assets",
  "pyreal-primitives",
@@ -4240,12 +4209,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
-name = "unicode-xid"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4426,18 +4389,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9dca005e69bf015e45577e415b9af8c67e8ee3c0e38b5b0add5aa92581ed5c"
 dependencies = [
  "leb128fmt",
- "wasmparser 0.245.1",
-]
-
-[[package]]
-name = "wasm-metadata"
-version = "0.245.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da55e60097e8b37b475a0fa35c3420dd71d9eb7bd66109978ab55faf56a57efb"
-dependencies = [
- "anyhow",
- "indexmap",
- "wasm-encoder",
  "wasmparser 0.245.1",
 ]
 
@@ -5275,44 +5226,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
-name = "wit-component"
-version = "0.245.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4894f10d2d5cbc17c77e91f86a1e48e191a788da4425293b55c98b44ba3fcac9"
-dependencies = [
- "anyhow",
- "bitflags 2.13.1",
- "indexmap",
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "wasm-encoder",
- "wasm-metadata",
- "wasmparser 0.245.1",
- "wit-parser",
-]
-
-[[package]]
-name = "wit-parser"
-version = "0.245.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330698718e82983499419494dd1e3d7811a457a9bf9f69734e8c5f07a2547929"
-dependencies = [
- "anyhow",
- "hashbrown 0.16.1",
- "id-arena",
- "indexmap",
- "log",
- "semver",
- "serde",
- "serde_derive",
- "serde_json",
- "unicode-xid",
- "wasmparser 0.245.1",
-]
-
-[[package]]
 name = "wl-clipboard-rs"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5405,10 +5318,12 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
+ "png",
  "pyreal-dat",
+ "pyreal-machine-lock",
  "regex",
  "serde_json",
  "sha2",

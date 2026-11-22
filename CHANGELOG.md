@@ -7,6 +7,31 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-22
+
+### Added
+
+- The radar shows how far away your waypoint is, in gold beside its arrow on the rim. It counts down as you walk and goes away when you arrive or clear the waypoint.
+
+### Changed
+
+- The Enhanced Environment pack is 0.5.3. The next hundred most common props keep their pictures to their own size, and glazed pots, glass, crystal, steel and gold look like what they are. Dozens of dungeon walls, floors and ceilings take relief that follows their pictures, and the large square floor paver is a flat tile.
+- The built-in trees are drawn with fewer triangles and look the same. Each branch is drawn in fewer segments, pines and spruces in the middle distance draw one needle card for each tuft, and far pines and spruces leave out the branches hidden inside their needles. A forest at Ultra Object Detail draws about a third fewer triangles.
+- A place opened on the map from a link in the Journal has a Create Waypoint button beside its marker straight away, so one click sets your waypoint there. It stays beside the marker while you pan or zoom.
+- Pyreal checks for a newer version at pyrealclient.app, and asks GitHub when the site does not answer. The Download button on the update notice opens the downloads on pyrealclient.app.
+
+### Removed
+
+- Releases no longer include the plugin tool. The plugin tools and the sample plugins now come from the Dereth project, and Pyreal still loads and runs plugins as before.
+
+### Fixed
+
+- Your character fades smoothly see-through when the camera comes close, and so do ghosts, other see-through creatures and anything fading in or out. They showed a fine pattern of dots, most of all with MetalFX upscaling and a render scale under 100.
+- The enhanced portal tunnel flies on smoothly while the world is placed behind it. When placing the world held the game up for more than a quarter of a second, as it often does on first entering the world, the tunnel jumped back to its start and its light went far away again just before the world appeared.
+- Fresh snow in the distance lies only on snowy ground. For a quarter of an hour after snow, the land seen past a snowy hill could turn white in wide patches and long straight bands reaching to the horizon.
+- Rocks, plants and other small objects in the distance stay drawn out to the edge of the loaded land at every Object Detail level, so changing Object Detail sets how much detail they keep and makes none of them appear or disappear. The flowers and stones among the grass reach as far as Ground Cover sets.
+- Stone walkways over a drop in some dungeons no longer flicker with a second, blurred pattern of stones. The top of the shaft under the walkway was drawn in the same place as the walkway's floor.
+
 ## [0.2.0] - 2026-11-21
 
 ### Added
@@ -433,7 +458,8 @@ work.
 - Far terrain pipelines are made once, and the ray scene gathers nearby statics once a frame.
 - Startup makes its pipelines side by side on several threads, warms up the ray-tracing builders in the background, and keeps a Vulkan pipeline cache in the settings folder, so a first launch on Windows reaches the world about twice as fast and later launches sooner still. The front door says when shaders are being prepared.
 
-[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.2.0
 [0.1.4]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.4
 [0.1.3]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.3

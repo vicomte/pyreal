@@ -56,10 +56,10 @@ members = [
     # depends on it, and it is a member so that `cargo check --workspace --all-targets` covers it.
     "pyreal/testkit",
     # tools/: research and build tools (MIT).
-    "tools/plugin",
-    "tools/plugin-template",
     "tools/art",
     "tools/xtask",
+    # The machine-wide lock that timing runs, the GPU tiers and release builds queue on.
+    "tools/machine-lock",
     # What the GPU layer can do on this machine, measured.
     "tools/gpu-probe",
     # The engine's viewer: a place drawn by the new engine, to a PNG or in a window.
@@ -68,7 +68,7 @@ members = [
 
 [workspace.package]
 # Pyreal's release version, which every crate carries (RELEASING.md).
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -96,14 +96,13 @@ pyreal-desktop = { path = "pyreal/desktop" }
 pyreal-input = { path = "pyreal/client/crates/input" }
 pyreal-landscape = { path = "core/landscape" }
 pyreal-launch = { path = "pyreal/client/crates/launch" }
+pyreal-machine-lock = { path = "tools/machine-lock" }
 pyreal-navigation = { path = "core/navigation" }
 pyreal-physics = { path = "core/physics" }
-pyreal-plugin = { path = "tools/plugin" }
 pyreal-plugin-api = { path = "core/plugin-api" }
 pyreal-plugin-host = { path = "core/plugin-host" }
 pyreal-plugin-lua = { path = "core/plugin-lua" }
 pyreal-plugin-package = { path = "core/plugin-package" }
-pyreal-plugin-template = { path = "tools/plugin-template" }
 pyreal-plugin-ui = { path = "pyreal/client/crates/plugin-ui" }
 pyreal-plugin-wasm = { path = "core/plugin-wasm", default-features = false }
 pyreal-presentation = { path = "core/presentation" }
@@ -189,4 +188,21 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.regex-syntax]
+opt-level = 3
+
+# `cargo xtask package` compresses, reads back and hashes each release archive: unoptimised, a
+# Linux tarball's read-back took most of a release run.
+[profile.dev.package.zlib-rs]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.zip]
+opt-level = 3
+
+[profile.dev.package.sha2]
 opt-level = 3

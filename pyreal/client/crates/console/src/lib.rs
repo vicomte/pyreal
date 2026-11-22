@@ -1,12 +1,13 @@
-//! The desktop's native console attachment, error box, read-only display queries and the Mac's
-//! open-URL events.
+//! The desktop's native console attachment, error box, read-only display queries, the splash
+//! painted before there is a graphics device, and the Mac's open-URL events.
 //!
 //! **Depends on** no other workspace crate (`objc2` on the Mac). **Used by** the client
 //! (`pyreal-client`) and the desktop host (`pyreal-desktop`).
 //!
 //! **Must never** own or close a native handle, retain a caller's buffer or reach the client
 //! runtime. Unsafe calls are confined to console attachment, the modal error box, the
-//! read-only caret/monitor queries and the Mac's open-URL handler. Each call returns plain values and keeps its buffers local.
+//! read-only caret/monitor queries, one picture painted on a window with GDI and the Mac's
+//! open-URL handler. Each call returns plain values and keeps its buffers local.
 //!
 //! Under the windows subsystem Windows creates no console, and this crate never makes one: a player
 //! who starts the client from Explorer or from the launcher sees the game's window and nothing
@@ -35,9 +36,73 @@ mod message_box;
 #[allow(unsafe_code)]
 mod desktop_queries;
 
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod window_paint;
+
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod open_url;
+
+/// A picture as GDI takes it: rows from the top, four bytes a texel in the order blue, green,
+/// red and one unused.
+#[derive(Debug, Clone, Copy)]
+pub struct Picture<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: &'a [u8],
+}
+
+/// Paint `picture` on the window `window` (its native handle) as large as it goes whole, centred,
+/// the rest of the window `round` (red, green, blue): what a window shows before there is a
+/// graphics device to draw with. Whether it was painted; nothing is painted off Windows, where the
+/// window waits for the device.
+pub fn paint_picture(window: isize, picture: &Picture<'_>, round: (u8, u8, u8)) -> bool {
+    #[cfg(windows)]
+    {
+        window_paint::paint(window, picture, round)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, picture, round);
+        false
+    }
+}
+
+/// Where a picture of size `picture` stands in an area of size `area` drawn as large as it goes
+/// whole and centred: left, top, width and height.
+#[must_use]
+pub fn contained(picture: (u32, u32), area: (u32, u32)) -> (i32, i32, i32, i32) {
+    let (pw, ph) = (u64::from(picture.0.max(1)), u64::from(picture.1.max(1)));
+    let (aw, ah) = (u64::from(area.0), u64::from(area.1));
+    // The wider of the two is held by its height, the narrower by its width.
+    let (w, h) = if aw * ph > ah * pw {
+        (ah * pw / ph, ah)
+    } else {
+        (aw, aw * ph / pw)
+    };
+    let i = |v: u64| i32::try_from(v).unwrap_or(i32::MAX);
+    (i((aw - w) / 2), i((ah - h) / 2), i(w), i(h))
+}
+
+#[cfg(test)]
+mod picture_tests {
+    #[test]
+    fn a_picture_stands_whole_and_centred() {
+        assert_eq!(super::contained((800, 600), (800, 600)), (0, 0, 800, 600));
+        assert_eq!(
+            super::contained((800, 600), (1600, 1200)),
+            (0, 0, 1600, 1200)
+        );
+        // Wider than the picture: bars either side.
+        assert_eq!(
+            super::contained((800, 600), (1920, 1080)),
+            (240, 0, 1440, 1080)
+        );
+        // Taller: bars above and below.
+        assert_eq!(super::contained((800, 600), (600, 800)), (0, 175, 600, 450));
+    }
+}
 
 /// Start receiving the links (`pyreal://...`) the system opens with this application; on the Mac
 /// before the event loop first runs, so the link it was launched with is caught. Elsewhere a link

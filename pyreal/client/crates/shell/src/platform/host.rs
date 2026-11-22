@@ -24,6 +24,10 @@ pub trait Host: 'static {
     /// The build hash the performance panel shows; empty when the build had none.
     const BUILD_HASH: &'static str = "";
 
+    /// The picture the window shows while the device's pipelines are made, as a PNG; `None` for
+    /// none (the window stands empty until the first frame).
+    const SPLASH_PNG: Option<&'static [u8]> = None;
+
     /// The host clipboard the shell mirrors each frame.
     type Clipboard: HostClipboard;
 

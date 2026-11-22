@@ -68,6 +68,24 @@ mod imp {
             ))
         }
 
+        /// [`Self::new`], keeping the window alive while the pipelines are made, the `splash`
+        /// (a PNG) on it: see [`SceneRenderer::new_waiting`].
+        ///
+        /// # Errors
+        /// As [`Self::new`].
+        pub fn new_waiting(
+            window: Option<WindowHandles>,
+            width: u32,
+            height: u32,
+            splash: Option<&[u8]>,
+            wait: &dyn Fn() -> (u32, u32),
+        ) -> Result<Self, PresentError> {
+            Ok(Self::around(
+                SceneRenderer::new_waiting(window, width, height, splash, Some(wait))
+                    .map_err(err)?,
+            ))
+        }
+
         /// The renderer over `device`.
         #[must_use]
         pub fn around(device: SceneRenderer) -> Self {

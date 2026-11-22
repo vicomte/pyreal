@@ -20,6 +20,7 @@ impl<P: Product> Host for Desktop<P> {
     const BUILD_ID: &'static str = P::BUILD_ID;
     const BUILD_COMMIT: &'static str = P::BUILD_COMMIT;
     const BUILD_HASH: &'static str = P::BUILD_HASH;
+    const SPLASH_PNG: Option<&'static [u8]> = P::SPLASH_PNG;
 
     type Clipboard = crate::clipboard::SystemClipboard;
 

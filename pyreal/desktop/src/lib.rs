@@ -67,6 +67,10 @@ pub trait Product: 'static {
     const TITLE: &'static str;
     /// The window's icon, an 8-bit RGBA PNG, for the window systems that take one as pixels.
     const ICON_PNG: &'static [u8];
+    /// The picture the window shows from the moment it opens until the first frame -- the
+    /// time a cold driver takes over the device's pipelines -- as a PNG. `None`: the window stands
+    /// empty until then.
+    const SPLASH_PNG: Option<&'static [u8]> = None;
     /// The application id a Linux desktop finds the window's `.desktop` entry by.
     const APP_ID: &'static str;
     /// Whether the window can be resized and maximised; its back buffer and interface follow.

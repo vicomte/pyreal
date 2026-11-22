@@ -61,6 +61,8 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 - Distant tree cards are drawn from the tree's shape just nearer, so far trees keep its gaps and bark. Packs made before this have their cards drawn again when they open.
 - Signing in to a 1999 or 2005 world from the world list no longer plays it with the End of Retail files when the world did not answer Pyreal's question about its era, as happens while its server is still starting. The 1999 world turned you away with "Your DAT files are newer than expected". Pyreal now remembers the era each world last named and asks again at the next sign-in.
 - A world that moved to other game files since you last played it, such as a 2005 world moved from the End of Retail files to the February 2005 files, is no longer refused with "This world's data was refused: it was made for other game files than yours". Pyreal opens the files the world names when it first asks, and the next sign-in in the same run opens them too.
+- On Windows, Pyreal's window no longer opens as a blank white window that stops responding while its shaders are prepared. It shows the Loading picture, Pyreal's logo over the night sky, about a twentieth of a second after it starts, and keeps it until the first screen is ready.
+- On Windows, the first start after an update or a new graphics driver no longer leaves the window "Not Responding" for some eleven seconds while the graphics card's ray tracing is prepared. The Loading picture stays up throughout and the window can be moved and closed. A window closed during the Loading picture closes once start-up is done.
 
 ## [0.1.4] - 2026-11-18
 

@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-console"
-description = "The desktop's native console attachment, error box, read-only display queries and the Mac's open-URL events."
+description = "The desktop's native console attachment, error box, read-only display queries, the splash painted before there is a graphics device, and the Mac's open-URL events."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -54,6 +54,8 @@ pyreal-codecs.workspace = true
 [dev-dependencies]
 # `pyreal_dat::testing`: where the tests find the retail dats.
 pyreal-dat = { workspace = true, features = ["test-support"] }
+# Validates the splash's shader, without a device.
+naga = { version = "30", features = ["wgsl-in"] }
 
 [lints]
 workspace = true

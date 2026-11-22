@@ -3182,6 +3182,7 @@ name = "pyreal-scene"
 version = "0.2.0"
 dependencies = [
  "glam",
+ "naga",
  "png",
  "pyreal-animation",
  "pyreal-art-pack",

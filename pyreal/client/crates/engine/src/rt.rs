@@ -40,9 +40,15 @@ pub const MAX_RAY_DRAWS: u64 = 256 << 10;
 ///
 /// The first such build on a device whose driver cache is cold compiles the driver's own builders,
 /// which took some sixteen seconds on the first world frame (an Intel Arc on Vulkan and on DX12
-/// alike). Done on a thread of its own while the device is otherwise idle (the front door, the
-/// login), it leaves the world's first frame to find them compiled; run late, the world's first
-/// build waits only for what is left. A device without ray queries does nothing.
+/// alike); done on a thread of its own, it leaves the world's first frame to find them compiled.
+/// Every device pays it once, warm cache or cold (some 1.3 seconds warm and 21 cold on an Arc
+/// 140V), a second device on the same adapter included.
+///
+/// The driver does that work as the build is recorded, inside the encoder's `finish`, and wgpu
+/// holds the device's resource lock for it: no frame can be presented on the device until it is
+/// done, so a frame presented meanwhile holds its thread (and a window's messages) as long. The
+/// renderer keeps its window's splash up until this returns. A device without ray queries does
+/// nothing.
 pub fn warm_up(gpu: &Gpu) {
     if !gpu.rays() {
         return;

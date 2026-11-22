@@ -391,7 +391,9 @@ impl<H: Host> App<H> {
         cfg: &Config,
     ) -> Result<Box<dyn ClientPresentation>, StartupError> {
         let handles = window.render_handles();
-        let mut renderer = Self::make_device(handles, client_w, client_h)?;
+        // The window kept alive, the splash on it, while the device's pipelines are made.
+        let wait = || window.keep_responding();
+        let mut renderer = Self::make_device(handles, client_w, client_h, H::SPLASH_PNG, &wait)?;
         // `Render.ScreenBrightness`: the exposure's compensation.
         renderer.set_brightness(cfg.render.screen_brightness);
         // `false`: the client starts windowed whatever the preference says, and
@@ -406,12 +408,13 @@ impl<H: Host> App<H> {
         handles: Option<pyreal_client_contract::window::WindowHandles>,
         client_w: u32,
         client_h: u32,
+        splash: Option<&[u8]>,
+        wait: &dyn Fn() -> (u32, u32),
     ) -> Result<crate::gpu::Renderer, StartupError> {
-        let r = crate::gpu::Renderer::new(handles, client_w, client_h).map_err(|e| {
-            StartupError::Device {
+        let r = crate::gpu::Renderer::new_waiting(handles, client_w, client_h, splash, wait)
+            .map_err(|e| StartupError::Device {
                 cause: format!("graphics engine: {e}"),
-            }
-        })?;
+            })?;
         tracing::info!("graphics engine on {}", r.adapter_name());
         Ok(r)
     }

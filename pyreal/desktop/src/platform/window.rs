@@ -912,6 +912,14 @@ fn is_wayland(window: &winit::window::Window) -> bool {
 }
 
 impl WinitWindow {
+    /// Shows the window if it was made hidden (on Windows, until it has something to show). A
+    /// window system that cannot say whether it is shown is left as it is.
+    fn show(&self) {
+        if self.shared.window.is_visible() == Some(false) {
+            self.shared.window.set_visible(true);
+        }
+    }
+
     /// Where the window stands now, as the window system says.
     fn placed_rect(&self) -> Option<Rect> {
         let p = self.shared.window.outer_position().ok()?;
@@ -948,6 +956,8 @@ pub struct WindowLook {
     /// The icon, as an 8-bit RGBA PNG, for the window systems that take one as pixels. (Windows
     /// takes the executable's own icon resource instead, and macOS the application bundle's.)
     pub icon_png: &'static [u8],
+    /// The picture the window shows until the first frame, as a PNG ([`crate::Product::SPLASH_PNG`]).
+    pub splash_png: Option<&'static [u8]>,
     /// The application id the desktop finds the window's `.desktop` entry by, on Linux.
     pub app_id: &'static str,
     /// Whether the player can resize and maximise the window ([`crate::Product::RESIZABLE`]).
@@ -1026,7 +1036,12 @@ fn window_attributes(
             WindowLevel::Normal
         })
         .with_decorations(place.style & pyreal_client_contract::window_proc::WS_POPUP == 0)
-        .with_visible(true);
+        // On Windows the window is shown with something on it, never standing empty and white:
+        // with the product's splash painted the moment it is made ([`open_window`]), or else once
+        // there is a device to draw on it, or by the first frame ([`WinitWindow::show`]).
+        // Elsewhere it is shown at once: an X11 window not yet mapped can hold up the first
+        // present that would show it.
+        .with_visible(!cfg!(windows));
     if let (true, Some((w, h))) = (look.resizable, look.login_size) {
         attributes = attributes.with_min_inner_size(units.size((w, h)));
     }
@@ -1167,6 +1182,80 @@ mod shown_tests {
     }
 }
 
+/// The product's splash as the window system paints it with no graphics device: rows from the
+/// top in blue, green, red and one unused byte, with the colour round it where the window is not
+/// its shape (the mean of its edge, as the device's splash takes it).
+struct SplashPicture {
+    width: u32,
+    height: u32,
+    bgra: Vec<u8>,
+    round: (u8, u8, u8),
+}
+
+impl SplashPicture {
+    /// The PNG `png` decoded; `None` (logged) when it will not decode, which only a broken build
+    /// could do.
+    fn decode(png: &[u8]) -> Option<Self> {
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder
+            .read_info()
+            .map_err(|e| tracing::warn!("splash: {e}"))
+            .ok()?;
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let frame = reader
+            .next_frame(&mut pixels)
+            .map_err(|e| tracing::warn!("splash: {e}"))
+            .ok()?;
+        let step = match frame.color_type {
+            png::ColorType::Rgba => 4,
+            png::ColorType::Rgb => 3,
+            other => {
+                tracing::warn!("splash: expected RGB or RGBA, got {other:?}");
+                return None;
+            }
+        };
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        let rgb = pixels.get(..w * h * step)?;
+        let mut bgra = Vec::with_capacity(w * h * 4);
+        let (mut sum, mut n) = ([0u64; 3], 0u64);
+        for (i, t) in rgb.chunks_exact(step).enumerate() {
+            bgra.extend_from_slice(&[t[2], t[1], t[0], 0]);
+            let (x, y) = (i % w, i / w);
+            if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                for (s, c) in sum.iter_mut().zip(t) {
+                    *s += u64::from(*c);
+                }
+                n += 1;
+            }
+        }
+        let mean = |s: u64| u8::try_from(s / n.max(1)).unwrap_or(u8::MAX);
+        Some(Self {
+            width: frame.width,
+            height: frame.height,
+            bgra,
+            round: (mean(sum[0]), mean(sum[1]), mean(sum[2])),
+        })
+    }
+
+    /// Shows `window` (made hidden on Windows) with the picture painted on it at once. What it
+    /// paints stays until the device's own splash takes over.
+    fn show_on(&self, window: &winit::window::Window) {
+        let Ok(handle) = isize::try_from(u64::from(window.id())) else {
+            return;
+        };
+        window.set_visible(true);
+        let picture = pyreal_console::Picture {
+            width: self.width,
+            height: self.height,
+            bgra: &self.bgra,
+        };
+        if !pyreal_console::paint_picture(handle, &picture, self.round) {
+            tracing::debug!("splash: the window system would not paint it");
+        }
+    }
+}
+
 /// How long the startup sequence waits for the window system to let it make its window.
 const OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -1185,6 +1274,16 @@ pub fn open_window(
     events: WindowEvents,
 ) -> Result<WinitWindow, String> {
     use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
+
+    // The splash, decoded while the event loop and the window are made; painted on the window the
+    // moment it exists, long before there is a graphics device to draw with (Windows only: see
+    // `with_visible` in [`window_attributes`]).
+    let splash = look.splash_png.filter(|_| cfg!(windows)).and_then(|png| {
+        std::thread::Builder::new()
+            .name("splash".into())
+            .spawn(move || SplashPicture::decode(png))
+            .ok()
+    });
 
     let mut builder = winit::event_loop::EventLoop::builder();
     // **A deliberate modernization** (client divergence CD-004). Display resolutions name
@@ -1227,6 +1326,9 @@ pub fn open_window(
     };
     events.borrow_mut().append(&mut opening.queue);
     set_application_icon(&window);
+    if let Some(picture) = splash.and_then(|t| t.join().ok()).flatten() {
+        picture.show_on(&window);
+    }
 
     // The process is DPI-aware (see above), so these are physical pixels; an OS-side query of the
     // window's geometry stays the independent measurement if an external compatibility override
@@ -1764,6 +1866,8 @@ impl WindowHost for WinitWindow {
     fn pump_events(&mut self, requested: (u32, u32), full_screen: bool) -> PumpedEvents {
         use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 
+        // A window no splash showed is shown by the first frame.
+        self.show();
         let mut queue = self.events.borrow_mut();
         let mut drain = Drain {
             shared: &self.shared,
@@ -1816,6 +1920,33 @@ impl WindowHost for WinitWindow {
             events: Vec::new(),
             exited: matches!(status, PumpStatus::Exit(_)),
         }
+    }
+
+    /// The window shown (the splash is drawn on it next), and its messages let through onto the
+    /// queue the first frame drains, routed as every frame's are. A close asked for now is
+    /// carried out by that frame.
+    fn keep_responding(&self) -> (u32, u32) {
+        use winit::platform::pump_events::EventLoopExtPumpEvents;
+
+        self.show();
+        let mut queue = self.events.borrow_mut();
+        let mut drain = Drain {
+            shared: &self.shared,
+            held: &self.held,
+            pins_size_limits: self.pins_size_limits,
+            presentation: (
+                (self.shared.units == ClientUnits::Pixels).then(|| self.shared.window.inner_size()),
+                false,
+            ),
+            queue: &mut queue,
+        };
+        let _ = self
+            .shared
+            .event_loop
+            .borrow_mut()
+            .pump_app_events(Some(std::time::Duration::ZERO), &mut drain);
+        drop(queue);
+        self.client_size()
     }
 }
 
@@ -2392,6 +2523,7 @@ mod tests {
         let look = |resizable| WindowLook {
             title: "",
             icon_png: &[],
+            splash_png: None,
             app_id: "",
             resizable,
             login_size: None,
@@ -2411,6 +2543,7 @@ mod tests {
         let look = |resizable| WindowLook {
             title: "",
             icon_png: &[],
+            splash_png: None,
             app_id: "",
             resizable,
             login_size: Some((800, 600)),
@@ -2452,6 +2585,7 @@ mod tests {
         let look = |in_points| WindowLook {
             title: "",
             icon_png: &[],
+            splash_png: None,
             app_id: "",
             resizable: true,
             login_size: Some((800, 600)),

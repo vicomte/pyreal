@@ -223,6 +223,17 @@ pub trait WindowHost {
     fn pump_events(&mut self, _requested: (u32, u32), _full_screen: bool) -> PumpedEvents {
         PumpedEvents::default()
     }
+
+    /// Startup is busy before its first frame (the device's pipelines, which a cold driver takes
+    /// seconds over): let the window system's messages through, so the window is never "not
+    /// responding", and show the window if it is still hidden (the splash is drawn on it after).
+    /// What arrives is queued for the first frame's [`Self::pump_events`]. Answers the client
+    /// size, which the splash is drawn at.
+    ///
+    /// The default is the headless answer: nothing to let through, and the size it was given.
+    fn keep_responding(&self) -> (u32, u32) {
+        self.client_size()
+    }
 }
 
 /// The window a `--headless` run does not have.

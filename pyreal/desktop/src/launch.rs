@@ -44,6 +44,7 @@ pub fn open_platform<P: Product>(
     let look = crate::platform::window::WindowLook {
         title: P::TITLE,
         icon_png: P::ICON_PNG,
+        splash_png: P::SPLASH_PNG,
         app_id: P::APP_ID,
         resizable: P::RESIZABLE,
         login_size: P::LOGIN_SIZE,

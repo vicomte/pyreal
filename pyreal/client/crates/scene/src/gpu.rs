@@ -580,6 +580,30 @@ pub fn keep_pipeline_cache_in(dir: impl Into<std::path::PathBuf>, version: &str)
     pyreal_engine::pipeline_cache::set_dir(dir, version);
 }
 
+/// What start-up made on this thread or is making on another.
+enum Made<'s, T> {
+    #[cfg_attr(windows, allow(dead_code))]
+    Here(T),
+    #[cfg_attr(not(windows), allow(dead_code))]
+    There(std::thread::ScopedJoinHandle<'s, T>),
+}
+
+impl<T> Made<'_, T> {
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Here(_) => true,
+            Self::There(h) => h.is_finished(),
+        }
+    }
+
+    fn join(self) -> T {
+        match self {
+            Self::Here(t) => t,
+            Self::There(h) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+        }
+    }
+}
+
 fn engine_on(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Engine, DeviceError> {
     let mut engine = Engine::new(gpu.clone(), PoolSizes::default(), format)?;
     // Only server objects are picked on their translucent surfaces; a static's leaves the pick
@@ -617,6 +641,36 @@ fn output_format(caps: &wgpu::SurfaceCapabilities, hdr: bool) -> wgpu::TextureFo
         .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb)
 }
 
+/// The window's configuration: `format` at `size`, waiting on the display when `vsync`.
+fn surface_configuration(
+    caps: &wgpu::SurfaceCapabilities,
+    format: wgpu::TextureFormat,
+    size: (u32, u32),
+    vsync: bool,
+) -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | (caps.usages & wgpu::TextureUsages::COPY_DST),
+        format,
+        width: size.0,
+        height: size.1,
+        present_mode: if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        },
+        desired_maximum_frame_latency: 2,
+        alpha_mode: alpha_mode(caps),
+        view_formats: vec![],
+        // A float output is extended linear sRGB: EDR on the Mac.
+        color_space: if format == wgpu::TextureFormat::Rgba16Float {
+            wgpu::SurfaceColorSpace::ExtendedSrgbLinear
+        } else {
+            wgpu::SurfaceColorSpace::Auto
+        },
+    }
+}
+
 /// The window's alpha: opaque when offered, the first offered otherwise.
 #[must_use]
 fn alpha_mode(caps: &wgpu::SurfaceCapabilities) -> wgpu::CompositeAlphaMode {
@@ -641,6 +695,32 @@ impl SceneRenderer {
         width: u32,
         height: u32,
     ) -> Result<Self, DeviceError> {
+        Self::new_waiting(window, width, height, None, None)
+    }
+
+    /// [`Self::new`], with the window kept alive while the pipelines are made: the `splash` (a
+    /// PNG, [`crate::splash`]) drawn as soon as there is a device, and `wait` called every frame
+    /// or so until the pipelines and the ray-tracing builders' warm-up are ready -- the window
+    /// system's messages let through, and the window's client size back, the splash drawn again
+    /// at a new one once nothing holds the device's presents. Without `wait` the splash is drawn
+    /// once, the warm-up is left running behind the first screens and the window waits for the
+    /// pipelines as it always did. Only Windows takes the splash and `wait`; elsewhere start-up
+    /// is as [`Self::new`].
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn new_waiting(
+        window: Option<WindowHandles>,
+        width: u32,
+        height: u32,
+        splash: Option<&[u8]>,
+        wait: Option<&dyn Fn() -> (u32, u32)>,
+    ) -> Result<Self, DeviceError> {
+        #[cfg(not(windows))]
+        let (splash, wait) = {
+            let _ = (splash, wait);
+            (None::<&[u8]>, None::<&dyn Fn() -> (u32, u32)>)
+        };
         let (gpu, surface) = match window {
             Some(w) => {
                 let (gpu, surface) = Gpu::for_window(w.display, w.window)?;
@@ -681,8 +761,42 @@ impl SceneRenderer {
                 );
             }
         }
-        // The ray-tracing builders compiled on a thread of their own while the screens before the
-        // world are up, so the world's first frame finds them ready.
+        // The splash, before anything slow: one small pipeline, drawn while the rest are made.
+        let splash = splash
+            .filter(|_| surface.is_some())
+            .and_then(|png| crate::splash::Splash::new(&gpu, format, png));
+        // Drawn once at each size the window takes while it waits (and again until a draw takes:
+        // a window being made or minimised gives no frame to draw to).
+        let mut splashed = None;
+        let mut configured = None;
+        let mut show_splash = |size: (u32, u32)| {
+            let (Some(splash), Some(surface)) = (splash.as_ref(), surface.as_ref()) else {
+                return;
+            };
+            if size.0 == 0 || size.1 == 0 || splashed == Some(size) {
+                return;
+            }
+            if configured != Some(size) {
+                let caps = surface.get_capabilities(&gpu.adapter);
+                surface.configure(
+                    &gpu.device,
+                    &surface_configuration(&caps, format, size, true),
+                );
+                configured = Some(size);
+            }
+            if splash.draw(&gpu, surface, size) {
+                splashed = Some(size);
+            } else {
+                tracing::debug!("the splash could not be drawn at {}x{}", size.0, size.1);
+            }
+        };
+        // A window made hidden (on Windows) is shown first: what is presented to a hidden window
+        // is never seen.
+        show_splash(wait.map_or((width, height), |wait| wait()));
+        // The ray-tracing builders compiled on a thread of their own, so the world's first frame
+        // finds them ready. Nothing is presented to the window while they compile (see
+        // [`pyreal_engine::rt::warm_up`]), so a window's splash stays up until they are done.
+        let mut warm_thread = None;
         let warm_up = gpu.rays().then(|| {
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (g, flag) = (gpu.clone(), Arc::clone(&done));
@@ -697,15 +811,20 @@ impl SceneRenderer {
                         began.elapsed().as_millis()
                     );
                 });
-            if spawned.is_err() {
-                done.store(true, std::sync::atomic::Ordering::Release);
+            match spawned {
+                Ok(thread) => warm_thread = Some(thread),
+                Err(_) => done.store(true, std::sync::atomic::Ordering::Release),
             }
             (began, done)
         });
+        // Its thread's end, not its flag: a warm-up that panicked is as finished as one that ran.
+        let warming = || warm_thread.as_ref().is_some_and(|t| !t.is_finished());
         // The engine's pipelines, the interface's and portal space's, made side by side (the
-        // engine's own on a pool of threads), so a cold driver compiles them on every core.
+        // engine's own on a pool of threads), so a cold driver compiles them on every core. This
+        // thread keeps the window: it lets the window system's messages through while it waits, so
+        // the window is never "not responding", and draws the splash again when its size changes.
         let began = std::time::Instant::now();
-        let (engine, overlay, portal) = std::thread::scope(|s| {
+        let (made, overlay, portal) = std::thread::scope(|s| {
             let overlay = s.spawn(|| Overlay::new(&gpu));
             // Portal space is built here, so a trip's first frame waits on no pipeline.
             let portal = s.spawn(|| {
@@ -713,16 +832,41 @@ impl SceneRenderer {
                 portal.prepare(&gpu, format);
                 portal
             });
-            let engine = engine_on(&gpu, format);
-            let overlay = overlay
-                .join()
-                .unwrap_or_else(|p| std::panic::resume_unwind(p));
-            let portal = portal
-                .join()
-                .unwrap_or_else(|p| std::panic::resume_unwind(p));
-            (engine, overlay, portal)
+            let make = || {
+                engine_on(&gpu, format).map(|engine| {
+                    let preview = pyreal_engine::preview::PreviewPass::new(&gpu, &engine.materials);
+                    (engine, preview)
+                })
+            };
+            // Only Windows makes the engine on another thread, while its window is kept answering.
+            #[cfg(not(windows))]
+            let engine = Made::Here(make());
+            #[cfg(windows)]
+            let engine = Made::There(s.spawn(make));
+            if let Some(wait) = wait {
+                while warming()
+                    || !(engine.is_finished() && overlay.is_finished() && portal.is_finished())
+                {
+                    let size = wait();
+                    // A present waits for the warm-up's recording, the messages with it: the
+                    // window keeps the splash it has, stretched, until the warm-up is done.
+                    if !warming() {
+                        show_splash(size);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+            }
+            (
+                engine.join(),
+                overlay
+                    .join()
+                    .unwrap_or_else(|p| std::panic::resume_unwind(p)),
+                portal
+                    .join()
+                    .unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            )
         });
-        let engine = engine?;
+        let (engine, preview_pass) = made?;
         tracing::info!(
             "pipelines made in {} ms{}",
             began.elapsed().as_millis(),
@@ -739,7 +883,6 @@ impl SceneRenderer {
                 .name("pipeline cache".into())
                 .spawn(move || log_cache_save(g.save_pipeline_cache()));
         }
-        let preview_pass = pyreal_engine::preview::PreviewPass::new(&gpu, &engine.materials);
         let portal = Arc::new(std::sync::Mutex::new(portal));
         let presenting = Arc::default();
         let portal_thread = surface.as_ref().and_then(|s| {
@@ -876,30 +1019,7 @@ impl SceneRenderer {
             return;
         };
         let caps = surface.get_capabilities(&self.gpu.adapter);
-        let vsync = self.sync.1;
-        let present_mode = if vsync {
-            wgpu::PresentMode::AutoVsync
-        } else {
-            wgpu::PresentMode::AutoNoVsync
-        };
-        let usage =
-            wgpu::TextureUsages::RENDER_ATTACHMENT | (caps.usages & wgpu::TextureUsages::COPY_DST);
-        let config = wgpu::SurfaceConfiguration {
-            usage,
-            format: self.format,
-            width: self.size.0,
-            height: self.size.1,
-            present_mode,
-            desired_maximum_frame_latency: 2,
-            alpha_mode: alpha_mode(&caps),
-            view_formats: vec![],
-            // A float output is extended linear sRGB: EDR on the Mac.
-            color_space: if self.format == wgpu::TextureFormat::Rgba16Float {
-                wgpu::SurfaceColorSpace::ExtendedSrgbLinear
-            } else {
-                wgpu::SurfaceColorSpace::Auto
-            },
-        };
+        let config = surface_configuration(&caps, self.format, self.size, self.sync.1);
         {
             let _held = self
                 .presenting

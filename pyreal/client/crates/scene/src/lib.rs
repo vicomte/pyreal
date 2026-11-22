@@ -52,5 +52,7 @@ pub mod render_prefs;
 /// The graphics options as the engine's switches.
 #[cfg(gpu)]
 pub mod settings;
+#[cfg(gpu)]
+pub mod splash;
 pub mod textures;
 pub mod world_map;

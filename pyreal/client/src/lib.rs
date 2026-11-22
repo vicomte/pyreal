@@ -64,6 +64,10 @@ impl pyreal_desktop::Product for Pyreal {
     const SETTINGS_DIR_NAME: &'static str = pyreal_desktop::folders::CLIENT_DIR_NAME;
     const TITLE: &'static str = "Pyreal";
     const ICON_PNG: &'static [u8] = include_bytes!("../assets/pyreal-256.png");
+    /// A still of the screens before the world -- the portal lights, the logo and a panel saying
+    /// the game is loading -- taken of the client itself at the login size (800x600), so the logo
+    /// stands where the first screen draws it.
+    const SPLASH_PNG: Option<&'static [u8]> = Some(include_bytes!("../assets/splash.png"));
     const APP_ID: &'static str = APP_ID;
     /// Dragged on macOS (client divergence CD-resizable-window); elsewhere the window keeps the
     /// size its resolution names, as the original's does.

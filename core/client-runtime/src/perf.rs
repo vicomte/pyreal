@@ -146,6 +146,20 @@ impl PerfSummary {
     }
 }
 
+/// Every line the panel draws: the summary's, the render scale drawn now (which a Dynamic render
+/// scale moves), and last the build's hash, as `build.py` names its folder, when it has one.
+#[must_use]
+pub fn panel_lines(summary: &PerfSummary, scale: Option<u32>, hash: &str) -> Vec<String> {
+    let mut lines = summary.lines();
+    if let Some(scale) = scale {
+        lines.push(format!("{:<9} {scale:5}%", "SCALE"));
+    }
+    if !hash.is_empty() {
+        lines.push(format!("BUILD ID {hash}"));
+    }
+    lines
+}
+
 // ---------------------------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------------------------
@@ -182,6 +196,7 @@ pub const GLYPHS: &[(char, [u8; 7])] = &[
     ('%', [0x18, 0x19, 0x02, 0x04, 0x08, 0x13, 0x03]),
     ('-', [0, 0, 0, 0x1F, 0, 0, 0]),
     ('A', [0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11]),
+    ('B', [0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E]),
     ('C', [0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E]),
     ('D', [0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E]),
     ('E', [0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F]),
@@ -198,6 +213,13 @@ pub const GLYPHS: &[(char, [u8; 7])] = &[
     ('U', [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E]),
     ('W', [0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A]),
     ('X', [0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11]),
+    // Lower-case hex, for the build hash as its folder is named.
+    ('a', [0, 0, 0x0E, 0x01, 0x0F, 0x11, 0x0F]),
+    ('b', [0x10, 0x10, 0x16, 0x19, 0x11, 0x11, 0x1E]),
+    ('c', [0, 0, 0x0E, 0x10, 0x10, 0x11, 0x0E]),
+    ('d', [0x01, 0x01, 0x0D, 0x13, 0x11, 0x11, 0x0F]),
+    ('e', [0, 0, 0x0E, 0x11, 0x1F, 0x10, 0x0E]),
+    ('f', [0x06, 0x09, 0x08, 0x1C, 0x08, 0x08, 0x08]),
 ];
 
 /// The font sheet's pixels: white where a glyph is drawn, clear elsewhere.
@@ -361,5 +383,19 @@ mod tests {
         assert!(vertices
             .iter()
             .all(|v| v.position[0] >= -1.0 && v.position[1] <= 1.0));
+    }
+
+    #[test]
+    fn the_build_hash_is_the_panels_last_line_in_glyphs_it_has() {
+        let s = PerfSummary::default();
+        let lines = panel_lines(&s, Some(75), "8ca518e9");
+        assert_eq!(lines.last().map(String::as_str), Some("BUILD ID 8ca518e9"));
+        assert!(lines.iter().any(|l| l.starts_with("SCALE")), "{lines:?}");
+        assert_eq!(panel_lines(&s, None, ""), s.lines(), "no hash, no line");
+        for line in panel_lines(&s, None, "0123456789abcdef") {
+            for c in line.chars() {
+                assert!(GLYPHS.iter().any(|(g, _)| *g == c), "{c:?} in {line:?}");
+            }
+        }
     }
 }

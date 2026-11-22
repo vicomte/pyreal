@@ -21,6 +21,9 @@ pub trait Host: 'static {
     /// did not say.
     const BUILD_COMMIT: &'static str = "unknown";
 
+    /// The build hash the performance panel shows; empty when the build had none.
+    const BUILD_HASH: &'static str = "";
+
     /// The host clipboard the shell mirrors each frame.
     type Clipboard: HostClipboard;
 

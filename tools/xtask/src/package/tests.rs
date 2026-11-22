@@ -168,6 +168,114 @@ fn links_folders_strays_gaps_and_oversized_files_are_each_refused() {
     );
 }
 
+/// The leading bytes of a container with its header at `at` and the data subset `subset`.
+fn container_head(at: usize, subset: &[u8; 4]) -> Vec<u8> {
+    let mut b = vec![0u8; guard::HEAD_LEN];
+    b[at..at + 4].copy_from_slice(&0x5442u32.to_le_bytes());
+    b[at + 0x0C..at + 0x10].copy_from_slice(&1u32.to_le_bytes());
+    b[at + 0x10..at + 0x14].copy_from_slice(subset);
+    b
+}
+
+/// A file of `size` bytes whose leading bytes are `head`.
+fn sized(path: &str, head: &[u8], size: u64) -> Entry {
+    Entry {
+        size,
+        ..Entry::file(path, head)
+    }
+}
+
+/// The flat package's files with the base pack allowed beside them.
+fn scan_with_base(extra: Entry) -> Vec<String> {
+    let mut e = clean_entries();
+    e.push(extra);
+    guard::scan_tree(
+        &e,
+        &allowlist(),
+        &[guard::BASE_PACK.to_owned()],
+        pyreal::FILE_CAP,
+        pyreal::TOTAL_CAP,
+    )
+}
+
+/// The base pack has no size cap: far over the file and package caps it passes, and it does not
+/// count toward the package's total.
+#[test]
+fn the_base_pack_passes_at_any_size() {
+    let pack = container_head(0x140, b"Pack");
+    for size in [1, pyreal::FILE_CAP + 1, pyreal::TOTAL_CAP * 4, 1 << 31] {
+        let found = scan_with_base(sized(guard::BASE_PACK, &pack, size));
+        assert_eq!(found, Vec::<String>::new(), "{size} bytes");
+    }
+}
+
+/// Retail files of every era are refused under the old file cap: by name, by their header, and as
+/// the base pack by name when they are not a packed art pack.
+#[test]
+fn retail_files_under_the_old_cap_are_refused_by_name_or_header() {
+    let modern = container_head(0x140, &[0; 4]);
+    let hires = container_head(0x140, b"HiFi");
+    let classic = container_head(0x12C, &[0; 4]);
+    // 1999's portal.dat, 2005's portal.dat and EoR's client_highres.dat, at their sizes.
+    for (name, head, size) in [
+        ("portal.dat", &classic, 95u64 << 20),
+        ("portal.dat", &classic, 272 << 20),
+        ("client_highres.dat", &hires, 127 << 20),
+    ] {
+        let found = scan_with_base(sized(name, head, size));
+        assert!(found.iter().any(|f| f.contains("a .dat file")), "{found:?}");
+        let renamed = scan_with_base(sized("pyreal-data", head, size));
+        assert!(
+            renamed.iter().any(|f| f.contains("data-file header")),
+            "{renamed:?}"
+        );
+        let as_base = scan_with_base(sized(guard::BASE_PACK, head, size));
+        assert!(
+            as_base.iter().any(|f| f.contains("not a packed art pack")),
+            "{as_base:?}"
+        );
+    }
+    for head in [&modern, &[0u8; 16].to_vec(), &Vec::new()] {
+        let found = scan_with_base(sized(guard::BASE_PACK, head, 1 << 20));
+        assert!(
+            found.iter().any(|f| f.contains("not a packed art pack")),
+            "{found:?}"
+        );
+    }
+}
+
+/// A packed art pack's header is the container's at `0x140` with the subset `Pack`, as the packer
+/// writes it.
+#[test]
+fn the_packed_art_pack_header_is_the_packers() {
+    let pack = container_head(0x140, b"Pack");
+    assert!(guard::is_packed_art_pack(&pack));
+    assert!(!guard::is_packed_art_pack(&container_head(0x12C, b"Pack")));
+    assert!(!guard::is_packed_art_pack(&pack[..0x150]));
+    // The container writer's own header, made as the art packer makes it.
+    let made = |subset: u32| {
+        let s = pyreal_dat::MemoryFile::default();
+        {
+            use pyreal_dat::DatStorageMut;
+            s.clone().write_all_at(0x1_0000 - 1, &[0]).expect("sized");
+        }
+        pyreal_dat::DatWriter::create_in(
+            PathBuf::from("pack.dat"),
+            Box::new(s.clone()),
+            0x400,
+            pyreal_dat::container::PORTAL_DATFILE,
+            subset,
+            0x1_0000,
+        )
+        .expect("made");
+        s.bytes()
+    };
+    assert!(guard::is_packed_art_pack(&made(u32::from_le_bytes(
+        *b"Pack"
+    ))));
+    assert!(!guard::is_packed_art_pack(&made(0)));
+}
+
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("xtask-package-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -420,6 +528,7 @@ fn an_unknown_target_is_refused_naming_the_known_ones() {
 fn the_commit_time_is_written_in_utc() {
     let facts = BuildFacts {
         commit: "a".repeat(40),
+        hash: "a".repeat(8),
         epoch: 1_700_000_000,
         source_url: String::new(),
     };
@@ -831,4 +940,56 @@ fn the_licence_pages_join_into_one_document_with_a_section_per_binary() {
     assert!(client < joined.find("client licences").expect("body") && tool > client);
     assert!(joined.contains("tool licences"));
     assert!(notice::splice_licence_pages(&[("x", "<html>no markers</html>".to_owned())]).is_err());
+}
+
+/// The build hash is the one handed on when there is one, else git's, and only hex counts.
+#[test]
+fn the_build_hash_is_the_one_handed_on_else_gits() {
+    use super::build_hash::pick;
+    let git = || Some("8CA518E9\n".to_owned());
+    assert_eq!(pick(Some("c15a72dd"), git).as_deref(), Some("c15a72dd"));
+    assert_eq!(pick(None, git).as_deref(), Some("8ca518e9"));
+    assert_eq!(
+        pick(Some(""), git).as_deref(),
+        Some("8ca518e9"),
+        "empty is none"
+    );
+    assert_eq!(pick(Some("not hex"), || None), None);
+    assert_eq!(pick(None, || None), None, "no git, no hash");
+    assert_eq!(pick(None, || Some(String::new())), None);
+}
+
+/// `build.py` names its `dist/` folder by the build hash's own git rule and hands that same
+/// value on, so the folder and the hash the app shows cannot differ.
+#[test]
+fn build_py_names_its_folder_by_the_build_hash_and_hands_it_on() {
+    use super::build_hash::{ENV, GIT_ARGS};
+    let src = std::fs::read_to_string(workspace_root().join("build.py")).expect("build.py");
+    let args = GIT_ARGS.map(|a| format!("\"{a}\"")).join(", ");
+    let rule = format!("commit = run([\"git\", {args}], env).strip()");
+    assert!(src.contains(&rule), "build.py no longer runs `{rule}`");
+    assert!(
+        src.contains("out = cfg[\"out_dir\"] / commit"),
+        "the folder is not the hash"
+    );
+    let handed = format!("env[\"{ENV}\"] = commit");
+    assert!(
+        src.contains(&handed),
+        "build.py does not hand the hash on (`{handed}`)"
+    );
+}
+
+/// The release build is handed the build hash with the commit.
+#[test]
+fn the_release_build_is_handed_the_build_hash() {
+    let facts = build_facts(&workspace_root(), true).expect("the checkout's facts");
+    assert!(
+        !facts.hash.is_empty() && facts.commit.starts_with(&facts.hash),
+        "{facts:?}"
+    );
+    let env = pyreal::build_env(&workspace_root(), &facts, target(LINUX_X64));
+    assert!(
+        env.contains(&(super::build_hash::ENV.to_owned(), facts.hash.clone())),
+        "{env:?}"
+    );
 }

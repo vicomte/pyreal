@@ -8,9 +8,9 @@
 //! A [`MapGrid`] holds the landblocks' vertices as read; [`MapGrid::prepare`] leaves out the
 //! placeholder land and works out the shore and the shading once, into a [`WorldMap`], which draws
 //! any window of the picture or the whole shrunk to [`OVERVIEW`]. [`MapBuild`] does the reading,
-//! the preparing and the overview off the frame: on a thread of its own, or where there are no
-//! threads a slice of each frame.
+//! the preparing and the overview off the frame, on a thread of its own.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use pyreal_assets::world::CellLandblock;
@@ -780,10 +780,14 @@ impl Steps {
         None
     }
 
-    /// Every step, the overview's bands shared among the machine's threads.
-    fn run(mut self) -> Result<Built, String> {
+    /// Every step until done or `stop` is set, the overview's bands shared among the machine's
+    /// threads when `share` is set.
+    fn run(mut self, share: bool, stop: &AtomicBool) -> Result<Built, String> {
         loop {
-            if let Stage::Overview(map, ..) = &self.stage {
+            if stop.load(Ordering::Relaxed) {
+                return Err("the world map's build was stopped".to_owned());
+            }
+            if let (true, Stage::Overview(map, ..)) = (share, &self.stage) {
                 let map = Arc::clone(map);
                 let overview = map.overview();
                 return Ok(Built {
@@ -798,9 +802,10 @@ impl Steps {
     }
 }
 
-/// A world map read, prepared and drawn off the frame.
+/// A world map read, prepared and drawn off the frame; dropped, its thread stops.
 pub struct MapBuild {
     done: std::sync::mpsc::Receiver<Result<Built, String>>,
+    stop: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for MapBuild {
@@ -809,25 +814,45 @@ impl std::fmt::Debug for MapBuild {
     }
 }
 
+impl Drop for MapBuild {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 impl MapBuild {
-    /// Build the map from `store`'s landblocks, with its overview when `overview` is set.
+    /// Build the map from `store`'s landblocks, with its overview when `overview` is set, the
+    /// overview shared among the machine's threads.
     #[must_use]
     pub fn start(store: Arc<RetailDatStore>, overview: bool) -> Self {
+        Self::spawn(store, overview, true)
+    }
+
+    /// As [`MapBuild::start`], on its one thread alone: for a map built ahead of being asked for,
+    /// which leaves the machine's other threads to the game.
+    #[must_use]
+    pub fn in_background(store: Arc<RetailDatStore>, overview: bool) -> Self {
+        Self::spawn(store, overview, false)
+    }
+
+    fn spawn(store: Arc<RetailDatStore>, overview: bool, share: bool) -> Self {
         let steps = Steps {
             store,
             overview,
             stage: Stage::Start,
         };
+        let stop = Arc::new(AtomicBool::new(false));
         let (tx, done) = std::sync::mpsc::channel();
+        let stopped = Arc::clone(&stop);
         let spawned = std::thread::Builder::new()
             .name("world map".to_owned())
             .spawn(move || {
-                let _ = tx.send(steps.run());
+                let _ = tx.send(steps.run(share, &stopped));
             });
         if let Err(e) = spawned {
             tracing::warn!("the world map's thread did not start: {e}");
         }
-        Self { done }
+        Self { done, stop }
     }
 
     /// The map, once it is built.

@@ -242,8 +242,82 @@ fn tiles_are_drawn_for_a_close_view_one_a_frame_and_let_go_when_the_map_closes()
     h.ui.windows.close(WindowId::Map);
     h.frame(&state);
     assert_eq!(kept(&art), 0);
-    assert!(!h.ui.windows.map_view.is_ready(), "the world let go");
-    assert!(art.lookup(OVERVIEW_KEY).is_some(), "and the whole kept");
+    assert!(h.ui.windows.map_view.is_ready(), "the world kept");
+    let whole = art.lookup(OVERVIEW_KEY).flatten().map(|s| s.tex);
+    assert!(whole.is_some(), "and the whole");
+
+    // Opened again, it draws from what it kept and builds nothing.
+    h.ui.windows.open(WindowId::Map, 1.0);
+    for _ in 0..5 {
+        h.frame(&state);
+    }
+    assert!(!h.ui.windows.map_view.is_building(), "nothing built again");
+    assert_eq!(art.lookup(OVERVIEW_KEY).flatten().map(|s| s.tex), whole);
+    assert_eq!(
+        drawn_from(&h, &art, &tile_key(3, 1)),
+        1,
+        "a tile drawn again"
+    );
+}
+
+/// Art over data of `store`, for the map to build from.
+fn over_data(store: pyreal_dat::RetailDatStore) -> Arc<Art> {
+    use pyreal_horizon::art::AcArt as _;
+    let art = Arc::new(Art::empty());
+    art.set_ac_store(Arc::new(store));
+    art
+}
+
+fn no_land() -> pyreal_dat::RetailDatStore {
+    pyreal_dat::RetailDatStore::empty().expect("an empty store")
+}
+
+/// The map's world is built in the background from the log-on with the map closed, once for its
+/// data and again only for other data.
+#[test]
+fn the_map_s_world_is_built_ahead_from_the_log_on_and_once_for_its_data() {
+    use pyreal_horizon::art::AcArt as _;
+    let art = over_data(no_land());
+    let mut h = Harness {
+        ui: HorizonUi::new(Arc::clone(&art), HorizonOptions::default()),
+        list: DrawList::default(),
+        input: InputFrame::default(),
+        screen: (1920.0, 1080.0),
+    };
+    let lobby = GameState {
+        connected: true,
+        ..GameState::default()
+    };
+    h.frame(&lobby);
+    assert!(
+        !h.ui.windows.map_view.is_building(),
+        "not before the log-on"
+    );
+
+    let state = player();
+    h.frame(&state);
+    assert!(!h.ui.windows.is_open(WindowId::Map));
+    assert!(h.ui.windows.map_view.is_building(), "begun in the world");
+    let start = std::time::Instant::now();
+    while h.ui.windows.map_view.is_building() {
+        assert!(start.elapsed().as_secs() < 10, "the build ends");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        h.frame(&state);
+    }
+    for _ in 0..3 {
+        h.frame(&state);
+    }
+    assert!(
+        !h.ui.windows.map_view.is_building(),
+        "data with no land is not built again each frame"
+    );
+
+    art.set_ac_store(Arc::new(no_land()));
+    h.frame(&state);
+    assert!(
+        h.ui.windows.map_view.is_building(),
+        "other data, built again"
+    );
 }
 
 /// A player's zoomed map shows the major towns and the houses; an administrator's also marks the

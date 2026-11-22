@@ -2,10 +2,10 @@
 //!
 //! The picture draws three of its pixels to a landcell, 6123 to a side. It is drawn from the
 //! landblocks of the data the client plays with ([`pyreal_scene::world_map`]): the world is read
-//! and the picture of the whole at a third of that size ([`OVERVIEW`]) drawn off the frame when
-//! the map first opens, and tiles of it at its own size ([`TILE`]) are drawn as a view first needs
-//! them, one a frame, and let go when no view has needed them for a while. Closing the map lets
-//! the world and the tiles go and keeps the picture of the whole.
+//! and the picture of the whole at a third of that size ([`OVERVIEW`]) drawn in the background as
+//! the player enters the world ([`MapView::preload`]), and kept until the data changes. Tiles of it
+//! at its own size ([`TILE`]) are drawn as a view first needs them, one a frame, and let go when no
+//! view has needed them for a while or the map closes.
 //!
 //! The picture names nothing: the places are drawn over it, the world's own when its server
 //! publishes them ([`GameState::map_places`], a place store, [`drawn_places`]) and otherwise those
@@ -14,7 +14,7 @@
 //! other kind, and picks which with the Places button.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use pyreal_client_contract::panels::map::{MapButton, MapClick};
 use pyreal_navigation::{MarkKind, PlaceKind as KnownKind, PlaceStore};
@@ -567,6 +567,17 @@ enum Picture {
     Failed,
 }
 
+/// The world the map draws, kept from the first frame in the world until the data changes, and
+/// over a log out and back in to the same data.
+#[derive(Debug, Default)]
+pub struct MapWorld {
+    picture: Picture,
+    /// The data it is drawn from; `None` for a picture handed over.
+    data: Option<Weak<pyreal_dat::RetailDatStore>>,
+    /// A picture of the whole built or handed over, given to the art when the map next draws.
+    overview: Option<Pixels>,
+}
+
 /// What the places were read from: the world's era, and its own document by its address.
 type PlacesFrom = (pyreal_primitives::EraId, Option<usize>);
 
@@ -612,11 +623,7 @@ pub struct MapView {
     /// Whether the Places list is open.
     pub kinds_open: bool,
     /// The world the picture is drawn from.
-    picture: Picture,
-    /// The data it is drawn from, by its address; `None` for a picture handed over.
-    data: Option<usize>,
-    /// A picture of the whole handed over, kept at the next frame.
-    given_overview: Option<Pixels>,
+    pub world: MapWorld,
 }
 
 impl Default for MapView {
@@ -641,9 +648,7 @@ impl Default for MapView {
             places: None,
             hidden: Vec::new(),
             kinds_open: false,
-            picture: Picture::None,
-            data: None,
-            given_overview: None,
+            world: MapWorld::default(),
         }
     }
 }
@@ -715,11 +720,11 @@ impl MapView {
     }
 
     /// Let go of the tiles no view has needed since `before`.
-    fn let_tiles_go(&mut self, p: &Painter<'_>, before: f64) {
+    fn let_tiles_go(&mut self, art: &Art, before: f64) {
         self.tiles.retain(|&(col, row), used| {
             let keep = *used >= before;
             if !keep {
-                p.art.let_go(&tile_key(col, row));
+                art.let_go(&tile_key(col, row));
             }
             keep
         });
@@ -727,57 +732,79 @@ impl MapView {
 
     /// Draw from `built` rather than the data the art holds: a world drawn elsewhere.
     pub fn show(&mut self, built: Built) {
-        self.picture = Picture::Ready(built.map);
-        self.data = None;
-        self.given_overview = built.overview;
+        self.world = MapWorld {
+            picture: Picture::Ready(built.map),
+            data: None,
+            overview: built.overview,
+        };
     }
 
     /// Whether the world the tiles are drawn from is here.
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        matches!(self.picture, Picture::Ready(_))
+        matches!(self.world.picture, Picture::Ready(_))
     }
 
-    /// The picture kept up with the data `art` holds: built when the picture of the whole is
-    /// missing or `close` asks for tiles, taken once built, and built again for other data.
-    fn keep_picture(&mut self, art: &Art, close: bool) {
-        if let Some(given) = self.given_overview.take() {
-            art.let_go(OVERVIEW_KEY);
-            art.cached(OVERVIEW_KEY, || Some(image(given)));
-        }
+    /// Whether the world is being built.
+    #[must_use]
+    pub fn is_building(&self) -> bool {
+        matches!(self.world.picture, Picture::Building(_))
+    }
+
+    /// The world kept up with the data `art` holds, a frame at a time and off the frame: built in
+    /// the background once there is data, with the picture of the whole unless the art has it,
+    /// taken once built, and built again for other data, the old pictures let go.
+    pub fn preload(&mut self, art: &Art) {
         let store = art.ac_data();
-        let data = store.as_ref().map(|s| Arc::as_ptr(s) as usize);
-        let given = self.data.is_none() && self.is_ready();
-        if !given && data != self.data {
-            self.picture = Picture::None;
-            self.data = data;
+        let given = self.world.data.is_none() && self.is_ready();
+        let same = match (&self.world.data, &store) {
+            (Some(was), Some(now)) => Weak::ptr_eq(was, &Arc::downgrade(now)),
+            (was, now) => was.is_none() && now.is_none(),
+        };
+        if !given && !same {
+            if self.world.data.is_some() {
+                art.let_go(OVERVIEW_KEY);
+                self.let_tiles_go(art, f64::INFINITY);
+            }
+            self.world = MapWorld {
+                data: store.as_ref().map(Arc::downgrade),
+                ..MapWorld::default()
+            };
         }
-        if let Picture::Building(build) = &mut self.picture {
+        if let Picture::Building(build) = &mut self.world.picture {
             match build.poll() {
                 Some(Ok(built)) => {
-                    if let Some(overview) = built.overview {
-                        art.let_go(OVERVIEW_KEY);
-                        art.cached(OVERVIEW_KEY, || Some(image(overview)));
+                    self.world.picture = Picture::Ready(built.map);
+                    if built.overview.is_some() {
+                        self.world.overview = built.overview;
                     }
-                    self.picture = Picture::Ready(built.map);
                 }
                 Some(Err(e)) => {
                     tracing::warn!("the world map was not drawn: {e}");
-                    self.picture = Picture::Failed;
+                    self.world.picture = Picture::Failed;
                 }
                 None => {}
             }
         }
-        let whole = art.lookup(OVERVIEW_KEY).is_some();
-        if given || (whole && !close) || !matches!(self.picture, Picture::None | Picture::Ready(_))
-        {
-            return;
+        let whole = self.world.overview.is_some() || art.lookup(OVERVIEW_KEY).is_some();
+        let wanted = match self.world.picture {
+            Picture::None => true,
+            // Art drawn afresh over the same data has no picture of the whole.
+            Picture::Ready(_) => !given && !whole,
+            Picture::Building(_) | Picture::Failed => false,
+        };
+        if let Some(store) = store.filter(|_| wanted && !given) {
+            self.world.picture = Picture::Building(MapBuild::in_background(store, !whole));
         }
-        if whole && self.is_ready() {
-            return;
-        }
-        if let Some(store) = store {
-            self.picture = Picture::Building(MapBuild::start(store, !whole));
+    }
+
+    /// The picture kept up with the data `art` holds ([`MapView::preload`]), and the picture of
+    /// the whole given to the art once it is drawn.
+    fn keep_picture(&mut self, art: &Art) {
+        self.preload(art);
+        if let Some(overview) = self.world.overview.take() {
+            art.let_go(OVERVIEW_KEY);
+            art.cached(OVERVIEW_KEY, || Some(image(overview)));
         }
     }
 }
@@ -951,12 +978,11 @@ pub fn tile_key(col: u32, row: u32) -> String {
 }
 
 impl Windows {
-    /// Let the map's world and tiles go while its window is closed.
+    /// Let the map's tiles go while its window is closed; the world is kept.
     pub(super) fn map_closed(&mut self, p: &Painter<'_>) {
         if !self.map_view.tiles.is_empty() {
-            self.map_view.let_tiles_go(p, f64::INFINITY);
+            self.map_view.let_tiles_go(p.art, f64::INFINITY);
         }
-        self.map_view.picture = Picture::None;
         self.map_view.pin = None;
         self.map_view.offer = None;
     }
@@ -1468,7 +1494,7 @@ impl Windows {
         let view = &mut self.map_view;
         let shown = view.shown();
         let close = area.w * view.zoom > OVERVIEW * OVERVIEW_STRETCH;
-        view.keep_picture(p.art, close);
+        view.keep_picture(p.art);
         let overview = p.art.lookup(OVERVIEW_KEY).flatten();
         let draw_overview = |p: &mut Painter<'_>| match &overview {
             Some(whole) => {
@@ -1483,10 +1509,10 @@ impl Windows {
         };
         if !close {
             draw_overview(p);
-            view.let_tiles_go(p, ctx.time - TILE_KEPT);
+            view.let_tiles_go(p.art, ctx.time - TILE_KEPT);
             return;
         }
-        let map = match &view.picture {
+        let map = match &view.world.picture {
             Picture::Ready(map) => Some(Arc::clone(map)),
             _ => None,
         };
@@ -1529,7 +1555,7 @@ impl Windows {
             );
             p.sprite(&Sprite { src, ..tile }, dst, WHITE);
         }
-        view.let_tiles_go(p, ctx.time - TILE_KEPT);
+        view.let_tiles_go(p.art, ctx.time - TILE_KEPT);
     }
 
     /// The world's places ([`drawn_places`]): its own when its server published them, over those
@@ -1975,43 +2001,80 @@ mod tests {
         assert!((drop.ns - ns).abs() < 1e-9 && (drop.ew - ew).abs() < 1e-9);
     }
 
-    /// Opened over the game's data, the map reads the world and draws the picture of the whole
-    /// off the frame, then for a close view the world again without it, and lets the world go
-    /// when it closes.
+    /// Over the game's data the map's world and picture of the whole are built ahead, off the
+    /// frame, so the first open draws them at once; a close keeps them, and only other data has
+    /// them built again, the old picture let go.
     #[test]
     #[cfg_attr(
         not(feature = "retail-dats"),
         ignore = "reads the retail dats: --features retail-dats"
     )]
-    fn the_map_draws_its_picture_from_the_data_off_the_frame() {
+    fn the_map_is_built_ahead_off_the_frame_and_opens_drawn() {
         use pyreal_dat::testing::{classic_shortfall, open_classic_store_or_fail, open_store};
-        let store = open_store()
-            .or_else(|| {
-                classic_shortfall()
-                    .is_none()
-                    .then(open_classic_store_or_fail)
-            })
-            .expect("the retail dats, or the older ones");
-        let art = Art::empty();
-        art.set_ac_store(Arc::new(store));
-        let mut view = MapView::default();
-        let wait = |view: &mut MapView, close: bool| {
-            let start = std::time::Instant::now();
-            let mut frames = 0;
-            while !view.is_ready() {
-                view.keep_picture(&art, close);
-                frames += 1;
-                assert!(start.elapsed().as_secs() < 30, "built in time");
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            (frames, start.elapsed().as_secs_f64() * 1000.0)
+        use std::time::Instant;
+        let open = || {
+            open_store()
+                .or_else(|| {
+                    classic_shortfall()
+                        .is_none()
+                        .then(open_classic_store_or_fail)
+                })
+                .expect("the retail dats, or the older ones")
         };
-        let (frames, ms) = wait(&mut view, false);
-        assert!(art.lookup(OVERVIEW_KEY).is_some(), "the whole");
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let store = Arc::new(open());
+        // What the first open waited for before: the build begun as the map opened.
+        let t = Instant::now();
+        MapBuild::start(Arc::clone(&store), true)
+            .wait()
+            .expect("the map builds");
+        let on_open = ms(t);
+
+        let art = Art::empty();
+        art.set_ac_store(Arc::clone(&store));
+        let mut view = MapView::default();
+        let t = Instant::now();
+        view.preload(&art);
+        assert!(view.is_building(), "begun on the first frame in the world");
+        let mut frames = 1;
+        while !view.is_ready() {
+            view.preload(&art);
+            frames += 1;
+            assert!(t.elapsed().as_secs() < 60, "built in time");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let ahead = ms(t);
         assert!(frames > 1, "built off the frame");
-        eprintln!("first picture of the whole: {ms:.0} ms over {frames} frames");
-        view.picture = Picture::None;
-        let (_, ms) = wait(&mut view, true);
-        eprintln!("the world again, for tiles: {ms:.0} ms");
+        assert!(
+            art.lookup(OVERVIEW_KEY).is_none(),
+            "the picture of the whole waits for the map to open"
+        );
+
+        let t = Instant::now();
+        view.keep_picture(&art);
+        let first_open = ms(t);
+        assert!(
+            art.lookup(OVERVIEW_KEY).flatten().is_some(),
+            "drawn at once"
+        );
+        let whole = art.lookup(OVERVIEW_KEY).flatten().map(|s| s.tex);
+        for _ in 0..3 {
+            view.preload(&art);
+            view.keep_picture(&art);
+        }
+        assert!(
+            view.is_ready() && !view.is_building(),
+            "kept, not built again"
+        );
+        assert_eq!(art.lookup(OVERVIEW_KEY).flatten().map(|s| s.tex), whole);
+        eprintln!(
+            "built as the map opened: {on_open:.0} ms; built ahead: {ahead:.0} ms over {frames} \
+             frames; the first open after: {first_open:.2} ms"
+        );
+
+        art.set_ac_store(Arc::new(open()));
+        view.preload(&art);
+        assert!(view.is_building(), "other data, built again");
+        assert!(art.lookup(OVERVIEW_KEY).is_none(), "the old picture let go");
     }
 }

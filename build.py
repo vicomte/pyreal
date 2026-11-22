@@ -276,6 +276,8 @@ def main():
         raise Failed("cannot build yet:\n  " + "\n  ".join(problems))
     commit = run(["git", "rev-parse", "--short=8", "HEAD"], env).strip()
     out = cfg["out_dir"] / commit
+    # The app's performance panel shows this same hash (pyreal/client/build_hash.rs).
+    env["PYREAL_BUILD_HASH"] = commit
     keep_out_of_dropbox([ROOT / d for d in BUILD_DIRS] + [cfg["out_dir"]])
     print(f"Ready: commit {commit}, signing with {cfg['identity']}, outputs to {out}")
     if args.check:

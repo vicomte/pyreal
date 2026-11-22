@@ -10,12 +10,18 @@
 //!
 //! Change the icon in `assets/pyreal.svg` and run `assets/render-icon.py`.
 //!
-//! It also names the commit the client is built from ([`build_commit`]).
+//! It also names the commit the client is built from ([`build_commit`]) and its build hash
+//! ([`build_hash`]).
 
 use std::path::{Path, PathBuf};
 
+#[path = "build_hash.rs"]
+mod build_hash;
+
 fn main() {
-    build_commit();
+    if build_commit() | build_hash() {
+        watch_head();
+    }
     println!("cargo:rustc-check-cfg=cfg(gpu)");
     if std::env::var_os("CARGO_FEATURE_WGPU").is_some() {
         println!("cargo:rustc-cfg=gpu");
@@ -39,30 +45,53 @@ fn main() {
     }
 }
 
+/// `git` in the crate's folder: its trimmed output, or `None` where git cannot say.
+fn git(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !text.is_empty()).then_some(text)
+}
+
 /// The commit the client is built from, as `@report` and `--version` name it:
 /// `PYREAL_BUILD_COMMIT` when the packaging names it, else the checkout's own `HEAD` where git can
-/// say, so a client built straight from a checkout names its commit too. Built again when `HEAD`
-/// moves.
-fn build_commit() {
+/// say, so a client built straight from a checkout names its commit too. Whether it asked git.
+fn build_commit() -> bool {
     println!("cargo:rerun-if-env-changed=PYREAL_BUILD_COMMIT");
     if std::env::var_os("PYREAL_BUILD_COMMIT").is_some() {
-        return;
+        return false;
     }
+    if let Some(commit) = git(&["rev-parse", "--short=12", "HEAD"]) {
+        println!("cargo:rustc-env=PYREAL_BUILD_COMMIT={commit}");
+    }
+    true
+}
+
+/// The build hash the performance panel shows ([`build_hash::pick`]), empty without one.
+/// Whether it asked git.
+fn build_hash() -> bool {
+    println!("cargo:rerun-if-env-changed={}", build_hash::ENV);
+    let given = std::env::var(build_hash::ENV).ok();
+    let mut asked = false;
+    let hash = build_hash::pick(given.as_deref(), || {
+        asked = true;
+        git(&build_hash::GIT_ARGS)
+    });
+    println!(
+        "cargo:rustc-env={}={}",
+        build_hash::ENV,
+        hash.unwrap_or_default()
+    );
+    asked
+}
+
+/// Built again when `HEAD` moves: `HEAD`, its log (written whenever `HEAD` moves, a commit on its
+/// branch too), the branch it names and the packed branches, where each is a file.
+fn watch_head() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let git = |args: &[&str]| -> Option<String> {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(here)
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-        (out.status.success() && !text.is_empty()).then_some(text)
-    };
-    let Some(commit) = git(&["rev-parse", "--short=12", "HEAD"]) else {
-        return;
-    };
-    // `HEAD`, its log (written whenever `HEAD` moves, a commit on its branch too), the branch it
-    // names and the packed branches, where each is a file.
     let branch = git(&["symbolic-ref", "-q", "HEAD"]);
     for name in ["HEAD", "logs/HEAD", "packed-refs"]
         .into_iter()
@@ -76,5 +105,4 @@ fn build_commit() {
             }
         }
     }
-    println!("cargo:rustc-env=PYREAL_BUILD_COMMIT={commit}");
 }

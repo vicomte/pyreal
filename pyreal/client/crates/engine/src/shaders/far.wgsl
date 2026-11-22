@@ -16,6 +16,10 @@ struct Node {
 @group(1) @binding(2) var samp: sampler;
 @group(1) @binding(3) var<storage, read> nodes: array<Node>;
 @group(1) @binding(4) var<uniform> far: FarParams;
+// Each terrain type's picture (slot, repeats a metre as bits; slot all ones: none), the road's last.
+@group(1) @binding(5) var<uniform> far_grounds: array<vec4<u32>, 33>;
+@group(2) @binding(0) var textures: binding_array<texture_2d<f32>, 16384>;
+@group(2) @binding(1) var samp_repeat: sampler;
 
 // Catmull-Rom weights at `t`.
 fn catmull(t: f32) -> vec4<f32> {
@@ -119,12 +123,64 @@ fn fs_far(in: FarOut) -> FarG {
     if (has(F_WATER)) {
         c = mix(vec3<f32>(0.15, 0.13, 0.09) * clamp(luma(c) / 0.12, 0.6, 1.5), c, s.a);
     }
+    var n = normalize(in.normal);
+    // The distant ground: every ring bends by the finest heights, takes the near ground's tint and
+    // the pictures' grain, then the shared looks.
+    if (has(F_DISTANT) && far_heights_on()) {
+        let foot = distance(in.world, frame.camera.xyz) * 2.0 * frame.cluster_z.w / frame.params.w;
+        n = far_relief(in.world, far_normal(in.world.xy, max(LAND_CELL, foot * 2.0)));
+        c *= far_macro_tint(in.world.xy) * far_grain(in.world.xy, dpdx(in.world.xy), dpdy(in.world.xy), foot);
+        c = far_look(in.world, c, n);
+    }
     var g: FarG;
     g.albedo = vec4<f32>(c, 1.0);
-    g.normal = oct_encode(normalize(in.normal));
+    g.normal = oct_encode(n);
     g.material = vec4<f32>(0.9, 0.0, 0.0, f32(G_TERRAIN) / 255.0);
     g.motion = motion_of(in.cur, in.prev);
     g.id = far.material;
     g.object = 0u;
     return g;
+}
+
+// The near ground's large-scale tint (gbuffer.wgsl's `macro_tint`), so the rings meet it.
+fn far_macro_tint(p: vec2<f32>) -> vec3<f32> {
+    let a = land_noise(p + vec2<f32>(91.3, 12.9), 57.0);
+    let b = land_noise(p - vec2<f32>(7.1, 55.3), 197.0);
+    let bright = 0.9 + 0.2 * (a * 0.6 + b * 0.4);
+    let warm = (b - 0.5) * 0.12;
+    return bright * vec3<f32>(1.0 + warm, 1.0, 1.0 - warm);
+}
+
+// The ground pictures' own grain, read 6 and 17 times larger about their mean, from the terrain
+// type of the nearest vertex; laid as the near ground lays it, so the two meet.
+fn far_grain(p: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, foot: f32) -> vec3<f32> {
+    let q = (p - far_rings.origin) / LAND_CELL;
+    let word = far_vertex(vec2<i32>(round(q))).word;
+    let road = (word >> LW_ROAD_SHIFT) & 3u;
+    let e = far_grounds[select(word & LW_TYPE, 32u, road != 0u)];
+    if (e.x == 0xFFFFFFFFu) {
+        return vec3<f32>(1.0);
+    }
+    let per_m = bitcast<f32>(e.y);
+    let keep = grain_keep(per_m, foot);
+    if (keep.x + keep.y <= 0.0) {
+        return vec3<f32>(1.0);
+    }
+    let s = vec2<f32>(1.0, -1.0) * per_m;
+    let mean = textureSampleLevel(textures[e.x], samp_repeat, vec2<f32>(0.5), GRAIN_MEAN_LEVEL).rgb;
+    var coarse = mean * (1.0 - 0.6 * keep.x - 0.4 * keep.y);
+    if (keep.x > 0.0) {
+        let s6 = s / 6.0;
+        coarse += textureSampleGrad(textures[e.x], samp_repeat, p * s6 + grain_origin(s6), dx * s6, dy * s6).rgb * 0.6 * keep.x;
+    }
+    if (keep.y > 0.0) {
+        let s17 = s / 17.0;
+        coarse += textureSampleGrad(textures[e.x], samp_repeat, p * s17 + grain_origin(s17), dx * s17, dy * s17).rgb * 0.4 * keep.y;
+    }
+    return clamp(coarse / max(mean, vec3<f32>(1e-3)), vec3<f32>(0.45), vec3<f32>(1.7));
+}
+
+// Render space's origin's share of a picture laid `s` times a metre (gbuffer.wgsl's `origin_uv`).
+fn grain_origin(s: vec2<f32>) -> vec2<f32> {
+    return fract(vec2<f32>(origin_block()) * fract(192.0 * s));
 }

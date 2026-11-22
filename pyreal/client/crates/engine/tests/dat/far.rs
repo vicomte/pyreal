@@ -54,3 +54,30 @@ fn the_sea_runs_on_past_the_worlds_edge() {
     let i = 100 * side + side - 1;
     assert!(float(i, 1) > 100.0, "{} m inside", float(i, 1));
 }
+
+/// Inland round Holtburg the far field's records go up whether or not water is near, each
+/// holding its vertex's height, which the distant ground is shaded by.
+#[test]
+fn the_far_records_hold_every_vertex_height() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let f = FarField::build(
+        &store,
+        &region,
+        0xA8B3,
+        Vec3::ZERO,
+        3,
+        (Vec2::splat(-192.0), Vec2::splat(384.0)),
+        &mut |_| [0, 0, 255, 255],
+    );
+    let side = f.water_side as usize;
+    assert_eq!(side, f.extent as usize, "a record for every vertex");
+    for y in 0..side {
+        for x in 0..side {
+            let i = (y * side + x) * 16;
+            let h = f32::from_bits(u32::from_le_bytes(f.water[i..i + 4].try_into().unwrap()));
+            let want = f.heights[y * f.size as usize + x];
+            assert!((h - want).abs() < 1e-3, "({x}, {y}): {h} for {want}");
+        }
+    }
+}

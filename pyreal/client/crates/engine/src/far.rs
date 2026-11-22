@@ -39,6 +39,10 @@ pub fn near_blocks(centre: i32, radius: i32) -> (i32, i32) {
     )
 }
 
+/// The ground table's entries ([`FarTerrain::new`]): 32 terrain types and the road.
+pub const GROUND_ENTRIES: usize = 33;
+/// A ground table entry with no picture.
+pub const NO_GROUND_ENTRY: [u32; 4] = [u32::MAX, 0, 0, 0];
 /// Quads along one side of a node's patch.
 pub const PATCH: u32 = 16;
 /// Metres between the dats' height samples.
@@ -63,10 +67,12 @@ pub struct FarField {
     pub heights: Vec<f32>,
     /// `size * size` sRGB colours; alpha nought on water.
     pub colours: Vec<[u8; 4]>,
-    /// The water's records, as the land field's texels ([`LandField::texels`]), `water_side`
-    /// a side from texel `(0, 0)`; empty with no water.
+    /// The field's records, as the land field's texels ([`LandField::texels`]), `water_side`
+    /// a side from texel `(0, 0)`: the water's, and the heights the distant ground is shaded by.
     pub water: Vec<u8>,
     pub water_side: u32,
+    /// Whether any of it is water.
+    pub wet: bool,
     /// The near square the exact cells cover, in render space.
     pub near_min: Vec2,
     pub near_max: Vec2,
@@ -180,12 +186,9 @@ impl FarField {
                 colours[y * n + x] = colours[from];
             }
         }
-        let (water, water_side) = if wet {
-            land.finish(&crate::water::WaterTable::default());
-            (land.texels(), u32::try_from(land.side.0).unwrap_or(0))
-        } else {
-            (Vec::new(), 0)
-        };
+        // The records go up dry too: their heights shade the distant ground.
+        land.finish(&crate::water::WaterTable::default());
+        let (water, water_side) = (land.texels(), u32::try_from(land.side.0).unwrap_or(0));
         Self {
             origin,
             size,
@@ -194,6 +197,7 @@ impl FarField {
             colours,
             water,
             water_side,
+            wet,
             near_min: near.0,
             near_max: near.1,
             smooth: false,
@@ -420,7 +424,7 @@ const SHADER: &str = include_str!("shaders/far.wgsl");
 #[must_use]
 pub fn source() -> String {
     format!(
-        "{}\n{}\n{SHADER}",
+        "enable wgpu_binding_array;\n{}\n{}\n{SHADER}",
         include_str!("shaders/common.wgsl"),
         include_str!("shaders/land.wgsl")
     )
@@ -477,6 +481,7 @@ pub struct FarTerrain {
     pub id: u64,
     // Kept alive with the bind group.
     _textures: [wgpu::Texture; 2],
+    _grounds: wgpu::Buffer,
 }
 
 /// The far terrain's group layout and pipelines: the same for every far terrain drawn with one
@@ -490,9 +495,13 @@ pub struct FarPipelines {
 }
 
 impl FarPipelines {
-    /// The layout and pipelines, with `frame_layout` as group 0.
+    /// The layout and pipelines, with `frame_layout` as group 0 and `materials_layout` as group 2.
     #[must_use]
-    pub fn new(gpu: &Gpu, frame_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        gpu: &Gpu,
+        frame_layout: &wgpu::BindGroupLayout,
+        materials_layout: &wgpu::BindGroupLayout,
+    ) -> Self {
         let device = &gpu.device;
         use wgpu::ShaderStages as S;
         let tex_entry = |binding, sample_type| wgpu::BindGroupLayoutEntry {
@@ -536,12 +545,22 @@ impl FarPipelines {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: S::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let module = gpu.shader("far", &source());
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("far terrain"),
-            bind_group_layouts: &[Some(frame_layout), Some(&layout)],
+            bind_group_layouts: &[Some(frame_layout), Some(&layout), Some(materials_layout)],
             immediate_size: 0,
         });
         let gbuffer = [
@@ -613,16 +632,20 @@ pub fn levels_for(size: u32) -> u32 {
 }
 
 impl FarTerrain {
-    /// Puts `field` on the GPU, drawn into the G-buffer with `frame_layout` as group 0; its
-    /// finest level is drawn out to `first_range` metres. `pipes` are the last far terrain's
+    /// Puts `field` on the GPU, drawn into the G-buffer with `frame_layout` as group 0 and
+    /// `materials_layout` as group 2; its finest level is drawn out to `first_range` metres, its
+    /// grain from `grounds` ([`GROUND_ENTRIES`] of them). `pipes` are the last far terrain's
     /// ([`Self::pipelines`]), made anew when `None`.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         gpu: &Gpu,
         frame_layout: &wgpu::BindGroupLayout,
+        materials_layout: &wgpu::BindGroupLayout,
         field: FarField,
         first_range: f32,
         terrain_material: u32,
+        grounds: &[[u32; 4]],
         pipes: Option<std::sync::Arc<FarPipelines>>,
     ) -> Self {
         use wgpu::util::DeviceExt;
@@ -744,8 +767,21 @@ impl FarTerrain {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let pipes =
-            pipes.unwrap_or_else(|| std::sync::Arc::new(FarPipelines::new(gpu, frame_layout)));
+        let pipes = pipes.unwrap_or_else(|| {
+            std::sync::Arc::new(FarPipelines::new(gpu, frame_layout, materials_layout))
+        });
+        let mut table = grounds.to_vec();
+        table.resize(GROUND_ENTRIES, NO_GROUND_ENTRY);
+        let ground_bytes: Vec<u8> = table
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let grounds = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("far grounds"),
+            contents: &ground_bytes,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
         let hv = heights.create_view(&Default::default());
         let cv = colours.create_view(&Default::default());
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -772,6 +808,10 @@ impl FarTerrain {
                     binding: 4,
                     resource: params.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: grounds.as_entire_binding(),
+                },
             ],
         });
         let bounds = prepared.bounds;
@@ -792,6 +832,7 @@ impl FarTerrain {
             water: water.create_view(&Default::default()),
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             _textures: [heights, colours],
+            _grounds: grounds,
         }
     }
 
@@ -804,7 +845,7 @@ impl FarTerrain {
     /// Whether any of its field is water.
     #[must_use]
     pub fn has_water(&self) -> bool {
-        self.field.water_side > 0
+        self.field.wet && self.field.water_side > 0
     }
 
     /// The water's records and the parameters that place them (`FarParams`), for the frame's group.
@@ -864,20 +905,32 @@ impl FarTerrain {
         (self.node_count, self.node_count * PATCH * PATCH * 2)
     }
 
-    /// Draws this frame's nodes into the G-buffer pass, `frame` bound as group 0.
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
-        self.draw_with(pass, frame, &self.pipes.pipeline);
+    /// Draws this frame's nodes into the G-buffer pass, `frame` bound as group 0 and `materials`
+    /// as group 2.
+    pub fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &wgpu::BindGroup,
+        materials: &wgpu::BindGroup,
+    ) {
+        self.draw_with(pass, frame, materials, &self.pipes.pipeline);
     }
 
     /// Draws this frame's nodes into depth alone, for the ground's prepass.
-    pub fn draw_depth(&self, pass: &mut wgpu::RenderPass<'_>, frame: &wgpu::BindGroup) {
-        self.draw_with(pass, frame, &self.pipes.depth_pipeline);
+    pub fn draw_depth(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        frame: &wgpu::BindGroup,
+        materials: &wgpu::BindGroup,
+    ) {
+        self.draw_with(pass, frame, materials, &self.pipes.depth_pipeline);
     }
 
     fn draw_with(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         frame: &wgpu::BindGroup,
+        materials: &wgpu::BindGroup,
         pipeline: &wgpu::RenderPipeline,
     ) {
         if self.node_count == 0 {
@@ -886,6 +939,7 @@ impl FarTerrain {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, frame, &[]);
         pass.set_bind_group(1, &self.group, &[]);
+        pass.set_bind_group(2, materials, &[]);
         pass.set_vertex_buffer(0, self.vertices.slice(..));
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..self.index_count, 0, 0..self.node_count);

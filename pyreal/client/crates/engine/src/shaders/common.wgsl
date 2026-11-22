@@ -98,6 +98,9 @@ struct Frame {
     // The bed's mud picture under water drawn as water: x its slot (u32 bits; 0: none), y its
     // repeats a metre.
     bed: vec4<f32>,
+    // x: how far a storm leans the growth steadily downwind, 0 to 1 (0 in calm weather); yz: the
+    // way the rain is driven, east and north (zero with none).
+    gale: vec4<f32>,
 }
 
 const F_PHYSICAL: u32 = 1u;
@@ -115,6 +118,8 @@ const F_TRIPLANAR: u32 = 2048u;
 const F_DETAIL: u32 = 4096u;
 const F_MACRO: u32 = 8192u;
 const F_WEBS: u32 = 16384u;
+const F_DISTANT: u32 = 32768u;
+const F_PARTICLES_ONCE: u32 = 65536u;
 
 // A surface's motion since last frame in texture coordinates, this frame's place less the last's,
 // without the jitter.
@@ -230,6 +235,11 @@ const M_SMOKE: u32 = 524288u;
 const M_TINTED_ICE: u32 = 1048576u;
 // A basin's water, `flags::POOL`.
 const M_POOL: u32 = 2097152u;
+// A player's face or hair picture: skin and hair detail from its face map (crate::face_detail).
+const M_FACE: u32 = 4194304u;
+// An untextured surface's pack material (`flags::PROJECTED`): its maps laid along the world's
+// axes, one repeat over `alpha_cutoff` metres of the object at its own size.
+const M_PROJECTED: u32 = 8388608u;
 const NO_TEXTURE: u32 = 0xFFFFFFFFu;
 
 // The G-buffer's shading bits, in the material target's alpha.
@@ -422,9 +432,20 @@ fn wind_gust(foot: vec2<f32>, along: vec2<f32>, t: f32) -> vec2<f32> {
     );
 }
 
+// The way growth bends, unit: the breeze's `along`, or in a storm the way the rain is driven.
+fn gale_way(along: vec2<f32>) -> vec2<f32> {
+    let w = frame.gale.yz;
+    if (frame.gale.x <= 0.0 || dot(w, w) < 1e-8) {
+        return along;
+    }
+    return normalize(mix(along, normalize(w), frame.gale.x));
+}
+
 // How far the wind moves a point `rise` (0 at the foot, 1 at the top) up a plant or tree `tall`
 // metres high whose foot stands at `foot`, at clock `t`: a lean with the wind deepened by the
-// passing gusts, a small sway at its own rate and a flutter, the taller the less in proportion.
+// passing gusts, a sway at its own rate and a flutter, the taller the less in proportion. The
+// sway is as wide as before the gusts came but never carries the tree past upright. A storm adds
+// a steady lean downwind, about half the sway again, deeper in the gusts.
 fn sway_at(foot: vec3<f32>, local: vec3<f32>, rise: f32, tall: f32, t: f32) -> vec3<f32> {
     let r = clamp(rise, 0.0, 1.0);
     let reach = min(tall * mix(0.16, 0.028, smoothstep(1.5, 12.0, tall)), 0.85) * r * r;
@@ -433,17 +454,17 @@ fn sway_at(foot: vec3<f32>, local: vec3<f32>, rise: f32, tall: f32, t: f32) -> v
         return vec3<f32>(0.0);
     }
     let along = select(vec2<f32>(0.82, 0.57), frame.wind.xy / max(strength, 1e-4), strength > 1e-4);
-    let side = vec2<f32>(-along.y, along.x);
     let n = wind_gust(foot.xy, along, t);
     let gust = smoothstep(0.25, 0.8, 0.5 * (n.x + n.y)) * mix(0.7, 1.2, frame.wind.z);
     let phase = dot(foot.xy, vec2<f32>(0.13, 0.09));
     let rate = 1.0 + 0.3 * sin(phase * 3.7);
-    let bend = (sin(t * 1.1 * rate + phase) + 0.45 * sin(t * 2.3 * rate + phase * 1.6)) * (0.06 + 0.1 * gust);
+    let bend = (sin(t * 1.1 * rate + phase) + 0.45 * sin(t * 2.3 * rate + phase * 1.6)) * (0.22 + 0.25 * gust);
     let flutter = 0.1 * sin(t * 6.1 * rate + dot(local, vec3<f32>(2.1, 1.7, 2.9)));
-    let across = 0.12 * sin(t * 0.7 * rate + phase * 0.7) + 0.4 * (n.y - 0.5);
+    let across = 0.18 * sin(t * 0.7 * rate + phase * 0.7) + 0.4 * (n.y - 0.5);
     let k = reach * strength;
-    let xy = along * (0.22 + 0.24 * gust + bend + 0.4 * flutter) * k
-        + side * (across - 0.3 * flutter) * k;
+    let way = gale_way(along);
+    let xy = way * (0.45 + 0.3 * gust + bend + flutter + frame.gale.x * (0.45 + 0.4 * gust)) * k
+        + vec2<f32>(-way.y, way.x) * (across - 0.3 * flutter) * k;
     // The length kept: what leans over drops a little.
     let held = min(length(xy), 0.9 * max(tall, 0.01));
     let drop = tall - sqrt(max(tall * tall - held * held, 0.0));
@@ -526,8 +547,8 @@ fn shade_retail(albedo: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, metal
                 emissive: f32, bits: u32, sun_vis: f32, sky_vis: f32,
                 extra: vec3<f32>) -> vec3<f32> {
     if ((bits & G_INDOOR) != 0u) {
-        let light = pow(min(frame.indoor.rgb * sky_vis + extra, vec3<f32>(1.0)), vec3<f32>(2.2));
-        return albedo * (1.0 - metal * 0.7) * light + albedo * emissive;
+        let light = min(frame.indoor.rgb * sky_vis + extra, vec3<f32>(1.0));
+        return lit_as_retail(albedo * (1.0 - metal * 0.7), light) + albedo * emissive;
     }
     let l = frame.sun_dir.xyz;
     let ndl = dot(n, l);
@@ -549,6 +570,16 @@ fn shade_retail(albedo: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, metal
         spec = ggx(n, v, l, rough, f0) * ndl * pow(frame.sun.rgb, vec3<f32>(2.2)) * sun_vis;
     }
     return albedo * (1.0 - metal * 0.7) * light + spec + albedo * emissive;
+}
+
+// A linear colour lit as the client lights it: its picture's (sRGB) values times `light`, made
+// linear again, so the dark keeps the client's steps rather than sRGB's linear toe.
+fn lit_as_retail(albedo: vec3<f32>, light: vec3<f32>) -> vec3<f32> {
+    let lo = albedo * 12.92;
+    let hi = 1.055 * pow(albedo, vec3<f32>(1.0 / 2.4)) - 0.055;
+    let picture = select(hi, lo, albedo <= vec3<f32>(0.0031308)) * light;
+    return select(pow((picture + 0.055) / 1.055, vec3<f32>(2.4)), picture / 12.92,
+                  picture <= vec3<f32>(0.04045));
 }
 
 // Sun and sky light on one surface point with nothing in the way.

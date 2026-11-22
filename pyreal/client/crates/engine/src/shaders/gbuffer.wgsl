@@ -29,10 +29,12 @@ struct VsOut {
     // How far the object is faded out, 0 to 255; above it its level's crossfade code and, from
     // bit 16, a hash of the instance ([`screened`]).
     @location(12) @interpolate(flat) fade: u32,
-    // The cover's vertex colour (its brightness); unused elsewhere.
+    // The cover's vertex colour (its brightness); a model's baked shade inside what it wears.
     @location(13) shade: f32,
-    // 1 for an instance that moves (the pool's dynamic slots).
-    @location(14) @interpolate(flat) moves: u32,
+    // A player's head: how far from the border of its face picture, 0 at it to 1 a few millimetres
+    // in (crate::face_detail::shape_head); 1 elsewhere. (Whether an instance moves is the top bit of
+    // `fade`.)
+    @location(14) border: f32,
     // Where on its model, in the model's own frame.
     @location(15) local: vec3<f32>,
 }
@@ -73,7 +75,7 @@ fn fade_word(own: u32, code: u32, instance: u32) -> u32 {
     var h = instance * 0x9E3779B9u;
     h = (h ^ (h >> 15u)) * 0x2C1B3C6Du;
     h = h ^ (h >> 13u);
-    return own | (code << 8u) | (h & 0xFFFF0000u);
+    return own | (code << 8u) | (h & 0x7FFF0000u);
 }
 
 struct GOut {
@@ -161,13 +163,15 @@ fn vs_main(v: VsIn, @builtin(instance_index) entry: u32) -> VsOut {
     let p = billboard(array<vec4<f32>, 3>(inst.p0, inst.p1, inst.p2), mode);
     var local = v.position;
     var turn = 0.0;
+    let posed = (inst.sway & SKINNED) != 0u;
     if (mode == IMPOSTOR_MODE) {
         turn = bearing(m);
         local = facing(local, turn);
+    } else if (!posed) {
+        local = face_push(e.y & 0xFFFFu, local, oct_decode(v.normal), v.uv, v.extra);
     }
     var world = xform(m[0], m[1], m[2], local);
     var prev = xform(p[0], p[1], p[2], local);
-    let posed = (inst.sway & SKINNED) != 0u;
     if (posed) {
         // A posed body's vertex carries where it stood last frame.
         let was = v.position + vec3<f32>(unpack2x16float(v.extra), unpack2x16float(v.extra2).x);
@@ -198,8 +202,13 @@ fn vs_main(v: VsIn, @builtin(instance_index) entry: u32) -> VsOut {
     out.cell = inst.cell & 0xFFFFFFu;
     out.fade = fade_word(inst.cell >> 24u, (e.y >> 16u) & 0xFFu, e.x);
     out.object = inst.object + 1u;
-    out.moves = select(0u, 1u, e.x >= bitcast<u32>(frame.snow.w));
+    out.fade |= select(0u, 1u << 31u, e.x >= bitcast<u32>(frame.snow.w));
+    out.border = 1.0;
+    if (!posed && (materials[e.y & 0xFFFFu].flags & M_FACE) != 0u) {
+        out.border = 1.0 - f32((v.extra >> 8u) & 255u) / 255.0;
+    }
     out.local = v.position;
+    out.shade = select(f32(v.extra2 & 255u) / 255.0, 0.0, posed);
     return out;
 }
 
@@ -452,8 +461,16 @@ fn relief(m: Material, in: VsOut, n: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, 
 
 @fragment
 fn fs_object(in: VsOut, @builtin(front_facing) front: bool) -> GOut {
-    return object_surface(in, front, in.extra);
+    var g = object_surface(in, front, in.extra);
+    // The skin a hood keeps, shaded by the hood round it (`shade_inside`).
+    g.albedo = vec4<f32>(g.albedo.rgb * (1.0 - INSIDE_SHADE * in.shade), g.albedo.a);
+    return g;
 }
+
+// Whether this pipeline draws faces' detail and untextured stone (`M_FACE`, `M_PROJECTED`): the
+// slim object pipelines and the cover leave both out, which makes every other object cheaper.
+override HAS_FACE: bool = true;
+override HAS_PROJECTED: bool = true;
 
 // `hold`: the axes the polygon's picture is held to its edge along (`HOLD_U`, `HOLD_V`).
 fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
@@ -464,6 +481,10 @@ fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
     let dy = dpdy(in.uv);
     let wdx = dpdx(in.world);
     let wdy = dpdy(in.world);
+    // The object's scale, from how far the world moves for a step across its own model.
+    let ldx = dpdx(in.local);
+    let ldy = dpdy(in.local);
+    let grow = sqrt(max(dot(wdx, wdx) + dot(wdy, wdy), 1e-20) / max(dot(ldx, ldx) + dot(ldy, ldy), 1e-20));
     let m = materials[in.material];
     if (web_card_hidden(m.flags)) {
         discard;
@@ -479,23 +500,47 @@ fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
     let at = relief(m, in, n, wdx, wdy, dx, dy, hold);
     let uv = at.uv;
     var c = m.base_color;
+    // An untextured surface's pack material, laid along the world's axes at the object's scale.
+    let projected = HAS_PROJECTED && (m.flags & M_PROJECTED) != 0u;
+    let tw = tri_weights(n);
+    let pp = in.world / grow;
+    let pdx = wdx / grow;
+    let pdy = wdy / grow;
     if ((m.flags & M_HAS_BASE) != 0u) {
-        c *= pic_grad(m.tex_base, uv, dx, dy, hold);
+        if (projected) {
+            c *= tri_pic(m.tex_base, pp, pdx, pdy, m.alpha_cutoff, tw);
+        } else {
+            c *= pic_grad(m.tex_base, uv, dx, dy, hold);
+        }
+    }
+    var face = Face(c, 0.0, 0.0, 0.0, vec3<f32>(0.0, 0.0, 1.0));
+    if (HAS_FACE && (m.flags & M_FACE) != 0u) {
+        face = face_detail(m, c, uv, dx, dy, hold, in.local, wdx, wdy, in.border);
+        c = face.c;
     }
     if ((m.flags & M_CUTOUT) != 0u && c.a < m.alpha_cutoff) {
         discard;
     }
     if ((m.flags & M_HAS_NORMAL) != 0u) {
-        let t = pic_grad(m.tex_normal, uv, dx, dy, hold).rg;
         // A pack material's bend on a retail picture is depth mapping's.
         let k = select(1.0, frame.relief.y, (m.flags & M_PACKED_SURFACE) != 0u);
-        n = bend(n, unpack_normal(0.5 + (t - 0.5) * k), wdx, wdy, dx, dy);
+        if (projected) {
+            n = tri_bend(m.tex_normal, pp, pdx, pdy, m.alpha_cutoff, tw, n, k);
+        } else {
+            let t = pic_grad(m.tex_normal, uv, dx, dy, hold).rg;
+            n = bend(n, unpack_normal(0.5 + (t - 0.5) * k), wdx, wdy, dx, dy);
+        }
     }
     var rough = m.roughness;
     var metal = m.metal;
     var occlusion = 1.0;
     if ((m.flags & M_HAS_ROUGH_METAL) != 0u) {
-        let rm = pic_grad(m.tex_rough_metal, uv, dx, dy, hold);
+        var rm: vec4<f32>;
+        if (projected) {
+            rm = tri_pic(m.tex_rough_metal, pp, pdx, pdy, m.alpha_cutoff, tw);
+        } else {
+            rm = pic_grad(m.tex_rough_metal, uv, dx, dy, hold);
+        }
         if ((m.flags & M_PACKED_SURFACE) != 0u) {
             // A pack material's surface: roughness, occlusion, height.
             rough = rm.r;
@@ -505,8 +550,15 @@ fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
             metal = rm.b;
         }
     }
+    // A face: its relief, its eyes wet and its skin soft; the metal channel carries how much is
+    // skin, for the lighting's light through skin (a face is never a metal).
+    if (HAS_FACE && (m.flags & M_FACE) != 0u) {
+        n = bend(n, face.t, wdx, wdy, dx, dy);
+        rough = mix(rough, face.rough, face.region);
+        metal = face.skin;
+    }
     // A metal map: a metal only where it says, its picture brightened there alone.
-    if ((m.flags & M_HAS_METAL) != 0u) {
+    if ((m.flags & M_HAS_METAL) != 0u && (m.flags & M_FACE) == 0u) {
         let k = textureSampleGrad(textures[m.tex_metal], samp_repeat, uv, dx, dy).r;
         metal *= k;
         c = vec4<f32>(c.rgb * mix(1.0, m.emissive.w, k), c.a);
@@ -533,7 +585,7 @@ fn object_surface(in: VsOut, front: bool, hold: u32) -> GOut {
     if (at.lamp > 0.5) {
         bits |= G_KEY_LAMP;
     }
-    if (in.moves != 0u) {
+    if ((in.fade >> 31u) != 0u) {
         bits |= G_MOVES;
     }
     var emissive = m.emissive.x;
@@ -628,6 +680,12 @@ const MACRO_TURN: vec2<f32> = vec2<f32>(0.6, 0.8);
 const MACRO_SHIFT: vec2<f32> = vec2<f32>(0.31, 0.57);
 // How strongly the close detail bends the ground, per surface kind (`SurfaceKind::ALL`'s order).
 const DETAIL_BEND = array<f32, 10>(0.5, 0.8, 0.5, 0.2, 0.3, 0.6, 0.4, 0.0, 0.25, 0.8);
+
+// Layer `l`'s close detail: none on wind-rippled sand (yellow, grey), whose ripples are its relief.
+fn detail_of(l: vec4<u32>, kind: u32) -> f32 {
+    let t = (l.z >> 16u) & 0xFFu;
+    return select(DETAIL_BEND[kind], 0.0, t == 10u || t == 11u);
+}
 
 // One ground picture's colour, roughness, bend (its normal's east and north parts), height
 // (`has` 1 where the picture has one) and, molten, its heat (`molten_heat`).
@@ -1084,6 +1142,11 @@ fn fs_terrain(in: VsOut) -> GOut {
     var detail = 0.0;
     var heat = vec2<f32>(0.0);
     let water_drawn = has(F_WATER);
+    // The distant ground's grain, from the layer that shows most: its picture read 6 and 17 times
+    // larger, about its mean.
+    let grain_k = select(0.0, smoothstep(DISTANT_FROM.x, DISTANT_FROM.y, distance(in.world, frame.camera.xyz)), has(F_DISTANT));
+    var grain_layer = vec2<u32>(0u);
+    var grain_share = 0.0;
     for (var k = 0u; k < min(cell.count, 6u); k++) {
         let l = cell.layers[k];
         let kind = min((l.z >> 8u) & 0xFFu, 9u);
@@ -1094,12 +1157,14 @@ fn fs_terrain(in: VsOut) -> GOut {
             g = bed_layer(g, lay);
         }
         if (k == 0u || l.y == NO_TEXTURE) {
+            grain_layer = l.xw;
+            grain_share = 1.0;
             c = g.colour;
             rough = g.rough;
             bent = g.bend;
             height = g.height;
             has_height = g.has;
-            detail = DETAIL_BEND[kind];
+            detail = detail_of(l, kind);
             heat = g.heat;
         } else {
             let rot = l.z & 3u;
@@ -1111,12 +1176,37 @@ fn fs_terrain(in: VsOut) -> GOut {
                 w = height_share(w, g.height, height);
             }
             c = mix(c, g.colour, w);
+            // What the layers under it keep shrinks with it.
+            grain_share *= 1.0 - w;
+            if (w > grain_share) {
+                grain_layer = l.xw;
+                grain_share = w;
+            }
             rough = mix(rough, g.rough, w);
             bent = mix(bent, g.bend, w);
             height = mix(height, g.height, w);
             has_height = max(has_height, g.has);
-            detail = mix(detail, DETAIL_BEND[kind], w);
+            detail = mix(detail, detail_of(l, kind), w);
             heat = mix(heat, g.heat, w);
+        }
+    }
+    if (grain_k > 0.0) {
+        let t = bitcast<f32>(grain_layer.y);
+        let per_m = select(-1.0 / t, t / 24.0, t >= 0.0);
+        let foot = distance(in.world, frame.camera.xyz) * 2.0 * frame.cluster_z.w / frame.params.w;
+        let keep = grain_keep(per_m, foot);
+        if (keep.x + keep.y > 0.0) {
+            let slot = grain_layer.x;
+            let mean = textureSampleLevel(textures[slot], samp_repeat, vec2<f32>(0.5), GRAIN_MEAN_LEVEL).rgb;
+            var coarse = mean * (1.0 - 0.6 * keep.x - 0.4 * keep.y);
+            if (keep.x > 0.0) {
+                coarse += ground_read(slot, per_m / 6.0, lay).rgb * 0.6 * keep.x;
+            }
+            if (keep.y > 0.0) {
+                coarse += ground_read(slot, per_m / 17.0, lay).rgb * 0.4 * keep.y;
+            }
+            let ratio = clamp(coarse / max(mean, vec3<f32>(1e-3)), vec3<f32>(0.45), vec3<f32>(1.7));
+            c *= mix(vec3<f32>(1.0), ratio, grain_k);
         }
     }
     var bits = G_TERRAIN;
@@ -1148,7 +1238,8 @@ fn fs_terrain(in: VsOut) -> GOut {
         }
     }
     // A bend leans the retail triangle's normal by its east and north parts.
-    let n = normalize(vec3<f32>(n0.xy + bent * n0.z, n0.z));
+    let n = far_relief(in.world, normalize(vec3<f32>(n0.xy + bent * n0.z, n0.z)));
+    c = far_look(in.world, c, n0);
     var g = pack(c, n, rough, 0.0, emissive, bits, in.material, in.cur, in.prev);
     g.albedo.a = raised.lit;
     return g;

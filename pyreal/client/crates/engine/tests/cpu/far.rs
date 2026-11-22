@@ -26,6 +26,7 @@ fn field() -> FarField {
         colours: vec![[90, 110, 60, 255]; n * n],
         water: Vec::new(),
         water_side: 0,
+        wet: false,
         near_min: Vec2::splat(-200.0),
         near_max: Vec2::splat(200.0),
         smooth: false,

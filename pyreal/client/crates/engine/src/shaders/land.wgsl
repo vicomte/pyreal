@@ -392,3 +392,183 @@ fn waterline_wet(world: vec3<f32>, foot: f32) -> vec2<f32> {
     let covered = water_cover(edge, foot) * (1.0 - smoothstep(up, up + 0.03, above));
     return vec2<f32>(max(wet, covered), covered);
 }
+
+// The distant ground (the surfaces' `distant`): what the far field's heights (its records' x) and
+// the ground's pictures give the land past about 50 m, where the pictures blur to their mean.
+
+// Where the distant ground's looks start, and where they are whole, metres from the eye.
+const DISTANT_FROM: vec2<f32> = vec2<f32>(50.0, 220.0);
+
+// The grain's reads (6 and 17 times larger) fade out as one repeat of the picture shrinks from
+// the second of these many pixels across to the first, where it shows only its mean.
+const GRAIN_PIXELS: vec2<f32> = vec2<f32>(2.0, 6.0);
+// A level past any picture's smallest: its mean.
+const GRAIN_MEAN_LEVEL: f32 = 16.0;
+
+// How much of the grain's two reads a pixel `foot` metres across shows of a picture repeated
+// `per_m` times a metre.
+fn grain_keep(per_m: f32, foot: f32) -> vec2<f32> {
+    let px = vec2<f32>(6.0, 17.0) / max(per_m * foot, 1e-6);
+    return smoothstep(vec2<f32>(GRAIN_PIXELS.x), vec2<f32>(GRAIN_PIXELS.y), px);
+}
+
+fn far_heights_on() -> bool {
+    return far_rings.water_side > 0u;
+}
+
+// The far field's height at `p`, bilinear between its vertices.
+fn far_height(p: vec2<f32>) -> f32 {
+    let q = (p - far_rings.origin) / LAND_CELL;
+    let i = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let a = far_vertex(i).height;
+    let b = far_vertex(i + vec2<i32>(1, 0)).height;
+    let c = far_vertex(i + vec2<i32>(0, 1)).height;
+    let d = far_vertex(i + vec2<i32>(1, 1)).height;
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// The far field's normal at `p`, its slope taken `s` metres either side.
+fn far_normal(p: vec2<f32>, s: f32) -> vec3<f32> {
+    let dx = far_height(p - vec2<f32>(s, 0.0)) - far_height(p + vec2<f32>(s, 0.0));
+    let dy = far_height(p - vec2<f32>(0.0, s)) - far_height(p + vec2<f32>(0.0, s));
+    return normalize(vec3<f32>(dx, dy, 2.0 * s));
+}
+
+// How far the ground round `p`, `r` metres out, lies above it: positive in a hollow.
+fn far_hollow(p: vec2<f32>, h: f32, r: f32) -> f32 {
+    let d = r * 0.7071;
+    let ring = far_height(p + vec2<f32>(r, 0.0)) + far_height(p - vec2<f32>(r, 0.0))
+        + far_height(p + vec2<f32>(0.0, r)) + far_height(p - vec2<f32>(0.0, r))
+        + far_height(p + vec2<f32>(d, d)) + far_height(p - vec2<f32>(d, d))
+        + far_height(p + vec2<f32>(d, -d)) + far_height(p + vec2<f32>(-d, d));
+    return ring * 0.125 - h;
+}
+
+// How much the ground's shape keeps of the light: hollows darker, crests a little lighter.
+fn far_cavity(p: vec2<f32>, h: f32) -> f32 {
+    let near = far_hollow(p, h, 40.0);
+    let wide = far_hollow(p, h, 140.0);
+    return clamp(1.0 - near * 0.03 - wide * 0.012, 0.55, 1.2);
+}
+
+// Large patches of lusher and drier ground, `k` of their strength.
+fn far_patches(p: vec2<f32>, c: vec3<f32>, k: f32) -> vec3<f32> {
+    let a = land_noise(p + vec2<f32>(17.3, 41.9), 85.0);
+    let b = land_noise(p - vec2<f32>(63.1, 9.7), 260.0);
+    let e = land_noise(p + vec2<f32>(5.5, 77.7), 29.0);
+    let v = (a * 0.45 + b * 0.35 + e * 0.2 - 0.5) * 2.0;
+    // Green ground turns drier and lusher; other ground only lighter and darker.
+    let green = clamp((c.g - max(c.r, c.b)) / max(c.g, 1e-3) * 3.0, 0.0, 1.0);
+    let dry = vec3<f32>(1.14, 1.06, 0.78);
+    let lush = vec3<f32>(0.86, 0.98, 0.9);
+    let hue = mix(vec3<f32>(1.0), select(lush, dry, v > 0.0), min(abs(v), 1.0) * green);
+    let bright = 1.0 + v * 0.3;
+    return c * mix(vec3<f32>(1.0), hue * bright, k);
+}
+
+// Steep ground darker and earthier, and ground standing above its surroundings a little paler.
+fn far_slope_tint(p: vec2<f32>, c: vec3<f32>, up: f32, h: f32, k: f32) -> vec3<f32> {
+    let steep = smoothstep(0.12, 0.45, 1.0 - up);
+    let earth = vec3<f32>(luma(c)) * vec3<f32>(1.08, 0.96, 0.82) * 0.78;
+    var out = mix(c, earth, steep * 0.85);
+    let rise = clamp(-far_hollow(p, h, 380.0) / 120.0, -1.0, 1.0);
+    let pale = mix(out, vec3<f32>(luma(out)) * vec3<f32>(0.98, 1.0, 1.04), 0.35);
+    out = mix(out, pale * 1.1, max(rise, 0.0));
+    out *= 1.0 + min(rise, 0.0) * 0.12;
+    return mix(c, out, k);
+}
+
+// How much sun the hills between `p` and the sun leave it, from the far field's heights.
+fn far_hill_shadow(p: vec3<f32>) -> f32 {
+    if (!has(F_DISTANT) || !far_heights_on()) {
+        return 1.0;
+    }
+    let l = frame.sun_dir.xyz;
+    let flat = length(l.xy);
+    if (l.z <= 0.0 || flat < 1e-3) {
+        return 1.0;
+    }
+    let way = l.xy / flat;
+    let rise = l.z / flat;
+    var t = 20.0;
+    var vis = 1.0;
+    for (var i = 0; i < 28; i++) {
+        let ray = p.z + 1.5 + t * rise;
+        let h = far_height(p.xy + way * t);
+        vis = min(vis, clamp(0.5 + (ray - h) / (t * 0.05 + 4.0), 0.0, 1.0));
+        if (vis <= 0.0) {
+            break;
+        }
+        t *= 1.2;
+    }
+    return vis;
+}
+
+// Colour `c` of the ground at `world` (normal `n`) with the distant ground's shape, patches and
+// slope tint, growing with distance.
+fn far_look(world: vec3<f32>, c: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    if (!has(F_DISTANT) || !far_heights_on()) {
+        return c;
+    }
+    let k = smoothstep(DISTANT_FROM.x, DISTANT_FROM.y, distance(world, frame.camera.xyz));
+    if (k <= 0.0) {
+        return c;
+    }
+    let h = far_height(world.xy);
+    var out = c * mix(1.0, far_cavity(world.xy, h), k);
+    out = far_patches(world.xy, out, k);
+    return far_slope_tint(world.xy, out, n.z, h, k);
+}
+
+// Retail's own triangle's normal at `p`, from the far field's heights and its cut.
+fn far_facet(p: vec2<f32>) -> vec3<f32> {
+    let q = (p - far_rings.origin) / LAND_CELL;
+    let i = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let a = far_vertex(i);
+    let sw = a.height;
+    let se = far_vertex(i + vec2<i32>(1, 0)).height;
+    let nw = far_vertex(i + vec2<i32>(0, 1)).height;
+    let ne = far_vertex(i + vec2<i32>(1, 1)).height;
+    var d: vec2<f32>;
+    if ((a.word & LW_SW_TO_NE) != 0u) {
+        d = select(vec2<f32>(ne - nw, nw - sw), vec2<f32>(se - sw, ne - se), f.x >= f.y);
+    } else {
+        d = select(vec2<f32>(ne - nw, ne - se), vec2<f32>(se - sw, nw - sw), f.x + f.y <= 1.0);
+    }
+    return normalize(vec3<f32>(-d, LAND_CELL));
+}
+
+// The distant ground's normal `n` at `world` with retail's facets and rough bends.
+fn far_relief(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    if (!has(F_DISTANT) || !far_heights_on()) {
+        return n;
+    }
+    let dist = distance(world, frame.camera.xyz);
+    let k = smoothstep(DISTANT_FROM.x, DISTANT_FROM.y, dist);
+    if (k <= 0.0) {
+        return n;
+    }
+    let foot = dist * 2.0 * frame.cluster_z.w / frame.params.w;
+    var out = n;
+    {
+        // Gone where a facet is only a few pixels across.
+        let keep = k * (1.0 - smoothstep(5.0, 14.0, foot));
+        out = normalize(mix(out, far_facet(world.xy), keep * 0.7));
+    }
+    {
+        let cells = array<f32, 3>(7.0, 19.0, 53.0);
+        let heights = array<f32, 3>(0.9, 2.2, 5.0);
+        var b = vec2<f32>(0.0);
+        for (var j = 0u; j < 3u; j++) {
+            let c = cells[j];
+            let keep = 1.0 - smoothstep(c * 0.3, c * 0.8, foot);
+            if (keep > 0.0) {
+                b += land_noise_sloped(world.xy + vec2<f32>(f32(j) * 41.3, f32(j) * 17.9), c).yz * heights[j] * keep;
+            }
+        }
+        out = normalize(vec3<f32>(out.xy - b * out.z * k, out.z));
+    }
+    return out;
+}

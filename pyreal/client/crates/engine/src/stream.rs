@@ -981,7 +981,14 @@ impl Stream {
             Some((c, mut f)) if chebyshev(c, centre) <= drawn => {
                 f.near_min = min;
                 f.near_max = max;
-                world::set_far(engine, loader, f, self.first_range());
+                world::set_far(
+                    engine,
+                    loader,
+                    &self.store,
+                    &self.region,
+                    f,
+                    self.first_range(),
+                );
                 self.far_centre = Some(c);
             }
             _ => {

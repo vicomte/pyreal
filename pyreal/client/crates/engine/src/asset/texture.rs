@@ -287,7 +287,20 @@ impl<'a> TextureSource<'a> {
         id: DataId,
         change: impl Fn(u32, u32, &mut [u8]),
     ) -> Result<TexturePixels, TextureError> {
-        let mut data = self.decode_level0(id, false, None)?;
+        self.decode_keyed_with(id, false, change)
+    }
+
+    /// [`Self::decode_with`] with a clip map's keying.
+    ///
+    /// # Errors
+    /// As [`Self::decode`].
+    pub fn decode_keyed_with(
+        &self,
+        id: DataId,
+        clip_map: bool,
+        change: impl Fn(u32, u32, &mut [u8]),
+    ) -> Result<TexturePixels, TextureError> {
+        let mut data = self.decode_level0(id, clip_map, None)?;
         if data.format != TextureFormat::Bgra8 {
             data = pyreal_codecs::texture::decode_block_chain(&data)
                 .map_err(|e| TextureError::Decode(id, e))?;

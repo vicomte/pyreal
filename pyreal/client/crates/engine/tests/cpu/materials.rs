@@ -3,8 +3,8 @@
 
 use pyreal_assets::Surface;
 use pyreal_engine::asset::material::{
-    describe_surface, flags, srgb_to_linear, KindTable, MaterialRecord, PackMaps, SurfaceKind,
-    TextureKey, MATERIAL_RECORD_SIZE, NO_TEXTURE,
+    describe_surface, flags, srgb_to_linear, untextured_colour, KindTable, MaterialRecord,
+    PackMaps, SurfaceKind, TextureKey, MATERIAL_RECORD_SIZE, NO_TEXTURE,
 };
 use pyreal_engine::asset::mesh::Sides;
 use pyreal_engine::scene::PipelineKind;
@@ -162,6 +162,33 @@ fn each_pack_map_only_adds() {
     assert_eq!(d.base, Some(TextureKey::Pack("brick".into())));
 }
 
+/// A `[[solid]]` material on an untextured surface: its grain multiplies the surface's own colour,
+/// laid along the world's axes, its repeat carried in the record's cut-out word.
+#[test]
+fn a_solid_keeps_the_surface_colour_under_its_projected_grain() {
+    let solid = surface(0x1);
+    assert_eq!(untextured_colour(&solid), Some(0xFF80_4020));
+    assert_eq!(untextured_colour(&surface(IMAGE)), None);
+    let pack = PackMaps {
+        base: Some(TextureKey::Pack("grain".into())),
+        normal: Some(TextureKey::Pack("grain_n".into())),
+        projected: Some(0.5),
+        ..PackMaps::default()
+    };
+    let d = describe_surface(&solid, false, None, &KindTable::default(), pack.clone());
+    assert_eq!(d.base_color[0], srgb_to_linear(0x80));
+    assert_eq!(
+        d.flags & (flags::HAS_BASE | flags::HAS_NORMAL | flags::PROJECTED),
+        flags::HAS_BASE | flags::HAS_NORMAL | flags::PROJECTED
+    );
+    let r = MaterialRecord::new(&d, |_| Some(3));
+    assert!((r.alpha_cutoff - 0.5).abs() < 1e-6);
+    // On a picture it is no solid: drawn as any pack picture is.
+    let d = describe_surface(&surface(IMAGE), false, None, &KindTable::default(), pack);
+    assert_eq!(d.flags & flags::PROJECTED, 0);
+    assert!((MaterialRecord::new(&d, |_| Some(3)).alpha_cutoff - 0.5).abs() < 1e-6);
+}
+
 /// A map whose texture does not load loses its flag, so the shader takes the fallback.
 #[test]
 fn a_map_that_does_not_load_falls_back() {
@@ -273,6 +300,7 @@ fn pack() -> std::sync::Arc<pyreal_art_pack::ArtPack> {
         fingerprints: Vec::new(),
         palettes: Vec::new(),
         draws_on: Default::default(),
+        solid: None,
         credit: Default::default(),
     };
     std::sync::Arc::new(pyreal_art_pack::ArtPack {
@@ -403,7 +431,13 @@ fn a_metal_map_makes_a_metal_only_where_it_says() {
     let r = MaterialRecord::new(&d, |k| match k {
         TextureKey::Pack(_) => Some(9),
         TextureKey::Dat { .. } => Some(7),
-        TextureKey::ClassicGround { .. } | TextureKey::LaterGround { .. } => None,
+        TextureKey::ClassicGround { .. }
+        | TextureKey::LaterGround { .. }
+        | TextureKey::LaterPicture { .. }
+        | TextureKey::FaceMap { .. }
+        | TextureKey::FaceEdges { .. }
+        | TextureKey::FaceTile
+        | TextureKey::LaterModel { .. } => None,
     });
     assert_eq!((r.textures[5], r.emissive[3]), (9, 2.0));
     // Wholly metal, it is brightened whole and names no map.

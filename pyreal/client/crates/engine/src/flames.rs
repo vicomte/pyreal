@@ -261,6 +261,10 @@ fn wreath_of(e: &pyreal_assets::world::ParticleEmitterInfo) -> Option<(f32, f32)
 /// Objects whose fire their emitters do not tell: a chandelier's ring of candles.
 pub const KINDS: &[(u32, FlameKind)] = &[(0x0200_0081, FlameKind::Candle)];
 
+/// (setup, the setup it burns as): a torch with no script of its own that burns as another's.
+/// End of Retail's torch pillar on a base lost its script with its base, and is the other pillar.
+pub const BURNS_AS: &[(u32, u32)] = &[(0x0200_039D, 0x0200_039C)];
+
 /// One flame of an object, in the object's own space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlameSource {
@@ -356,6 +360,11 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<FlameSource> {
     let Some(setup) = decode::<Setup>(store, DbType::Setup, id) else {
         return Vec::new();
     };
+    if setup.default_script_id.0 == 0 {
+        if let Some(&(_, other)) = BURNS_AS.iter().find(|(s, _)| *s == id.0) {
+            return examine(store, DataId(other));
+        }
+    }
     let parts = parts(&setup);
     let fiery: Vec<_> = script_emitters(store, &setup, &parts)
         .into_iter()

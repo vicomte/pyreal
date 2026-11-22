@@ -124,9 +124,88 @@ pub struct LoadStats {
     /// Retail pictures and objects the pack has entries for, none made from this world's record
     /// of them (`docs/ERAS.md`), drawn as the world's files hold them.
     pub pack_unmatched: usize,
+    /// Room slots drawn with End of Retail's picture beside an older world
+    /// ([`crate::later_rooms`]).
+    pub later_room_slots: usize,
+    /// Parts of props drawn from End of Retail's files beside an older world
+    /// ([`crate::later_models`]).
+    pub later_model_parts: usize,
 }
 
+/// A room piece: its environment, cell structure, surfaces, End of Retail's surfaces in their
+/// slots and whether those are tinted ([`AssetLoader::later_slots`]).
+type RoomKey = (u32, u16, Vec<u32>, Vec<u32>, bool);
+/// The world's surface, End of Retail's, two-sided, tinted.
+type LaterMaterialKey = (u32, u32, bool, bool);
+/// End of Retail's surface, two-sided, and its picture's tint.
+type LaterModelKey = (u32, bool, Option<crate::later_rooms::FitKey>);
+
 /// The caches between the dats and the engine: each texture, material and mesh is loaded once.
+/// A material drawing a face or hair picture: plain until the picture's maps are made and a near
+/// player draws it, plain again once none has for [`FACE_GRACE`].
+#[derive(Debug, Clone)]
+struct FaceMat {
+    picture: DataId,
+    full: MaterialDesc,
+    plain: MaterialDesc,
+    detailed: bool,
+    /// When a near player last drew it, on the faces' clock.
+    wanted: f64,
+}
+
+/// A picture's loaded maps: their texture slots (face map, edge map) and when last wanted.
+#[derive(Debug, Clone, Copy)]
+struct FaceMaps {
+    slots: (u32, u32),
+    wanted: f64,
+}
+
+/// A player head model shaped in full for the world: its mesh once made and dressed variants, and
+/// when a near player last asked for it.
+#[derive(Debug, Default)]
+struct NearHead {
+    base: Option<MeshId>,
+    dressed: HashMap<Dress, Option<MeshId>>,
+    wanted: f64,
+}
+
+/// How a player's head is drawn ([`AssetLoader::head_mesh`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HeadLevel {
+    /// As the dats make it (Detailed Faces off).
+    Plain,
+    /// Lightly rounded.
+    Far,
+    /// Shaped in full: its beard, brows, lips and eyes standing out.
+    Near,
+}
+
+/// Within this many metres a player's head is shaped in full, once made; out past
+/// [`HEAD_NEAR_OUT`] it goes back to the light one.
+pub const HEAD_NEAR_IN: f32 = 6.0;
+pub const HEAD_NEAR_OUT: f32 = 8.0;
+/// Within this many metres a player's face and hair pictures are given their detail.
+pub const FACE_REACH: f32 = 30.0;
+/// How long, seconds, a face's detail is kept after the last near player drew it: a player who
+/// steps away and back keeps theirs.
+pub const FACE_GRACE: f64 = 45.0;
+/// How long, seconds, a head shaped in full is kept after the last near player.
+pub const HEAD_GRACE: f64 = 20.0;
+/// The most made maps or heads taken onto the pools in one frame.
+const FACE_TAKE: usize = 4;
+
+/// `desc` (a face or hair picture's plain material) with picture `t`'s detail.
+fn face_desc(desc: &MaterialDesc, t: DataId) -> MaterialDesc {
+    let mut full = desc.clone();
+    full.flags |= flags::FACE;
+    full.face = Some([
+        TextureKey::FaceMap { id: t },
+        TextureKey::FaceEdges { id: t },
+        TextureKey::FaceTile,
+    ]);
+    full
+}
+
 pub struct AssetLoader {
     pub kinds: KindTable,
     overrides: Box<dyn MaterialOverrides>,
@@ -142,6 +221,19 @@ pub struct AssetLoader {
     prints: Mutex<HashMap<(u32, bool), Option<Fingerprint>>>,
     /// End of retail's ground beside an older world, read once.
     later_ground: Option<Option<Arc<LaterGround>>>,
+    /// End of Retail's rooms beside an older world, opened the first time a room is placed.
+    later_rooms: Option<Option<crate::later_rooms::LaterRooms>>,
+    /// Room surfaces drawn with End of Retail's picture: the world's surface, End of Retail's,
+    /// two-sided, tinted.
+    later_materials: HashMap<LaterMaterialKey, Option<(u32, u32)>>,
+    /// End of Retail's props beside an older world, opened the first time one is placed.
+    later_models: Option<Option<crate::later_models::LaterModels>>,
+    /// Their meshes and materials, apart from the world's: the eras number surfaces differently
+    /// and repainted some pictures under the same ids.
+    /// Meshes by End of Retail's graphics object and the prop whose tints they take (`0` for
+    /// none).
+    later_model_meshes: HashMap<(u32, u32), Option<MeshId>>,
+    later_model_materials: HashMap<LaterModelKey, Option<(u32, u32)>>,
     /// Where a pack model's level of pictures takes over from its last level of shape: its
     /// shape's own end where it has one, else this many times where that level began; zero
     /// keeps the shape to the horizon.
@@ -170,15 +262,44 @@ pub struct AssetLoader {
     textures: HashMap<TextureKey, Option<u32>>,
     materials: HashMap<MaterialKey, Option<(u32, u32)>>,
     meshes: HashMap<u32, Option<MeshId>>,
-    /// Dressed variants of a graphics object's mesh.
-    dressed: HashMap<(u32, Dress), Option<MeshId>>,
+    /// Dressed variants of a graphics object's mesh, by the object, the part model its shading
+    /// is for (0 for none) and the dress.
+    dressed: HashMap<(u32, u32, Dress), Option<MeshId>>,
+    /// A graphics object's mesh worn in place of a part model, shaded where it keeps the part's
+    /// own surfaces; `None` where nothing is shaded.
+    shaded: HashMap<(u32, u32), Option<MeshId>>,
+    /// A player's head as drawn beyond arm's length (crate::face_detail::far_head), plain and dressed.
+    far_heads: HashMap<(u64, Dress), Option<MeshId>>,
+    /// A player's head drawn plain (Detailed Faces off), dressed.
+    plain_heads: HashMap<(u64, Dress), Option<MeshId>>,
+    /// The skin a head model worn over a part model keeps (a hair style's or a hood's), shaded
+    /// inside what covers it; empty where it keeps none or all. By head key.
+    head_keeps: HashMap<u64, Vec<DataId>>,
+    /// Player heads shaped in full for the world's near players, made off the frame.
+    near_heads: HashMap<u64, NearHead>,
+    /// The meshes drawn as a head near (shaped in full), whose next level is the far head.
+    near_meshes: std::collections::HashSet<u32>,
+    /// Face and hair pictures' detail made off the frame ([`crate::faces`]).
+    faces: crate::faces::FaceWork,
+    /// The materials drawing a face or hair picture, by index.
+    face_mats: HashMap<u32, FaceMat>,
+    /// The pictures whose maps are loaded, by picture.
+    face_maps: HashMap<u32, FaceMaps>,
+    /// The faces' clock, seconds since the loader was made, and when it last let detail go.
+    face_clock: (std::time::Instant, f64, f64),
+    /// Faces given their detail on the frame (an offline view, where nothing waits), or off it.
+    pub faces_now: bool,
     /// A part's near mesh dressed: its pictures' mean linear luminance and their weight.
     lumas: HashMap<(u32, Dress), Option<(f32, f32)>>,
     /// Each loaded mesh's sub-meshes, which a variant draws with other materials.
     submeshes: HashMap<u32, Vec<crate::asset::mesh::SubMesh>>,
     /// Whether a picture is palette-indexed, which a palette variant can change.
     palettised: HashMap<u32, bool>,
-    cell_meshes: HashMap<(u32, u16, Vec<u32>), Option<MeshId>>,
+    /// Whether a setup is mostly the pack's clear crystal ([`Self::clear_body`]).
+    clear_bodies: HashMap<u32, bool>,
+    /// Each room piece's mesh by its surfaces and End of Retail's in their slots (beside an older
+    /// world), and whether those are tinted.
+    cell_meshes: HashMap<RoomKey, Option<MeshId>>,
     /// Meshes whose degrade levels are linked.
     linked: std::collections::HashSet<u32>,
     /// The cut volumes written so far.
@@ -224,8 +345,17 @@ fn decode<T: Decode>(store: &RetailDatStore, kind: DbType, id: DataId) -> Option
 /// Where a pack model's level of pictures takes over: this many times where its last level of
 /// shape began.
 pub const CARDS_FROM: f32 = 1.0;
-/// The least distance a level of shape is taken to begin at, metres a metre of scale.
-const CARD_LEAST: f32 = 60.0;
+/// The least distance a level of shape is taken to begin at, metres a metre of scale; the card
+/// is drawn from the level this leaves last ([`pyreal_art_pack::cards::CARD_LEAST`]).
+const CARD_LEAST: f32 = pyreal_art_pack::cards::CARD_LEAST;
+/// The least radius, metres, of a static's near level that keeps its last coarser level drawn
+/// where retail's degrade draws nothing: a building or tower stays out to the loaded land's edge,
+/// which reaches beyond where retail's own view ended.
+pub const LANDMARK_RADIUS: f32 = 5.0;
+/// A mesh variant bit: a player's head as drawn beyond arm's length.
+const FAR_HEAD: u32 = 1 << 31;
+/// A mesh variant bit: a player's head as the dats make it.
+const PLAIN_HEAD: u32 = 1 << 30;
 
 /// The pipeline a material draws with.
 #[must_use]
@@ -261,6 +391,11 @@ impl AssetLoader {
             pack_cards: HashMap::new(),
             prints: Mutex::new(HashMap::new()),
             later_ground: None,
+            later_rooms: None,
+            later_materials: HashMap::new(),
+            later_models: None,
+            later_model_meshes: HashMap::new(),
+            later_model_materials: HashMap::new(),
             pack_grounds: HashMap::new(),
             pool_faces: HashMap::new(),
             fireboxes: Vec::new(),
@@ -269,9 +404,21 @@ impl AssetLoader {
             materials: HashMap::new(),
             meshes: HashMap::new(),
             dressed: HashMap::new(),
+            far_heads: HashMap::new(),
+            plain_heads: HashMap::new(),
+            head_keeps: HashMap::new(),
+            near_heads: HashMap::new(),
+            near_meshes: std::collections::HashSet::new(),
+            faces: crate::faces::FaceWork::default(),
+            face_mats: HashMap::new(),
+            face_maps: HashMap::new(),
+            face_clock: (std::time::Instant::now(), 0.0, 0.0),
+            faces_now: false,
+            shaded: HashMap::new(),
             lumas: HashMap::new(),
             submeshes: HashMap::new(),
             palettised: HashMap::new(),
+            clear_bodies: HashMap::new(),
             cell_meshes: HashMap::new(),
             linked: std::collections::HashSet::new(),
             cuts: Vec::new(),
@@ -317,6 +464,18 @@ impl AssetLoader {
         let mesh_gone = |m: &Option<MeshId>| m.is_some_and(|m| meshes.contains(&m.0));
         self.meshes.retain(|_, m| !mesh_gone(m));
         self.dressed.retain(|_, m| !mesh_gone(m));
+        self.far_heads.retain(|_, m| !mesh_gone(m));
+        self.plain_heads.retain(|_, m| !mesh_gone(m));
+        self.near_heads
+            .retain(|_, h| !h.base.is_some_and(|m| meshes.contains(&m.0)));
+        for h in self.near_heads.values_mut() {
+            h.dressed.retain(|_, m| !mesh_gone(m));
+        }
+        self.near_meshes.retain(|m| !meshes.contains(m));
+        self.face_mats.retain(|m, _| !materials.contains(m));
+        self.face_maps
+            .retain(|_, f| !textures.contains(&f.slots.0) && !textures.contains(&f.slots.1));
+        self.shaded.retain(|_, m| !mesh_gone(m));
         // A freed part's dressed brightness is worked out again if it comes back.
         let meshes_kept = &self.meshes;
         self.lumas.retain(|(g, _), _| meshes_kept.contains_key(g));
@@ -475,7 +634,12 @@ impl AssetLoader {
                 .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
             TextureKey::Dat { .. }
             | TextureKey::ClassicGround { .. }
-            | TextureKey::LaterGround { .. } => None,
+            | TextureKey::LaterGround { .. }
+            | TextureKey::LaterPicture { .. }
+            | TextureKey::FaceMap { .. }
+            | TextureKey::FaceEdges { .. }
+            | TextureKey::FaceTile
+            | TextureKey::LaterModel { .. } => None,
         };
         if slot.is_some() {
             self.stats.textures += 1;
@@ -536,6 +700,33 @@ impl AssetLoader {
                 .decode(*id, false, None)
                 .ok()
                 .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
+            TextureKey::FaceMap { id } => crate::face_detail::face_map(store, *id)
+                .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
+            TextureKey::FaceEdges { id } => crate::face_detail::edge_map(store, *id)
+                .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
+            TextureKey::FaceTile => engine
+                .materials
+                .add_texture(&engine.gpu, &crate::face_detail::tile())
+                .ok(),
+            TextureKey::LaterPicture { id, fit } => TextureSource::new(store)
+                .decode_with(*id, |_, _, bgra| {
+                    if let Some(f) = fit {
+                        crate::later_rooms::Fit::from_key(*f).apply(bgra);
+                    }
+                })
+                .ok()
+                .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok()),
+            TextureKey::LaterModel { id, clip_map, fit } => {
+                let src = TextureSource::new(store);
+                match fit {
+                    Some(f) => src.decode_keyed_with(*id, *clip_map, |_, _, bgra| {
+                        crate::later_rooms::Fit::from_key(*f).apply(bgra);
+                    }),
+                    None => src.decode(*id, *clip_map, None),
+                }
+                .ok()
+                .and_then(|px| engine.materials.add_texture(&engine.gpu, &px).ok())
+            }
         };
         if slot.is_some() {
             self.stats.textures += 1;
@@ -682,6 +873,35 @@ impl AssetLoader {
         decode::<Surface>(store, DbType::Surface, surface).and_then(|s| s.orig_texture_id)
     }
 
+    /// Whether most of setup `id`'s seen surfaces are clear in the pack (`Matter::clear`).
+    fn clear_body(&mut self, store: &RetailDatStore, id: DataId) -> bool {
+        if let Some(&c) = self.clear_bodies.get(&id.0) {
+            return c;
+        }
+        let (mut seen, mut clear) = (0u32, 0u32);
+        if let Some(setup) = decode::<pyreal_assets::Setup>(store, DbType::Setup, id) {
+            for gid in &setup.parts {
+                let Some(gfx) = decode::<GfxObj>(store, DbType::GfxObj, *gid) else {
+                    continue;
+                };
+                for s in &gfx.surfaces {
+                    let Some(surf) = decode::<Surface>(store, DbType::Surface, *s) else {
+                        continue;
+                    };
+                    if surf.translucency >= 1.0 {
+                        continue;
+                    }
+                    seen += 1;
+                    let maps = self.overrides.maps(*s, surf.orig_texture_id);
+                    clear += u32::from(maps.matter.clear.is_some());
+                }
+            }
+        }
+        let c = seen > 0 && clear * 2 >= seen;
+        self.clear_bodies.insert(id.0, c);
+        c
+    }
+
     fn is_palettised(&mut self, store: &RetailDatStore, texture: DataId) -> bool {
         *self
             .palettised
@@ -765,6 +985,9 @@ impl AssetLoader {
             if self.unmatched(s.orig_texture_id, &pack) {
                 self.stats.pack_unmatched += 1;
             }
+            if let Some(c) = crate::asset::material::untextured_colour(&s) {
+                pack = self.overrides.solid_maps(surface, c);
+            }
             if crate::asset::material::molten_dress(s.orig_texture_id, &palettes, &|t| {
                 self.print_of(Some(store), t)
             }) {
@@ -782,7 +1005,41 @@ impl AssetLoader {
             if smoke && desc.flags & (flags::TRANSLUCENT | flags::ICE) == 0 {
                 desc.flags |= flags::SMOKE | flags::TRANSLUCENT;
             }
-            self.add_material(engine, store, &desc)
+            // A player's face or hair picture, drawn opaque: the shader lays skin and hair over it
+            // once its maps are made (at once for an offline view; off the frame in the world,
+            // drawn plain meanwhile).
+            let face = s
+                .orig_texture_id
+                .filter(|t| crate::face_detail::is_face_picture(store, *t))
+                .and_then(|t| {
+                    let blends =
+                        flags::TRANSLUCENT | flags::ADDITIVE | flags::ALPHA | flags::CUTOUT;
+                    (desc.flags & blends == 0 && desc.base.is_some())
+                        .then(|| (t, face_desc(&desc, t)))
+                });
+            let Some((t, full)) = face else {
+                return self.add_material(engine, store, &desc);
+            };
+            let on = crate::face_detail::enabled();
+            if self.faces_now {
+                return self.add_material(engine, store, if on { &full } else { &desc });
+            }
+            let ready = on && self.face_maps.contains_key(&t.0);
+            let made = self.add_material(engine, store, if ready { &full } else { &desc });
+            if let Some((index, _)) = made {
+                let now = self.face_clock.1;
+                self.face_mats.insert(
+                    index,
+                    FaceMat {
+                        picture: t,
+                        full,
+                        plain: desc,
+                        detailed: ready,
+                        wanted: now,
+                    },
+                );
+            }
+            made
         });
         self.materials.insert(key, made);
         made
@@ -834,7 +1091,10 @@ impl AssetLoader {
         if let Some(m) = self.meshes.get(&id.0) {
             return *m;
         }
-        let made = self.load_mesh(engine, store, id, foliage, 0);
+        let made = self.load_mesh(engine, store, id, foliage, 0, &[]);
+        if let Some(m) = made.filter(|_| crate::face_detail::is_head(store, id)) {
+            self.near_meshes.insert(m.0);
+        }
         if made.is_some() {
             self.stats.meshes += 1;
         } else {
@@ -851,12 +1111,48 @@ impl AssetLoader {
         id: DataId,
         foliage: bool,
         variant: u32,
+        shade: &[DataId],
     ) -> Option<MeshId> {
         let obj = decode::<GfxObj>(store, DbType::GfxObj, id)?;
         let mut mesh = gfxobj_mesh(&obj);
         if mesh.indices.is_empty() {
             return None;
         }
+        // A shaded mesh is made only where something is shaded.
+        if !shade.is_empty()
+            && !crate::asset::mesh::shade_inside(&mut mesh, shade, crate::asset::mesh::SHADE_REACH)
+        {
+            return None;
+        }
+        // A player's head, rounded, its face pictures where they were: shaped in full near, lightly
+        // beyond (`FAR_HEAD`). Shaded as made first, its shade blended over the finer cut.
+        if variant & PLAIN_HEAD == 0 && crate::face_detail::is_head(store, id) {
+            mesh = if variant & FAR_HEAD != 0 {
+                crate::face_detail::far_head(store, id, &mesh)
+            } else {
+                crate::face_detail::shape_head(store, id, &mesh)
+            };
+        }
+        self.upload_mesh(
+            engine,
+            store,
+            id,
+            mesh,
+            foliage,
+            variant & !FAR_HEAD & !PLAIN_HEAD,
+        )
+    }
+
+    /// `mesh` (graphics object `id`'s, as made) onto the pools with its materials.
+    fn upload_mesh(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        mut mesh: crate::asset::mesh::MeshData,
+        foliage: bool,
+        variant: u32,
+    ) -> Option<MeshId> {
         let webs = self.weave_webs(engine, store, &mut mesh, id, variant);
         let mut draws = Vec::with_capacity(mesh.submeshes.len());
         for (k, s) in mesh.submeshes.iter().enumerate() {
@@ -963,7 +1259,7 @@ impl AssetLoader {
         if let Some(m) = self.web_variants.get(&(id.0, variant)) {
             return m.unwrap_or(mesh);
         }
-        let made = self.load_mesh(engine, store, id, foliage, variant);
+        let made = self.load_mesh(engine, store, id, foliage, variant, &[]);
         self.web_variants.insert((id.0, variant), made);
         made.unwrap_or(mesh)
     }
@@ -1005,13 +1301,460 @@ impl AssetLoader {
         dress: &Dress,
     ) -> Option<MeshId> {
         let base = self.mesh(engine, store, id, false)?;
+        self.dress_variant(engine, store, base, (id.0, 0), dress)
+    }
+
+    /// The mesh of graphics object `id` worn in place of the setup's own part model `own`, dressed
+    /// as `dress` says: where it keeps some of `own`'s surfaces and adds others (a face in a hood),
+    /// those are shaded by the rest round them ([`crate::asset::mesh::shade_inside`]); else
+    /// [`Self::mesh_dressed`].
+    pub fn mesh_worn(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        own: Option<DataId>,
+        dress: &Dress,
+    ) -> Option<MeshId> {
+        let shaded = own
+            .filter(|o| *o != id)
+            .and_then(|o| Some((o, self.shaded_mesh(engine, store, id, o)?)));
+        match shaded {
+            Some((own, base)) => self.dress_variant(engine, store, base, (id.0, own.0), dress),
+            None => self.mesh_dressed(engine, store, id, dress),
+        }
+    }
+
+    /// [`Self::mesh_worn`]'s shaded mesh, made once.
+    fn shaded_mesh(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        own: DataId,
+    ) -> Option<MeshId> {
+        if let Some(m) = self.shaded.get(&(id.0, own.0)) {
+            return *m;
+        }
+        // A hair style's head is not shaded inside its hair: the skin its hair picture paints (a
+        // forehead, a neck) would shade the face beside it as a hood would, a hard band.
+        if crate::face_detail::is_bare_head(store, id) {
+            self.shaded.insert((id.0, own.0), None);
+            return None;
+        }
+        let keep =
+            decode::<GfxObj>(store, DbType::GfxObj, own).map_or_else(Vec::new, |o| o.surfaces);
+        let wraps = decode::<GfxObj>(store, DbType::GfxObj, id).is_some_and(|o| {
+            o.surfaces.iter().any(|s| keep.contains(s))
+                && o.surfaces.iter().any(|s| !keep.contains(s))
+        });
+        let made = if wraps {
+            self.load_mesh(engine, store, id, false, 0, &keep)
+        } else {
+            None
+        };
+        // A hooded player's head is shaped in full only near, as a bare one.
+        if let Some(m) = made.filter(|_| crate::face_detail::is_head(store, id)) {
+            self.near_meshes.insert(m.0);
+        }
+        self.shaded.insert((id.0, own.0), made);
+        made
+    }
+
+    /// `base` (graphics object `key.0`'s mesh, shaded for part model `key.1`) drawn with the
+    /// dressed materials, made once per dress.
+    fn dress_variant(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        base: MeshId,
+        key: (u32, u32),
+        dress: &Dress,
+    ) -> Option<MeshId> {
         if dress.is_plain() {
             return Some(base);
         }
-        let key = (id.0, dress.clone());
+        let key = (key.0, key.1, dress.clone());
         if let Some(m) = self.dressed.get(&key) {
             return *m;
         }
+        let made = self.dress_mesh(engine, store, base, dress);
+        if let Some(m) = made.filter(|_| self.near_meshes.contains(&base.0)) {
+            self.near_meshes.insert(m.0);
+        }
+        self.dressed.insert(key, made);
+        made
+    }
+
+    /// Player head `id` as drawn beyond arm's length, dressed as `dress` says.
+    fn far_head(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        dress: &Dress,
+    ) -> Option<MeshId> {
+        self.head_variant(engine, store, id, None, dress, FAR_HEAD)
+    }
+
+    /// A head model's key: the model, and the part model it is worn over (none, or itself).
+    fn head_key(id: DataId, own: Option<DataId>) -> u64 {
+        let own = own.filter(|o| *o != id).map_or(0, |o| o.0);
+        (u64::from(own) << 32) | u64::from(id.0)
+    }
+
+    /// The skin head model `id` keeps of part model `own` it is worn over, where it keeps some and
+    /// covers it with more (a hair style, a hood); made once.
+    fn head_keep(
+        &mut self,
+        store: &RetailDatStore,
+        id: DataId,
+        own: Option<DataId>,
+    ) -> Vec<DataId> {
+        let key = Self::head_key(id, own);
+        if let Some(k) = self.head_keeps.get(&key) {
+            return k.clone();
+        }
+        // Not a hair style's (see `shaded_mesh`).
+        let own = own.filter(|_| !crate::face_detail::is_bare_head(store, id));
+        let keep = own.filter(|o| *o != id).map_or_else(Vec::new, |own| {
+            let keep =
+                decode::<GfxObj>(store, DbType::GfxObj, own).map_or_else(Vec::new, |o| o.surfaces);
+            let wraps = decode::<GfxObj>(store, DbType::GfxObj, id).is_some_and(|o| {
+                o.surfaces.iter().any(|s| keep.contains(s))
+                    && o.surfaces.iter().any(|s| !keep.contains(s))
+            });
+            if wraps {
+                keep
+            } else {
+                Vec::new()
+            }
+        });
+        self.head_keeps.insert(key, keep.clone());
+        keep
+    }
+
+    /// Player head `id`, worn over part model `own`, made as variant bit `variant` says
+    /// ([`FAR_HEAD`], [`PLAIN_HEAD`]) and shaded inside what covers its skin, dressed as `dress`
+    /// says.
+    fn head_variant(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        own: Option<DataId>,
+        dress: &Dress,
+        variant: u32,
+    ) -> Option<MeshId> {
+        let head = Self::head_key(id, own);
+        let key = (head, dress.clone());
+        if let Some(m) = self.head_cache(variant).get(&key) {
+            return *m;
+        }
+        let plain = (head, Dress::default());
+        let base = match self.head_cache(variant).get(&plain) {
+            Some(m) => *m,
+            None => {
+                let keep = self.head_keep(store, id, own);
+                let m = if keep.is_empty() {
+                    None
+                } else {
+                    self.load_mesh(engine, store, id, false, variant, &keep)
+                }
+                .or_else(|| self.load_mesh(engine, store, id, false, variant, &[]));
+                self.head_cache(variant).insert(plain, m);
+                m
+            }
+        };
+        let made = if dress.is_plain() {
+            base
+        } else {
+            base.and_then(|b| self.dress_mesh(engine, store, b, dress))
+        };
+        self.head_cache(variant).insert(key, made);
+        made
+    }
+
+    fn head_cache(&mut self, variant: u32) -> &mut HashMap<(u64, Dress), Option<MeshId>> {
+        if variant == FAR_HEAD {
+            &mut self.far_heads
+        } else {
+            &mut self.plain_heads
+        }
+    }
+
+    /// The mesh player head part `gfxobj` (its near level) is drawn with `distance` metres from the
+    /// eye, dressed as `dress`, and how: as the dats make it with Detailed Faces off; else shaped
+    /// in full within [`HEAD_NEAR_IN`] (out to [`HEAD_NEAR_OUT`] when `was_near`) once made off the
+    /// frame, the light head meanwhile and beyond. Its face and hair pictures are given their
+    /// detail within [`FACE_REACH`]. Its degrade levels are linked.
+    #[allow(clippy::too_many_arguments)]
+    pub fn head_mesh(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        gfxobj: DataId,
+        own: Option<DataId>,
+        dress: &Dress,
+        distance: f32,
+        was_near: bool,
+    ) -> Option<(MeshId, HeadLevel)> {
+        if !crate::face_detail::enabled() {
+            let m = self.head_variant(engine, store, gfxobj, own, dress, PLAIN_HEAD)?;
+            self.link_degrades_dressed(engine, store, m, gfxobj, false, dress);
+            return Some((m, HeadLevel::Plain));
+        }
+        let far = self.head_variant(engine, store, gfxobj, own, dress, FAR_HEAD)?;
+        self.link_degrades_dressed(engine, store, far, gfxobj, false, dress);
+        let head_key = Self::head_key(gfxobj, own);
+        let mut out = (far, HeadLevel::Far);
+        if distance
+            < if was_near {
+                HEAD_NEAR_OUT
+            } else {
+                HEAD_NEAR_IN
+            }
+        {
+            let now = self.face_clock.1;
+            let head = self.near_heads.entry(head_key).or_default();
+            head.wanted = now;
+            match head.base {
+                Some(base) => {
+                    let made = match head.dressed.get(dress) {
+                        Some(m) => *m,
+                        None => {
+                            let m = if dress.is_plain() {
+                                Some(base)
+                            } else {
+                                self.dress_mesh(engine, store, base, dress)
+                            };
+                            if let Some(m) = m {
+                                self.near_meshes.insert(m.0);
+                            }
+                            self.near_heads
+                                .entry(head_key)
+                                .or_default()
+                                .dressed
+                                .insert(dress.clone(), m);
+                            m
+                        }
+                    };
+                    if let Some(near) = made {
+                        self.link_degrades_dressed(engine, store, near, gfxobj, false, dress);
+                        out = (near, HeadLevel::Near);
+                    }
+                }
+                None => {
+                    let keep = self.head_keep(store, gfxobj, own);
+                    self.faces.ask_head(store, gfxobj, head_key, &keep);
+                }
+            }
+        }
+        if distance < FACE_REACH {
+            self.want_faces(engine, store, out.0);
+        }
+        Some(out)
+    }
+
+    /// Marks `mesh`'s face and hair materials as drawn near now, giving those whose maps are made
+    /// their detail and asking for the rest's maps.
+    pub fn want_faces(&mut self, engine: &mut Engine, store: &RetailDatStore, mesh: MeshId) {
+        if self.faces_now || !crate::face_detail::enabled() {
+            return;
+        }
+        let now = self.face_clock.1;
+        let mats: Vec<u32> = engine
+            .scene
+            .mesh(mesh)
+            .map(|m| m.draws.iter().map(|d| d.material).collect())
+            .unwrap_or_default();
+        for index in mats {
+            let Some(fm) = self.face_mats.get_mut(&index) else {
+                continue;
+            };
+            fm.wanted = now;
+            let picture = fm.picture;
+            if let Some(maps) = self.face_maps.get_mut(&picture.0) {
+                maps.wanted = now;
+                if !fm.detailed {
+                    self.detail(engine, store, index);
+                }
+            } else {
+                self.faces.ask_maps(store, picture);
+            }
+        }
+    }
+
+    /// Gives face material `index` its detail (its picture's maps loaded).
+    fn detail(&mut self, engine: &mut Engine, store: &RetailDatStore, index: u32) {
+        let Some(full) = self.face_mats.get(&index).map(|f| f.full.clone()) else {
+            return;
+        };
+        let record = MaterialRecord::new(&full, |k| self.texture(engine, store, k));
+        engine.materials.set_material(index, record);
+        if let Some(f) = self.face_mats.get_mut(&index) {
+            f.detailed = true;
+        }
+    }
+
+    /// Takes face material `index`'s detail away.
+    fn plain(&mut self, engine: &mut Engine, store: &RetailDatStore, index: u32) {
+        let Some(plain) = self.face_mats.get(&index).map(|f| f.plain.clone()) else {
+            return;
+        };
+        let record = MaterialRecord::new(&plain, |k| self.texture(engine, store, k));
+        engine.materials.set_material(index, record);
+        if let Some(f) = self.face_mats.get_mut(&index) {
+            f.detailed = false;
+        }
+    }
+
+    /// Once a frame: takes what the faces' thread has made onto the pools (the faces near players
+    /// draw given their detail, heads shaped in full ready to draw), and lets go of detail no near
+    /// player has drawn for its grace: materials drawn plain again, maps and heads freed.
+    pub fn tick_faces(&mut self, engine: &mut Engine, store: &RetailDatStore) {
+        let now = self.face_clock.0.elapsed().as_secs_f64();
+        self.face_clock.1 = now;
+        let on = crate::face_detail::enabled();
+        for made in self.faces.take(FACE_TAKE) {
+            match made {
+                crate::faces::Made::Maps(id, Some(face), Some(edges)) if on => {
+                    let a = engine.materials.add_texture(&engine.gpu, &face).ok();
+                    let b = engine.materials.add_texture(&engine.gpu, &edges).ok();
+                    let (Some(a), Some(b)) = (a, b) else {
+                        a.into_iter()
+                            .chain(b)
+                            .for_each(|t| engine.materials.free_texture(t));
+                        continue;
+                    };
+                    self.textures.insert(TextureKey::FaceMap { id }, Some(a));
+                    self.textures.insert(TextureKey::FaceEdges { id }, Some(b));
+                    self.face_maps.insert(
+                        id.0,
+                        FaceMaps {
+                            slots: (a, b),
+                            wanted: now,
+                        },
+                    );
+                    let waiting: Vec<u32> = self
+                        .face_mats
+                        .iter()
+                        .filter(|(_, f)| {
+                            f.picture == id && !f.detailed && now - f.wanted < FACE_GRACE
+                        })
+                        .map(|(i, _)| *i)
+                        .collect();
+                    for index in waiting {
+                        self.detail(engine, store, index);
+                    }
+                }
+                crate::faces::Made::Head(id, key, Some(mesh)) if on => {
+                    let base = self.upload_mesh(engine, store, id, mesh, false, 0);
+                    if let Some(m) = base {
+                        self.near_meshes.insert(m.0);
+                    }
+                    self.near_heads.entry(key).or_default().base = base;
+                }
+                _ => {}
+            }
+        }
+        if now - self.face_clock.2 < 1.0 {
+            return;
+        }
+        self.face_clock.2 = now;
+        let stale: Vec<u32> = self
+            .face_mats
+            .iter()
+            .filter(|(_, f)| f.detailed && (!on || now - f.wanted > FACE_GRACE))
+            .map(|(i, _)| *i)
+            .collect();
+        for index in stale {
+            self.plain(engine, store, index);
+        }
+        let detailed: std::collections::HashSet<u32> = self
+            .face_mats
+            .values()
+            .filter(|f| f.detailed)
+            .map(|f| f.picture.0)
+            .collect();
+        let gone: Vec<u32> = self
+            .face_maps
+            .iter()
+            .filter(|(p, m)| !detailed.contains(p) && (!on || now - m.wanted > FACE_GRACE))
+            .map(|(p, _)| *p)
+            .collect();
+        for p in gone {
+            if let Some(m) = self.face_maps.remove(&p) {
+                engine.materials.free_texture(m.slots.0);
+                engine.materials.free_texture(m.slots.1);
+                self.textures.remove(&TextureKey::FaceMap { id: DataId(p) });
+                self.textures
+                    .remove(&TextureKey::FaceEdges { id: DataId(p) });
+            }
+        }
+        let old: Vec<u64> = self
+            .near_heads
+            .iter()
+            .filter(|(_, h)| h.base.is_some() && now - h.wanted > HEAD_GRACE)
+            .map(|(g, _)| *g)
+            .collect();
+        for g in old {
+            let Some(head) = self.near_heads.get(&g) else {
+                continue;
+            };
+            let meshes: Vec<MeshId> = head
+                .dressed
+                .values()
+                .flatten()
+                .copied()
+                .filter(|m| Some(*m) != head.base)
+                .chain(head.base)
+                .collect();
+            // Only once nothing draws any of them (the counts taken).
+            if meshes
+                .iter()
+                .any(|m| engine.scene.drawn_by_any(*m) != Some(false))
+            {
+                continue;
+            }
+            for m in meshes {
+                engine.scene.free_mesh(m);
+                self.near_meshes.remove(&m.0);
+                self.linked.remove(&m.0);
+                self.submeshes.remove(&m.0);
+            }
+            self.near_heads.remove(&g);
+        }
+    }
+
+    /// Sets the Detailed Faces option; whether faces are drawn differently now, so what draws
+    /// players' heads should take them again ([`Self::head_mesh`]). Turned off, every face's detail
+    /// is let go at the next [`Self::tick_faces`].
+    pub fn set_face_detail(&mut self, store: Option<&RetailDatStore>, on: bool) -> bool {
+        if !crate::face_detail::set_enabled(on) {
+            return false;
+        }
+        // The heads made for a preview or an offline view, shaped or not as it was: made again.
+        if let Some(store) = store {
+            self.meshes
+                .retain(|g, _| !crate::face_detail::is_player_head(store, DataId(*g)));
+            self.dressed
+                .retain(|(g, _, _), _| !crate::face_detail::is_player_head(store, DataId(*g)));
+            self.shaded
+                .retain(|(g, _), _| !crate::face_detail::is_player_head(store, DataId(*g)));
+        }
+        self.face_clock.2 = f64::NEG_INFINITY;
+        true
+    }
+
+    /// `base` drawn with its surfaces dressed as `dress` says, made anew.
+    fn dress_mesh(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        base: MeshId,
+        dress: &Dress,
+    ) -> Option<MeshId> {
         let subs = self.submeshes.get(&base.0).cloned().unwrap_or_default();
         let draws: Vec<Option<(u32, PipelineKind)>> = subs
             .iter()
@@ -1034,11 +1777,12 @@ impl AssetLoader {
             self.submeshes.insert(m.0, subs);
             self.dressed_made += 1;
         }
-        self.dressed.insert(key, made);
         made
     }
 
-    /// Links `mesh` (graphics object `gfxobj`'s near level) to its coarser levels, once.
+    /// Links `mesh` (graphics object `gfxobj`'s near level) to its coarser levels, once; a
+    /// static at least [`LANDMARK_RADIUS`] in radius keeps its last coarser level where retail's
+    /// chain ends.
     fn link_degrades(
         &mut self,
         engine: &mut Engine,
@@ -1047,7 +1791,20 @@ impl AssetLoader {
         gfxobj: DataId,
         foliage: bool,
     ) {
-        self.link_degrades_dressed(engine, store, mesh, gfxobj, foliage, &Dress::default());
+        let landmark = !foliage
+            && engine
+                .scene
+                .mesh(mesh)
+                .is_some_and(|m| m.radius >= LANDMARK_RADIUS);
+        self.link_chain(
+            engine,
+            store,
+            mesh,
+            gfxobj,
+            foliage,
+            &Dress::default(),
+            landmark,
+        );
     }
 
     /// [`Self::link_degrades`] with every level dressed as `dress` says.
@@ -1060,12 +1817,42 @@ impl AssetLoader {
         foliage: bool,
         dress: &Dress,
     ) {
+        self.link_chain(engine, store, mesh, gfxobj, foliage, dress, false);
+    }
+
+    /// Links `mesh` to its coarser levels dressed as `dress` says, once; with `keep_last`, a
+    /// chain ending in nothing after a coarser level leaves that level drawn.
+    #[allow(clippy::too_many_arguments)]
+    fn link_chain(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        mesh: MeshId,
+        gfxobj: DataId,
+        foliage: bool,
+        dress: &Dress,
+        keep_last: bool,
+    ) {
         if !self.linked.insert(mesh.0) {
             return;
         }
         engine.scene.set_billboard(mesh, near_mode(store, gfxobj));
         let mut at = mesh;
+        // A player's head is shaped in full only near; beyond, lightly.
+        if !foliage && self.near_meshes.contains(&mesh.0) {
+            if let Some(far) = self.far_head(engine, store, gfxobj, dress) {
+                engine
+                    .scene
+                    .set_lod(mesh, Some(far), crate::face_detail::NEAR_HEAD);
+                engine.scene.set_billboard(far, near_mode(store, gfxobj));
+                at = far;
+            }
+        }
         for level in degrade_chain(store, gfxobj) {
+            // A coarser level, never the near one, is kept: that is what retail drew far off.
+            if keep_last && level.mesh.is_none() && at != mesh {
+                break;
+            }
             let next = level.mesh.and_then(|g| {
                 if dress.is_plain() {
                     self.mesh(engine, store, g, foliage)
@@ -1119,7 +1906,15 @@ impl AssetLoader {
         let placed: Vec<crate::lamps::Lamp> = sources
             .map(|s| crate::lamps::place(&s, at, cell, object))
             .collect();
-        let flames = engine.flames.sources(store, id).to_vec();
+        // A prop drawn as End of Retail has it burns with End of Retail's fire.
+        let later = crate::later_models::listed(id)
+            .and_then(|_| {
+                self.later_models
+                    .get_or_insert_with(|| crate::later_models::LaterModels::of(store))
+                    .as_mut()
+            })
+            .map(|l| l.flames(id).to_vec());
+        let flames = later.unwrap_or_else(|| engine.flames.sources(store, id).to_vec());
         let (carded, beds): (Vec<_>, Vec<_>) = flames.iter().partition(|f| f.kind.carded());
         engine.flames.placed.extend(
             carded
@@ -1179,8 +1974,8 @@ impl AssetLoader {
 
     /// Object `id`'s lamps at `at` in cell slot `cell`, belonging to object number `object`: the
     /// pack's where it gives the object some there, else the dats', else a creature's glow (an
-    /// acid creature's glow in place of its own). For an object that moves, whose lamps are
-    /// placed again each frame.
+    /// acid creature's glow in place of its own; none for a body of clear crystal). For an object
+    /// that moves, whose lamps are placed again each frame.
     pub fn lamps_at(
         &mut self,
         store: &RetailDatStore,
@@ -1196,10 +1991,15 @@ impl AssetLoader {
             .as_ref()
             .and_then(|p| crate::lamps::pack_sources(&p.pack, id, cell == OUTSIDE, &retail))
             .unwrap_or(retail);
+        // A body of clear crystal (an ice golem's) is lit, not a light: its luminosity is retail's ice.
         let sources = if creature
             && (sources.is_empty() || self.lamps.glows(store, id).iter().any(crate::lamps::acid))
         {
-            self.lamps.glows(store, id).to_vec()
+            if self.clear_body(store, id) {
+                Vec::new()
+            } else {
+                self.lamps.glows(store, id).to_vec()
+            }
         } else {
             sources
         };
@@ -1619,13 +2419,18 @@ impl AssetLoader {
                 return usize::from(placed);
             }
         }
+        if let Some(n) = self.place_later(engine, store, id, at, foliage, cell) {
+            return n;
+        }
         if let Some(host) = animated {
             return self.place_animated(engine, store, id, host, foliage, cell);
         }
         let object = self.next_object;
         self.next_object += 1;
+        let parts = object_parts(store, id);
+        let wind = self.retail_wind(id, cell, &parts);
         let mut n = 0;
-        for part in object_parts(store, id) {
+        for part in parts {
             let Some(mesh) = self.mesh(engine, store, part.gfxobj, foliage) else {
                 continue;
             };
@@ -1640,7 +2445,7 @@ impl AssetLoader {
                     previous: transform,
                     object,
                     cell,
-                    sway: 0,
+                    sway: wind.map_or(0, |w| retail_sway(engine, mesh, w)),
                 },
             ) {
                 n += 1;
@@ -1649,33 +2454,333 @@ impl AssetLoader {
         self.stats.instances += n;
         n
     }
+
+    /// How much the wind moves retail object `id` drawn with its own `parts` in cell slot `cell`:
+    /// the pack's `[[sway]]` outdoors, where every part stands upright at the object's foot.
+    fn retail_wind(
+        &self,
+        id: DataId,
+        cell: u32,
+        parts: &[crate::asset::object::Part],
+    ) -> Option<f32> {
+        if cell != OUTSIDE {
+            return None;
+        }
+        let wind = self.pack.as_ref()?.pack.sway(id)?;
+        parts
+            .iter()
+            .all(|p| {
+                p.transform.translation.length() < 0.01 && p.transform.z_axis.normalize().z > 0.99
+            })
+            .then_some(wind)
+    }
+}
+
+/// The sway word of a retail part drawn as `mesh` that the wind moves `wind`, by its height.
+fn retail_sway(engine: &Engine, mesh: MeshId, wind: f32) -> u32 {
+    let height = engine
+        .scene
+        .mesh(mesh)
+        .map_or(0.0, |m| m.center.z + m.radius);
+    if height > 0.05 {
+        crate::scene::sway(wind, height)
+    } else {
+        0
+    }
 }
 
 impl AssetLoader {
+    /// Prop `id` drawn from End of Retail's files beside the older world `store`, where it is one
+    /// of [`crate::later_models::MODELS`] and those files hold it: the instances it made. `None`
+    /// leaves it to the world's own records.
+    fn place_later(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        id: DataId,
+        at: Affine3A,
+        foliage: bool,
+        cell: u32,
+    ) -> Option<usize> {
+        let tinted = crate::later_models::listed(id)?;
+        let later = self
+            .later_models
+            .get_or_insert_with(|| crate::later_models::LaterModels::of(store))
+            .as_mut()?;
+        let parts = object_parts(later.store(), id);
+        if parts.is_empty() {
+            return None;
+        }
+        // Classic Ground Coloring keeps the older colours, as it does for End of Retail's rooms.
+        let classic = crate::ground_tint::coloring() == crate::ground_tint::GroundColoring::Classic;
+        let fits = (tinted && classic).then(|| later.fits(store, id));
+        let later_store = later.store().clone();
+        let object = self.next_object();
+        let wind = self.retail_wind(id, cell, &parts);
+        let mut n = 0;
+        for part in parts {
+            let tint = fits.as_deref().map(|f| (id, f));
+            let Some(mesh) = self.later_mesh(engine, &later_store, part.gfxobj, foliage, tint)
+            else {
+                continue;
+            };
+            let transform = at * part.transform;
+            if self.add_instance(
+                engine,
+                Instance {
+                    mesh,
+                    transform,
+                    previous: transform,
+                    object,
+                    cell,
+                    sway: wind.map_or(0, |w| retail_sway(engine, mesh, w)),
+                },
+            ) {
+                n += 1;
+            }
+        }
+        self.stats.instances += n;
+        self.stats.later_model_parts += n;
+        Some(n)
+    }
+
+    /// Part `gfxobj` of a server's object of setup `setup` drawn from End of Retail's files beside
+    /// an older world, where the setup is one of [`crate::later_models::MODELS`] drawn untinted
+    /// and those files hold the part; `None` leaves it to the world's own records.
+    pub fn later_part(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        setup: DataId,
+        gfxobj: DataId,
+    ) -> Option<MeshId> {
+        if crate::later_models::listed(setup)? {
+            return None;
+        }
+        let later = self
+            .later_models
+            .get_or_insert_with(|| crate::later_models::LaterModels::of(store))
+            .as_ref()?;
+        let later_store = later.store().clone();
+        let mesh = self.later_mesh(engine, &later_store, gfxobj, false, None)?;
+        self.stats.later_model_parts += 1;
+        Some(mesh)
+    }
+
+    /// End of Retail's graphics object `id` beside an older world, each picture tinted by the
+    /// fit `tint` gives it (the prop and its fits by picture).
+    fn later_mesh(
+        &mut self,
+        engine: &mut Engine,
+        later: &RetailDatStore,
+        id: DataId,
+        foliage: bool,
+        tint: Option<(DataId, &HashMap<u32, crate::later_rooms::Fit>)>,
+    ) -> Option<MeshId> {
+        let key = (id.0, tint.map_or(0, |t| t.0 .0));
+        if let Some(m) = self.later_model_meshes.get(&key) {
+            return *m;
+        }
+        let made = decode::<GfxObj>(later, DbType::GfxObj, id).and_then(|obj| {
+            let mesh = gfxobj_mesh(&obj);
+            if mesh.indices.is_empty() {
+                return None;
+            }
+            let draws: Vec<Option<(u32, PipelineKind)>> = mesh
+                .submeshes
+                .iter()
+                .map(|s| {
+                    let surface = s.surface?;
+                    let fit = tint.and_then(|(_, fits)| {
+                        let picture = self.surface_texture(later, surface)?;
+                        fits.get(&picture.0).map(crate::later_rooms::Fit::key)
+                    });
+                    let m = self.later_model_material(
+                        engine,
+                        later,
+                        surface,
+                        s.sides == Sides::Both,
+                        foliage,
+                        fit,
+                    )?;
+                    Some((m.0, pipeline_for(m.1, s.sides)))
+                })
+                .collect();
+            let made = engine
+                .scene
+                .add_mesh(&engine.gpu, &mesh, |k| draws.get(k).copied().flatten())
+                .ok()?;
+            self.submeshes.insert(made.0, mesh.submeshes);
+            Some(made)
+        });
+        if made.is_some() {
+            self.stats.meshes += 1;
+        } else {
+            self.stats.empty_meshes += 1;
+        }
+        self.later_model_meshes.insert(key, made);
+        made
+    }
+
+    /// End of Retail's surface `surface` beside an older world, with End of Retail's picture and
+    /// the pack's material for it, the picture tinted by `fit`.
+    fn later_model_material(
+        &mut self,
+        engine: &mut Engine,
+        later: &RetailDatStore,
+        surface: DataId,
+        two_sided: bool,
+        foliage: bool,
+        fit: Option<crate::later_rooms::FitKey>,
+    ) -> Option<(u32, u32)> {
+        let key = (surface.0, two_sided, fit);
+        if let Some(m) = self.later_model_materials.get(&key) {
+            return *m;
+        }
+        let made = decode::<Surface>(later, DbType::Surface, surface).and_then(|s| {
+            let picture = s.orig_texture_id;
+            if foliage
+                && s.surface_type & st::BASE1_CLIPMAP != 0
+                && self.kinds.kind(picture) == SurfaceKind::Plain
+            {
+                if let Some(t) = picture {
+                    self.kinds.insert(t, SurfaceKind::Foliage);
+                }
+            }
+            let mut pack = self.overrides.maps_for(surface, picture, &[], &|t| {
+                self.print_in(Some(later), t, true)
+            });
+            if let Some(c) = crate::asset::material::untextured_colour(&s) {
+                pack = self.overrides.solid_maps(surface, c);
+            }
+            if fit.is_some() {
+                // The picture is End of Retail's, tinted; the pack's own would lose the tint.
+                pack.base = None;
+            }
+            if pack != PackMaps::default() {
+                self.stats.pack_surfaces += 1;
+            }
+            let mut desc = describe_surface(&s, two_sided, None, &self.kinds, pack);
+            // The world's files hold other pictures under some of these ids.
+            if let Some(TextureKey::Dat { id, clip_map, .. }) = desc.base {
+                desc.base = Some(TextureKey::LaterModel { id, clip_map, fit });
+            }
+            self.add_material(engine, later, &desc)
+        });
+        self.later_model_materials.insert(key, made);
+        made
+    }
+
     /// The mesh of a room: its cell structure against its surface list, its portals left open.
     /// Rooms of one building type share it.
+    /// Room `d`'s slots drawn with End of Retail's picture beside an older world
+    /// ([`crate::later_rooms`]); all `None` elsewhere.
+    fn later_slots(
+        &mut self,
+        store: &RetailDatStore,
+        d: &DecodedCell,
+    ) -> Vec<Option<crate::later_rooms::LaterSlot>> {
+        let rooms = self
+            .later_rooms
+            .get_or_insert_with(|| crate::later_rooms::LaterRooms::of(store));
+        match rooms {
+            Some(r) => r.slots(store, d),
+            None => vec![None; d.cell.surfaces.len()],
+        }
+    }
+
+    /// The world's room surface `surface` drawn with End of Retail's picture `later` (its pack
+    /// material End of Retail's), `tinted` toward the older picture or not.
+    fn later_material(
+        &mut self,
+        engine: &mut Engine,
+        store: &RetailDatStore,
+        surface: DataId,
+        two_sided: bool,
+        later: &crate::later_rooms::LaterSlot,
+        tinted: bool,
+    ) -> Option<(u32, u32)> {
+        let key = (surface.0, later.surface.0, two_sided, tinted);
+        if let Some(m) = self.later_materials.get(&key) {
+            return *m;
+        }
+        let later_store = self.later_rooms.as_ref()?.as_ref()?.store().clone();
+        let made = decode::<Surface>(store, DbType::Surface, surface).and_then(|s| {
+            let mut pack = self
+                .overrides
+                .maps_for(later.surface, Some(later.picture), &[], &|t| {
+                    self.print_in(Some(&later_store), t, true)
+                });
+            // The picture is End of Retail's, tinted; the pack's own would lose the tint.
+            pack.base = None;
+            if pack != PackMaps::default() {
+                self.stats.pack_surfaces += 1;
+            }
+            // The world's surface keeps its kind, flags and translucency.
+            let mut desc = describe_surface(&s, two_sided, None, &self.kinds, pack);
+            desc.base = Some(TextureKey::LaterPicture {
+                id: later.picture,
+                fit: tinted.then(|| later.fit.key()),
+            });
+            self.stats.later_room_slots += 1;
+            self.add_material(engine, &later_store, &desc)
+        });
+        self.later_materials.insert(key, made);
+        made
+    }
+
     fn room_mesh(
         &mut self,
         engine: &mut Engine,
         store: &RetailDatStore,
         d: &DecodedCell,
     ) -> Option<MeshId> {
+        let later = self.later_slots(store, d);
+        // Classic Ground Coloring tints the pairs drawn tinted; the others are End of Retail's own.
+        let classic = crate::ground_tint::coloring() == crate::ground_tint::GroundColoring::Classic;
         let key = (
             d.cell.environment.0,
             d.cell.cell_struct,
             d.cell.surfaces.iter().map(|s| s.0).collect::<Vec<_>>(),
+            later
+                .iter()
+                .map(|l| l.map_or(0, |l| l.surface.0))
+                .collect::<Vec<_>>(),
+            classic && later.iter().any(|l| l.is_some_and(|l| l.tinted)),
         );
         if let Some(m) = self.cell_meshes.get(&key) {
             return *m;
         }
         let mesh = cell_mesh(&d.structure, &d.cell.surfaces);
+        // A slot's End of Retail picture, by the world's surface (the mesh names surfaces).
+        let by_surface: HashMap<u32, crate::later_rooms::LaterSlot> = d
+            .cell
+            .surfaces
+            .iter()
+            .zip(&later)
+            .filter_map(|(s, l)| Some((s.0, (*l)?)))
+            .collect();
         let made = (!mesh.indices.is_empty())
             .then(|| {
                 let draws: Vec<Option<(u32, PipelineKind)>> = mesh
                     .submeshes
                     .iter()
                     .map(|s| {
-                        let m = self.material(engine, store, s.surface?, s.sides == Sides::Both)?;
+                        let surface = s.surface?;
+                        let two_sided = s.sides == Sides::Both;
+                        let m = match by_surface.get(&surface.0) {
+                            Some(l) => self
+                                .later_material(
+                                    engine,
+                                    store,
+                                    surface,
+                                    two_sided,
+                                    l,
+                                    classic && l.tinted,
+                                )
+                                .or_else(|| self.material(engine, store, surface, two_sided)),
+                            None => self.material(engine, store, surface, two_sided),
+                        }?;
                         Some((m.0, pipeline_for(m.1, s.sides)))
                     })
                     .collect();
@@ -2666,22 +3771,28 @@ pub fn far_field_round(
 pub fn set_far(
     engine: &mut Engine,
     loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
     field: crate::far::FarField,
     first_range: f32,
 ) {
     let material = loader.terrain_material(engine).unwrap_or(0);
+    let grounds = far_grounds(engine, loader, store, region);
     engine.far = Some(crate::far::FarTerrain::new(
         &engine.gpu,
         &engine.renderer.frame_layout,
+        &engine.materials.layout,
         field,
         first_range,
         material,
+        &grounds,
         engine.far.as_ref().map(crate::far::FarTerrain::pipelines),
     ));
 }
 
 /// Builds the far terrain `radius` blocks out around `area` (whose exact cells it leaves alone),
-/// its finest level drawn out to `first_range` metres.
+/// its finest level drawn out to `first_range` metres; `smooth` draws it with Landscape Smoothing.
+#[allow(clippy::too_many_arguments)]
 pub fn load_far(
     engine: &mut Engine,
     loader: &mut AssetLoader,
@@ -2690,9 +3801,47 @@ pub fn load_far(
     area: Area,
     radius: i32,
     first_range: f32,
+    smooth: bool,
 ) {
-    let field = far_field(store, region, area, radius);
-    set_far(engine, loader, field, first_range);
+    let mut field = far_field(store, region, area, radius);
+    field.smooth = smooth;
+    set_far(engine, loader, store, region, field, first_range);
+}
+
+/// Each terrain type's ground picture for the far rings' grain, the road's last: its slot and
+/// repeats a metre (as bits), pinned; [`crate::far::NO_GROUND_ENTRY`] where it has none.
+fn far_grounds(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
+) -> Vec<[u32; 4]> {
+    let later = loader.later_ground(store);
+    (0..u32::try_from(crate::far::GROUND_ENTRIES).unwrap_or(0))
+        .map(|t| {
+            let got = Ground {
+                loader: &mut *loader,
+                engine: &mut *engine,
+                store,
+                region,
+                later: later.as_deref(),
+            }
+            .ground(t);
+            match got {
+                Some((slot, tiling, _)) => {
+                    engine.materials.pin_texture(slot);
+                    // A layer's tiling: repeats a cell, or (below nought) metres a repeat.
+                    let per_m = if tiling >= 0.0 {
+                        tiling / CELL_SIZE
+                    } else {
+                        -1.0 / tiling
+                    };
+                    [slot, per_m.to_bits(), 0, 0]
+                }
+                None => crate::far::NO_GROUND_ENTRY,
+            }
+        })
+        .collect()
 }
 
 /// Terrain type `terrain_type`'s Classic tint for its picture `picture`, when the coloring in
@@ -3864,7 +5013,19 @@ pub fn load_area(
     region: &Region,
     area: Area,
 ) {
-    let mut planner = Planner::new(region);
+    load_area_smoothed(engine, loader, store, region, area, 0);
+}
+
+/// [`load_area`] with Landscape Smoothing at strength `smoothing`.
+pub fn load_area_smoothed(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    region: &Region,
+    area: Area,
+    smoothing: u8,
+) {
+    let mut planner = Planner::new(region).smoothing(smoothing);
     let plans: Vec<BlockPlan> = area
         .blocks()
         .into_iter()

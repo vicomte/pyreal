@@ -9,6 +9,8 @@ mod far;
 mod fountains;
 mod gates;
 mod lamps;
+mod later_models;
+mod later_rooms;
 mod particles;
 
 use glam::Vec3;
@@ -408,9 +410,9 @@ fn a_buildings_doorways_are_left_out_of_its_mesh() {
     );
 }
 
-/// Jacob's report at 0x8A02: the stairs 0x02000623, a static of 0x8A02015F, climb north into
-/// 0x8A02015E. From the hallway cell 0x8A020143 the walk reaches 0x015E but not 0x015F, and the
-/// stairs are still seen, through 0x015E.
+/// The developer's report at 0x8A02: the stairs 0x02000623, a static of 0x8A02015F, climb north
+/// into 0x8A02015E. From the hallway cell 0x8A020143 the walk reaches 0x015E but not 0x015F, and
+/// the stairs are still seen, through 0x015E.
 #[test]
 fn stairs_reaching_into_the_next_room_are_seen_through_it() {
     let store = pyreal_dat::testing::open_store_or_fail();

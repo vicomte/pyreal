@@ -72,6 +72,8 @@ struct DatCompanions {
     classic_portal: Option<Arc<DatFile>>,
     /// The last attached set's optional cell file, used only by interior views.
     cell: Option<Arc<DatFile>>,
+    /// The later `client_highres.dat` beside an older world, for the later files' own store.
+    modern_highres: Option<Arc<DatFile>>,
 }
 
 impl RetailDatStore {
@@ -186,11 +188,16 @@ impl RetailDatStore {
         let cell = later(ModernDat::Cell)
             .and_then(|f| in_layout(f, ContainerEra::Modern))
             .ok();
-        Self::open_classic_dir(dir)?.beside_modern(
+        let mut store = Self::open_classic_dir(dir)?.beside_modern(
             later(ModernDat::Portal)?,
             later(ModernDat::Local)?,
             cell,
-        )
+        )?;
+        // Optional, as beside a later world: the later files' store reads its high-res levels.
+        if ModernDat::HighRes.in_dir(later_dir).is_file() {
+            store.companions.modern_highres = Some(later(ModernDat::HighRes)?);
+        }
+        Ok(store)
     }
 
     /// [`Self::open_classic_with_modern`] for an older store already open: the later
@@ -335,11 +342,15 @@ impl RetailDatStore {
     #[must_use]
     pub fn modern_companion_files(&self) -> Option<Self> {
         let portal = Arc::clone(self.companions.modern_portal.as_ref()?);
+        let highres = OnceLock::new();
+        if let Some(h) = &self.companions.modern_highres {
+            let _ = highres.set(Arc::clone(h));
+        }
         Some(Self {
             portal,
             cell: Arc::clone(&self.cell),
             local: Arc::clone(&self.local),
-            highres: OnceLock::new(),
+            highres,
             companions: DatCompanions::default(),
             client_dir: None,
             overlay: None,
@@ -455,7 +466,11 @@ impl RetailDatStore {
         // never reads it.
         let highres = OnceLock::new();
         if era == ContainerEra::Modern {
-            if let Some(h) = self.highres.get() {
+            if let Some(h) = self
+                .highres
+                .get()
+                .or(self.companions.modern_highres.as_ref())
+            {
                 let _ = highres.set(Arc::clone(h));
             }
         }

@@ -3,8 +3,9 @@
 //!
 //! - `build` makes `<target>/base-pack/base-pack.dat` when it is not already the pinned pack: the
 //!   commit's files are read out of the repository (its LFS files from the repository's own LFS
-//!   store), checked with the repository's `build.py --provenance-only`, packed with `pyreal-art`
-//!   in layout 2 (each record compressed) and refused unless they hash to the pin.
+//!   store), checked with the repository's `build.py --provenance-only` and against its
+//!   `tables/drawn-as-eor.tsv` ([`drawn_as_eor_agrees`]), packed with `pyreal-art` in layout 2 (each
+//!   record compressed) and refused unless they hash to the pin.
 //! - `update [<rev>]` packs the repository at `<rev>` (its `HEAD` by default) the same way and pins
 //!   what it made.
 //!
@@ -31,6 +32,13 @@ const DIR: &str = "base-pack";
 const LFS_POINTER: &str = "version https://git-lfs.github.com/spec/v1\n";
 
 const USAGE: &str = "usage: cargo xtask base-pack build | update [<rev>]";
+
+/// The pack's table of what Pyreal draws with End of Retail's art beside an older world.
+const EOR_TABLE: &str = "tables/drawn-as-eor.tsv";
+
+/// Pyreal's own lists of those, from the workspace's root: the room pictures and the props.
+const LATER_ROOMS: &str = "pyreal/client/crates/engine/src/later_rooms.rs";
+const LATER_MODELS: &str = "pyreal/client/crates/engine/src/later_models.rs";
 
 /// What [`PIN_FILE`] says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +252,17 @@ fn pack_commit(repo: &Path, commit: &str) -> Result<PathBuf, String> {
             ));
         }
     }
+    let table = src.join(EOR_TABLE);
+    if table.is_file() {
+        let read =
+            |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+        drawn_as_eor_agrees(
+            &read(&table)?,
+            &read(&workspace_root().join(LATER_ROOMS))?,
+            &read(&workspace_root().join(LATER_MODELS))?,
+        )
+        .map_err(|e| format!("the pack at {}: {e}", short(commit)))?;
+    }
     let made = dir.join(format!("{FILE}.new"));
     let ok = Command::new("cargo")
         .args(["run", "--release", "-q", "-p", "pyreal-art", "--", "pack"])
@@ -428,6 +447,87 @@ fn short(commit: &str) -> &str {
     commit.get(..8).unwrap_or(commit)
 }
 
+/// The tuples of the `const` named `name` in Rust source: each `(a, b, ...)` line, its numbers read
+/// as hex (`0x0100_05F5`) and its `true` and `false` as 1 and 0.
+fn listed(src: &str, name: &str) -> Vec<Vec<u32>> {
+    let start = src.find(&format!("pub const {name}")).unwrap_or(src.len());
+    src[start..]
+        .lines()
+        .skip(1)
+        .take_while(|l| !l.trim_start().starts_with("];"))
+        .filter_map(|l| {
+            let l = l.trim().strip_prefix('(')?.strip_suffix("),")?;
+            l.split(", ").map(number).collect()
+        })
+        .collect()
+}
+
+fn number(s: &str) -> Option<u32> {
+    match s.trim() {
+        "true" | "yes" => Some(1),
+        "false" | "no" => Some(0),
+        n => u32::from_str_radix(&n.strip_prefix("0x")?.replace('_', ""), 16).ok(),
+    }
+}
+
+/// Whether the pack's `tables/drawn-as-eor.tsv` lists exactly the room pictures (`PAIRS`) and the
+/// props (`MODELS`) Pyreal draws with End of Retail's art beside an older world: the pack leaves out
+/// the older materials that table names, so the two repositories must agree on it.
+///
+/// # Errors
+/// What one lists and the other does not, a few lines of it.
+pub fn drawn_as_eor_agrees(table: &str, rooms: &str, models: &str) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let mut pack = (BTreeSet::new(), BTreeSet::new());
+    for line in table
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+    {
+        let f: Vec<&str> = line.split('\t').collect();
+        let row: Option<Vec<u32>> = f
+            .get(1..4)
+            .and_then(|v| v.iter().map(|x| number(x)).collect::<Option<_>>());
+        match (f.first(), row) {
+            (Some(&"room"), Some(r)) => pack.0.insert(r),
+            (Some(&"model"), Some(r)) => pack.1.insert(vec![r[0], r[2]]),
+            _ => return Err(format!("{EOR_TABLE}: cannot read {line:?}")),
+        };
+    }
+    let ours: (BTreeSet<_>, BTreeSet<_>) = (
+        listed(rooms, "PAIRS").into_iter().collect(),
+        listed(models, "MODELS").into_iter().collect(),
+    );
+    let mut why = Vec::new();
+    for (what, p, o) in [("room", &pack.0, &ours.0), ("model", &pack.1, &ours.1)] {
+        let hex = |r: &Vec<u32>| {
+            r.iter()
+                .map(|n| format!("{n:#010X}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        why.extend(
+            o.difference(p)
+                .map(|r| format!("{what} {} is Pyreal's, not in {EOR_TABLE}", hex(r))),
+        );
+        why.extend(
+            p.difference(o)
+                .map(|r| format!("{what} {} is in {EOR_TABLE}, not Pyreal's", hex(r))),
+        );
+    }
+    if why.is_empty() {
+        return Ok(());
+    }
+    let more = why.len().saturating_sub(8);
+    why.truncate(8);
+    if more > 0 {
+        why.push(format!("and {more} more"));
+    }
+    Err(format!(
+        "{EOR_TABLE} and Pyreal's lists differ:\n  {}",
+        why.join("\n  ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +551,34 @@ mod tests {
         let pointer = format!("{LFS_POINTER}oid sha256:{oid}\nsize 42\n");
         assert_eq!(lfs_object(pointer.as_bytes()), Some((oid, 42)));
         assert_eq!(lfs_object(b"not a pointer"), None);
+    }
+
+    const ROOMS: &str = "pub const PAIRS: &[(u32, u32, bool)] = &[\n    (0x05000ABB, 0x0500271E, false),\n    (0x05000CDB, 0x05002626, true),\n];\n";
+    const MODELS: &str = "pub const MODELS: &[(u32, bool)] = &[\n    (0x0100_05F5, false),\n    (0x0200_02FA, true),\n];\n";
+
+    #[test]
+    fn the_table_agrees_with_pyreals_lists() {
+        let table = "# kind\tid\teor\ttinted\tleft out\n\
+                     room\t0x05000ABB\t0x0500271E\tno\t2005:0x05000ABB\n\
+                     room\t0x05000CDB\t0x05002626\tyes\t-\n\
+                     model\t0x010005F5\t0x010005F5\tno\t-\n\
+                     model\t0x020002FA\t0x020002FA\tyes\t2005:0x05000E11\n";
+        assert_eq!(drawn_as_eor_agrees(table, ROOMS, MODELS), Ok(()));
+    }
+
+    #[test]
+    fn a_table_that_differs_says_how() {
+        let table = "room\t0x05000ABB\t0x0500271E\tyes\t-\nmodel\t0x010005F5\t0x010005F5\tno\t-\n";
+        let e = drawn_as_eor_agrees(table, ROOMS, MODELS).unwrap_err();
+        assert!(
+            e.contains("room 0x05000CDB 0x05002626 0x00000001 is Pyreal's"),
+            "{e}"
+        );
+        assert!(
+            e.contains("room 0x05000ABB 0x0500271E 0x00000001 is in"),
+            "{e}"
+        );
+        assert!(e.contains("model 0x020002FA 0x00000001 is Pyreal's"), "{e}");
+        assert!(drawn_as_eor_agrees("odd\trow\n", ROOMS, MODELS).is_err());
     }
 }

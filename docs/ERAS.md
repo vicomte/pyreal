@@ -76,3 +76,45 @@ With End of Retail's files beside a 1999 or 2005 world, each terrain type and th
 Retail's picture and repeat instead (`LaterGround`, `ground_picture`, `engine/src/world.rs`), tinted
 by Ground Coloring as End of Retail's own are, with the pack's relief for those pictures. The blend
 maps stay the world's. An older world with no later files beside it lays its own pictures.
+
+With End of Retail's files beside an older world, a room End of Retail's cell file holds with the
+same piece also draws End of Retail's picture in each slot where the eras' pictures are one of the
+pairs the older-era survey found the same layout painted again (`later_rooms::PAIRS`,
+`engine/src/later_rooms.rs`), the slot's texture coordinates are the same, and the two still match
+when loaded. That check also measures a gain and offset per colour that carries End of Retail's
+picture back to the older one's colours. Classic Ground Coloring applies it to the pairs marked
+tinted (the same picture, only sharper, plus 0x05001CBF and 0x05000D77); every other pair, and every pair under
+Throne of Destiny, draws End of Retail's colours (the developer's review, 2026-11-19). The surface keeps the world's kind and flags and takes End
+of Retail's pack material. End of Retail's `client_highres.dat` is opened beside an older world
+for this, since most of these pictures are larger only in their high-resolution level.
+
+## Props End of Retail remodelled
+
+End of Retail remodelled some props under their old ids: 101 that the 1999 and 2005 worlds place,
+besides the trees and plants the pack draws in every era. The developer reviews them a round at a time and
+picks, for each, the older model or End of Retail's (`notes/review/era-props/`). With End of
+Retail's files beside an older world, a prop in `later_models::MODELS`
+(`engine/src/later_models.rs`) is drawn from those files: its parts, surfaces and pictures, and
+the pack's materials for those pictures. Where it stands, how it is turned, its lights and what
+the player bumps into stay the world's. A prop marked tinted takes the older model's colours under
+Classic Ground Coloring: each of End of Retail's pictures is carried, channel by channel, to the
+mean and spread of the older pictures drawn over the same places on the model. Under Throne of
+Destiny coloring it keeps End of Retail's own colours.
+
+A prop drawn as End of Retail has it burns with End of Retail's fire, drawn as the engine's
+flames (`LaterModels::flames`), even where the older model's fire was a mesh: the torch pillars'
+flame is a model in the older eras and an emitter in End of Retail's. End of Retail's torch pillar
+on a base has no script of its own, so it burns as the other pillar (`flames::BURNS_AS`). The melted
+snowman's puddle, retail's one see-through cyan with no picture, is drawn as water
+(`material::is_pool`).
+
+The Bael'Zharon statues are listed too, though their model is the same in 2005: the developer wants every
+era to draw End of Retail's, with its redrawn face. A server places them, so the client swaps their
+parts one by one (`AssetLoader::later_part`). Their dark red body has no picture; the pack's
+`[[solid]]` stone is laid on End of Retail's surface for it and on 2005's, each told apart by its
+colour, so the statue keeps the stone even without End of Retail's files beside it.
+
+The art pack lists both, `later_rooms::PAIRS` and `later_models::MODELS`, in its
+`tables/drawn-as-eor.tsv`, with the older materials it leaves out because nothing of that era
+draws them. `cargo xtask base-pack` refuses a pack whose table differs from the two lists, so a
+change to either list goes with a change to the pack's table, and then the pin moves.

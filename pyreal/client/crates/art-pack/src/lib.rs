@@ -1,6 +1,5 @@
 //! Art packs: models for retail objects, drawn by the high-fidelity presentation and the new
-//! engine in place of the objects they replace, and the one lookup that says which look draws an
-//! object.
+//! engine in place of the objects they replace.
 //!
 //! **Depends on** `pyreal-primitives`, `pyreal-assets` (the manifest), `pyreal-terrain` (the
 //! retail ground a pack's ground is laid with), `pyreal-dat` (the file a pack is packed into) and
@@ -10,11 +9,6 @@
 //!
 //! **Must never** need a device or reach the client runtime: it opens a pack into plain data,
 //! and each renderer uploads it its own way.
-//!
-//! **Which look draws an object** ([`Looks::of`]): the art pack's model, when a pack is drawn and
-//! has one for the object; otherwise the classic look's, when that look is chosen and stands for
-//! the object; otherwise the world's own. Only pixels follow from it. The object's collision, its
-//! physics and everything the server sees are the world's whichever look draws it.
 //!
 //! **A pack is a folder** ([`ArtPack::open_dir`]): `manifest.toml` at its top
 //! ([`pyreal_assets::art_pack`]), naming glTF 2.0 models by path, with their pictures beside them.
@@ -68,66 +62,11 @@ pub use pyreal_assets::art_pack::{Ground, MANIFEST_FILE};
 pub fn manifest_name(text: &str) -> Option<String> {
     ArtPackManifest::parse(text).ok().map(|m| m.name)
 }
-use pyreal_primitives::{DataId, Frame};
+use pyreal_primitives::DataId;
 
 pub use gltf::VERTEX_FLOATS;
 pub use images::Image;
 pub use materials::TextureMaterial;
-
-/// Which look draws an outdoor object.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Look {
-    /// The art pack's model, by the high-fidelity presentation.
-    ArtPack,
-    /// The classic look: another era's record of the object.
-    Classic,
-    /// The world's own record.
-    Retail,
-}
-
-/// The looks an outdoor object may be drawn with, each asked in turn.
-#[derive(Clone, Copy)]
-pub struct Looks<'a> {
-    /// Whether the art pack draws a model for an object, while a pack is drawn.
-    pub pack: Option<&'a dyn Fn(DataId) -> bool>,
-    /// Whether the classic look stands for an object (`true` for a building shell), while that
-    /// look is chosen.
-    pub classic: Option<&'a dyn Fn(DataId, bool) -> bool>,
-}
-
-impl std::fmt::Debug for Looks<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Looks")
-            .field("pack", &self.pack.is_some())
-            .field("classic", &self.classic.is_some())
-            .finish()
-    }
-}
-
-impl Looks<'_> {
-    /// The look that draws the object `id`, `building` for a building shell.
-    #[must_use]
-    pub fn of(&self, id: DataId, building: bool) -> Look {
-        if self.pack.is_some_and(|has| has(id)) {
-            Look::ArtPack
-        } else if self.classic.is_some_and(|takes| takes(id, building)) {
-            Look::Classic
-        } else {
-            Look::Retail
-        }
-    }
-}
-
-/// One outdoor object the art pack has a model for, where it stands in its block.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PackPlacement {
-    /// The retail object.
-    pub id: DataId,
-    /// Its place and turn, block-local.
-    pub frame: Frame,
-    /// Its scale, the same on every axis.
-    pub scale: f32,
-}
 
 /// A metallic-roughness material, its pictures by index into [`ArtPack::images`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -833,6 +772,8 @@ pub struct ArtPack {
     pub ground_cover: Vec<PackGroundCover>,
     /// The lights it gives retail objects.
     pub lights: Vec<pyreal_assets::art_pack::ManifestLight>,
+    /// The retail objects the wind moves, drawn with their own parts.
+    pub sways: Vec<pyreal_assets::art_pack::ManifestSway>,
     /// The retail moons it draws again as balls.
     pub moons: Vec<PackMoon>,
     /// The bodies it draws in place of setups' parts, in the manifest's order.
@@ -1614,6 +1555,7 @@ impl ArtPack {
                     entry
                         .textures
                         .iter()
+                        .chain(entry.solid.iter().flat_map(|sd| sd.surfaces.iter()))
                         .map(|t| format!("{:#010X}", t.0))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -1753,6 +1695,7 @@ impl ArtPack {
             grit_names,
             ground_cover,
             lights: manifest.lights,
+            sways: manifest.sways,
             moons,
             skins,
             keep: manifest.keep,
@@ -1879,7 +1822,33 @@ impl ArtPack {
             .iter()
             .flat_map(|m| (0..m.textures.len()).map(|k| (m.textures[k], m.fingerprint(k))))
             .collect();
+        // A top solid replaces the base's for the same surface and colour.
+        let laid_solid: HashSet<(DataId, u32)> = materials
+            .iter()
+            .filter_map(|m| m.solid.as_ref())
+            .flat_map(|sd| sd.surfaces.iter().map(|s| (*s, sd.colour)))
+            .collect();
         for (i, m) in base.materials.iter().enumerate() {
+            if let Some(sd) = &m.solid {
+                let surfaces: Vec<DataId> = sd
+                    .surfaces
+                    .iter()
+                    .copied()
+                    .filter(|s| !laid_solid.contains(&(*s, sd.colour)))
+                    .collect();
+                if surfaces.is_empty() {
+                    continue;
+                }
+                let mut m = m.clone();
+                m.solid = Some(pyreal_assets::art_pack::Solid {
+                    surfaces,
+                    ..sd.clone()
+                });
+                m.grit = m.grit.map(|g| g + grit_at);
+                materials.push(m);
+                records.push(base.material_source.as_ref().and_then(|s| s.record(i)));
+                continue;
+            }
             let kept: Vec<(DataId, Option<Fingerprint>)> = (0..m.textures.len())
                 .map(|k| (m.textures[k], m.fingerprint(k)))
                 .filter(|t| !m.palettes.is_empty() || !covered.contains(t))
@@ -1932,6 +1901,9 @@ impl ArtPack {
                 .filter(|l| !lit.contains(&l.object))
                 .cloned(),
         );
+        let swayed: HashSet<DataId> = self.sways.iter().map(|w| w.object).collect();
+        let mut sways = self.sways.clone();
+        sways.extend(base.sways.iter().filter(|w| !swayed.contains(&w.object)));
         let mooned: HashSet<DataId> = self.moons.iter().map(|m| m.object).collect();
         let mut moons = self.moons.clone();
         moons.extend(
@@ -1958,6 +1930,7 @@ impl ArtPack {
                 .collect(),
             ground_cover,
             lights,
+            sways,
             moons,
             skins,
             keep,
@@ -2011,6 +1984,13 @@ impl ArtPack {
         self.models.iter().any(|m| m.id == id)
     }
 
+    /// How much the wind moves retail object `id` drawn with its own parts (`[[sway]]`), if the
+    /// pack says.
+    #[must_use]
+    pub fn sway(&self, id: DataId) -> Option<f32> {
+        self.sways.iter().find(|w| w.object == id).map(|w| w.wind)
+    }
+
     /// Material `i`'s picture `part`, with its levels: held, or read again from the packed file.
     #[must_use]
     pub fn material_picture(&self, i: usize, part: MaterialPart) -> Option<Image> {
@@ -2046,6 +2026,16 @@ impl ArtPack {
         self.materials
             .iter()
             .position(|m| m.textures.contains(&texture))
+    }
+
+    /// The material laid on the untextured surface `surface` of solid colour `colour` (ARGB),
+    /// and the metres one repeat of it covers, if the pack has one.
+    #[must_use]
+    pub fn solid_for(&self, surface: DataId, colour: u32) -> Option<(usize, f32)> {
+        self.materials.iter().enumerate().find_map(|(i, m)| {
+            let sd = m.solid.as_ref()?;
+            (sd.colour == colour && sd.surfaces.contains(&surface)).then_some((i, sd.size))
+        })
     }
 
     /// The index of the pack's material drawn on the retail picture `texture` drawn in
@@ -2187,6 +2177,10 @@ mod tests {
             draws_on: Default::default(),
             credit: Credit::default(),
         };
+        let sway = |id, wind| pyreal_assets::art_pack::ManifestSway {
+            object: DataId(id),
+            wind,
+        };
         let material = |textures: &[u32], grit| TextureMaterial {
             textures: textures.iter().map(|&t| DataId(t)).collect(),
             albedo: None,
@@ -2203,6 +2197,7 @@ mod tests {
             fingerprints: Vec::new(),
             palettes: Vec::new(),
             draws_on: Default::default(),
+            solid: None,
             credit: Credit::default(),
         };
         let cover = |grounds| PackGroundCover {
@@ -2219,6 +2214,7 @@ mod tests {
             materials: vec![material(&[10, 11], Some(0)), material(&[12], None)],
             grits: vec![image(4)],
             ground_cover: vec![cover(0b011)],
+            sways: vec![sway(5, 1.0), sway(6, 1.0)],
             ..ArtPack::default()
         };
         let top = ArtPack {
@@ -2229,10 +2225,18 @@ mod tests {
             materials: vec![material(&[11], Some(0))],
             grits: vec![image(4)],
             ground_cover: vec![cover(0b010)],
+            sways: vec![sway(6, 0.5)],
             ..ArtPack::default()
         };
         let both = top.over(&base);
         assert_eq!((both.name.as_str(), both.hash.as_str()), ("Top", "t+b"));
+        assert_eq!(both.sway(DataId(5)), Some(1.0));
+        assert_eq!(
+            both.sway(DataId(6)),
+            Some(0.5),
+            "the top's sway replaces the base's"
+        );
+        assert_eq!(both.sways.len(), 2);
         let ids: Vec<u32> = both.models.iter().map(|m| m.id.0).collect();
         assert_eq!(ids, [2, 1], "the top's model replaces the base's");
         let picture = |m: &PackModel| m.lods[0].primitives[0].material.base_color_image;
@@ -2295,6 +2299,7 @@ mod tests {
             fingerprints: vec![print],
             palettes: Vec::new(),
             draws_on,
+            solid: None,
             credit: Credit::default(),
         };
         let pick = |pack: &ArtPack, record: Fingerprint| {
@@ -2378,6 +2383,7 @@ mod tests {
             fingerprints: Vec::new(),
             draws_on: DrawsOn::Matching,
             palettes: palettes.iter().map(|&p| DataId(p)).collect(),
+            solid: None,
             credit: Credit::default(),
         };
         let pack = ArtPack {
@@ -2458,43 +2464,6 @@ mod tests {
             .0
             .iter()
             .all(|t| t[0] == 220 && t[1] == 255));
-    }
-
-    #[test]
-    fn the_art_pack_answers_first_then_the_classic_look_then_the_world() {
-        let tree = DataId(0x0200_0258);
-        let rock = DataId(0x0200_05C9);
-        let house = DataId(0x0200_0001);
-        let pack_has = |id: DataId| id == tree;
-        let classic_takes = |id: DataId, building: bool| id == rock || (id == house && building);
-        let both = Looks {
-            pack: Some(&pack_has),
-            classic: Some(&classic_takes),
-        };
-        assert_eq!(both.of(tree, false), Look::ArtPack);
-        assert_eq!(both.of(rock, false), Look::Classic);
-        assert_eq!(both.of(house, true), Look::Classic);
-        assert_eq!(both.of(house, false), Look::Retail);
-        // The pack off (the retail look asked for, or no presentation that draws it): the
-        // classic look and the world answer as they do without a pack.
-        let no_pack = Looks {
-            pack: None,
-            classic: Some(&classic_takes),
-        };
-        assert_eq!(no_pack.of(tree, false), Look::Retail);
-        assert_eq!(no_pack.of(rock, false), Look::Classic);
-        // No classic look chosen.
-        let pack_only = Looks {
-            pack: Some(&pack_has),
-            classic: None,
-        };
-        assert_eq!(pack_only.of(tree, false), Look::ArtPack);
-        assert_eq!(pack_only.of(rock, false), Look::Retail);
-        let neither = Looks {
-            pack: None,
-            classic: None,
-        };
-        assert_eq!(neither.of(tree, false), Look::Retail);
     }
 
     /// A pack of one model with two levels, a triangle each, its picture shared.
@@ -2691,6 +2660,45 @@ license = "CC0-1.0"
         let nothing = manifest.replace("normal = \"m/wall_n.png\"\n", "");
         let pack = ArtPack::open(&nothing, &mut |_| Err("missing".to_owned())).expect("opens");
         assert!(pack.materials.is_empty() && pack.problems.len() == 1);
+    }
+
+    #[test]
+    fn a_solid_is_found_by_its_surface_and_colour_and_kept_under_a_pack_over_it() {
+        let mut files = HashMap::new();
+        files.insert(
+            "m/grain.png".to_owned(),
+            png_of(8, 8, &[240, 240, 240, 255].repeat(64)),
+        );
+        let solid = |surface: &str| {
+            format!(
+                "[pack]\nname = \"S\"\nformat = 1\n[[solid]]\nsurface = \"{surface}\"\n\
+                 colour = \"0xFF320000\"\nsize = 0.5\nbase_color = \"m/grain.png\"\n\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        let open = |manifest: &str| {
+            ArtPack::open(manifest, &mut |path| {
+                files
+                    .get(path)
+                    .cloned()
+                    .ok_or_else(|| format!("{path}: missing"))
+            })
+            .expect("the pack opens")
+        };
+        let base = open(&solid("0x080006F7"));
+        assert_eq!(
+            base.solid_for(DataId(0x0800_06F7), 0xFF32_0000),
+            Some((0, 0.5))
+        );
+        // Another colour under the same id is another era's surface.
+        assert_eq!(base.solid_for(DataId(0x0800_06F7), 0xFF00_0032), None);
+        assert_eq!(base.material_for(DataId(0x0800_06F7), &[], || None), None);
+        // A pack over the base keeps the base's solid where it has none of its own.
+        let top = open(&solid("0x08000203"));
+        let both = top.over(&base);
+        assert!(both.solid_for(DataId(0x0800_06F7), 0xFF32_0000).is_some());
+        assert!(both.solid_for(DataId(0x0800_0203), 0xFF32_0000).is_some());
+        assert_eq!(top.over(&top).materials.len(), 1);
     }
 
     #[test]
@@ -3125,6 +3133,7 @@ license = "CC0-1.0"
             material_source: None,
             ground_cover: Vec::new(),
             lights: Vec::new(),
+            sways: Vec::new(),
             moons: Vec::new(),
             skins: Vec::new(),
             keep: Vec::new(),

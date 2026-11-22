@@ -543,4 +543,139 @@ fn the_object_scale_reaches_the_cylinders_height_as_well_as_its_radius() {
     );
 }
 
+// ---------------------------------------------------------------------------------------------
+// Cylinders a host adds to an object's own shape
+// ---------------------------------------------------------------------------------------------
+
+/// A trunk 2 m east of the pillar's axis, 0.4 m round: where the pillar is not.
+const TRUNK: CylSphere = CylSphere {
+    low_pt: Vec3::new(2.0, 0.0, 0.0),
+    height: 2.0,
+    radius: 0.4,
+};
+
+/// The pillar, with `added` beside it.
+fn pillar_with(added: Vec<CylSphere>) -> Arc<SetupGeometry> {
+    let mut g = (*pillar_geometry(true)).clone();
+    g.added_cyl_spheres = added;
+    Arc::new(g)
+}
+
+/// An added cylinder blocks where the object's own shape does not, and the own shape still blocks
+/// where the added one does not: the object is solid wherever either is.
+#[test]
+fn an_added_cylinder_and_the_objects_own_each_block_where_the_other_does_not() {
+    let pillar = Vec3::new(101.0, 100.0, GROUND);
+    let west = (Vec3::new(99.95, 100.0, GROUND), Vec3::new(0.4, 0.0, 0.0));
+    let east = (Vec3::new(104.05, 100.0, GROUND), Vec3::new(-0.4, 0.0, 0.0));
+    let (own, _) = probe(pillar_with(vec![TRUNK]), pillar, 1.0, west.0, west.1);
+    assert_ne!(own, TransitionState::Ok, "the pillar still blocks");
+    let (added, n) = probe(pillar_with(vec![TRUNK]), pillar, 1.0, east.0, east.1);
+    assert_ne!(added, TransitionState::Ok, "the trunk blocks too");
+    assert_eq!(n, 2, "after the pillar, the trunk was tested");
+    let (without, _) = probe(pillar_with(Vec::new()), pillar, 1.0, east.0, east.1);
+    assert_eq!(
+        without,
+        TransitionState::Ok,
+        "the pillar alone leaves that way open"
+    );
+}
+
+/// Added cylinders are tested after the mesh arm as well: an object whose physics mesh is out of
+/// the body's way still blocks at its added cylinder.
+#[test]
+fn added_cylinders_are_tested_after_a_physics_mesh() {
+    use pyreal_physics::geom::bsp::{BspNode, BspNodeKind, BspTree};
+    use pyreal_physics::geom::{BBox, Plane, Polygon};
+    use pyreal_physics::source::SetupPart;
+    // A one-leaf mesh 10 m up: a part tree the body never reaches.
+    let square = Polygon::new(vec![
+        Vec3::new(-1.0, -1.0, 0.0),
+        Vec3::new(1.0, -1.0, 0.0),
+        Vec3::new(1.0, 1.0, 0.0),
+        Vec3::new(-1.0, 1.0, 0.0),
+    ]);
+    let tree = Arc::new(BspTree {
+        nodes: vec![BspNode {
+            sphere: Sphere::new(Vec3::ZERO, 1.5),
+            splitting_plane: Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 1000.0,
+            },
+            pos_child: None,
+            neg_child: None,
+            kind: BspNodeKind::Leaf {
+                leaf_index: 0,
+                solid: true,
+            },
+            in_polys: vec![0],
+        }],
+        polygons: vec![square],
+    });
+    let meshed = |added: Vec<CylSphere>| {
+        Arc::new(SetupGeometry {
+            parts: vec![SetupPart {
+                placement_frame: Frame::new(Vec3::new(0.0, 0.0, 10.0), Quat::IDENTITY),
+                physics_bsp: Some(Arc::clone(&tree)),
+                bound_box: Some(BBox::new(
+                    Vec3::new(-1.0, -1.0, 0.0),
+                    Vec3::new(1.0, 1.0, 0.1),
+                )),
+                ..SetupPart::default()
+            }],
+            sorting_sphere: Sphere::new(Vec3::new(0.0, 0.0, 1.0), 2.2),
+            added_cyl_spheres: added,
+            ..SetupGeometry::default()
+        })
+    };
+    assert!(
+        meshed(Vec::new()).caches_physics_bsp(),
+        "the mesh arm is taken"
+    );
+    let pillar = Vec3::new(101.0, 100.0, GROUND);
+    let from = Vec3::new(99.95, 100.0, GROUND);
+    let by = Vec3::new(0.4, 0.0, 0.0);
+    let (with, n) = probe(meshed(vec![PILLAR]), pillar, 1.0, from, by);
+    assert_ne!(with, TransitionState::Ok, "the added cylinder blocks");
+    assert_eq!(n, 1);
+    let (without, n) = probe(meshed(Vec::new()), pillar, 1.0, from, by);
+    assert_eq!(
+        (without, n),
+        (TransitionState::Ok, 0),
+        "the mesh alone does not"
+    );
+}
+
+/// A static is registered in the cells its added cylinders reach as well as its own shape's, so
+/// a trunk leaning over a cell line is solid from the cell beyond.
+#[test]
+fn an_added_cylinder_registers_its_static_in_the_cell_it_reaches() {
+    // The cell line at block-local x = 96; the pillar 1 m west of it reaches 0.6 m.
+    let at = Vec3::new(95.0, 100.0, GROUND);
+    let (west, east) = (cell_at(at), cell_at(Vec3::new(97.0, 100.0, GROUND)));
+    assert_ne!(west, east);
+    let cells = |g: Arc<SetupGeometry>| {
+        let mut w = flat_world();
+        let h = w.create(ObjectId(0), g, false);
+        w.enter_cell(h, west);
+        if let Some(o) = w.get_mut(h) {
+            let frame = Frame::new(at, Quat::IDENTITY);
+            o.set_frame(frame);
+            o.position = Position::new(west, frame);
+        }
+        w.calc_cross_cells_static(h);
+        let o = w.get(h).expect("live");
+        o.shadow_objects
+            .iter()
+            .map(|s| s.cell_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(cells(pillar_with(Vec::new())), vec![west]);
+    let both = cells(pillar_with(vec![TRUNK]));
+    assert!(
+        both.contains(&west) && both.contains(&east),
+        "the trunk at 97 m reaches over the line: {both:?}"
+    );
+}
+
 use crate::common::physics_fixture::{flat_world, player_geometry};

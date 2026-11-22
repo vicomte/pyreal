@@ -126,7 +126,6 @@ pub struct Look {
     frame: Cell<u64>,
     /// A point the runtime asked about that the last pick did not answer: picked after the frame.
     wanted: Cell<Option<(f32, f32)>>,
-    fps: Cell<f32>,
     viewport: Cell<Option<Viewport>>,
     /// The render preferences in force, for the field of view.
     prefs: RefCell<RenderPreferences>,
@@ -217,12 +216,6 @@ macro_rules! view_reads {
             }
             fn game_date_time(&self) -> Option<(String, String)> {
                 self.inner.game_date_time()
-            }
-            fn frame_rate_fps(&self) -> f32 {
-                self.look.fps.get()
-            }
-            fn degrade_meter(&self) -> (bool, f32, f32) {
-                (false, 1.0, 0.0)
             }
             fn render_preferences(&self) -> RenderPreferences {
                 *self.look.prefs.borrow()
@@ -489,6 +482,8 @@ pub struct SceneRenderer {
     /// `PYREAL_FRAME_LOG`: a line a frame (times, where the eye is, what is loaded), for a run's
     /// traversal measured offline.
     frame_log: Option<std::io::BufWriter<std::fs::File>>,
+    /// Last timed frame's UI Blur passes and composite, ms on the device.
+    ui_blur_ms: (f64, f64),
     /// Where the eye stood this frame, its block and the loaded world, for the frame log.
     frame_note: String,
     /// What the frame did besides its passes, for the hitch reports.
@@ -590,7 +585,18 @@ fn engine_on(gpu: &Gpu, format: wgpu::TextureFormat) -> Result<Engine, DeviceErr
     // Only server objects are picked on their translucent surfaces; a static's leaves the pick
     // to what is behind it, as retail's ray never tests one.
     engine.renderer.pick_from = crate::bridge::SERVER_NUMBERS;
+    if let Some(e) = fixed_exposure() {
+        engine.renderer.exposure = pyreal_engine::renderer::Exposure::Manual(e);
+    }
     Ok(engine)
+}
+
+/// `PYREAL_EXPOSURE`: a fixed exposure in place of the eye's adaptation, for screenshots.
+fn fixed_exposure() -> Option<f32> {
+    std::env::var("PYREAL_EXPOSURE")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|e| e.is_finite() && *e > 0.0)
 }
 
 /// The window's format: a float one in extended linear sRGB for HDR Output, an sRGB one otherwise.
@@ -800,6 +806,7 @@ impl SceneRenderer {
             applied: None,
             last_eye: None,
             last_render: None,
+            ui_blur_ms: (0.0, 0.0),
             frame_log: std::env::var_os("PYREAL_FRAME_LOG")
                 .and_then(|p| std::fs::File::create(p).ok())
                 .map(std::io::BufWriter::new),
@@ -826,6 +833,27 @@ impl SceneRenderer {
         self.gpu.adapter.get_info().name
     }
 
+    /// The adapter drawing to the window, for the quality preset chosen for it; `None` offscreen.
+    #[must_use]
+    pub fn graphics_adapter(
+        &self,
+    ) -> Option<pyreal_client_contract::options::auto_quality::Adapter> {
+        use pyreal_client_contract::options::auto_quality::{Adapter, Kind};
+        self.surface.as_ref()?;
+        let info = self.gpu.adapter.get_info();
+        Some(Adapter {
+            name: info.name,
+            vendor: info.vendor,
+            kind: match info.device_type {
+                wgpu::DeviceType::IntegratedGpu => Kind::Integrated,
+                wgpu::DeviceType::DiscreteGpu => Kind::Discrete,
+                wgpu::DeviceType::VirtualGpu => Kind::Virtual,
+                wgpu::DeviceType::Cpu => Kind::Software,
+                wgpu::DeviceType::Other => Kind::Other,
+            },
+        })
+    }
+
     /// Whether the shaders are still being prepared, [`PREPARING_NOTE_AFTER`] or more after the
     /// start: the screens before the world then say so. A warm driver is done long before, and a
     /// device without ray tracing has nothing to prepare.
@@ -841,12 +869,6 @@ impl SceneRenderer {
     #[must_use]
     pub fn backend(&self) -> String {
         format!("{:?}", self.gpu.adapter.get_info().backend)
-    }
-
-    /// Whether the device is a software rasteriser.
-    #[must_use]
-    pub fn software(&self) -> bool {
-        self.gpu.adapter.get_info().device_type == wgpu::DeviceType::Cpu
     }
 
     fn configure(&mut self) {
@@ -934,6 +956,12 @@ impl SceneRenderer {
             Some(p) => AssetLoader::with_shared_pack(Arc::clone(p)),
             None => AssetLoader::default(),
         };
+        // The player collides with the pack's trees as they are drawn as well as retail's shapes.
+        pyreal_world_data::env_cells::set_drawn_trunks(
+            self.pack
+                .as_ref()
+                .map(|p| Arc::new(pyreal_engine::pack::drawn_trunks(&p.pack))),
+        );
         if let Some(store) = self.store.as_ref() {
             self.engine.particles.assets = Some(Arc::new(
                 pyreal_world_data::anim_assets::DatAnimAssets::new(Arc::clone(store)),
@@ -964,6 +992,16 @@ impl SceneRenderer {
             if let Some(b) = self.bridge.as_mut() {
                 b.reload();
             }
+        }
+        // Portal Style: portals in the world whirl as the vortex, or as the original swirl.
+        self.engine.particles.portals = pyreal_client_contract::options::portal_style::enhanced();
+        // Detailed Faces: every head is taken again, plain or shaped, and the previews' with it.
+        let faces = pyreal_client_contract::options::face_detail::on();
+        if self.loader.set_face_detail(self.store.as_deref(), faces) {
+            if let Some(b) = self.bridge.as_mut() {
+                b.redress(&mut self.engine);
+            }
+            self.generation += 1;
         }
         let settings = crate::settings::Settings::from_preferences(&prefs);
         if self.applied.as_ref() == Some(&settings) {
@@ -1092,7 +1130,13 @@ impl SceneRenderer {
         let base = self.base.clone();
         self.spawn_opening(move || {
             let mut opened = before.map_or_else(|| Opened { base, chosen: None }, join_opening);
-            opened.chosen = open_pack("art pack", &path, opened.base.as_deref());
+            opened.chosen = match crate::art_pack::packed::added_pack_problem(&path) {
+                Some(e) => {
+                    tracing::warn!("the art pack would not open: {e}");
+                    None
+                }
+                None => open_pack("art pack", &path, opened.base.as_deref()),
+            };
             opened
         });
     }
@@ -1292,6 +1336,8 @@ impl SceneRenderer {
             camera.position += crate::bridge::water_lift(camera.position, surface);
         }
         let t = std::time::Instant::now();
+        // Faces made off the frame taken on, and detail no near player drew let go.
+        self.loader.tick_faces(&mut self.engine, &bridge.store);
         bridge.sync(&mut self.engine, &mut self.loader, ws, camera.position);
         self.work.sync_ms += pyreal_engine::frame_work::ms_since(t);
         let light = crate::bridge::light(&bridge.region, ws);
@@ -1401,6 +1447,11 @@ impl SceneRenderer {
                 around,
             })
         });
+        // The client's viewer light, two metres over the player.
+        self.engine.viewer = ws
+            .character
+            .as_ref()
+            .map(|c| crate::bridge::frame_point(&c.render_frame()) + offset + glam::Vec3::Z * 2.0);
         // A camera that jumps (a teleport, a portal, a recentred world) starts the temporal
         // history again rather than smearing the last place into the new one.
         let jumped = self
@@ -1584,6 +1635,12 @@ impl SceneRenderer {
                     }
                 }
                 OverlayItem::Preview { space, rect } => self.draw_preview(*space, *rect),
+                OverlayItem::Backdrop { rect, strength } => {
+                    if pyreal_client_contract::options::ui_effects::blur_on() {
+                        let r = (rect.x, rect.y, rect.width, rect.height);
+                        self.overlay.push_backdrop(r, *strength);
+                    }
+                }
             }
         }
     }
@@ -1594,6 +1651,9 @@ impl SceneRenderer {
             return;
         };
         let world_fov = self.look.prefs.borrow().game_fov_rad();
+        if self.bridge.is_none() {
+            self.loader.tick_faces(&mut self.engine, &store);
+        }
         let Some(view) = self.previews.draw(
             space,
             &mut self.engine,
@@ -1712,7 +1772,19 @@ impl SceneRenderer {
                     self.gpu.wait();
                     self.work.gpu_wait_ms += pyreal_engine::frame_work::ms_since(t);
                 }
-                let _ = self.engine.renderer.collect_timings(&self.gpu, headless);
+                let timings = self.engine.renderer.collect_timings(&self.gpu, headless);
+                // UI Blur's passes and the composite, for the frame log.
+                let sum = |f: &dyn Fn(&str) -> bool| {
+                    timings
+                        .iter()
+                        .filter(|t| f(t.name))
+                        .map(|t| t.ms)
+                        .sum::<f64>()
+                };
+                self.ui_blur_ms = (
+                    sum(&|n| n.starts_with("ui blur")),
+                    sum(&|n| n == "composite"),
+                );
                 self.times.gpu_ms = self.engine.renderer.frame_span_ms();
             }
             None if portal.is_none() && self.backdrop => {
@@ -1831,24 +1903,19 @@ impl SceneRenderer {
         }
         if let Some(t) = self.frame_started.take() {
             self.times.cpu_ms = t.elapsed().as_secs_f64() * 1e3;
-            let fps = if self.times.cpu_ms > 0.0 {
-                1000.0 / self.times.cpu_ms.max(self.times.gpu_ms).max(1.0)
-            } else {
-                0.0
-            };
-            #[allow(clippy::cast_possible_truncation)]
-            self.look.fps.set(fps as f32);
         }
         if let Some(log) = self.frame_log.as_mut() {
             use std::io::Write;
             let s = self.engine.scene.counts();
             let _ = writeln!(
                 log,
-                "{} period {:.2} cpu {:.2} gpu {:.2} {} instances {} meshes {} vertices {} indices {} textures {} materials {} texture_mb {} largest_vertex_run {}",
+                "{} period {:.2} cpu {:.2} gpu {:.2} ui_blur {:.3} composite {:.3} {} instances {} meshes {} vertices {} indices {} textures {} materials {} texture_mb {} largest_vertex_run {}",
                 self.times.frames,
                 self.times.history.last().map_or(0.0, |h| h.0),
                 self.times.cpu_ms,
                 self.times.gpu_ms,
+                self.ui_blur_ms.0,
+                self.ui_blur_ms.1,
                 self.frame_note,
                 s.instances,
                 s.meshes,
@@ -2537,6 +2604,10 @@ impl SceneRenderer {
 
     /// The screen's brightness, `-0.2` to `1`: stops over the exposure's key.
     pub fn set_brightness(&mut self, brightness: f32) {
+        if let Some(e) = fixed_exposure() {
+            self.engine.renderer.exposure = pyreal_engine::renderer::Exposure::Manual(e);
+            return;
+        }
         let b = brightness.clamp(-0.2, 1.0);
         self.engine.renderer.exposure = pyreal_engine::renderer::Exposure::Auto {
             compensation: b * 1.5,

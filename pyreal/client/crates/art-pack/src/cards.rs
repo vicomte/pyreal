@@ -15,13 +15,17 @@ use super::{images, Image, PackLod, PackMaterial, PackModel, PackPrimitive, VERT
 
 /// The cards' make, in the key a packed pack keeps each card under: bumped whenever a card is
 /// drawn differently, so a pack packed with older cards has them drawn again as it opens.
-pub const MAKE: u32 = 1;
+pub const MAKE: u32 = 2;
 
 /// The views round a card's model, and the tiles to a row.
 pub const VIEWS: Views = Views {
     count: 16,
     columns: 4,
 };
+
+/// The least distance a level of shape is taken to begin at, metres a metre of scale: an
+/// open-ended last level after one ending this far out is left to the card.
+pub const CARD_LEAST: f32 = 60.0;
 
 /// How far a card takes over from its model's shape, metres a metre of its scale: never, so the
 /// loaded blocks draw shapes throughout and the far pass alone draws cards.
@@ -204,15 +208,26 @@ pub fn add_cards(
     made
 }
 
-/// The level a model's card is drawn from: its first level of shape the view draws, for a model
-/// with no level of pictures.
+/// The level a model's card is drawn from, for a model with no level of pictures: the level of
+/// shape the view draws last, which the card takes over from. An open-ended last level after one
+/// ending at least [`CARD_LEAST`] out is never drawn alone (the engine's `pack_mesh`), so the
+/// level before it.
 fn source(m: &PackModel) -> Option<&PackLod> {
     if m.lods.iter().any(|l| l.views.is_some()) {
         return None;
     }
-    m.lods
+    let shapes: Vec<&PackLod> = m
+        .lods
         .iter()
-        .find(|l| !l.shadows_only && !l.primitives.is_empty())
+        .filter(|l| !l.shadows_only && !l.primitives.is_empty())
+        .collect();
+    match shapes.as_slice() {
+        [.., before, last] if !last.distance.is_finite() && before.distance >= CARD_LEAST => {
+            Some(before)
+        }
+        [.., last] => Some(last),
+        [] => None,
+    }
 }
 
 /// `card` added to `m` as its last level, drawn past `from`: the first level of shape reaching
@@ -688,6 +703,33 @@ mod tests {
     }
 
     #[test]
+    fn a_card_is_drawn_from_the_level_it_takes_over_from() {
+        // Levels ending at 60, 180 and 500 m and an open-ended last: the engine hands the 500 m
+        // level to the card, so the card is drawn from it, each level told by its width.
+        let widths = [2.0, 1.5, 1.0, 0.5];
+        let ends = [60.0, 180.0, 500.0, f32::INFINITY];
+        let level = |w: f32, end: f32| PackLod {
+            distance: end,
+            ..square(w, end).lods[0].clone()
+        };
+        let mut m = square(1.0, f32::INFINITY);
+        m.lods = widths.iter().zip(ends).map(|(w, e)| level(*w, e)).collect();
+        assert_eq!(source(&m), Some(&m.lods[2]));
+        // A level ending nearer than CARD_LEAST keeps the open-ended last drawn: the card is drawn
+        // from that last.
+        m.lods = vec![level(2.0, 30.0), level(0.5, f32::INFINITY)];
+        assert_eq!(source(&m), Some(&m.lods[1]));
+        // A level drawn into the shadows alone is passed over.
+        m.lods = vec![
+            level(2.0, 60.0),
+            level(1.0, 500.0),
+            level(0.5, f32::INFINITY),
+        ];
+        m.lods[1].shadows_only = true;
+        assert_eq!(source(&m), Some(&m.lods[0]));
+    }
+
+    #[test]
     fn a_card_covers_its_model_from_the_front_and_shows_it_edge_on_from_the_side() {
         let m = square(1.0, f32::INFINITY);
         let card = bake(&m, &HashMap::new()).expect("a card");
@@ -857,6 +899,6 @@ mod tests {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        assert_eq!((MAKE, hash.as_str()), (1, "d56413efca568021"));
+        assert_eq!((MAKE, hash.as_str()), (2, "d56413efca568021"));
     }
 }

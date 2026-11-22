@@ -156,6 +156,7 @@ fn door_geometry_posed(store: &RetailDatStore, frames: Option<&[Frame]>) -> Setu
         physics_bsp: None,
         allow_free_heading: s.allow_free_heading,
         parts: Vec::new(),
+        added_cyl_spheres: Vec::new(),
     };
     let mut parts = Vec::with_capacity(s.parts.len());
     for (i, part_id) in s.parts.iter().enumerate() {

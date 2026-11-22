@@ -49,6 +49,9 @@ pub struct SetupGeometry {
     /// and nothing else keeps taking the sphere arm, because [`Self::caches_physics_bsp`] is
     /// then false.
     pub parts: Vec<SetupPart>,
+    /// Cylinders a host adds to the setup's own shape, tested after whichever arm the object
+    /// takes and registered with it. Retail data never fills it.
+    pub added_cyl_spheres: Vec<CylSphere>,
 }
 
 /// One setup part as needed for BSP collision.
@@ -589,12 +592,6 @@ impl LandSource for StaticLandSource {
     fn building(&self, cell: CellId) -> Option<Arc<BuildingGeometry>> {
         self.buildings.get(&cell.0).cloned()
     }
-}
-
-/// A `Position` helper the world uses when it has to synthesise one.
-#[must_use]
-pub fn position_at(cell: CellId, origin: Vec3) -> Position {
-    Position::new(cell, Frame::new(origin, pyreal_primitives::Quat::IDENTITY))
 }
 
 #[cfg(test)]

@@ -277,10 +277,13 @@ pub const MAX_CELL_LIST_SPHERES: usize = 10;
 /// that reaches over a cell line only once scaled is not listed in the cell beyond it.
 #[must_use]
 pub fn cylinder_cell_spheres(geometry: &SetupGeometry, pos: &Position) -> Vec<Sphere> {
+    cell_spheres_of(&geometry.cyl_spheres, pos)
+}
+
+/// [`cylinder_cell_spheres`] for any list of cylinders.
+fn cell_spheres_of(cyls: &[crate::geom::CylSphere], pos: &Position) -> Vec<Sphere> {
     let m = math::l2g(pos.frame.rotation);
-    geometry
-        .cyl_spheres
-        .iter()
+    cyls.iter()
         .take(MAX_CELL_LIST_SPHERES)
         .map(|c| {
             Sphere::new(
@@ -920,8 +923,8 @@ impl<'a> CellResolver<'a> {
     /// `part_frames` pose the parts as [`SetupGeometry::placed_part_posed`] does (`None` is the
     /// placement). `part_scale` is the scale the parts were posed at, which for a static being
     /// added to its cell is 1: generated scenery takes its scale only after it has been added and
-    /// registered. The cylinder spheres take no scale at all ([`cylinder_cell_spheres`]). The
-    /// search never loads a cell.
+    /// registered. The cylinder spheres take no scale at all ([`cylinder_cell_spheres`]). A host's
+    /// added cylinders register it in the cells they reach as well. The search never loads a cell.
     pub fn find_static_cell_list(
         &self,
         pos: &Position,
@@ -939,6 +942,21 @@ impl<'a> CellResolver<'a> {
                 .filter_map(|i| geometry.placed_part_posed(i, pos, part_scale, part_frames))
                 .collect();
             self.find_bbox_cell_list(pos, &parts, arr);
+        }
+        if !geometry.added_cyl_spheres.is_empty() {
+            let mut more = CellArray::new();
+            more.do_not_load_cells = true;
+            let mut interior = false;
+            self.find_cell_list(
+                pos,
+                &cell_spheres_of(&geometry.added_cyl_spheres, pos),
+                &mut more,
+                false,
+                &mut interior,
+            );
+            for c in more.cells {
+                arr.add_cell(c.cell_id, c.cell);
+            }
         }
     }
 

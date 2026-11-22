@@ -8,7 +8,7 @@
 //! | decoding environment-cell and environment records | [`pyreal_assets`] |
 //! | what a cell BSP, a physics BSP and a polygon mean | [`pyreal_physics::geom`] |
 //! | interior collision and the portal transit | [`pyreal_physics::cell`], `transition::collide` |
-//! | the portal traversal and the indoor draw order | `pyreal_world_render::cells::portal_view` |
+//! | the portal walk that decides which cells are seen | `pyreal_engine::cells` |
 //!
 //! The conversion belongs in the application: `pyreal-physics` declares the shapes it needs and a
 //! source trait, and the application connects `pyreal-assets` through free functions. This avoids an
@@ -806,20 +806,6 @@ impl CellStaticObjects {
         self.handles.is_empty()
     }
 
-    /// The bodies one cell owns, for the tests.
-    #[must_use]
-    pub fn handles(&self, cell: CellId) -> &[PhysHandle] {
-        self.handles.get(&cell.0).map_or(&[], Vec::as_slice)
-    }
-
-    /// Every cell [`Self::init`] has registered and [`Self::release_block`] has not taken back, in
-    /// id order, for the tests: `len()` alone cannot say *which* blocks a residency
-    /// spans, and that is the question a release has to answer.
-    #[must_use]
-    pub fn registered_cells(&self) -> Vec<CellId> {
-        self.done.iter().map(|c| CellId(*c)).collect()
-    }
-
     /// Initialize static objects for a set of placements.
     ///
     /// ```text
@@ -1032,6 +1018,90 @@ impl CellStaticObjects {
     }
 }
 
+/// The heights (metres over the object's origin) a drawn trunk is measured in: four short bands up
+/// to a character's height and a little over, so a leaning or tapering trunk is followed.
+pub const TRUNK_BANDS: [(f32, f32); 4] = [(0.0, 0.6), (0.6, 1.2), (1.2, 1.8), (1.8, 2.4)];
+
+/// A tree trunk as an art pack draws it, solid beside the object's own collision: in each of
+/// [`TRUNK_BANDS`], the trunk's middle (object space, metres) and its radius there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawnTrunk {
+    pub bands: [(f32, f32, f32); 4],
+}
+
+/// The drawn trunks by object id, while a pack that draws them is in use.
+static DRAWN_TRUNKS: std::sync::RwLock<Option<Arc<BTreeMap<u32, DrawnTrunk>>>> =
+    std::sync::RwLock::new(None);
+
+/// Sets (or with `None` clears) the trunks the client collides with as well as the objects' own
+/// collision. Read when an object's collision is first loaded, so it is set before the world is
+/// built; a host that never sets it (the server) keeps retail's shapes alone.
+pub fn set_drawn_trunks(trunks: Option<Arc<BTreeMap<u32, DrawnTrunk>>>) {
+    if let Ok(mut t) = DRAWN_TRUNKS.write() {
+        *t = trunks;
+    }
+}
+
+/// The drawn trunk of object `id`, if one is set.
+#[must_use]
+pub fn drawn_trunk(id: u32) -> Option<DrawnTrunk> {
+    DRAWN_TRUNKS.read().ok()?.as_ref()?.get(&id).copied()
+}
+
+/// `g` with `trunk`'s stack of short upright cylinders, one a band, added to its own collision
+/// where `g` has a trunk (cylinders or a physics mesh), so either one blocks: the lowest reaching
+/// down to the lowest of its cylinders, the highest up to the top of its highest, or its own height
+/// over the ground for a mesh. A band one of its cylinders already holds is left out; `None` when
+/// nothing is added.
+#[must_use]
+pub fn with_drawn_trunk(g: &SetupGeometry, trunk: DrawnTrunk) -> Option<SetupGeometry> {
+    if g.cyl_spheres.is_empty() && !g.has_physics_bsp {
+        return None;
+    }
+    let (low, high) = if g.cyl_spheres.is_empty() {
+        (0.0, if g.height > 0.0 { g.height } else { 3.0 })
+    } else {
+        let low = g
+            .cyl_spheres
+            .iter()
+            .map(|c| c.low_pt.z)
+            .fold(f32::INFINITY, f32::min);
+        let high = g
+            .cyl_spheres
+            .iter()
+            .map(|c| c.low_pt.z + c.height)
+            .fold(f32::NEG_INFINITY, f32::max);
+        (low, high)
+    };
+    let last = TRUNK_BANDS.len() - 1;
+    let mut out = g.clone();
+    out.added_cyl_spheres = TRUNK_BANDS
+        .iter()
+        .zip(trunk.bands)
+        .enumerate()
+        .filter_map(|(k, (&(b0, b1), (x, y, radius)))| {
+            let bottom = if k == 0 { low.min(b0) } else { b0 };
+            let top = if k == last { high.max(b1) } else { b1 };
+            (top > bottom && radius > 0.0).then_some(pyreal_physics::geom::CylSphere {
+                low_pt: Vec3::new(x, y, bottom),
+                radius,
+                height: top - bottom,
+            })
+        })
+        .filter(|b| !g.cyl_spheres.iter().any(|c| holds(c, b)))
+        .collect();
+    (!out.added_cyl_spheres.is_empty()).then_some(out)
+}
+
+/// Whether cylinder `c` holds all of `b`, so `b` adds nothing to it.
+fn holds(c: &pyreal_physics::geom::CylSphere, b: &pyreal_physics::geom::CylSphere) -> bool {
+    let off =
+        pyreal_primitives::num::math::hypotf(b.low_pt.x - c.low_pt.x, b.low_pt.y - c.low_pt.y);
+    off + b.radius <= c.radius + 1e-3
+        && b.low_pt.z >= c.low_pt.z - 1e-3
+        && b.low_pt.z + b.height <= c.low_pt.z + c.height + 1e-3
+}
+
 /// One placement's collision half out of the dat store, as [`CellStaticObjects::init`] reads it.
 fn load_static_geometry(
     store: &RetailDatStore,
@@ -1042,20 +1112,261 @@ fn load_static_geometry(
     // **With the parts**, so a table's own mesh is what the body meets. The same
     // loader the object stream uses (`crate::setup`), because a chair baked into a
     // cell and a door sent by the server are the same physics object to the client.
-    if mesh_collision || id.0 >> 24 == 0x01 {
-        static_geometry(store, id, stats).map(Arc::new)
+    let g = if mesh_collision || id.0 >> 24 == 0x01 {
+        static_geometry(store, id, stats)
     } else {
         store
             .read_typed(DbType::Setup, id)
             .ok()
             .and_then(|b| Setup::decode_payload_in(store.era_of(id), id, &b).ok())
-            .map(|s| Arc::new(crate::setup::setup_geometry(&s)))
-    }
+            .map(|s| crate::setup::setup_geometry(&s))
+    }?;
+    Some(Arc::new(
+        drawn_trunk(id.0)
+            .and_then(|t| with_drawn_trunk(&g, t))
+            .unwrap_or(g),
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drawn_trunk_is_added_beside_a_trees_own_cylinders_and_mesh() {
+        let cyl = |x: f32, z: f32, r: f32, h: f32| pyreal_physics::geom::CylSphere {
+            low_pt: Vec3::new(x, 0.0, z),
+            radius: r,
+            height: h,
+        };
+        // A trunk leaning east as it rises, and narrowing.
+        let trunk = DrawnTrunk {
+            bands: [
+                (0.0, 0.0, 0.5),
+                (0.2, 0.0, 0.45),
+                (0.4, 0.0, 0.42),
+                (0.6, 0.0, 0.4),
+            ],
+        };
+        let own = vec![cyl(0.0, -3.8, 0.3, 44.4), cyl(0.3, 0.0, 0.2, 2.0)];
+        let tree = SetupGeometry {
+            cyl_spheres: own.clone(),
+            ..Default::default()
+        };
+        let g =
+            with_drawn_trunk(&tree, trunk).expect("a tree with cylinders takes the drawn trunk");
+        assert_eq!(g.cyl_spheres, own, "retail's cylinders stay");
+        assert_eq!(g.added_cyl_spheres.len(), 4);
+        let (first, top) = (g.added_cyl_spheres[0], g.added_cyl_spheres[3]);
+        assert_eq!(
+            (first.low_pt.z, first.radius),
+            (-3.8, 0.5),
+            "the lowest reaches retail's foot"
+        );
+        assert!((first.height - 4.4).abs() < 1e-4);
+        assert_eq!(
+            (top.low_pt.x, top.low_pt.z, top.radius),
+            (0.6, 1.8, 0.4),
+            "the highest follows the lean"
+        );
+        assert!(
+            (top.low_pt.z + top.height - 40.6).abs() < 1e-3,
+            "and reaches retail's top"
+        );
+        let meshed = SetupGeometry {
+            has_physics_bsp: true,
+            height: 12.0,
+            ..Default::default()
+        };
+        let g = with_drawn_trunk(&meshed, trunk).expect("a tree with a physics mesh takes it too");
+        assert!(
+            g.has_physics_bsp && g.cyl_spheres.is_empty(),
+            "its mesh stays"
+        );
+        assert_eq!(g.added_cyl_spheres[0].low_pt.z, 0.0);
+        let top = g.added_cyl_spheres[3];
+        assert!((top.low_pt.z + top.height - 12.0).abs() < 1e-4);
+        assert!(
+            with_drawn_trunk(&SetupGeometry::default(), trunk).is_none(),
+            "nothing to collide with stays so"
+        );
+        let wide = |r: f32| SetupGeometry {
+            cyl_spheres: vec![cyl(0.0, -3.8, r, 44.4)],
+            ..Default::default()
+        };
+        assert!(
+            with_drawn_trunk(&wide(1.53), trunk).is_none(),
+            "a trunk inside retail's cylinder adds nothing"
+        );
+        let g = with_drawn_trunk(&wide(0.9), trunk).expect("the top band leans out");
+        assert_eq!(g.added_cyl_spheres.len(), 1);
+        assert_eq!(g.added_cyl_spheres[0].low_pt.x, 0.6);
+    }
+
+    /// Walks a two-sphere body (0 to 1.9 m, 0.5 m round) `step` a frame for ten seconds from
+    /// `(x, y)` past a static `tree` standing at block-local (101, 100) on flat ground, and answers
+    /// its path.
+    fn walk(tree: SetupGeometry, (x, y): (f32, f32), step: Vec3) -> Vec<Vec3> {
+        use pyreal_physics::{ScriptedMotion, StaticLandSource};
+        use pyreal_primitives::{LandblockId, LocalTime, Quat};
+        let mut land = StaticLandSource::linear();
+        land.add_flat_block(LandblockId::new(0xA9, 0xB4), 10);
+        let mut w = PhysicsWorld::new(Arc::new(land));
+        let ground = 20.0;
+        let place = |w: &mut PhysicsWorld, h: PhysHandle, at: Vec3| {
+            let mut cell = LandblockId(0xA9B4).cell(1);
+            let mut local = at;
+            assert!(pyreal_physics::landdefs::adjust_to_outside(
+                &mut cell, &mut local
+            ));
+            w.enter_cell(h, cell);
+            let o = w.get_mut(h).expect("live");
+            o.set_frame(Frame::new(at, Quat::IDENTITY));
+            o.position = Position::new(cell, Frame::new(at, Quat::IDENTITY));
+        };
+        let t = w.create(ObjectId(0), Arc::new(tree), false);
+        place(&mut w, t, Vec3::new(101.0, 100.0, ground));
+        w.calc_cross_cells_static(t);
+        let body = Arc::new(SetupGeometry {
+            spheres: vec![
+                Sphere::new(Vec3::new(0.0, 0.0, 0.5), 0.5),
+                Sphere::new(Vec3::new(0.0, 0.0, 1.4), 0.5),
+            ],
+            sorting_sphere: Sphere::new(Vec3::new(0.0, 0.0, 1.0), 1.2),
+            step_up_height: 0.3,
+            step_down_height: 0.3,
+            radius: 0.5,
+            height: 1.9,
+            ..SetupGeometry::default()
+        });
+        let b = w.create(ObjectId(1), body, true);
+        place(&mut w, b, Vec3::new(x, y, ground));
+        {
+            let o = w.get_mut(b).expect("live");
+            o.set_motion(Box::new(ScriptedMotion::new(
+                vec![Frame::new(step, Quat::IDENTITY); 300],
+                true,
+            )));
+            o.transient_state.set_active_bit(true);
+            o.calc_acceleration();
+            o.update_time = 0.0;
+        }
+        w.calc_cross_cells(b, false);
+        let mut now = 0.0;
+        let mut path = Vec::new();
+        for _ in 0..300 {
+            now += 1.0 / 30.0;
+            w.use_time(LocalTime(now), false);
+            path.push(w.get(b).expect("live").position.frame.origin);
+        }
+        path
+    }
+
+    /// How close `path` came to the side of a cylinder `c` of the tree at (101, 100) that reaches
+    /// the body's height; negative is how far into it.
+    fn closest(path: &[Vec3], c: pyreal_physics::geom::CylSphere) -> f32 {
+        if c.low_pt.z > 1.9 {
+            return f32::INFINITY;
+        }
+        path.iter()
+            .map(|p| {
+                let (dx, dy) = (p.x - 101.0 - c.low_pt.x, p.y - 100.0 - c.low_pt.y);
+                (dx * dx + dy * dy).sqrt() - c.radius - 0.5
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    // Oracle: the retail portal dat's setup 0x0200071F (leaning dead pine), one cylinder 2.092 m
+    // round at its origin, and its trunk as base pack 0.4.53 draws it (`pack::drawn_trunks`).
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn a_leaning_pine_blocks_at_retails_cylinder_and_along_its_drawn_trunk() {
+        use pyreal_primitives::num::math;
+        let store = pyreal_dat::testing::open_store().unwrap_or_else(|| {
+            panic!(
+                "the retail dats are this test's oracle and they are not under {} -- \
+                 set PYREAL_TEST_DAT_DIR",
+                pyreal_dat::testing::dat_dir().display()
+            )
+        });
+        let mut stats = crate::setup::SetupPartStats::default();
+        let pine = static_geometry(&store, DataId(0x0200_071F), &mut stats).expect("the pine");
+        let own = pine.cyl_spheres[0];
+        assert!(!pine.caches_physics_bsp() && pine.cyl_spheres.len() == 1);
+        assert!((own.radius - 2.092).abs() < 1e-3);
+        let drawn = DrawnTrunk {
+            bands: [
+                (0.659, -0.133, 0.887),
+                (0.108, -0.052, 0.739),
+                (-0.330, 0.211, 0.875),
+                (0.951, -0.031, 0.648),
+            ],
+        };
+        // Pack 0.4.53's trunk is inside retail's cylinder, so nothing is added: the pine is
+        // retail's alone.
+        assert!(with_drawn_trunk(&pine, drawn).is_none());
+        // That trunk in place of retail's, as before, let a glancing body 0.3 m into retail's
+        // cylinder, where the server, which keeps retail's, refuses it.
+        let mut thin = pine.clone();
+        thin.cyl_spheres[0].radius = 0.0;
+        let mut instead = with_drawn_trunk(&thin, drawn).expect("bands");
+        instead.cyl_spheres = std::mem::take(&mut instead.added_cyl_spheres);
+        let path = walk(instead, (107.0, 100.4), Vec3::new(-0.1, 0.0, 0.0));
+        assert!(closest(&path, own) < -0.3);
+
+        // Drawn leaning 2.6 m east at chest height, past retail's cylinder: the body walking in
+        // from the east stops at the drawn trunk, and from the west at retail's cylinder.
+        let mut leaning = drawn;
+        leaning.bands[2] = (2.6, 0.0, 0.5);
+        let union = with_drawn_trunk(&pine, leaning).expect("the pine takes its trunk");
+        assert_eq!(union.cyl_spheres, vec![own], "retail's stays");
+        assert_eq!(
+            union.added_cyl_spheres.len(),
+            1,
+            "only the band outside it is added"
+        );
+        let lean = union.added_cyl_spheres[0];
+        assert_eq!((lean.low_pt.x, lean.low_pt.z), (2.6, 1.2));
+        let east = walk(union.clone(), (107.0, 100.0), Vec3::new(-0.1, 0.0, 0.0));
+        assert!(closest(&east, lean) > -0.01 && closest(&east, lean) < 0.05);
+        let stop = east.last().expect("a path").x;
+        assert!(
+            (stop - (101.0 + 2.6 + 0.5 + 0.5)).abs() < 0.05,
+            "stopped at {stop}"
+        );
+        let alone = walk(pine, (107.0, 100.0), Vec3::new(-0.1, 0.0, 0.0));
+        assert!(
+            closest(&alone, lean) < -0.3,
+            "retail's alone lets the body under the lean"
+        );
+        let west = walk(union.clone(), (95.0, 100.0), Vec3::new(0.1, 0.0, 0.0));
+        assert!(closest(&west, own) > -0.01 && closest(&west, own) < 0.05);
+
+        // Into the crease where the two meet, (103.4, 100.98), head on and a little either way:
+        // the body stays there, in neither, wobbling a few centimetres as it does in any crease
+        // between two of retail's cylinders.
+        let mut crease = Vec::new();
+        for k in 0..3 {
+            #[allow(clippy::cast_precision_loss)]
+            let a = std::f32::consts::FRAC_PI_4 + (k - 1) as f32 * 0.01;
+            let path = walk(
+                union.clone(),
+                (105.4, 102.98),
+                Vec3::new(-0.1 * math::cosf(a), -0.1 * math::sinf(a), 0.0),
+            );
+            assert!(closest(&path, own) > -0.01 && closest(&path, lean) > -0.01);
+            crease.extend_from_slice(&path[path.len() - 30..]);
+        }
+        assert!(
+            crease
+                .iter()
+                .all(|p| (p.x - 103.42).abs() < 0.05 && (p.y - 101.01).abs() < 0.05),
+            "{crease:?}"
+        );
+    }
 
     // Oracle: `client_cell_1.dat`, through the environment-cell and environment decoders (whose
     // own tests consume all 805,347 cell records' payloads exactly) and the cell geometry.

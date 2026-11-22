@@ -8,6 +8,7 @@
 //! Velocity cancellation is the one exception and is deferred through
 //! [`super::Transition::kill_velocity`].
 
+use pyreal_primitives::shape::PlaneArithmetic;
 use pyreal_primitives::{CellId, Vec3};
 
 use crate::cell::Cell;
@@ -29,19 +30,21 @@ use crate::transition::{Transition, TransitionCtx, TransitionState};
 ///
 /// `sphere` is the **mover's** sphere at the check position and `curr_center` its centre at
 /// `curr_pos`; `normal` is the surface normal to slide along. With a zero normal it just halves
-/// the remaining offset and returns `ADJUSTED_TS`.
+/// the remaining offset and returns `ADJUSTED_TS`. Where the move runs into the surface along its
+/// own line it stops, and `normal` becomes the move's own direction backwards, which the caller
+/// keeps (the step-up normal, a back face's normal).
 pub fn slide_sphere(
     t: &mut Transition,
     sphere: Sphere,
-    normal: Vec3,
+    normal_out: &mut Vec3,
     curr_center: Vec3,
 ) -> TransitionState {
+    let normal = *normal_out;
     if normal.x == 0.0 && normal.y == 0.0 && normal.z == 0.0 {
         let v = curr_center.sub(sphere.center).mul(0.5);
         t.sphere_path.add_offset_to_check_pos(v);
         return TransitionState::Adjusted;
     }
-    let mut normal = normal;
     t.collision_info.set_collision_normal(normal);
     let d = t
         .sphere_path
@@ -84,8 +87,7 @@ pub fn slide_sphere(
         if !n.normalize_check_small() {
             t.collision_info.set_collision_normal(n);
         }
-        normal = n;
-        let _ = normal;
+        *normal_out = n;
         TransitionState::Collided
     } else {
         let offset = normal.mul(-d.dot(normal));
@@ -102,7 +104,7 @@ pub fn slide_sphere(
 pub fn slide(t: &mut Transition, sphere: Sphere, normal: &mut Vec3, curr: Vec3) -> TransitionState {
     match t.rules.slide {
         Some(world) if !t.object_info.slides => (world.along)(t, &sphere, normal, curr),
-        _ => slide_sphere(t, sphere, *normal, curr),
+        _ => slide_sphere(t, sphere, normal, curr),
     }
 }
 
@@ -178,7 +180,7 @@ pub fn slide_sphere_from_centers(
     }
     let sphere = t.sphere_path.global_sphere[index];
     let curr = t.sphere_path.global_curr_center[index];
-    slide_sphere(t, sphere, n, curr)
+    slide_sphere(t, sphere, &mut n, curr)
 }
 
 /// A mover that steps ([`super::objectinfo::ObjectInfo::steps`]), meeting a rise whose face
@@ -226,8 +228,10 @@ pub fn step_sphere_up(
         t.sphere_path.step_up = false;
         let sphere = t.sphere_path.global_sphere[0];
         let curr = t.sphere_path.global_curr_center[0];
-        let n = t.sphere_path.step_up_normal;
-        slide_sphere(t, sphere, n, curr)
+        let mut n = t.sphere_path.step_up_normal;
+        let r = slide_sphere(t, sphere, &mut n, curr);
+        t.sphere_path.step_up_normal = n;
+        r
     }
 }
 
@@ -536,7 +540,8 @@ fn glide_on_ground(
     let mut result = TransitionState::Adjusted;
     if sphere.center.sub(began).dot(plane.normal) < 0.0 {
         let s = t.sphere_path.global_sphere[0];
-        result = slide_sphere(t, s, plane.normal, curr);
+        let mut n = plane.normal;
+        result = slide_sphere(t, s, &mut n, curr);
         if result != TransitionState::Slid {
             return result;
         }
@@ -598,11 +603,29 @@ pub fn validate_walkable(
     }
 
     // Normal objects: measure the *bottom* of the sphere against the plane, plus the water depth.
-    let low = sphere.center.sub(Vec3::new(0.0, 0.0, sphere.radius));
-    let d = plane.dot_point(low) + water_depth;
+    // Worked in the world's plane arithmetic. The first game's client works the distance, the
+    // lift and the new interpolation in double precision and keeps the lift and the interpolation
+    // as floats: rounding every step instead puts a body on a slope an ulp higher or lower.
+    let double = t.rules.plane_arithmetic == PlaneArithmetic::Double;
+    let (nx, ny, nz) = (
+        f64::from(plane.normal.x),
+        f64::from(plane.normal.y),
+        f64::from(plane.normal.z),
+    );
+    let c = sphere.center;
+    let d = if double {
+        ((((f64::from(c.z) - f64::from(sphere.radius)) * nz + f64::from(c.y) * ny)
+            + f64::from(c.x) * nx)
+            + f64::from(plane.d))
+            + f64::from(water_depth)
+    } else {
+        let low = c.sub(Vec3::new(0.0, 0.0, sphere.radius));
+        f64::from(plane.dot_point(low) + water_depth)
+    };
+    let eps = f64::from(EPSILON);
 
-    if d >= -EPSILON {
-        if d > EPSILON {
+    if d >= -eps {
+        if d > eps {
             return TransitionState::Ok;
         }
         let walkable = t.rules.is_valid_walkable(plane.normal);
@@ -622,13 +645,18 @@ pub fn validate_walkable(
     if t.sphere_path.check_walkable {
         return TransitionState::Collided;
     }
-    let lift = d / plane.normal.z;
+    #[allow(clippy::cast_possible_truncation)]
+    let lift = if double {
+        (d / nz) as f32
+    } else {
+        (d as f32) / plane.normal.z
+    };
     let walkable = t.rules.is_valid_walkable(plane.normal);
     if t.sphere_path.step_down || !t.object_info.has(ObjectInfoState::ON_WALKABLE) || walkable {
         t.collision_info
             .set_contact_plane_on(*plane, is_water, true, false);
         t.collision_info.contact_plane_cell_id = cell_id;
-        if t.sphere_path.step_down {
+        if t.sphere_path.step_down && !double {
             let denom = t.sphere_path.step_down_amt * t.sphere_path.walk_interp;
             // A world that guards a zero drop lowers the sphere without dividing by it.
             let guarded = t.rules.step_down_guards_zero_drop && denom.abs() < EPSILON;
@@ -638,6 +666,22 @@ pub fn validate_walkable(
                     return TransitionState::Collided;
                 }
                 t.sphere_path.walk_interp = interp;
+            }
+        } else if t.sphere_path.step_down {
+            let walk_interp = f64::from(t.sphere_path.walk_interp);
+            let denom = f64::from(t.sphere_path.step_down_amt) * walk_interp;
+            // A world that guards a zero drop lowers the sphere without dividing by it.
+            let guarded = t.rules.step_down_guards_zero_drop && denom.abs() < eps;
+            if !guarded {
+                let interp = (1.0 - (-1.0 / denom) * f64::from(lift)) * walk_interp;
+                // The floor is the double nearest -0.1, not the float.
+                if interp >= walk_interp || interp < -0.1 {
+                    return TransitionState::Collided;
+                }
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    t.sphere_path.walk_interp = interp as f32;
+                }
             }
         }
         t.sphere_path
@@ -822,16 +866,6 @@ pub fn bsp_find_collisions(
     bsp_find_collisions_on(ctx, t, tree, TreeScale::Uniform(scale), false)
 }
 
-/// [`bsp_find_collisions`] with the object's scale as `scale` says ([`TreeScale`]).
-pub fn bsp_find_collisions_scaled(
-    ctx: &TransitionCtx<'_>,
-    t: &mut Transition,
-    tree: &crate::geom::BspTree,
-    scale: TreeScale,
-) -> TransitionState {
-    bsp_find_collisions_on(ctx, t, tree, scale, false)
-}
-
 /// A plane carried into the world whose normal is multiplied by `v` along each axis, made unit
 /// length again with its distance: a contact plane found on a tree with a scale along each axis,
 /// `v` the inverse of that scale. The products and the length are worked in double precision, the
@@ -942,7 +976,11 @@ fn bsp_find_collisions_on(
                     let delta = valid.center.sub(local.center).mul(scale);
                     let world_delta = crate::math::localtoglobalvec(m, delta);
                     t.sphere_path.add_offset_to_check_pos(world_delta);
-                    let mut contact = poly.plane.localtoglobal(&t.sphere_path.check_pos, &pos);
+                    let mut contact = poly.plane.localtoglobal_in(
+                        &t.sphere_path.check_pos,
+                        &pos,
+                        t.rules.plane_arithmetic,
+                    );
                     contact.d *= scale;
                     t.collision_info
                         .set_contact_plane_on(contact, false, false, environment);
@@ -955,7 +993,11 @@ fn bsp_find_collisions_on(
                     let world_delta = times(crate::math::localtoglobalvec(m, delta), scale);
                     t.sphere_path.add_offset_to_check_pos(world_delta);
                     let contact = plane_scaled_by(
-                        poly.plane.localtoglobal(&t.sphere_path.check_pos, &pos),
+                        poly.plane.localtoglobal_in(
+                            &t.sphere_path.check_pos,
+                            &pos,
+                            t.rules.plane_arithmetic,
+                        ),
                         inverse,
                     );
                     t.collision_info
@@ -1058,7 +1100,8 @@ fn bsp_find_collisions_on(
             }
             let sphere = t.sphere_path.global_sphere[0];
             let curr = t.sphere_path.global_curr_center[0];
-            return slide_sphere(t, sphere, n, curr);
+            let mut n = n;
+            return slide_sphere(t, sphere, &mut n, curr);
         }
         if hit || hit_poly.is_some() {
             let Some(p) = hit_poly else {
@@ -1285,7 +1328,9 @@ fn bsp_step_sphere_down(
     let world_delta = crate::math::localtoglobalvec(crate::math::l2g(pos.frame.rotation), delta);
     t.sphere_path.walk_interp = interp;
     t.sphere_path.add_offset_to_check_pos(world_delta);
-    let mut contact = poly.plane.localtoglobal(&t.sphere_path.check_pos, &pos);
+    let mut contact =
+        poly.plane
+            .localtoglobal_in(&t.sphere_path.check_pos, &pos, t.rules.plane_arithmetic);
     contact.d *= scale;
     t.collision_info
         .set_contact_plane_on(contact, false, false, environment);
@@ -1355,7 +1400,8 @@ fn bsp_step_sphere_down_axes(
     t.sphere_path.walk_interp = interp;
     t.sphere_path.add_offset_to_check_pos(offset);
     let contact = plane_scaled_by(
-        poly.plane.localtoglobal(&t.sphere_path.check_pos, &pos),
+        poly.plane
+            .localtoglobal_in(&t.sphere_path.check_pos, &pos, t.rules.plane_arithmetic),
         inverse,
     );
     t.collision_info
@@ -1684,8 +1730,9 @@ pub fn find_obj_collisions_geom(
 }
 
 /// The geometry of one candidate object's test: every part's tree when the candidate has physics
-/// trees, else each of its cylinder spheres, else each of its spheres; the first result that is
-/// not OK wins. `creature` is handed to the sphere test (a creature is never stepped down onto).
+/// trees, else each of its cylinder spheres, else each of its spheres, then any cylinders a host
+/// added ([`crate::SetupGeometry::added_cyl_spheres`]); the first result that is not OK wins.
+/// `creature` is handed to the sphere test (a creature is never stepped down onto).
 #[allow(clippy::too_many_arguments)]
 pub fn object_geometry(
     ctx: &TransitionCtx<'_>,
@@ -1703,32 +1750,6 @@ pub fn object_geometry(
         other_geom,
         other_scale,
         None,
-        other_pos,
-        creature,
-    )
-}
-
-/// [`object_geometry`] for an object whose trees are tested at `trees` ([`TreeScale`]) in place of
-/// each part's own scale; its parts are placed, and its cylinders and spheres tested, at
-/// `other_scale`.
-#[allow(clippy::too_many_arguments)]
-pub fn object_geometry_scaled(
-    ctx: &TransitionCtx<'_>,
-    t: &mut Transition,
-    other_state: PhysicsState,
-    other_geom: ObjGeometry<'_>,
-    other_scale: f32,
-    trees: TreeScale,
-    other_pos: &pyreal_primitives::Position,
-    creature: bool,
-) -> TransitionState {
-    object_geometry_with(
-        ctx,
-        t,
-        other_state,
-        other_geom,
-        other_scale,
-        Some(trees),
         other_pos,
         creature,
     )
@@ -1801,6 +1822,23 @@ fn object_geometry_with(
             r = sphere_intersects_sphere(ctx, t, &obstacle, creature);
             if r != TransitionState::Ok {
                 break;
+            }
+        }
+    }
+    if r == TransitionState::Ok {
+        if let ObjGeometry::Setup(g, _) = other_geom {
+            for c in &g.added_cyl_spheres {
+                t.counters.object_cylspheres_tested += 1;
+                r = crate::transition::cylinder::cyl_intersects_sphere_scaled(
+                    ctx,
+                    t,
+                    c,
+                    other_pos,
+                    other_scale,
+                );
+                if r != TransitionState::Ok {
+                    break;
+                }
             }
         }
     }

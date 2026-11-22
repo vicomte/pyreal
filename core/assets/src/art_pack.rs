@@ -140,6 +140,26 @@
 //! and is neither read nor drawn here. The keys after `occlusion` are all optional, and a reader
 //! of this format that does not know them draws the material without them.
 //!
+//! A surface with no picture, drawn in one solid colour, takes a `[[solid]]` material: the same
+//! keys as a material's but for `texture` and `keep_retail_picture`, laid along the world's three
+//! axes, as the surface has no picture coordinates, and grown with the object's scale. Its `base_color` is a grain that multiplies
+//! the surface's own colour, so the colour stays the player's. A reader that does not know
+//! `[[solid]]` draws those surfaces as they are.
+//!
+//! ```toml
+//! [[solid]]
+//! surface = ["0x080006F7", "0x08000203"] # the untextured surfaces, one or a list
+//! colour = "0xFF320000"      # their solid colour (ARGB): laid only on a surface of this colour
+//! size = 0.5                 # metres one repeat covers on the object at its own size (scale 1)
+//! base_color = "materials/solid/stone_colour.png"  # grey, multiplying the surface's colour
+//! normal = "materials/solid/stone_normal.png"
+//! roughness = "materials/solid/stone_roughness.png"
+//! occlusion = "materials/solid/stone_occlusion.png"
+//! author = "..."
+//! tool = "..."
+//! license = "..."
+//! ```
+//!
 //! A pack may also plant ground cover: plants retail never places, scattered over the terrain
 //! types each kind grows on. They are pictures alone: nothing collides with them. A kind's levels
 //! are a model's, and its last names how far from the eye the plant is drawn at all.
@@ -196,6 +216,16 @@
 //! ```
 //!
 //! Only `object`, `kelvin`, `brightness`, `reach` and the credit are required.
+//!
+//! A pack may let the wind move a retail object it draws no model for (`[[sway]]`): retail's own
+//! parts sway as a pack model's growth does, outdoors alone. A `[[model]]` drawn for the object
+//! sways by its own `wind` instead.
+//!
+//! ```toml
+//! [[sway]]
+//! object = "0x02000A37"      # the retail object: a setup (0x02...) or a graphics object (0x01...)
+//! wind = 1.0                 # how much the wind moves it, above 0 to 2, as a model's `wind`
+//! ```
 //!
 //! A pack may draw one of retail's moons again as a ball of its own. Its pictures cover the whole
 //! ball, longitude by latitude: longitude 0, the face turned to Dereth, at the middle of the
@@ -303,6 +333,8 @@ pub struct ArtPackManifest {
     pub ground_cover: Vec<ManifestGroundCover>,
     /// The lights it gives retail objects, in the order the manifest lists them.
     pub lights: Vec<ManifestLight>,
+    /// The retail objects the wind moves, in the order the manifest lists them.
+    pub sways: Vec<ManifestSway>,
     /// The moons it draws again, in the order the manifest lists them.
     pub moons: Vec<ManifestMoon>,
     /// The bodies it draws in place of setups' parts, in the order the manifest lists them.
@@ -447,6 +479,15 @@ pub struct ManifestLight {
     pub credit: Credit,
 }
 
+/// A retail object the wind moves, drawn with its own parts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ManifestSway {
+    /// The retail object.
+    pub object: DataId,
+    /// How much the wind moves it, as [`ManifestModel::wind`].
+    pub wind: f32,
+}
+
 /// One kind of plant a pack lays over the land.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ManifestGroundCover {
@@ -512,8 +553,23 @@ pub struct ManifestMaterial {
     pub draws_on: DrawsOn,
     /// The palettes (`0x04...`) it is drawn in alone; any, where it names none.
     pub palettes: Vec<DataId>,
+    /// For a `[[solid]]` entry: the untextured surfaces it is laid on, in place of [`Self::textures`].
+    pub solid: Option<Solid>,
     /// Who made it, with what, and under which license.
     pub credit: Credit,
+}
+
+/// Where a `[[solid]]` material is laid: untextured surfaces, which have no picture to stand for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Solid {
+    /// The surface records (`0x08...`) it is laid on.
+    pub surfaces: Vec<DataId>,
+    /// The solid colour (ARGB) a surface must have for it to be laid there: what tells one era's
+    /// surface from another's under the same id.
+    pub colour: u32,
+    /// How many metres one repeat of its pictures covers on the object at its own size, laid along
+    /// the world's three axes.
+    pub size: f32,
 }
 
 /// What a material is made of beyond its pictures: a metal, how smooth, or clear as ice or a gem.
@@ -813,6 +869,31 @@ impl ArtPackManifest {
             }
             materials.push(material);
         }
+        let listed = match table.get("solid") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`solid` is not a list of [[solid]] tables"),
+        };
+        let mut solid_at: HashSet<(DataId, u32)> = HashSet::new();
+        for (i, m) in listed.iter().enumerate() {
+            let Some(m) = m.as_table() else {
+                return fail(format!("solid {} is not a table", i + 1));
+            };
+            let material =
+                solid(m).map_err(|e| ManifestError(format!("solid {}: {}", i + 1, e.0)))?;
+            if let Some(sd) = &material.solid {
+                for s in &sd.surfaces {
+                    if !solid_at.insert((*s, sd.colour)) {
+                        return fail(format!(
+                            "solid {}: {:#010X} has a material already",
+                            i + 1,
+                            s.0
+                        ));
+                    }
+                }
+            }
+            materials.push(material);
+        }
         let listed = match table.get("ground_cover") {
             None => &empty,
             Some(toml::Value::Array(a)) => a,
@@ -872,6 +953,26 @@ impl ArtPackManifest {
             same.push(lights.len());
             lights.push(light);
         }
+        let listed = match table.get("sway") {
+            None => &empty,
+            Some(toml::Value::Array(a)) => a,
+            Some(_) => return fail("`sway` is not a list of [[sway]] tables"),
+        };
+        let mut sways: Vec<ManifestSway> = Vec::with_capacity(listed.len());
+        for (i, w) in listed.iter().enumerate() {
+            let Some(w) = w.as_table() else {
+                return fail(format!("sway {} is not a table", i + 1));
+            };
+            let one = sway(w).map_err(|e| ManifestError(format!("sway {}: {}", i + 1, e.0)))?;
+            if sways.iter().any(|o| o.object == one.object) {
+                return fail(format!(
+                    "sway {}: {:#010X} is listed twice",
+                    i + 1,
+                    one.object.0
+                ));
+            }
+            sways.push(one);
+        }
         let listed = match table.get("moon") {
             None => &empty,
             Some(toml::Value::Array(a)) => a,
@@ -930,11 +1031,21 @@ impl ArtPackManifest {
             materials,
             ground_cover,
             lights,
+            sways,
             moons,
             skins,
             keep,
             keep_launchers,
         })
+    }
+
+    /// How much the wind moves retail object `object` drawn with its own parts, if the pack says.
+    #[must_use]
+    pub fn sway(&self, object: DataId) -> Option<f32> {
+        self.sways
+            .iter()
+            .find(|w| w.object == object)
+            .map(|w| w.wind)
     }
 
     /// The body drawn for an object built on `setup`, whose record's fingerprint is `record`,
@@ -1209,7 +1320,62 @@ fn draws_on(t: &toml::Table) -> Result<DrawsOn, ManifestError> {
 }
 
 fn material(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
-    let textures = textures_of(t.get("texture"))?;
+    material_with(t, textures_of(t.get("texture"))?, None)
+}
+
+/// A `[[solid]]` entry: a material laid on untextured surfaces of one colour.
+fn solid(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
+    if t.contains_key("texture") || t.contains_key("keep_retail_picture") {
+        return fail("names a picture; a solid is laid on untextured surfaces");
+    }
+    let one = |v: &toml::Value| -> Result<DataId, ManifestError> {
+        match v
+            .as_str()
+            .and_then(|r| u32::from_str_radix(r.trim().trim_start_matches("0x"), 16).ok())
+        {
+            Some(id) if id >> 24 == 0x08 => Ok(DataId(id)),
+            _ => fail(format!("surface {v} is not a surface record (0x08...)")),
+        }
+    };
+    let surfaces = match t.get("surface") {
+        None => return fail("no surface"),
+        Some(toml::Value::Array(a)) => a.iter().map(one).collect::<Result<Vec<_>, _>>()?,
+        Some(v) => vec![one(v)?],
+    };
+    if surfaces.is_empty() {
+        return fail("no surface");
+    }
+    let colour = match t.get("colour").and_then(toml::Value::as_str).map(str::trim) {
+        Some(c) => match u32::from_str_radix(c.trim_start_matches("0x"), 16) {
+            Ok(c) => c,
+            Err(_) => return fail(format!("colour {c:?} is not 0x and eight hex digits")),
+        },
+        None => return fail("no colour"),
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    // Metres, well inside both types' range.
+    let size = match t.get("size") {
+        Some(toml::Value::Float(f)) if *f >= 0.05 && *f <= 100.0 => *f as f32,
+        Some(toml::Value::Integer(i)) if (1..=100).contains(i) => *i as f32,
+        _ => return fail("size is not a number of metres from 0.05 to 100"),
+    };
+    material_with(
+        t,
+        Vec::new(),
+        Some(Solid {
+            surfaces,
+            colour,
+            size,
+        }),
+    )
+}
+
+/// A material entry's pictures, matter and credit, for `textures` or a `solid`.
+fn material_with(
+    t: &toml::Table,
+    textures: Vec<DataId>,
+    solid: Option<Solid>,
+) -> Result<ManifestMaterial, ManifestError> {
     let picture = |key: &str| -> Result<Option<String>, ManifestError> {
         match t.get(key) {
             None => Ok(None),
@@ -1311,6 +1477,7 @@ fn material(t: &toml::Table) -> Result<ManifestMaterial, ManifestError> {
         fingerprints,
         draws_on,
         palettes,
+        solid,
         credit: Credit {
             author: text(t, "author")?.to_owned(),
             tool: text(t, "tool")?.to_owned(),
@@ -1390,6 +1557,18 @@ fn light(t: &toml::Table) -> Result<ManifestLight, ManifestError> {
             license: text(t, "license")?.to_owned(),
         },
     })
+}
+
+/// A retail object the wind moves.
+fn sway(t: &toml::Table) -> Result<ManifestSway, ManifestError> {
+    let object = object_id(t.get("object").and_then(toml::Value::as_str).unwrap_or(""))?;
+    let Some(wind) = number(t, "wind")? else {
+        return fail("no wind");
+    };
+    if !(wind > 0.0 && wind <= 2.0) {
+        return fail(format!("wind {wind} is not above 0 to 2"));
+    }
+    Ok(ManifestSway { object, wind })
 }
 
 /// A retail moon a pack draws again.
@@ -2457,6 +2636,38 @@ license = \"CC0-1.0\"
     }
 
     #[test]
+    fn a_solid_material_is_laid_on_untextured_surfaces_of_its_colour() {
+        let solid = |lines: &str| {
+            format!(
+                "[pack]\nname = \"x\"\nformat = 1\n[[solid]]\n{lines}\nbase_color = \"b.png\"\n\
+                 author = \"a\"\ntool = \"t\"\nlicense = \"CC0-1.0\"\n"
+            )
+        };
+        let pack = ArtPackManifest::parse(&solid(
+            "surface = [\"0x080006F7\", \"0x08000203\"]\ncolour = \"0xFF320000\"\nsize = 0.5",
+        ))
+        .expect("reads");
+        let m = &pack.materials[0];
+        assert!(m.textures.is_empty());
+        let sd = m.solid.as_ref().expect("a solid");
+        assert_eq!(sd.surfaces, [DataId(0x0800_06F7), DataId(0x0800_0203)]);
+        assert_eq!((sd.colour, sd.size), (0xFF32_0000, 0.5));
+        // A solid names surfaces and a colour, never a picture, and one surface and colour once.
+        for bad in [
+            "colour = \"0xFF320000\"\nsize = 0.5",
+            "surface = \"0x05000001\"\ncolour = \"0xFF320000\"\nsize = 0.5",
+            "surface = \"0x080006F7\"\nsize = 0.5",
+            "surface = \"0x080006F7\"\ncolour = \"0xFF320000\"",
+            "surface = \"0x080006F7\"\ncolour = \"0xFF320000\"\nsize = 0.5\ntexture = \"0x05000001\"",
+        ] {
+            assert!(ArtPackManifest::parse(&solid(bad)).is_err(), "{bad}");
+        }
+        let twice = solid("surface = \"0x080006F7\"\ncolour = \"0xFF320000\"\nsize = 0.5");
+        let twice = format!("{twice}{}", &twice[twice.find("[[solid]]").unwrap_or(0)..]);
+        assert!(ArtPackManifest::parse(&twice).is_err());
+    }
+
+    #[test]
     fn a_material_may_shine_as_silk_does() {
         let sheen = |lines: &str| {
             let pack = ArtPackManifest::parse(&wall_with(lines)).expect("reads");
@@ -2605,6 +2816,34 @@ license = "CC0-1.0"
         assert!(ArtPackManifest::parse(&dark).is_err());
         let odd = LIGHTS.replace("flicker = \"flame\"", "flicker = \"strobe\"");
         assert!(ArtPackManifest::parse(&odd).is_err());
+    }
+
+    const SWAYS: &str = r#"
+[pack]
+name = "Flowers"
+format = 1
+
+[[sway]]
+object = "0x02000A37"
+wind = 0.8
+
+[[sway]]
+object = "0x02000B2F"
+wind = 1
+"#;
+
+    #[test]
+    fn a_retail_object_is_given_the_wind_with_no_model() {
+        let m = ArtPackManifest::parse(SWAYS).expect("reads");
+        assert!(m.models.is_empty());
+        assert_eq!(m.sway(DataId(0x0200_0A37)), Some(0.8));
+        assert_eq!(m.sway(DataId(0x0200_0B2F)), Some(1.0));
+        assert_eq!(m.sway(DataId(0x0200_0B2E)), None);
+        let twice = SWAYS.replace("0x02000B2F", "0x02000A37");
+        assert!(ArtPackManifest::parse(&twice).is_err());
+        for wind in ["wind = 0", "wind = 2.5", "wind = \"lots\"", ""] {
+            assert!(ArtPackManifest::parse(&SWAYS.replace("wind = 0.8", wind)).is_err());
+        }
     }
 
     /// A number finite in the manifest but past `f32`'s range is refused, not read as infinity.

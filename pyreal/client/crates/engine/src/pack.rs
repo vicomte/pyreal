@@ -381,8 +381,112 @@ impl MaterialOverrides for PackOverrides {
             packed_surface: surface.is_some(),
             ice: m.ice,
             matter: m.matter,
+            projected: None,
         }
     }
+
+    fn solid_maps(&self, surface: DataId, colour: u32) -> PackMaps {
+        let Some((i, size)) = self.0.solid_for(surface, colour) else {
+            return PackMaps::default();
+        };
+        let m = &self.0.materials[i];
+        let key = |part: &str| Some(TextureKey::Pack(format!("material:{i}:{part}")));
+        let surface = real(&m.surface).then(|| key("surface")).flatten();
+        PackMaps {
+            base: m.albedo.as_ref().and_then(|_| key("albedo")),
+            normal: real(&m.normal).then(|| key("normal")).flatten(),
+            // Laid along the world's axes, it has no depth to map.
+            height: None,
+            roughness_metal: surface.clone(),
+            occlusion: surface.clone(),
+            metal: None,
+            kind: material_kind(&self.0, i),
+            packed_surface: surface.is_some(),
+            ice: false,
+            matter: m.matter,
+            projected: Some(size),
+        }
+    }
+}
+
+/// The trunk each tree of `pack` drawn on any world stands on, by retail object id, for collision
+/// with what is drawn ([`pyreal_world_data::env_cells::set_drawn_trunks`]): in each of
+/// [`pyreal_world_data::env_cells::TRUNK_BANDS`], the middle and median radius of its nearest
+/// level's solid parts where a plane through the middle of the band cuts them, so a leaning or
+/// tapering trunk is followed. A band the plane finds nothing in takes the band under it; a model
+/// with nothing solid in its lowest band (a bush, a flower) has none and keeps retail's collision.
+/// Measured once, when the pack is put in use; four short cylinders a tree, so collision stays cheap.
+#[must_use]
+pub fn drawn_trunks(
+    pack: &ArtPack,
+) -> std::collections::BTreeMap<u32, pyreal_world_data::env_cells::DrawnTrunk> {
+    use pyreal_world_data::env_cells::{DrawnTrunk, TRUNK_BANDS};
+    let mut out = std::collections::BTreeMap::new();
+    for model in &pack.models {
+        if model.draws_on != DrawsOn::Any {
+            continue;
+        }
+        let Some(lod) = model
+            .lods
+            .iter()
+            .find(|l| l.views.is_none() && !l.shadows_only)
+        else {
+            continue;
+        };
+        let solid: Vec<&pyreal_art_pack::PackPrimitive> = lod
+            .primitives
+            .iter()
+            .filter(|p| p.material.alpha_cutoff.is_none() && p.material.base_color[3] >= 1.0)
+            .collect();
+        let mut bands = [(0.0, 0.0, 0.0); 4];
+        for (k, &(b0, b1)) in TRUNK_BANDS.iter().enumerate() {
+            match trunk_ring(&solid, (b0 + b1) / 2.0) {
+                Some(r) => bands[k] = r,
+                None if k > 0 => bands[k] = bands[k - 1],
+                None => {}
+            }
+        }
+        if bands[0].2 > 0.0 {
+            out.insert(model.id.0, DrawnTrunk { bands });
+        }
+    }
+    out
+}
+
+/// Where a plane at height `h` cuts `solid`'s triangles: the cut's middle and median radius, or
+/// `None` for a cut too small to be a trunk.
+fn trunk_ring(solid: &[&pyreal_art_pack::PackPrimitive], h: f32) -> Option<(f32, f32, f32)> {
+    use pyreal_art_pack::VERTEX_FLOATS;
+    let mut cut = Vec::new();
+    for p in solid {
+        let v = p.vertices.as_chunks::<VERTEX_FLOATS>().0;
+        for t in p.indices.as_chunks::<3>().0 {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (Some(a), Some(b)) = (v.get(a as usize), v.get(b as usize)) else {
+                    continue;
+                };
+                if (a[2] - h) * (b[2] - h) >= 0.0 {
+                    continue;
+                }
+                let f = (h - a[2]) / (b[2] - a[2]);
+                cut.push((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f));
+            }
+        }
+    }
+    if cut.len() < 3 {
+        return None;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = cut.len() as f32;
+    let x = cut.iter().map(|c| c.0).sum::<f32>() / n;
+    let y = cut.iter().map(|c| c.1).sum::<f32>() / n;
+    let mut d: Vec<f32> = cut
+        .iter()
+        .map(|c| pyreal_primitives::num::math::hypotf(c.0 - x, c.1 - y))
+        .collect();
+    d.sort_by(f32::total_cmp);
+    let radius = d[d.len() / 2];
+    (radius > 0.02).then_some((x, y, radius))
 }
 
 /// One level of a pack model as an engine mesh: its primitives' triangles, one sub-mesh each in
@@ -458,4 +562,85 @@ pub fn model_material(m: &PackMaterial, foliage: bool) -> (u32, [Option<TextureK
         f |= flags::TWO_SIDED;
     }
     (f, keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyreal_art_pack::{PackLod, PackMaterial, PackPrimitive, VERTEX_FLOATS};
+
+    /// A twelve-sided trunk 3 m tall leaning `lean` metres east a metre, `r` round, as one level.
+    fn leaning_trunk(lean: f32, r: f32) -> PackModel {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let sides = 12u32;
+        for ring in 0..=6u32 {
+            #[allow(clippy::cast_precision_loss)]
+            let z = ring as f32 * 0.5;
+            for s in 0..sides {
+                #[allow(clippy::cast_precision_loss)]
+                let a = s as f32 / sides as f32 * std::f32::consts::TAU;
+                let mut v = [0.0; VERTEX_FLOATS];
+                v[0] = lean * z + r * pyreal_primitives::num::math::cosf(a);
+                v[1] = r * pyreal_primitives::num::math::sinf(a);
+                v[2] = z;
+                vertices.extend_from_slice(&v);
+            }
+        }
+        for ring in 0..6u32 {
+            for s in 0..sides {
+                let (a, b) = (ring * sides + s, ring * sides + (s + 1) % sides);
+                indices.extend_from_slice(&[a, b, a + sides, b, b + sides, a + sides]);
+            }
+        }
+        PackModel {
+            id: DataId(0x0200_071F),
+            foliage: true,
+            wind: 0.0,
+            lods: vec![PackLod {
+                distance: f32::INFINITY,
+                primitives: vec![PackPrimitive {
+                    vertices: Arc::new(vertices),
+                    indices: Arc::new(indices),
+                    material: PackMaterial {
+                        base_color: [1.0; 4],
+                        base_color_image: None,
+                        normal_image: None,
+                        normal_scale: 1.0,
+                        metal_rough_image: None,
+                        metallic: 0.0,
+                        roughness: 1.0,
+                        occlusion_image: None,
+                        occlusion_strength: 1.0,
+                        alpha_cutoff: None,
+                        double_sided: false,
+                    },
+                }],
+                views: None,
+                shadows_only: false,
+            }],
+            bounds: ([0.0, 0.0, 1.5], 3.0),
+            fingerprint: None,
+            draws_on: DrawsOn::Any,
+            credit: pyreal_assets::art_pack::Credit::default(),
+        }
+    }
+
+    #[test]
+    fn a_leaning_trunk_is_measured_in_bands_that_follow_it() {
+        let solid: Vec<&PackPrimitive> = Vec::new();
+        assert!(trunk_ring(&solid, 0.9).is_none());
+        let model = leaning_trunk(0.4, 0.5);
+        let prims: Vec<&PackPrimitive> = model.lods[0].primitives.iter().collect();
+        let low = trunk_ring(&prims, 0.3).expect("a ring at the foot");
+        let high = trunk_ring(&prims, 2.1).expect("a ring higher up");
+        assert!(
+            (low.0 - 0.12).abs() < 0.05 && (high.0 - 0.84).abs() < 0.05,
+            "{low:?} {high:?}"
+        );
+        assert!(
+            (low.2 - 0.5).abs() < 0.05 && (high.2 - 0.5).abs() < 0.05,
+            "{low:?} {high:?}"
+        );
+    }
 }

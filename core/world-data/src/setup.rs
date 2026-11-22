@@ -46,6 +46,7 @@ pub fn setup_geometry(s: &Setup) -> SetupGeometry {
         // [`setup_geometry_with_parts`], which wraps this and needs the
         // dat store to reach each part's graphics object. Empty here means "sphere arm".
         parts: Vec::new(),
+        added_cyl_spheres: Vec::new(),
     }
 }
 

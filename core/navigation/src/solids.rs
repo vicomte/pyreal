@@ -283,9 +283,34 @@ pub(crate) fn bsp_shapes(
 }
 
 /// The world-space shapes of one object, as its collision sees it: the parts' polygons when any
-/// part carries a physics tree, otherwise its cylinders, otherwise its spheres. Walkable part
-/// polygons are handed to `floor` instead of returned.
+/// part carries a physics tree, otherwise its cylinders, otherwise its spheres, and any cylinders
+/// a host added. Walkable part polygons are handed to `floor` instead of returned.
 pub(crate) fn object_shapes(
+    g: &SetupGeometry,
+    frame: &Frame,
+    obj_scale: f32,
+    walkable_z: f32,
+    floor: impl FnMut(Poly),
+) -> Vec<Shape> {
+    let mut out = own_shapes(g, frame, obj_scale, walkable_z, floor);
+    out.extend(cylinders(&g.added_cyl_spheres, frame, obj_scale));
+    out
+}
+
+fn cylinders<'a>(
+    cyls: &'a [pyreal_physics::geom::CylSphere],
+    frame: &Frame,
+    obj_scale: f32,
+) -> impl Iterator<Item = Shape> + 'a {
+    let frame = *frame;
+    cyls.iter().map(move |c| Shape::Cylinder {
+        low: localtoglobal(&frame, scale(c.low_pt, obj_scale)),
+        radius: c.radius * obj_scale,
+        height: c.height * obj_scale,
+    })
+}
+
+fn own_shapes(
     g: &SetupGeometry,
     frame: &Frame,
     obj_scale: f32,
@@ -313,13 +338,7 @@ pub(crate) fn object_shapes(
         return out;
     }
     if !g.cyl_spheres.is_empty() {
-        for c in &g.cyl_spheres {
-            out.push(Shape::Cylinder {
-                low: localtoglobal(frame, scale(c.low_pt, obj_scale)),
-                radius: c.radius * obj_scale,
-                height: c.height * obj_scale,
-            });
-        }
+        out.extend(cylinders(&g.cyl_spheres, frame, obj_scale));
         return out;
     }
     for s in &g.spheres {
@@ -366,5 +385,27 @@ mod tests {
         assert!((c.dist_sq(Vec3::new(3.0, 0.0, 1.0)) - 4.0).abs() < 1e-5);
         assert!((c.dist_sq(Vec3::new(0.0, 0.0, 5.0)) - 9.0).abs() < 1e-5);
         assert_eq!(c.dist_sq(Vec3::new(0.5, 0.0, 1.0)), 0.0);
+    }
+
+    #[test]
+    fn an_objects_added_cylinders_are_solid_beside_its_own() {
+        let cyl = |x: f32| pyreal_physics::geom::CylSphere {
+            low_pt: Vec3::new(x, 0.0, 0.0),
+            radius: 0.5,
+            height: 2.0,
+        };
+        let g = SetupGeometry {
+            cyl_spheres: vec![cyl(0.0)],
+            added_cyl_spheres: vec![cyl(2.0)],
+            ..SetupGeometry::default()
+        };
+        let frame = Frame::new(Vec3::new(10.0, 0.0, 0.0), pyreal_primitives::Quat::IDENTITY);
+        let shapes = object_shapes(&g, &frame, 1.0, 0.66, |_| {});
+        assert_eq!(shapes.len(), 2);
+        for x in [10.0, 12.0] {
+            assert!(shapes
+                .iter()
+                .any(|s| s.dist_sq(Vec3::new(x, 0.0, 1.0)) == 0.0));
+        }
     }
 }

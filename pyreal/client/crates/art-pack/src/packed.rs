@@ -89,8 +89,24 @@ const CONTENTS: DataId = DataId(1);
 const FIRST: u32 = 2;
 
 /// The largest packed pack: a container's blocks lie below 2 GiB, where the high bit of a link
-/// marks a free block.
-const LARGEST: u64 = 0x8000_0000;
+/// marks a free block. A limit of the format, which the base pack is under like any pack; a pack a
+/// player adds is also refused past it ([`added_pack_problem`]).
+pub const LARGEST: u64 = 0x8000_0000;
+
+/// Why the file at `path` will not do as a pack a player adds: it is larger than any packed pack
+/// can be ([`LARGEST`]). `None` when it is not, or cannot be measured.
+#[must_use]
+pub fn added_pack_problem(path: &Path) -> Option<String> {
+    let bytes = std::fs::metadata(path).ok()?.len();
+    (bytes > LARGEST).then(|| {
+        format!(
+            "{} is {} MB, and an art pack holds at most {} MB",
+            path.display(),
+            bytes >> 20,
+            LARGEST >> 20
+        )
+    })
+}
 
 /// The blocks the writer keeps free beyond what the record it writes needs.
 const RESERVE: u64 = 0x34;
@@ -812,6 +828,31 @@ fn pack_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pack a player adds is refused past the most a packed pack can be, with its size and the
+    /// limit in the message; one at the limit is not.
+    #[test]
+    fn an_added_pack_past_the_largest_is_refused() {
+        let path =
+            std::env::temp_dir().join(format!("pyreal-added-pack-{}.dat", std::process::id()));
+        let f = std::fs::File::create(&path).expect("made");
+        f.set_len(LARGEST).expect("sized");
+        assert_eq!(added_pack_problem(&path), None);
+        f.set_len(LARGEST + (1 << 20)).expect("sized");
+        let problem = added_pack_problem(&path);
+        drop(f);
+        let _ = std::fs::remove_file(&path);
+        let problem = problem.expect("refused");
+        assert!(
+            problem.contains("2049 MB") && problem.contains("at most 2048 MB"),
+            "{problem}"
+        );
+        assert_eq!(
+            added_pack_problem(&path),
+            None,
+            "a file not there is not measured"
+        );
+    }
 
     /// A picture too large to count its bytes is refused, not overflowed.
     #[test]

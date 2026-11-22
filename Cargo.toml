@@ -68,7 +68,7 @@ members = [
 
 [workspace.package]
 # Pyreal's release version, which every crate carries (RELEASING.md).
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -133,9 +133,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 # Shared versions; platform, optional and feature choices remain on each consumer.
 serde = { version = "1", features = ["derive"] }
 blake3 = { version = "1", default-features = false }
-base64 = { version = "0.23", default-features = false, features = ["std"] }
 cpal = { version = "0.17.3", default-features = false }
-ctrlc = "3.5"
 # The desktop host's pads; no other crate depends on it.
 gilrs = { version = "0.11", default-features = false }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

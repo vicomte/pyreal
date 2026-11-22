@@ -7,6 +7,61 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
+### Added
+
+- UI Blur, on by default under Display, blurs the world behind see-through windows, menus, tooltips and the chat. It costs about 0.2 ms a frame.
+- An art pack can let the wind sway one of the original game's models outdoors without replacing it, with a `[[sway]]` entry in its manifest naming the object and how much the wind moves it.
+- Pyreal picks the Quality Preset that fits your graphics card the first time it starts, from Low for built-in graphics and older cards up to Ultra for the fastest. It goes by the card's name: Apple's M chips by generation and Pro, Max or Ultra, and NVIDIA, AMD and Intel cards by series and number. A card it does not know gets Medium, or Low when it is built in. Display shows the preset suggested for your card under Quality Preset, with a button that sets it. Existing settings are left as they are, and a new graphics card brings its own preset only while the settings are still the ones chosen for the old card.
+- The performance panel shows the build's ID on its last line, the same short hash that names the build.
+- The README's and the site's pictures are a library defined in `docs/screenshots/shots.json`, drawn again by `tools/screenshots/capture.py` (in place of `capture.sh`) with the README's pictures rewritten to match. engine-view gives each placed creature or character its own stance, motion, heading, dress, walk, height over the ground and scripts, and takes `--no-face-detail` and `--light-reach`.
+- Detailed Faces, on by default under Display, draws the faces of the players near you with finer skin, hair that runs in strands, and wet, rounded eyes. Heads are rounded, and within a few metres brows, lips, beards and moustaches stand out in depth. Caps, hoods and hooded robes keep the face beneath them detailed, and the character creation figure shows it too, without the thin dark lines it had across the forehead and under the eyes. Each face is worked out in the background the first time it comes near, so nothing stutters, and it lets its detail go a while after no one near you wears it. Turned off, faces are drawn as the original game drew them. The Low quality preset turns it off.
+- On 1999 and 2005 worlds with the End of Retail files beside them, dungeon and room walls, floors and ceilings that End of Retail painted again at a higher resolution are drawn with End of Retail's sharper picture and its relief, as End of Retail drew them. The 41 that are the same picture only sharper, or that need the older colours to match, are tinted back to the older colours under Classic Ground Coloring and drawn as they are under Throne of Destiny.
+
+### Changed
+
+- Lamps light the room they stand in and the rooms their light reaches through doorways, so a torch behind a wall or under a floor stays out of the rooms beyond. A sealed room with no lamp reaching it keeps the original game's dim light.
+- Retail Look lights rooms as the original game did, with its own lamp formulas and the light the player carries, and a wall torch lights the room from the original game's place for it.
+- On 1999 and 2005 worlds with the End of Retail files beside them, 48 props that End of Retail remodelled are drawn with End of Retail's model, some tinted to the older colours. The torch pillars keep the older flame.
+- Gem and ice golems glint without lighting the ground round them.
+- The floor grate's brown haze rises as fume and takes no fire's light.
+- Trees from an art pack sway about as widely as they did before gusts were added.
+- A hood shades the skin beneath it.
+- Travel turns smoothly below 20 frames a second, keeps going down ramps, opens a shut door as it reaches it, and keeps clear of portals it is not taking.
+- Frames are about 3 ms faster with the same picture. Each band of the sun's shadows leaves out the objects whose shadow cannot reach what you see, and objects and ground cover draw with a lighter shader unless they show a detailed face or statue stone.
+- Smoke from spells, fires and chimneys takes its light at four points of each puff in place of every pixel. A cloud of spell smoke draws in about a seventh of the time, so a spell like Ethangar's Wrath landing on a crowd no longer stalls the frame.
+- Storms drive the rain at a steeper slant, about 26 degrees in a full storm, and light rain drifts further with the breeze. Rain streaks are drawn as even lines at any slant, without breaking into dashes. In a storm, trees, bushes, flowers and grass lean steadily the way the rain blows, more in the gusts, with their natural sway still showing. Calm weather is unchanged.
+- Trees block you where the art pack draws their trunks and also where the original game's trees did, so a leaning trunk stops you along its lean and the server never moves you back from a tree.
+- Desert sand reads as wind-rippled sand rather than dirt. The fine bumps the ground takes near you are left off yellow and grey sand, so its ripples show, and grass no longer grows out onto sand where the sand's picture covers the edge of a meadow. Pebbles still lie on it.
+- The Mac download opens in a parchment window with large icons for Pyreal and Applications and an arrow between them, so it is clear where to drag Pyreal to install it.
+- Distant ground no longer looks flat. Past about 50 m, hollows are darker and crests lighter, grass shows lusher and drier patches, steep slopes turn earthier, and the light falls on retail's own triangles again under Landscape Smoothing, with small bumps across it. The ground pictures' own grain shows out to the mountains, and hills cast shadows past the shadow distance. The ground near you is unchanged. This costs about 2 ms a frame.
+- Portal Style changes the portals standing in the world as well as portal space, and the change shows at once. Original draws them with the swirl from the original game. Enhanced draws each one as a whirl of smoke in its own colour.
+- The map is drawn in the background once you enter the world, so it opens straight away the first time. It is kept after you close it and drawn again only when the world's data changes.
+- The Enhanced Environment pack is 0.5.2. Every tree and plant is reviewed and regrown to look like its retail tree, and the pines and firs take their needles in retail's own dark green. Clothing, robes, masks and hats show their cloth, silk, hide and fur, and the most common props keep their relief to their own size. Room and dungeon walls take relief made to follow their own pictures, so smooth plaster and stone no longer show rock, caps and mouldings stand proud, and painted signs and cloth lie flat. 2005's pictures take their own relief where they differ from End of Retail's. Armour shows what it is made of across forty-two suits and their helms: quilting puffs between its seams, studs and buckles stand proud, chain is rings, scales overlap, chitin is glossy, fur lies soft, and only the metal shines. The ground's grass, roads, rock and dirt follow their pictures. Desert sand ripples as its picture is painted, deep enough to cast shade, and the large ash trees' trunks narrow into their branches instead of ending in a ledge.
+- A Water Golem drawn larger or smaller than usual keeps its water together: its blobs grow and shrink with it.
+- Magma Golems no longer carry a large flame round their core. The cracks in their rock glow red instead.
+- The Bael'Zharon statues, such as the giant one in the Singularity Caul, are carved from chiselled dark red stone. Their shape is unchanged. Art packs can now give a surface that has no picture a material of its own (`[[solid]]`). On 1999 and 2005 worlds with the End of Retail files beside them, the statues show End of Retail's redrawn face.
+- The Quality Presets also set Landscape Smoothing, High-Res Textures, Silk Cobwebs and Portal Style. Low turns the first three off and uses the Original portal style. Terrain Draw Distance goes from High on Low to Horizon on Ultra, and Depth Mapping and Landscape Smoothing are Medium on every preset above Low. A new profile starts at the Medium preset, with Very High terrain and Medium depth mapping.
+
+### Fixed
+
+- Item names show their material again, such as on salvage bags.
+- The melted snowman's puddle is drawn as see-through water.
+- On a Mac, full screen keeps the right resolution, and a saved resolution fits the screen the window opens on.
+- A spellbook school tab lists all of that school's spells whatever the saved filters say, and Launch worlds show no level switches.
+- A world's data patch waits for the world's list of records, so it is sent once, and applying it keeps the frame smooth.
+- Movement meets walls, steps and slopes at the original game's precision, and Pyreal takes and answers the server's position corrections.
+- Pyreal reads a server's newer portal table and leaves closed and temporary portals out of travel routes. Creatures with negative armour show it.
+- A world's place list with a line Pyreal does not know still loads.
+- A plugin's tooltip goes away when its control is hidden.
+- Large buildings and towers far away stay drawn as their simplest shape out to the edge of the land Pyreal shows. A tower on a far hill no longer vanishes at Medium Object Detail where the original game's own distances would drop it.
+- Portals in the world whirl in the colours the original game shows them in. The blue portal is blue, the orange one orange, the yellow one yellow and the white one a cool white. The great purple portal is half again as wide as the others, as it is in the original.
+- Waterfall mist stays at the top of the falls and at the pool below. It no longer runs down the side of a cliff where the land's water data has a pool hanging out past the edge or where the falls land at different heights.
+- Distant tree cards are drawn from the tree's shape just nearer, so far trees keep its gaps and bark. Packs made before this have their cards drawn again when they open.
+- Signing in to a 1999 or 2005 world from the world list no longer plays it with the End of Retail files when the world did not answer Pyreal's question about its era, as happens while its server is still starting. The 1999 world turned you away with "Your DAT files are newer than expected". Pyreal now remembers the era each world last named and asks again at the next sign-in.
+- A world that moved to other game files since you last played it, such as a 2005 world moved from the End of Retail files to the February 2005 files, is no longer refused with "This world's data was refused: it was made for other game files than yours". Pyreal opens the files the world names when it first asks, and the next sign-in in the same run opens them too.
+
 ## [0.1.4] - 2026-11-18
 
 ### Added
@@ -31,6 +86,7 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 - The fire on Redspire's red spire burns as a ring of fire. Each of its two rings is one band of flame round the spire that licks upward, burns deep orange with a yellow heart, whirls round the spire the way retail's fire puffs go round, and lights the ground and buildings around it with a flickering light. Before, each ring was a few pale clouds on either side of the spire. The same fire round shrines and statues in a few dungeons changes too.
 - Fountains, basins, wells and tubs hold water that looks like water when Better Lighting and Water Detail are on. The water in a basin or a tub mirrors the room or the sky above it, even seen from straight above, shows the bottom of the basin through it, and ripples, with rings spreading where the fountain's water lands. Water pouring from a wall fountain's spout runs down in clear streaks and sends rings across its basin. A fountain's jet is a clear column of water that rises from its spout and falls back as drops into the basin, and the streams that spill from one tier to the next run as clear water. With Better Lighting or Water Detail off, fountains keep their blue water and bubbles.
 - The green gas that blows out of dungeon vents and gas pits, as in the halls of the Training Academy, is a cloud of gas rather than flat pictures. A vent's gas pours down out of the vent and spreads low over the floor, a pit's gas billows up, and both thin as they spread and are lit by the room, so the vents' green lights make them glow. Every vent and pit that blows this gas looks the same way.
+- The brown haze over wooden floor grates, in dungeons and in a few places outdoors, rises from the grate as a soft column of vapour. It billows, thins as it climbs, keeps the original game's brown and glows faintly warm just over the grate. The grates no longer count as fires, so they no longer throw a flickering firelight round them, and in dungeons their haze shows again.
 - A smithy's forge indoors, as in the Training Academy, burns with a fire on the coals inside its mouth. Rows of flames lick up from the coals to the roof of its firebox, tallest at the front where the opening is highest, with sparks rising out of them, and they flicker with the fire's light. The coals throw a warm, flickering light out of the mouth onto the floor in front of the forge. Before, the fire was a pale cloud filling the opening. A fire pit indoors, a ring of stones round glowing coals as under the cauldron in the Academy's kitchen, burns the same way: flames lick up from its coals, the middle one tallest, and its coals light the stones and the floor round it. Forges and fire pits outdoors, campfires, and the same fire elsewhere look as they did.
 - Iron doors shine as iron does. Their leaves, the iron bands on their wooden posts and lintels, and their hinges and rivets catch the light of nearby lamps, and the wood around them stays wood. This needs the Enhanced Environment pack's iron materials, and an art pack material can now name a metal map to say where it is a metal.
 - Blue, green and violet torches burn as flames of their own colour, as the blue pole torches in the Training Academy and the blue and green torches lining many dungeons do. A deep coloured flame with a pale core licks up from the torch, and its coloured light now flickers on the wall and floor round it. Before, these torches showed only a small, pale wisp. A torch whose flame grows larger in the original game, as the academy's pole torches and the tall torches with a long iron head do, burns taller to match. Other orange torches and candles look as they did.
@@ -375,7 +431,8 @@ work.
 - Far terrain pipelines are made once, and the ray scene gathers nearby statics once a frame.
 - Startup makes its pipelines side by side on several threads, warms up the ray-tracing builders in the background, and keeps a Vulkan pipeline cache in the settings folder, so a first launch on Windows reaches the world about twice as fast and later launches sooner still. The front door says when shaders are being prepared.
 
-[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.2.0
 [0.1.4]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.4
 [0.1.3]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.3
 [0.1.2]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.2

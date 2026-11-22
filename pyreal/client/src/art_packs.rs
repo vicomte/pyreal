@@ -7,7 +7,8 @@
 //! takes an older Dereth profile's `[Fidelity] ArtPack` into the library once;
 //! `PYREAL_ART_PACK` names the pack for one run outright. A pack chosen is opened on a thread of
 //! its own, and drawn from the frame it is open: the engine is made again and the world loaded
-//! again round the eye.
+//! again round the eye. A pack added is refused past the most a packed pack can hold
+//! (`packed::LARGEST`); the base pack has no cap of its own.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use pyreal_horizon::art_packs::{ArtPackRequest, ArtPackRow, ArtPacksView};
-use pyreal_scene::art_pack::packed::PackedFile;
+use pyreal_scene::art_pack::packed::{added_pack_problem, PackedFile};
 
 /// The file in the settings folder that keeps the library and the choice.
 pub const LIBRARY_FILE: &str = "art-packs.txt";
@@ -298,9 +299,13 @@ pub fn describe(path: &Path) -> ArtPackRow {
         }
     } else {
         let bytes = std::fs::metadata(path).map_or(0, |m| m.len());
-        match PackedFile::open(path) {
-            Ok(f) => (f.contents().name.clone(), bytes, None),
-            Err(e) => (fallback, bytes, Some(e)),
+        if let Some(e) = added_pack_problem(path) {
+            (fallback, bytes, Some(e))
+        } else {
+            match PackedFile::open(path) {
+                Ok(f) => (f.contents().name.clone(), bytes, None),
+                Err(e) => (fallback, bytes, Some(e)),
+            }
         }
     };
     ArtPackRow {
@@ -590,10 +595,10 @@ impl ArtPacks {
                 let (tx, rx) = mpsc::channel();
                 let path = at.clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(pyreal_scene::gpu::EnginePack::open_over(
-                        &path,
-                        base.as_deref(),
-                    ));
+                    let _ = tx.send(match added_pack_problem(&path) {
+                        Some(e) => Err(e),
+                        None => pyreal_scene::gpu::EnginePack::open_over(&path, base.as_deref()),
+                    });
                 });
                 self.packs.started(at, rx);
                 self.started = Some(Instant::now());

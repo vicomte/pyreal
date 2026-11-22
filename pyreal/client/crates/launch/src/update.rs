@@ -1,6 +1,6 @@
-//! Whether a newer Pyreal is out: the latest release's `release.json` read ([`parse_release`]),
-//! compared by SemVer's precedence ([`is_offered`]), and the answer kept a day in the settings
-//! folder ([`UpdateCache`]). The client reads the file off
+//! Whether a newer Pyreal is out: the latest release's `release.json` read from the website or
+//! the repository ([`Feed`]), compared by SemVer's precedence ([`is_offered`]), and the answer
+//! kept a day in the settings folder ([`UpdateCache`]). The client reads the file off
 //! the frame thread; nothing here touches the network.
 
 use std::io;
@@ -27,11 +27,58 @@ pub fn release_json_url(source: &str) -> String {
     )
 }
 
+/// A place the latest release is read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Feed {
+    /// The website's copy of the latest `release.json`, at this address.
+    Site(String),
+    /// The latest release of the repository at this address.
+    Repo(String),
+}
+
+impl Feed {
+    /// The feeds a build reads, in order: its website's `release.json`, then its repository's.
+    #[must_use]
+    pub fn list(site: Option<&str>, repo: Option<&str>) -> Vec<Self> {
+        fn named(u: Option<&str>) -> Option<&str> {
+            u.map(str::trim).filter(|u| !u.is_empty())
+        }
+        let mut feeds = Vec::new();
+        if let Some(site) = named(site) {
+            feeds.push(Self::Site(site.to_owned()));
+        }
+        if let Some(repo) = named(repo) {
+            feeds.push(Self::Repo(repo.trim_end_matches('/').to_owned()));
+        }
+        feeds
+    }
+
+    /// The address of the `release.json` read.
+    #[must_use]
+    pub fn url(&self) -> String {
+        match self {
+            Self::Site(url) => url.clone(),
+            Self::Repo(repo) => release_json_url(repo),
+        }
+    }
+
+    /// The release the `release.json` read from here describes.
+    ///
+    /// # Errors
+    /// Text that is not a Pyreal `release.json` with a SemVer version.
+    pub fn parse(&self, bytes: &[u8]) -> Result<Release, String> {
+        match self {
+            Self::Site(url) => parse_site_release(bytes, url),
+            Self::Repo(repo) => parse_release(bytes, repo),
+        }
+    }
+}
+
 /// The latest release, as its `release.json` names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
     pub version: String,
-    /// Its page in the repository.
+    /// The page the notice opens: the website's, or the release's in the repository.
     pub url: String,
     pub prerelease: bool,
 }
@@ -44,6 +91,23 @@ struct Index {
     tag: Option<String>,
     #[serde(default)]
     prerelease: bool,
+    /// The website's page for the release; only the website's copy names one.
+    page: Option<String>,
+}
+
+impl Index {
+    /// The index in `bytes`, when it is Pyreal's with a SemVer version.
+    fn read(bytes: &[u8]) -> Result<(Self, bool), String> {
+        let index: Self =
+            serde_json::from_slice(bytes).map_err(|e| format!("not a release index: {e}"))?;
+        if index.product.as_deref().is_some_and(|p| p != "pyreal") {
+            return Err(format!("a release of {:?}", index.product));
+        }
+        let version = PluginVersion::parse(&index.version)
+            .ok_or_else(|| format!("{:?} is not a version", index.version))?;
+        let prerelease = index.prerelease || !version.pre().is_empty();
+        Ok((index, prerelease))
+    }
 }
 
 /// The release a `release.json` from the repository at `source` describes.
@@ -51,13 +115,7 @@ struct Index {
 /// # Errors
 /// Text that is not a Pyreal `release.json` with a SemVer version.
 pub fn parse_release(bytes: &[u8], source: &str) -> Result<Release, String> {
-    let index: Index =
-        serde_json::from_slice(bytes).map_err(|e| format!("not a release index: {e}"))?;
-    if index.product.as_deref().is_some_and(|p| p != "pyreal") {
-        return Err(format!("a release of {:?}", index.product));
-    }
-    let version = PluginVersion::parse(&index.version)
-        .ok_or_else(|| format!("{:?} is not a version", index.version))?;
+    let (index, prerelease) = Index::read(bytes)?;
     let tag = index
         .tag
         .filter(|t| {
@@ -68,9 +126,39 @@ pub fn parse_release(bytes: &[u8], source: &str) -> Result<Release, String> {
         .unwrap_or_else(|| format!("v{}", index.version));
     Ok(Release {
         url: format!("{}/releases/tag/{tag}", source.trim_end_matches('/')),
-        prerelease: index.prerelease || !version.pre().is_empty(),
+        prerelease,
         version: index.version,
     })
+}
+
+/// The release the website's `release.json` at `url` describes. Its page is the `page` it names
+/// on the same site, else the site's front page.
+///
+/// # Errors
+/// Text that is not a Pyreal `release.json` with a SemVer version.
+pub fn parse_site_release(bytes: &[u8], url: &str) -> Result<Release, String> {
+    let (index, prerelease) = Index::read(bytes)?;
+    let site = origin(url);
+    let page = index
+        .page
+        .filter(|p| {
+            p.strip_prefix(site)
+                .is_some_and(|rest| rest.starts_with('/'))
+                && p.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b":/._-~#?=%".contains(&b))
+        })
+        .unwrap_or_else(|| format!("{site}/"));
+    Ok(Release {
+        url: page,
+        prerelease,
+        version: index.version,
+    })
+}
+
+/// The scheme and host of `url`, without the path.
+fn origin(url: &str) -> &str {
+    let host = url.find("://").map_or(0, |i| i + 3);
+    url[host..].find('/').map_or(url, |i| &url[..host + i])
 }
 
 /// Whether `latest` is offered to a build of version `current`: strictly newer, and no
@@ -192,6 +280,61 @@ mod tests {
         // A tag that would leave the page's address is not used.
         let odd = br#"{"product":"pyreal","version":"0.1.3","tag":"../../x?y"}"#;
         assert_eq!(parse_release(odd, REPO).unwrap().url, release("0.1.3").url);
+    }
+
+    #[test]
+    fn the_site_names_its_own_page() {
+        const SITE: &str = "https://pyrealclient.app/release.json";
+        let json = br#"{"product":"pyreal","version":"0.2.1","tag":"v0.2.1",
+            "page":"https://pyrealclient.app/#download"}"#;
+        let r = parse_site_release(json, SITE).unwrap();
+        assert_eq!(r.version, "0.2.1");
+        assert_eq!(r.url, "https://pyrealclient.app/#download");
+        assert!(!r.prerelease);
+        // With no page, or one elsewhere or odd, the notice opens the site's front page.
+        for page in [
+            "",
+            r#","page":"https://example.com/x""#,
+            r#","page":"https://pyrealclient.app.example.com/""#,
+            r#","page":"https://pyrealclient.app/a&calc""#,
+            r#","page":"https://pyrealclient.app/ x""#,
+        ] {
+            let json = format!(r#"{{"product":"pyreal","version":"0.2.1"{page}}}"#);
+            let r = parse_site_release(json.as_bytes(), SITE).unwrap();
+            assert_eq!(r.url, "https://pyrealclient.app/", "{page}");
+        }
+        let pre = br#"{"product":"pyreal","version":"0.3.0","prerelease":true}"#;
+        assert!(parse_site_release(pre, SITE).unwrap().prerelease);
+        assert!(parse_site_release(b"<html>Not found</html>", SITE).is_err());
+    }
+
+    #[test]
+    fn the_site_is_read_before_the_repository() {
+        const SITE: &str = "https://pyrealclient.app/release.json";
+        let both = Feed::list(Some(SITE), Some(&format!("{REPO}/")));
+        assert_eq!(
+            both,
+            [Feed::Site(SITE.into()), Feed::Repo(REPO.into())],
+            "the site first"
+        );
+        assert_eq!(both[0].url(), SITE);
+        assert_eq!(
+            both[1].url(),
+            format!("{REPO}/releases/latest/download/release.json")
+        );
+        assert_eq!(Feed::list(None, Some(REPO)), [Feed::Repo(REPO.into())]);
+        assert_eq!(Feed::list(Some(SITE), None), [Feed::Site(SITE.into())]);
+        assert!(Feed::list(None, None).is_empty());
+        assert!(Feed::list(Some(" "), Some("")).is_empty());
+        let json = br#"{"product":"pyreal","version":"0.2.1","tag":"v0.2.1"}"#;
+        assert_eq!(
+            both[0].parse(json).unwrap().url,
+            "https://pyrealclient.app/"
+        );
+        assert_eq!(
+            both[1].parse(json).unwrap().url,
+            format!("{REPO}/releases/tag/v0.2.1")
+        );
     }
 
     #[test]

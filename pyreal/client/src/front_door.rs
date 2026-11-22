@@ -161,6 +161,7 @@ impl FrontDoor {
             directory: crate::world_directory::WorldDirectory::open(dir),
             updates: crate::update_check::UpdateCheck::open(
                 dir,
+                crate::update_check::UPDATE_URL,
                 crate::update_check::SOURCE_URL,
                 crate::update_check::VERSION,
             ),

@@ -322,6 +322,9 @@ pub enum TravelCommand {
     Forward(bool),
     /// Hold the turn-left key (`Some(false)`), the turn-right key (`Some(true)`), or neither.
     Turn(Option<bool>),
+    /// Face this heading at once, degrees clockwise from north: the last of a turn, less than a
+    /// turn key held for one frame would turn.
+    Face(f32),
     /// Use this object: a door, a portal, a recall item.
     Use(ObjectId),
     /// Take up this item (a caster).
@@ -438,6 +441,20 @@ pub struct StoreFiles {
 /// journey gives it.
 const DOOR_WAIT: f64 = 4.0;
 const DOOR_TRIES: u32 = 4;
+
+/// How near a portal stands to a place no walk reaches for it to be that portal, metres: the walk
+/// aims at the nearest place to stand, which may be a few metres off the portal.
+const UNWALKABLE_NEAR: f32 = 8.0;
+
+/// What a journey fails with when the only portals that lead on stand where no walk reaches.
+const UNWALKABLE: &str = "no walk reaches";
+
+/// How near a portal the body stands, or a walk ends, metres, for the walk not to keep off it: the
+/// body did not go through it (it was refused, or not touched), or the walk goes to it.
+const PORTAL_KEPT_NEAR: f32 = 6.0;
+
+/// The most portals one trip learns no walk reaches before it gives up.
+const MAX_UNWALKABLE: usize = 4;
 
 /// What a journey fails with when its walk has no route and a door on the way would not open.
 const DOOR_SHUT: &str = "door_shut";
@@ -620,6 +637,9 @@ struct Trip {
     tried_again: BTreeSet<u32>,
     /// Recalls that did not land on this trip: not offered again.
     disabled: BTreeSet<Recall>,
+    /// Where portals stand that no walk reaches from the land the trip walked on (a portal on a
+    /// plateau only other portals lead to, say): planned round on this trip.
+    unwalkable: Vec<Position>,
     /// Something solid appeared near the route since it was planned.
     route_dirty: Option<String>,
     stats: TripStats,
@@ -860,6 +880,9 @@ pub struct Travel {
     creatures_seen: Vec<(String, Vec3)>,
     /// Where each creature was, and when, to tell standing from running.
     creature_track: HashMap<u32, (Vec3, f64, f32)>,
+    /// Where the body last stood, as the objects were last set: a portal it stands at is not kept
+    /// off.
+    body_at: Option<Position>,
     now: f64,
     wall: f64,
     wall_before: f64,
@@ -906,6 +929,7 @@ impl Travel {
             obstacles: Vec::new(),
             creatures_seen: Vec::new(),
             creature_track: HashMap::new(),
+            body_at: None,
             now: 0.0,
             wall: 0.0,
             wall_before: 0.0,
@@ -943,13 +967,6 @@ impl Travel {
     #[must_use]
     pub const fn busy(&self) -> bool {
         self.trip.is_some()
-    }
-
-    /// Whether the planner (the world's walkable routes, read from the game's data) has been
-    /// built: the first time a journey or a plan is asked for, not before.
-    #[must_use]
-    pub const fn planner_built(&self) -> bool {
-        self.planning.is_some()
     }
 
     /// Whether the travel has anything to do this frame: a journey under way, a request to take
@@ -1068,21 +1085,66 @@ impl Travel {
         true
     }
 
+    /// Whether the walk keeps off `o`: anything but a portal, and a portal only where neither the
+    /// body (where it stood as the objects were last set) nor where a walk of the journey goes is
+    /// within [`PORTAL_KEPT_NEAR`] of it. A portal the journey takes, or one the body stands at,
+    /// is no obstacle.
+    fn kept_off(&self, o: &WorldObstacle) -> bool {
+        if o.obstacle.kind != ObstacleKind::Portal {
+            return true;
+        }
+        let q = global(&o.obstacle.position);
+        let near = |p: &Position| {
+            let g = global(p);
+            hypotf(g.x - q.x, g.y - q.y) < PORTAL_KEPT_NEAR && (g.z - q.z).abs() < 3.0
+        };
+        if self.body_at.as_ref().is_some_and(near) {
+            return false;
+        }
+        let Some(t) = self.trip.as_ref() else {
+            return true;
+        };
+        let approach = match &t.step {
+            Some(Step::Approach { portal }) => Some(*portal),
+            _ => None,
+        };
+        let taken = t
+            .journey
+            .iter()
+            .flat_map(|j| &j.legs)
+            .filter_map(|l| match l {
+                Leg::Portal { edge } => Some(edge.from),
+                _ => None,
+            });
+        !t.walking
+            .map(|(_, to)| to)
+            .into_iter()
+            .chain(t.goal)
+            .chain(approach)
+            .chain(taken)
+            .any(|p| near(&p))
+    }
+
     /// Hand the planning the objects in the world, when they have changed since it was last
     /// handed them.
     fn send_obstacles(&mut self) {
+        let kept: Vec<Obstacle> = self
+            .obstacles
+            .iter()
+            .filter(|o| self.kept_off(o))
+            .map(|o| o.obstacle.clone())
+            .collect();
         let Some(planning) = self.planning.as_mut() else {
             return;
         };
-        let now: Vec<(u32, ObstacleKind, u32, [i32; 3])> = self
-            .obstacles
+        let now: Vec<(u32, ObstacleKind, u32, [i32; 3])> = kept
             .iter()
             .map(|o| {
-                let v = o.obstacle.position.frame.origin;
+                let v = o.position.frame.origin;
                 (
-                    o.obstacle.id.0,
-                    o.obstacle.kind,
-                    o.obstacle.position.cell.0,
+                    o.id.0,
+                    o.kind,
+                    o.position.cell.0,
                     [to_i32(v.x * 4.0), to_i32(v.y * 4.0), to_i32(v.z * 4.0)],
                 )
             })
@@ -1091,9 +1153,7 @@ impl Travel {
             return;
         }
         self.obstacles_sent = now;
-        planning.ask(Job::Obstacles(
-            self.obstacles.iter().map(|o| o.obstacle.clone()).collect(),
-        ));
+        planning.ask(Job::Obstacles(kept));
     }
 
     fn store_path(&self, name: &str) -> Option<PathBuf> {
@@ -1200,6 +1260,9 @@ impl Travel {
     /// within reach of the body at `at`.
     pub fn set_obstacles(&mut self, list: Vec<WorldObstacle>, at: Option<&Position>) {
         let now = self.now;
+        if at.is_some() {
+            self.body_at = at.copied();
+        }
         let locked = self
             .trip
             .as_ref()
@@ -1241,6 +1304,7 @@ impl Travel {
         self.creature_track = seen.into_iter().collect();
         // A new obstacle in the way of the route ahead, or a door that has closed on it, sends the
         // body round by a new route before it walks into it.
+        let kept_off: Vec<bool> = kept.iter().map(|o| self.kept_off(o)).collect();
         if let Some(t) = self.trip.as_mut().filter(|t| t.route_dirty.is_none()) {
             if let Some(f) = t.follower.as_ref() {
                 let next = f.next_waypoint().saturating_sub(1);
@@ -1252,8 +1316,8 @@ impl Travel {
                     .flatten()
                     .map(global)
                     .collect();
-                for o in &kept {
-                    let blocks = o.obstacle.kind != ObstacleKind::Door(DoorState::Open);
+                for (o, off) in kept.iter().zip(&kept_off) {
+                    let blocks = o.obstacle.kind != ObstacleKind::Door(DoorState::Open) && *off;
                     let known = self.obstacles.iter().any(|k| {
                         k.obstacle.id == o.obstacle.id && k.obstacle.kind == o.obstacle.kind
                     });
@@ -1403,11 +1467,21 @@ impl Travel {
         object: bool,
     ) -> Option<u64> {
         let teleports = self.teleports(allow, disabled);
+        let unwalkable = self
+            .trip
+            .as_ref()
+            .map(|t| t.unwalkable.clone())
+            .unwrap_or_default();
         let (portals, hand_backs) = if allow.portals {
             (
                 self.portals
                     .routable(self.character.level)
                     .into_iter()
+                    .filter(|e| {
+                        !unwalkable.iter().any(|u| {
+                            pyreal_navigation::global_distance(u, &e.from) < UNWALKABLE_NEAR
+                        })
+                    })
                     .cloned()
                     .collect(),
                 self.hand_backs(),
@@ -1539,7 +1613,13 @@ impl Travel {
             t.goal = Some(to);
         }
         let Some((journey, ms)) = planned else {
-            self.end(out, Some(here), Some("no_path"));
+            // Planned again without a portal no walk reaches: that is why there is no way.
+            let why = reason
+                .as_deref()
+                .filter(|r| r.starts_with(UNWALKABLE))
+                .unwrap_or("no_path")
+                .to_owned();
+            self.end(out, Some(here), Some(&why));
             return;
         };
         let view = Self::legs_of(&journey, first);
@@ -1814,6 +1894,22 @@ impl Travel {
         });
     }
 
+    /// The name of the portal the trip's journey walks to `to` to use, when the walk to `to` is
+    /// one that ends at a portal.
+    fn portal_walked_to(&self, to: &Position) -> Option<String> {
+        let t = self.trip.as_ref()?;
+        let legs = &t.journey.as_ref()?.legs;
+        legs.windows(2).find_map(|w| match (&w[0], &w[1]) {
+            (Leg::Walk { to: walk }, Leg::Portal { edge })
+                if pyreal_navigation::global_distance(walk, to) < UNWALKABLE_NEAR
+                    && pyreal_navigation::global_distance(&edge.from, to) < UNWALKABLE_NEAR =>
+            {
+                Some(edge.name.clone())
+            }
+            _ => None,
+        })
+    }
+
     /// Ask for the route as far toward `to` as one window holds; the body stands until it comes,
     /// and then follows it.
     fn walk_toward(&mut self, here: &Position, to: &Position, out: &mut Vec<TravelCommand>) {
@@ -1824,6 +1920,9 @@ impl Travel {
             .filter(|t| matches!(t.target, TravelTarget::Object(_)) && t.goal == Some(*to))
             .map(|_| OBJECT_REACH);
         let id = self.job();
+        // The portals the walk keeps off as it starts from here, toward where it goes.
+        self.body_at = Some(*here);
+        self.send_obstacles();
         let Some(planning) = self.planning.as_mut() else {
             self.end(out, Some(here), Some("no_route"));
             return;
@@ -1870,6 +1969,23 @@ impl Travel {
             }
             Err(e) => {
                 tracing::warn!(target: "travel", "no route from {:?}: {e}", here.frame.origin);
+                // A walk to a portal that the land does not join to where the body is: the
+                // journey took the land for one place. It is planned again without that portal.
+                if e == NoPath::Unreachable {
+                    if let Some(name) = self.portal_walked_to(&to) {
+                        let Some(t) = self.trip.as_mut() else { return };
+                        if t.unwalkable.len() < MAX_UNWALKABLE {
+                            t.unwalkable.push(to);
+                            t.stats.replans += 1;
+                            tracing::info!(
+                                target: "travel",
+                                "no walk reaches the portal {name:?} from here: planning without it"
+                            );
+                            self.plan_trip(here, out, Some(format!("{UNWALKABLE} {name}")));
+                            return;
+                        }
+                    }
+                }
                 let Some(t) = self.trip.as_mut() else { return };
                 t.follower = None;
                 t.stats.replans += 1;
@@ -2451,6 +2567,11 @@ impl Travel {
         match outcome {
             TeleportOutcome::Waiting => {}
             TeleportOutcome::Landed(p) => {
+                // Set down somewhere new: a portal no walk reached from where the body was may be
+                // a walk away from here.
+                if let Some(t) = self.trip.as_mut() {
+                    t.unwalkable.clear();
+                }
                 let t = unix_now();
                 let name = self.character.name.clone();
                 match what {
@@ -2869,11 +2990,17 @@ impl Travel {
                 }
             }
             Steer::Go {
-                forward: go, turn, ..
+                forward: go,
+                turn,
+                face,
+                ..
             } => {
                 if turn != self.turning {
                     out.push(TravelCommand::Turn(turn));
                     self.turning = turn;
+                }
+                if let Some(heading) = face {
+                    out.push(TravelCommand::Face(heading));
                 }
                 if go != self.forward {
                     out.push(TravelCommand::Forward(go));
@@ -2909,6 +3036,7 @@ impl Trip {
             lock_answers: BTreeSet::new(),
             tried_again: BTreeSet::new(),
             disabled: BTreeSet::new(),
+            unwalkable: Vec::new(),
             route_dirty: None,
             stats: TripStats::default(),
             started: now,
@@ -3274,6 +3402,48 @@ mod tests {
     }
 
     #[test]
+    fn at_a_low_frame_rate_the_last_of_a_turn_is_faced_at_once_not_turned_with_a_key() {
+        let mut travel = Travel::new(StoreFiles::default());
+        travel.planning = Some(Planning::held());
+        let mut trip = Trip::new(
+            1,
+            Purpose::Go,
+            TravelTarget::Place(at_a_door::at(9.0)),
+            TravelAllow::default(),
+            0.0,
+            0.0,
+        );
+        trip.step = Some(Step::Walk {
+            target: at_a_door::at(9.0),
+            last: true,
+        });
+        travel.trip = Some(trip);
+        travel.follow_route(at_a_door::round_the_door(), true);
+        // East along the room, facing ten degrees short of it, at five frames a second: a turn
+        // key held one frame would turn the body 27 degrees.
+        let facing = |degrees: f32| {
+            let mut p = at_a_door::at(0.0);
+            pyreal_primitives::frame::set_heading(&mut p.frame, degrees);
+            p
+        };
+        let mut out = Vec::new();
+        travel.follow(&facing(80.0), &mut out);
+        out.clear();
+        travel.now = 0.2;
+        travel.follow(&facing(80.0), &mut out);
+        assert!(
+            out.iter()
+                .any(|c| matches!(c, TravelCommand::Face(h) if (h - 90.0).abs() < 0.5)),
+            "{out:?}"
+        );
+        assert!(
+            !out.iter()
+                .any(|c| matches!(c, TravelCommand::Turn(Some(_)))),
+            "{out:?}"
+        );
+    }
+
+    #[test]
     fn a_door_slow_to_open_opens_on_its_second_go_and_the_walk_goes_through_it() {
         let mut walk = at_a_door::Walk::new();
         while walk.uses <= DOOR_TRIES {
@@ -3288,6 +3458,155 @@ mod tests {
         assert!(t.door.is_none(), "the walk is through with the door");
         assert_eq!(t.follower.as_ref().map(Follower::next_waypoint), Some(2));
         assert_eq!(walk.uses, DOOR_TRIES + 1, "and uses it no more");
+    }
+
+    /// A walk to a portal that the land does not join to the body plans the journey again without
+    /// that portal; with no other way, the journey ends saying which portal no walk reaches.
+    #[test]
+    fn a_portal_no_walk_reaches_is_planned_round_and_named_when_nothing_else_leads_on() {
+        let land = |x: f32, z: f32| {
+            Position::new(
+                CellId(0x9795_003C),
+                Frame::new(Vec3::new(x, 75.0, z), Quat::IDENTITY),
+            )
+        };
+        let (here, stand, dungeon) = (
+            land(180.0, 76.3),
+            Position::new(
+                CellId(0x9395_0023),
+                Frame::new(Vec3::new(102.4, 65.5, 224.0), Quat::IDENTITY),
+            ),
+            Position::new(
+                CellId(0x01D4_01B1),
+                Frame::new(Vec3::new(61.8, -22.5, 30.0), Quat::IDENTITY),
+            ),
+        );
+        let tower = pyreal_navigation::PortalEdge {
+            source: EdgeSource::Published,
+            wcid: Some(375),
+            name: String::from("Bellig Tower"),
+            from: stand,
+            to: Some(dungeon),
+            verified: 0,
+            uses: 0,
+            failures: 0,
+            levels: (None, None),
+            retired: None,
+            requires: Vec::new(),
+        };
+        let mut travel = Travel::new(StoreFiles::default());
+        travel.planning = Some(Planning::held());
+        travel.portals.merge([tower.clone()]);
+        let mut trip = Trip::new(
+            1,
+            Purpose::Go,
+            TravelTarget::Place(dungeon),
+            TravelAllow::default(),
+            0.0,
+            0.0,
+        );
+        trip.goal = Some(dungeon);
+        trip.journey = Some(Journey {
+            legs: vec![
+                Leg::Walk { to: stand },
+                Leg::Portal { edge: tower },
+                Leg::Walk { to: dungeon },
+            ],
+            seconds: 60.0,
+        });
+        travel.trip = Some(trip);
+        let mut out = Vec::new();
+        travel.walked(&here, stand, Err(NoPath::Unreachable), 1.0, &mut out);
+        let t = travel.trip.as_ref().expect("the journey goes on");
+        assert_eq!(t.unwalkable, [stand], "learned");
+        match travel.planning.as_ref().and_then(Planning::last_asked) {
+            Some(Job::Journey { portals, .. }) => assert!(
+                portals.iter().all(|e| e.name != "Bellig Tower"),
+                "planned again without it: {portals:?}"
+            ),
+            other => panic!("planned again: {other:?}"),
+        }
+        // Nothing else leads there: the journey ends, naming the portal.
+        travel.planned(
+            &here,
+            Some(dungeon),
+            None,
+            None,
+            Some(format!("{UNWALKABLE} Bellig Tower")),
+            &mut out,
+        );
+        assert!(travel.trip.is_none(), "over");
+        let why = travel.take_events().into_iter().find_map(|e| match e {
+            TravelEvent::Failed { reason, .. } => Some(reason),
+            _ => None,
+        });
+        assert_eq!(why.as_deref(), Some("no walk reaches Bellig Tower"));
+    }
+
+    /// What a trip learned no walk reaches holds for the land the body walked on: set down
+    /// somewhere new by a portal, it is forgotten.
+    #[test]
+    fn a_portal_no_walk_reached_is_tried_again_once_a_portal_sets_the_body_down_elsewhere() {
+        let at = |cell: u32, x: f32, z: f32| {
+            Position::new(
+                CellId(cell),
+                Frame::new(Vec3::new(x, 65.0, z), Quat::IDENTITY),
+            )
+        };
+        let (here, plateau, goal) = (
+            at(0x9395_001E, 70.0, 114.0),
+            at(0x9395_0023, 98.4, 224.0),
+            at(0x01D4_021B, 40.0, 114.0),
+        );
+        let mut travel = Travel::new(StoreFiles::default());
+        travel.planning = Some(Planning::held());
+        let mut trip = Trip::new(
+            1,
+            Purpose::Go,
+            TravelTarget::Place(goal),
+            TravelAllow::default(),
+            0.0,
+            0.0,
+        );
+        trip.goal = Some(goal);
+        trip.unwalkable.push(at(0x9395_0023, 102.4, 224.0));
+        trip.journey = Some(Journey {
+            legs: vec![
+                Leg::Portal {
+                    edge: pyreal_navigation::PortalEdge {
+                        source: EdgeSource::Published,
+                        wcid: Some(28_000),
+                        name: String::from("Bellig Top"),
+                        from: here,
+                        to: Some(plateau),
+                        verified: 0,
+                        uses: 0,
+                        failures: 0,
+                        levels: (None, None),
+                        retired: None,
+                        requires: Vec::new(),
+                    },
+                },
+                Leg::Walk { to: goal },
+            ],
+            seconds: 60.0,
+        });
+        travel.trip = Some(trip);
+        let sighting = PortalSighting {
+            wcid: Some(28_000),
+            name: String::from("Bellig Top"),
+            position: here,
+        };
+        let watch = TeleportWatch {
+            before: here,
+            since: 0.0,
+            wait: PORTAL_WAIT,
+        };
+        travel.wall = 1.0;
+        let mut out = Vec::new();
+        travel.wait_frame(&plateau, true, &Awaited::Portal(sighting), &watch, &mut out);
+        let t = travel.trip.as_ref().expect("the journey goes on");
+        assert!(t.unwalkable.is_empty(), "{:?}", t.unwalkable);
     }
 
     #[test]
@@ -3626,5 +3945,54 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A walk keeps off the portals it is not taking: of three in sight, the one beside its way is
+    /// handed to the planning as an obstacle; the one the body stands at (it did not take the
+    /// body) and the one the walk goes to are not.
+    #[test]
+    fn a_walk_keeps_off_a_portal_it_is_not_taking_and_not_one_it_starts_or_ends_at() {
+        use at_a_door::at;
+        let mut travel = Travel::new(StoreFiles::default());
+        travel.planning = Some(Planning::held());
+        let mut trip = Trip::new(
+            1,
+            Purpose::Go,
+            TravelTarget::Place(at(30.0)),
+            TravelAllow::default(),
+            0.0,
+            0.0,
+        );
+        trip.walking = Some((1, at(30.0)));
+        travel.trip = Some(trip);
+        let portal = |id: u32, x: f32| WorldObstacle {
+            obstacle: Obstacle {
+                id: ObjectId(id),
+                position: at(x),
+                setup: Arc::new(SetupGeometry::default()),
+                scale: 1.0,
+                kind: ObstacleKind::Portal,
+            },
+            name: String::from("Portal"),
+        };
+        let sent = |t: &Travel| match t.planning.as_ref().and_then(Planning::last_asked) {
+            Some(Job::Obstacles(o)) => o.iter().map(|o| o.id.0).collect::<Vec<_>>(),
+            other => panic!("the objects were not handed on: {other:?}"),
+        };
+        travel.set_obstacles(
+            vec![portal(1, 15.0), portal(2, 2.0), portal(3, 31.0)],
+            Some(&at(0.0)),
+        );
+        assert_eq!(sent(&travel), vec![1], "the one beside the way only");
+        // Walked on past the first: the body now stands at it, and it is no longer kept off.
+        travel.set_obstacles(
+            vec![portal(1, 15.0), portal(2, 2.0), portal(3, 31.0)],
+            Some(&at(14.0)),
+        );
+        assert_eq!(
+            sent(&travel),
+            vec![2],
+            "the one left behind is kept off now"
+        );
     }
 }

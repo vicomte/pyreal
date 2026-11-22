@@ -4,7 +4,7 @@
 //! bar does the same, as the game's spellbook does), or forget it after a question.
 //!
 //! The spellbook's level filter is the game's, kept by the server: a level switched off hides its
-//! spells. The tabs follow the world's era: Void magic only where the world has it, and a Create
+//! spells, on worlds whose spellbook has a filter. The tabs follow the world's era: Void magic only where the world has it, and a Create
 //! Spell tab where it has spell research.
 
 use crate::art::AcArt as _;
@@ -194,7 +194,14 @@ impl Windows {
             Tab::School(i) => i,
         };
         let (school_name, school) = SCHOOLS[school_tab];
-        let mask = state.world_services.spell_filters;
+        // The tab is the school: of the game's filter only the levels apply, and none at all
+        // on a world whose spellbook has no filter.
+        let w = &state.world_services;
+        let levels = if !state.in_world || w.era_ui.spell_filter_panel {
+            w.spell_filters
+        } else {
+            u32::MAX
+        };
         // The search box across the window under the tabs.
         let search = Rect::new(body.x, body.y + 32.0 * k, body.w, SEARCH_H * k);
         kit::text_box(
@@ -215,7 +222,7 @@ impl Windows {
             .spells
             .iter()
             .filter(|s| s.school == school)
-            .filter(|s| pyreal_client_contract::spellbook::accepts(mask, s.school, s.level))
+            .filter(|s| levels & pyreal_client_contract::spellbook::level_mask(s.level) != 0)
             .filter(|s| search_matches(&s.name, s.level, school_name, &needle))
             .collect();
         spells.sort_by(|a, b| a.level.cmp(&b.level).then(a.name.cmp(&b.name)));
@@ -246,22 +253,7 @@ impl Windows {
             8.0 * k
         };
         p.list.push_clip(area);
-        // A filter that hides this school leaves a way to show it again.
-        let school_bit = pyreal_client_contract::spellbook::school_mask(school);
-        if spells.is_empty() && mask & school_bit == 0 {
-            p.text(
-                &dim,
-                area.x + 10.0 * k,
-                area.y + 4.0 * k,
-                &format!("The spell filter hides {school_name} spells."),
-            );
-            let show = Rect::new(area.x + 10.0 * k, area.y + 28.0 * k, 180.0 * k, 28.0 * k);
-            if kit::button(p, ctx, show, &format!("Show {school_name} Spells"), true) {
-                out.requests.push(UiRequest::SetSpellbookFilter {
-                    mask: mask | school_bit,
-                });
-            }
-        } else if spells.is_empty() {
+        if spells.is_empty() {
             p.text(
                 &dim,
                 area.x + 10.0 * k,
@@ -516,6 +508,9 @@ impl Windows {
         let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
         #[allow(clippy::cast_precision_loss)]
         let per = (r.w / LEVELS.len() as f32).max(1.0);
+        if state.in_world && !w.era_ui.spell_filter_panel {
+            return;
+        }
         for (i, label) in LEVELS.iter().enumerate() {
             let bit = level_mask(u32::try_from(i + 1).unwrap_or(1));
             if bit == 0 || (state.in_world && !w.era_ui.spell_filter(bit)) {

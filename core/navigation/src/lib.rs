@@ -54,6 +54,7 @@ mod path;
 mod places;
 mod portals;
 mod region;
+pub mod requirement;
 mod search;
 mod solids;
 mod source;
@@ -78,6 +79,7 @@ pub use portals::{
     TeleportOutcome, TeleportWatch, STORE_VERSION,
 };
 pub use region::{BuildReport, Place, Region};
+pub use requirement::Requirement;
 pub use source::{
     Agent, LandNavSource, LandStatics, NavConfig, NavSource, NoLandStatics, StaticPlacement,
 };

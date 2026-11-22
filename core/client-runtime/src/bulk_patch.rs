@@ -12,7 +12,11 @@
 
 use std::io::{BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use pyreal_protocol::admin::{DddData, BULK_MAGIC, BULK_VERSION};
@@ -23,6 +27,42 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const QUEUED: usize = 256;
 /// The largest record body the stream may carry.
 const LARGEST: usize = 64 << 20;
+
+/// How long a frame may spend applying the stream's records: the rest of the frame draws the
+/// screens and keeps the session's messages moving, so the progress shows and the server's
+/// messages are answered while the patch is written. A frame that may apply any applies at least
+/// one.
+pub const FRAME_SHARE: Duration = Duration::from_millis(8);
+
+/// The clock a frame's share of the stream is measured by: the time since some fixed moment.
+/// The client's reads the machine's clock; a test's moves as the test says.
+pub struct WorkClock(Box<dyn FnMut() -> Duration + Send>);
+
+impl WorkClock {
+    /// A clock that reads `now`.
+    pub fn new(now: impl FnMut() -> Duration + Send + 'static) -> Self {
+        Self(Box::new(now))
+    }
+
+    /// The time since the clock's fixed moment.
+    pub fn now(&mut self) -> Duration {
+        (self.0)()
+    }
+}
+
+impl Default for WorkClock {
+    /// The machine's clock.
+    fn default() -> Self {
+        let start = Instant::now();
+        Self::new(move || start.elapsed())
+    }
+}
+
+impl std::fmt::Debug for WorkClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WorkClock")
+    }
+}
 
 #[derive(Debug)]
 enum Msg {
@@ -39,6 +79,9 @@ pub struct BulkDownload {
     started: Instant,
     records: u64,
     bytes: u64,
+    /// The record bytes the stream's thread has read.
+    #[cfg(test)]
+    read: Arc<AtomicUsize>,
 }
 
 impl BulkDownload {
@@ -48,10 +91,18 @@ impl BulkDownload {
     /// The thread cannot start.
     pub fn start(addr: SocketAddr, token: [u8; 16]) -> std::io::Result<Self> {
         let (tx, rx) = sync_channel(QUEUED);
+        #[cfg(test)]
+        let read_bytes = Arc::new(AtomicUsize::new(0));
+        #[cfg(test)]
+        let counted = Arc::clone(&read_bytes);
         std::thread::Builder::new()
             .name("patch stream".to_owned())
             .spawn(move || {
-                let end = match read(addr, token, |d| tx.send(Msg::Record(d)).is_ok()) {
+                let end = match read(addr, token, |d| {
+                    #[cfg(test)]
+                    counted.fetch_add(d.data.len(), Ordering::Relaxed);
+                    tx.send(Msg::Record(d)).is_ok()
+                }) {
                     Ok(()) => Msg::Done,
                     Err(e) => Msg::Failed(e.to_string()),
                 };
@@ -63,30 +114,42 @@ impl BulkDownload {
             started: Instant::now(),
             records: 0,
             bytes: 0,
+            #[cfg(test)]
+            read: read_bytes,
         })
     }
 
-    /// The records that have arrived, up to about `max_bytes` of them.
-    pub fn drain(&mut self, max_bytes: usize) -> Vec<Box<DddData>> {
-        let mut out = Vec::new();
-        let mut taken = 0usize;
-        while self.end.is_none() && taken < max_bytes {
-            match self.rx.try_recv() {
-                Ok(Msg::Record(d)) => {
-                    taken += d.data.len();
-                    self.records += 1;
-                    self.bytes += d.data.len() as u64;
-                    out.push(d);
-                }
-                Ok(Msg::Done) => self.end = Some(Ok(())),
-                Ok(Msg::Failed(e)) => self.end = Some(Err(e)),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.end = Some(Err("the stream's thread ended".to_owned()));
-                }
+    /// The next record that has arrived, if one has.
+    pub fn next_record(&mut self) -> Option<Box<DddData>> {
+        if self.end.is_some() {
+            return None;
+        }
+        match self.rx.try_recv() {
+            Ok(Msg::Record(d)) => {
+                self.records += 1;
+                self.bytes += d.data.len() as u64;
+                Some(d)
+            }
+            Ok(Msg::Done) => {
+                self.end = Some(Ok(()));
+                None
+            }
+            Ok(Msg::Failed(e)) => {
+                self.end = Some(Err(e));
+                None
+            }
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                self.end = Some(Err("the stream's thread ended".to_owned()));
+                None
             }
         }
-        out
+    }
+
+    /// The record bytes the stream has read so far, applied or not.
+    #[cfg(test)]
+    pub(crate) fn queued(&self) -> usize {
+        self.read.load(Ordering::Relaxed)
     }
 
     /// How the stream ended, once every record it brought has been drained.
@@ -189,7 +252,9 @@ mod tests {
         let mut ids = Vec::new();
         let until = Instant::now() + Duration::from_secs(10);
         while d.ended().is_none() && Instant::now() < until {
-            ids.extend(d.drain(usize::MAX).iter().map(|r| r.resource_id));
+            while let Some(r) = d.next_record() {
+                ids.push(r.resource_id);
+            }
             std::thread::sleep(Duration::from_millis(5));
         }
         ids

@@ -482,6 +482,9 @@ pub struct DddPatcher {
     /// The world named itself as another than the one the answer carried, and the server is to
     /// ask again.
     asked_again: bool,
+    /// The set of files the world's overlay was made over, when that world asks again and they
+    /// are not the files open: the caller opens them before the answer.
+    rebase: Option<pyreal_dat::ContainerEra>,
     /// The files whose overlay carries the world's own iteration list, by the manifest: their
     /// records are the world's whatever iteration the base has of them.
     exact: BTreeSet<DatTarget>,
@@ -529,6 +532,7 @@ impl DddPatcher {
             answered: None,
             switched: false,
             asked_again: false,
+            rebase: None,
             exact: BTreeSet::new(),
             phase: DddPhase::Idle,
             writers: BTreeMap::new(),
@@ -620,6 +624,33 @@ impl DddPatcher {
         std::mem::take(&mut self.switched)
     }
 
+    /// The set of files to open before the server asks again, when the world it named was made
+    /// over another set than the files open (a world moved to other files since the last run).
+    pub fn take_rebase(&mut self) -> Option<pyreal_dat::ContainerEra> {
+        self.rebase.take()
+    }
+
+    /// The set the files `m` names were made over, when it is not the set the bases are.
+    fn other_set(&self, m: &DddOverlayManifest) -> Option<pyreal_dat::ContainerEra> {
+        let target = self.target.as_ref()?;
+        let set_of = |name: &str| {
+            if pyreal_dat::ClassicDat::ALL
+                .iter()
+                .any(|d| d.file_name().eq_ignore_ascii_case(name))
+            {
+                pyreal_dat::ContainerEra::Classic
+            } else {
+                pyreal_dat::ContainerEra::Modern
+            }
+        };
+        m.files.iter().find_map(|f| {
+            let t = target_from_wire(f.dat_file_type, f.dat_file_id)?;
+            let (_, held) = target.bases.get(&t)?;
+            let wanted = set_of(&f.base_name);
+            (wanted != set_of(held)).then_some(wanted)
+        })
+    }
+
     /// The file a patch target names, as this client holds it (`portal.dat` beside an older
     /// world, `client_portal.dat` beside a later one).
     fn name_of(&self, target: DatTarget) -> String {
@@ -690,6 +721,19 @@ impl DddPatcher {
         if self.target.as_ref().is_some_and(|t| t.each_world.is_some()) {
             if let Err((refusal, why)) = self.follow_world(m, keeps_none) {
                 self.refuse(refusal, why);
+                return;
+            }
+        }
+        // The server asks again, and the world's overlay lies over another set than the files
+        // open: that set is opened first, and the manifest ahead of the patch is checked then.
+        if self.asked_again {
+            if let Some(set) = self.other_set(m) {
+                self.note(format!(
+                    "0xF7EC the world {:?} was made over the {set:?} files; they are opened before \
+                     the server asks again",
+                    m.world_key
+                ));
+                self.rebase = Some(set);
                 return;
             }
         }
@@ -814,6 +858,7 @@ impl DddPatcher {
             return;
         }
         self.unchecked.clear();
+        self.forget_dropped(m);
         self.note(format!(
             "0xF7EC the world {:?} names {} file(s), {} record(s) and {} deletion(s)",
             m.world_key,
@@ -957,6 +1002,12 @@ impl DddPatcher {
         self.phase
     }
 
+    /// Whether the world's manifest (`0xF7EC`) has been taken this exchange.
+    #[must_use]
+    pub fn manifest_seen(&self) -> bool {
+        self.manifest_seen
+    }
+
     /// Downloads promised and not yet delivered.
     #[must_use]
     pub fn pending(&self) -> usize {
@@ -997,6 +1048,8 @@ impl DddPatcher {
     pub fn on_interrogation(&mut self) {
         self.phase = DddPhase::InterrogationReceved;
         self.asked_again = false;
+        // Each exchange's manifest is its own.
+        self.manifest_seen = false;
     }
 
     /// Answer whether this `QualifiedDataID` needs a `0xF7E3` sent
@@ -1475,6 +1528,78 @@ impl DddPatcher {
         }
     }
 
+    /// A newer overlay of the world holds only what its manifest `m` names: each record the
+    /// client kept from an older one, in a file the manifest names, that it no longer names is
+    /// taken out of the client's copy, so the base's record (where there is one) is read again;
+    /// and each deletion it no longer makes is lifted, so the base's records it hid are read
+    /// again.
+    fn forget_dropped(&mut self, m: &DddOverlayManifest) {
+        let named: Vec<(DatTarget, Vec<(u32, u32)>)> = m
+            .files
+            .iter()
+            .filter_map(|f| {
+                let t = target_from_wire(f.dat_file_type, f.dat_file_id)?;
+                Some((t, f.tombstones.iter().map(|x| (x.id, x.mask)).collect()))
+            })
+            .collect();
+        let mut dropped = 0usize;
+        let mut lifted = 0usize;
+        for (t, deletions) in named {
+            if !self.target.as_ref().is_some_and(|d| d.dir.holds(t)) {
+                continue;
+            }
+            let (stale, old_deletions): (Vec<DataId>, Vec<(u32, u32)>) = match self.writer(t) {
+                Ok(w) => (
+                    w.record_ids().collect(),
+                    w.tombstones().iter().map(|x| (x.id, x.mask)).collect(),
+                ),
+                Err(_) => continue,
+            };
+            let stale: Vec<DataId> = stale
+                .into_iter()
+                .filter(|id| !self.expected.contains_key(&(t, id.raw())))
+                .collect();
+            let unmade: Vec<(u32, u32)> = old_deletions
+                .into_iter()
+                .filter(|d| !deletions.contains(d))
+                .collect();
+            if stale.is_empty() && unmade.is_empty() {
+                continue;
+            }
+            let date = entry_date(crate::platform::clock::system_unix_time());
+            let Ok(w) = self.writer(t) else {
+                continue;
+            };
+            let mut failed = None;
+            for id in &stale {
+                if let Err(e) = w.revert(*id) {
+                    failed = Some(e);
+                    break;
+                }
+                dropped += 1;
+            }
+            for (id, mask) in unmade {
+                lifted += usize::from(w.lift_tombstone(id, mask));
+            }
+            if let Err(e) = w.flush(date) {
+                failed.get_or_insert(e);
+            }
+            // What the world reads changed: the file is reopened at the patch's end.
+            self.changed.insert(t);
+            if let Some(e) = failed {
+                tracing::warn!(
+                    "DDD {}: the records the world's overlay no longer holds were not all taken out: {e}",
+                    self.name_of(t)
+                );
+            }
+        }
+        if dropped > 0 || lifted > 0 {
+            self.note(format!(
+                "the world's overlay no longer holds {dropped} record(s) and {lifted} deletion(s) this client kept; they are taken out"
+            ));
+        }
+    }
+
     /// Open the file's overlay writer, once.
     fn writer(&mut self, target: DatTarget) -> Result<&mut OverlayWriter, DatError> {
         if !self.writers.contains_key(&target) {
@@ -1857,6 +1982,173 @@ mod tests {
             .expect("seed iterations");
         }
         DatFile::open(&path).expect("the file")
+    }
+
+    /// A client that kept two records of an older overlay of the world, given the manifest of a
+    /// newer one that holds only one of them, takes the other out of its copy, so the base's own
+    /// record is read again, and the file is reopened at the patch's end.
+    #[test]
+    fn a_record_a_newer_overlay_no_longer_holds_is_taken_out_of_the_clients_copy() {
+        let scratch =
+            pyreal_dat::testing::ScratchDir::new("ddd-overlay-drops").expect("scratch directory");
+        let dir = scratch.path().to_path_buf();
+        let base = language_file(&dir.join("base"), [0x2100_0001, 0x2100_0002], 1);
+        let overlay = OverlayDir::new(&dir.join("overlay")).expect("an overlay folder");
+        let (kept, dropped) = (DataId(0x2100_0002), DataId(0x2100_0003));
+        let kept_hash = {
+            let mut w = overlay
+                .writer(
+                    DatTarget::Local,
+                    &base,
+                    "client_local_English.dat",
+                    "a world",
+                    1,
+                )
+                .expect("the older overlay");
+            for id in [kept, dropped] {
+                w.save(&base, id, b"older", 1, 2, 1).expect("a record");
+            }
+            w.add_iteration(2, 1).expect("its revision");
+            w.flush(1).expect("flushed");
+            w.hash_of(kept).expect("the kept record's hash")
+        };
+        let newer = DddOverlayManifest {
+            world_key: "a world".into(),
+            total_bytes: 0,
+            files: vec![pyreal_protocol::admin::OverlayFileManifest {
+                dat_file_type: 1,
+                dat_file_id: 3,
+                base_name: "client_local_English.dat".into(),
+                base_fingerprint: pyreal_dat::overlay::fingerprint(&base),
+                base_records: None,
+                base_iterations: 1,
+                exact_iterations: false,
+                revisions: vec![2],
+                records: vec![pyreal_protocol::admin::OverlayRecord {
+                    id: kept.raw(),
+                    iteration: 2,
+                    size: 5,
+                    sha256: kept_hash,
+                }],
+                tombstones: Vec::new(),
+            }],
+        };
+        let mut patcher = DddPatcher::new(Some(OverlayTarget::with_bases(
+            overlay.clone(),
+            [(DatTarget::Local, base.clone())],
+            "a world",
+        )));
+        patcher.on_manifest(&newer);
+        assert_eq!(patcher.refused(), None);
+        assert!(
+            patcher.changed.contains(&DatTarget::Local),
+            "the file is reopened"
+        );
+        drop(patcher);
+        let w = overlay
+            .writer(
+                DatTarget::Local,
+                &base,
+                "client_local_English.dat",
+                "a world",
+                1,
+            )
+            .expect("the overlay");
+        let held: Vec<DataId> = w.record_ids().collect();
+        assert_eq!(
+            held,
+            [kept],
+            "the dropped record is gone, the kept one stays"
+        );
+        drop(w);
+        let layered = base.layered(std::sync::Arc::new(
+            overlay
+                .layer_over(DatTarget::Local, &base, Some("a world"))
+                .expect("the layer opens")
+                .expect("a layer"),
+        ));
+        assert_eq!(
+            layered.read(DataId(0x2100_0003)).ok(),
+            None,
+            "the base never held 0x21000003, and the overlay no longer does"
+        );
+        assert_eq!(
+            layered.read(kept).expect("the kept record"),
+            b"older",
+            "the newer overlay's record stays"
+        );
+        drop(scratch);
+    }
+
+    /// A base record an older overlay of the world deleted reads again once the manifest of a
+    /// newer one no longer makes that deletion.
+    #[test]
+    fn a_deletion_a_newer_overlay_no_longer_makes_is_lifted() {
+        let scratch = pyreal_dat::testing::ScratchDir::new("ddd-overlay-undelete")
+            .expect("scratch directory");
+        let dir = scratch.path().to_path_buf();
+        let base = language_file(&dir.join("base"), [0x2100_0001, 0x2100_0002], 1);
+        let overlay = OverlayDir::new(&dir.join("overlay")).expect("an overlay folder");
+        let hidden = DataId(0x2100_0001);
+        {
+            let mut w = overlay
+                .writer(
+                    DatTarget::Local,
+                    &base,
+                    "client_local_English.dat",
+                    "a world",
+                    1,
+                )
+                .expect("the older overlay");
+            w.tombstone(hidden, 0, 2).expect("deleted");
+            w.add_iteration(2, 1).expect("its revision");
+            w.flush(1).expect("flushed");
+        }
+        let read = |overlay: &OverlayDir| {
+            base.layered(std::sync::Arc::new(
+                overlay
+                    .layer_over(DatTarget::Local, &base, Some("a world"))
+                    .expect("the layer opens")
+                    .expect("a layer"),
+            ))
+            .read(hidden)
+            .ok()
+        };
+        assert_eq!(read(&overlay), None, "the older overlay hides it");
+        let newer = DddOverlayManifest {
+            world_key: "a world".into(),
+            total_bytes: 0,
+            files: vec![pyreal_protocol::admin::OverlayFileManifest {
+                dat_file_type: 1,
+                dat_file_id: 3,
+                base_name: "client_local_English.dat".into(),
+                base_fingerprint: pyreal_dat::overlay::fingerprint(&base),
+                base_records: None,
+                base_iterations: 1,
+                exact_iterations: false,
+                revisions: vec![2],
+                records: Vec::new(),
+                tombstones: Vec::new(),
+            }],
+        };
+        let mut patcher = DddPatcher::new(Some(OverlayTarget::with_bases(
+            overlay.clone(),
+            [(DatTarget::Local, base.clone())],
+            "a world",
+        )));
+        patcher.on_manifest(&newer);
+        assert_eq!(patcher.refused(), None);
+        assert!(
+            patcher.changed.contains(&DatTarget::Local),
+            "the file is reopened"
+        );
+        drop(patcher);
+        assert_eq!(
+            read(&overlay).as_deref(),
+            Some(&0x2100_0001u32.to_le_bytes()[..]),
+            "the base's record reads again"
+        );
+        drop(scratch);
     }
 
     #[test]

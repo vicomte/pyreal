@@ -1092,15 +1092,14 @@ fn draw_character_select_for_a_person_to_look_at() {
 
 /// Not a claim: an instrument that draws the windows a second set of window fixes touches, with
 /// the interface's own art, into `<PYREAL_UI_SHOTS>/`: `skills-groups.png` (the four skill
-/// groups), `spellbook-school-hidden.png` (a tab whose school the filter hides),
-/// `shop-row-cost.png` (100 arrows chosen at a vendor), `allegiance-rank.png` (a rank a spell
-/// raises) and `exp-cap.png` (the EXP bar at the level cap).
+/// groups), `shop-row-cost.png` (100 arrows chosen at a vendor), `allegiance-rank.png` (a rank a
+/// spell raises) and `exp-cap.png` (the EXP bar at the level cap).
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
-fn draw_the_skill_groups_spell_filter_shop_row_rank_and_exp_cap_for_a_person_to_look_at() {
+fn draw_the_skill_groups_shop_row_rank_and_exp_cap_for_a_person_to_look_at() {
     use pyreal_client_contract::view::{AllegianceEntry, AllegianceRoster, ShopRow, ShopView};
     use pyreal_horizon::draw::Rect;
-    use pyreal_horizon::ui::game::{Modifiers, Skill, Spell};
+    use pyreal_horizon::ui::game::{Modifiers, Skill};
     let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
         return;
     };
@@ -1167,30 +1166,6 @@ fn draw_the_skill_groups_spell_filter_shop_row_rank_and_exp_cap_for_a_person_to_
     settle(&mut h, &state);
     let r = window(&h, WindowId::Character);
     write_part(&dir.join("skills-groups.png"), &h, &art, Some(r));
-
-    // A spellbook tab whose school the filter hides.
-    let mut state = GameState {
-        combat_mode: pyreal_client_contract::combat_mode::MAGIC,
-        spells: vec![Spell {
-            charge: None,
-            id: 7,
-            name: "Flame Bolt I".into(),
-            school: 1,
-            level: 1,
-            ac_icon: 0,
-            icon_power: 0,
-            bitfield: 0,
-        }],
-        ..in_world()
-    };
-    state.world_services.spell_filters = pyreal_client_contract::spellbook::DEFAULT_SPELL_FILTERS
-        & !pyreal_client_contract::spellbook::school_mask(1);
-    let mut h = harness();
-    h.frame(&state);
-    h.ui.windows.open(WindowId::Actions, 0.0);
-    settle(&mut h, &state);
-    let r = window(&h, WindowId::Actions);
-    write_part(&dir.join("spellbook-school-hidden.png"), &h, &art, Some(r));
 
     // 100 arrows chosen at a vendor.
     let state = GameState {

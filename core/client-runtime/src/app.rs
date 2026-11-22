@@ -50,7 +50,8 @@ mod world;
 
 use motion::command_interpreter_control_transfer_with_finish;
 pub use motion::{
-    body_motion_in, complete_player_teleport_at, player_timestamps, raw_motion_state_to_wire_in,
+    body_motion_in, complete_player_blip_at, complete_player_teleport_at, player_timestamps,
+    raw_motion_state_to_wire_in,
 };
 #[cfg(any(test, feature = "test-support"))]
 mod testing;
@@ -60,7 +61,7 @@ pub use session::{
 #[cfg(any(test, feature = "test-support"))]
 pub use testing::{
     apply_player_teleport, body_jump, body_motion, command_interpreter_control_transfer,
-    complete_player_teleport, jump_edge_sample, raw_motion_state_to_wire,
+    complete_player_blip, complete_player_teleport, jump_edge_sample, raw_motion_state_to_wire,
 };
 
 use pyreal_client_contract::window_proc::style;
@@ -650,9 +651,6 @@ pub struct App<S: Shell> {
     pub orbit_keys: crate::orbit::MovementKeys,
     /// What the orbit camera's mouse buttons asked of the game since the last dispatch.
     pub orbit_pending: Vec<pyreal_client_contract::actions::Action>,
-    /// What the player has been told this session of a box of the presentation that this device
-    /// cannot draw: each line is said once.
-    fidelity_told: Vec<&'static str>,
     /// A look stick's push, each axis from -1 to 1, which turns the orbit camera every frame.
     pub orbit_look: (f32, f32),
     /// Whether a `--report` run has put its body where the report says.
@@ -828,6 +826,8 @@ pub struct App<S: Shell> {
     hitch_world: bool,
     /// The commit the program was built from, as its host names it, for `@report`.
     pub build_commit: &'static str,
+    /// The build hash as its host names it, for the performance panel; empty without one.
+    pub build_hash: &'static str,
     /// Time when `0x0013` made the session playable, used by `--linger`.
     pub playable_at: Option<f64>,
     /// Movement-command position reporting: `0xF753` on the client's own 1.0 s schedule and
@@ -856,6 +856,11 @@ pub struct App<S: Shell> {
     pub pending_ddd: Vec<pyreal_client_contract::pregame::DddEvent>,
     /// The patch stream being read, when the server offered one (CD-044).
     pub bulk: Option<crate::bulk_patch::BulkDownload>,
+    /// How long a frame may spend applying the patch stream's records
+    /// ([`crate::bulk_patch::FRAME_SHARE`]).
+    pub patch_share: std::time::Duration,
+    /// The clock [`Self::patch_share`] is measured by.
+    pub patch_clock: crate::bulk_patch::WorkClock,
     /// The shared asset cache's DDD patch state, and the writers it patches through.
     ///
     /// Aimed at [`crate::config::Config::dat_dir`], which in a normal run is the retail
@@ -999,8 +1004,7 @@ pub struct App<S: Shell> {
 /// on them ([`crate::scene::SceneConfig::object_identity_budget`]).
 pub const IDENTITY_BACKGROUND_BUDGET: std::time::Duration = std::time::Duration::from_millis(3);
 
-/// How long a frame gives them, at least, while the objects wait to take a look the player asked
-/// for, and while no world is drawn.
+/// How long a frame gives them, at least, while no world is drawn.
 pub const IDENTITY_WAITING_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// [`App::object_identity`]: the verdicts being worked out for the store, and what the frames
@@ -1019,10 +1023,6 @@ pub struct ObjectIdentityPrep {
     pub longest_step: std::time::Duration,
     /// Whether the presentation has been handed the verdicts.
     pub offered: bool,
-    /// Whether the drawn world waited on it at the last preference poll.
-    awaited: bool,
-    /// Whether the player has been told the look is being prepared.
-    noticed: bool,
 }
 
 impl ObjectIdentityPrep {
@@ -1047,8 +1047,6 @@ impl ObjectIdentityPrep {
             started: std::time::Instant::now(),
             longest_step: std::time::Duration::ZERO,
             offered: false,
-            awaited: false,
-            noticed: false,
         })
     }
 }
@@ -1403,8 +1401,9 @@ fn nav_portals(
 }
 
 /// The world's objects as `--nav-proof` obstacles: every door, open when its body is ethereal,
-/// every other solid body, and every creature (which the driver keeps only while it stands or
-/// ambles near the route).
+/// every portal (which the driver keeps off unless the walk starts or ends at it), every other
+/// solid body, and every creature (which the driver keeps only while it stands or ambles near the
+/// route).
 fn nav_obstacles(
     world: &pyreal_client_model::world::World,
     character: &crate::character::Character,
@@ -1412,6 +1411,8 @@ fn nav_obstacles(
     use pyreal_navigation::{DoorState, Obstacle, ObstacleKind};
     /// `ObjectDescriptionFlag` bit 12: the object is a door.
     const DOOR: u32 = 0x0000_1000;
+    /// `ObjectDescriptionFlag` bit 18: the object is a portal.
+    const PORTAL: u32 = 0x0004_0000;
     let mut out = Vec::new();
     for (id, _) in world.tables.physics.iter() {
         if world.player == Some(id) {
@@ -1427,11 +1428,14 @@ fn nav_obstacles(
         };
         let creature = w.pwd.obj_type & pyreal_rules::weenie::item_type::CREATURE != 0;
         let door = w.pwd.bitfield & DOOR != 0;
+        let portal = w.pwd.bitfield & PORTAL != 0;
         let open = o.state.is_ethereal();
-        if open && !door {
+        if open && !door && !portal {
             continue;
         }
-        let kind = if creature {
+        let kind = if portal {
+            ObstacleKind::Portal
+        } else if creature {
             ObstacleKind::Creature
         } else if door {
             ObstacleKind::Door(if open {

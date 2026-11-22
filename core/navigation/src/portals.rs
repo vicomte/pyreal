@@ -23,9 +23,13 @@ use std::fmt::Write as _;
 use pyreal_primitives::{CellId, Frame, Position, Quat, Vec3};
 
 use crate::path::global_distance;
+use crate::requirement::{self, Requirement};
 
-/// The store's format version, the first line's second field.
-pub const STORE_VERSION: u32 = 1;
+/// The store's format version, the first line's second field. Version 1 had no `requires` field;
+/// a version 3 line's `shape` field is read past.
+pub const STORE_VERSION: u32 = 2;
+/// The newest version this reader takes, the server's published table.
+const READ_VERSION: u32 = 3;
 
 /// Where an edge came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,6 +107,8 @@ pub struct PortalEdge {
     pub levels: (Option<i32>, Option<i32>),
     /// Why it is not used, when it is retired: the last refusal.
     pub retired: Option<String>,
+    /// What else it asks, of the character who uses it or of the world for it to stand there.
+    pub requires: Vec<Requirement>,
 }
 
 impl PortalEdge {
@@ -122,6 +128,14 @@ impl PortalEdge {
     pub fn admits(&self, level: Option<i32>) -> bool {
         let Some(l) = level else { return true };
         self.levels.0.is_none_or(|min| l >= min) && self.levels.1.is_none_or(|max| l <= max)
+    }
+
+    /// Whether it admits nobody or may not be standing: `closed` or `temporary`.
+    #[must_use]
+    pub fn shut(&self) -> bool {
+        self.requires
+            .iter()
+            .any(|r| matches!(r, Requirement::Closed | Requirement::Temporary))
     }
 }
 
@@ -180,7 +194,7 @@ pub enum StoreError {
     #[error("not a navigation store")]
     NotAStore,
     /// A later format version.
-    #[error("store version {0} is newer than this client's {STORE_VERSION}")]
+    #[error("store version {0} is newer than this client's {READ_VERSION}")]
     Version(u32),
     /// A line that does not read.
     #[error("line {0}: {1}")]
@@ -332,6 +346,7 @@ impl PortalStore {
             failures: 0,
             levels: (None, None),
             retired: None,
+            requires: Vec::new(),
         });
     }
 
@@ -361,6 +376,7 @@ impl PortalStore {
                 failures: 1,
                 levels: (None, None),
                 retired: Some(reason.to_owned()),
+                requires: Vec::new(),
             });
         }
     }
@@ -398,7 +414,7 @@ impl PortalStore {
             else {
                 continue;
             };
-            if !std::ptr::eq(*best, e) || !best.admits(level) {
+            if !std::ptr::eq(*best, e) || !best.admits(level) || best.shut() {
                 continue;
             }
             out.push(e);
@@ -439,9 +455,9 @@ impl PortalStore {
     /// The store as text:
     ///
     /// ```text
-    /// dereth-navigation-store<TAB>1
+    /// dereth-navigation-store<TAB>2
     /// world<TAB><identity>
-    /// portal<TAB>source<TAB>wcid<TAB>name<TAB>from<TAB>to<TAB>verified<TAB>uses<TAB>failures<TAB>min<TAB>max<TAB>retired
+    /// portal<TAB>source<TAB>wcid<TAB>name<TAB>from<TAB>to<TAB>verified<TAB>uses<TAB>failures<TAB>min<TAB>max<TAB>retired<TAB>requires
     /// recall<TAB>character<TAB>recall<TAB>to<TAB>verified<TAB>uses
     /// ```
     ///
@@ -456,7 +472,7 @@ impl PortalStore {
         for e in &self.portals {
             let _ = writeln!(
                 out,
-                "portal\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "portal\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 e.source.word(),
                 opt(e.wcid),
                 escape(&e.name),
@@ -471,6 +487,7 @@ impl PortalStore {
                 e.retired
                     .as_deref()
                     .map_or_else(|| String::from("-"), escape),
+                escape(&requirement::write_field(&e.requires)),
             );
         }
         for r in &self.recalls {
@@ -502,7 +519,7 @@ impl PortalStore {
             .next()
             .and_then(|v| v.parse().ok())
             .ok_or(StoreError::NotAStore)?;
-        if version > STORE_VERSION {
+        if version > READ_VERSION {
             return Err(StoreError::Version(version));
         }
         let mut store = Self::default();
@@ -516,7 +533,11 @@ impl PortalStore {
                 Some("world") => {
                     store.world = unescape(f.get(1).copied().unwrap_or(""));
                 }
-                Some("portal") if f.len() == 12 => {
+                Some("portal")
+                    if f.len() == 12
+                        || (version >= 2 && f.len() == 13)
+                        || (version >= 3 && f.len() == 14) =>
+                {
                     let e = PortalEdge {
                         source: EdgeSource::parse(f[1]).ok_or_else(|| bad("source"))?,
                         wcid: read_opt(f[2]).map_err(|()| bad("wcid"))?,
@@ -535,6 +556,10 @@ impl PortalStore {
                             read_opt(f[10]).map_err(|()| bad("max level"))?,
                         ),
                         retired: (f[11] != "-").then(|| unescape(f[11])),
+                        requires: f
+                            .get(12)
+                            .map(|r| requirement::read_field(&unescape(r)))
+                            .unwrap_or_default(),
                     };
                     store.portals.push(e);
                 }
@@ -645,6 +670,7 @@ mod tests {
             failures: 0,
             levels: (None, None),
             retired: None,
+            requires: Vec::new(),
         }]);
         s.learn_refusal(&sighting(10.0), "Busy", 100);
         assert!(s.routable(None).is_empty(), "premise: refused, retired");
@@ -766,6 +792,7 @@ mod tests {
             failures: 0,
             levels: (None, None),
             retired: None,
+            requires: Vec::new(),
         }]);
         assert_eq!(s.routable(None).len(), 1);
         s.learn_refusal(&sighting(10.0), "You are not powerful enough", 300);
@@ -801,6 +828,7 @@ mod tests {
             failures: 0,
             levels: (Some(10), None),
             retired: None,
+            requires: Vec::new(),
         };
         s.merge([hint.clone()]);
         assert!(
@@ -841,12 +869,45 @@ mod tests {
             300,
         );
         let text = s.to_text();
-        assert!(text.starts_with("dereth-navigation-store\t1\n"), "{text}");
+        assert!(text.starts_with("dereth-navigation-store\t2\n"), "{text}");
         assert_eq!(PortalStore::from_text(&text), Ok(s));
         assert_eq!(
             PortalStore::from_text("dereth-navigation-store\t9\n"),
             Err(StoreError::Version(9))
         );
         assert_eq!(PortalStore::from_text("hello"), Err(StoreError::NotAStore));
+    }
+
+    #[test]
+    fn the_servers_version_3_table_reads_its_requirements_and_a_closed_portal_does_not_route() {
+        let line = |name: &str, x: f32, requires: &str| {
+            format!(
+                "portal\tpublished\t1234\t{name}\t{}\t{}\t0\t0\t0\t-\t-\t-\t{requires}\t0x020001B3 1\n",
+                write_position(&at(0xA9B4_0011, x, 20.0)),
+                write_position(&at(0x0106_0104, 8.0, -60.0)),
+            )
+        };
+        let text = format!(
+            "dereth-navigation-store\t3\nworld\tServer\n{}{}",
+            line("Open", 10.0, "-"),
+            line("Shut", 40.0, "closed;quest Gharu'n"),
+        );
+        let s = PortalStore::from_text(&text).expect("a version 3 table reads");
+        assert_eq!(s.portals.len(), 2);
+        assert_eq!(
+            s.portals[1].requires,
+            vec![Requirement::Closed, Requirement::Quest("Gharu'n".into())]
+        );
+        let routes: Vec<&str> = s
+            .routable(Some(50))
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(routes, ["Open"]);
+        assert_eq!(PortalStore::from_text(&s.to_text()), Ok(s));
+        assert_eq!(
+            PortalStore::from_text("dereth-navigation-store\t4\n"),
+            Err(StoreError::Version(4))
+        );
     }
 }

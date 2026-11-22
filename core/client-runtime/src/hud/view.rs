@@ -138,7 +138,7 @@ impl GameView for HudView<'_> {
             add_page_responses: self.world.book.add_page_responses,
             // The add-page response reads the author inside the
             // handler -- first getting the player id, then querying string property 1
-            // on the local player description -- and `dereth-ui-screens` can see neither, so
+            // on the local player description -- and the retired retail UI could see neither, so
             // both are composed here for the same reason `title` is.
             add_page: self
                 .world
@@ -513,7 +513,7 @@ impl GameView for HudView<'_> {
     }
 
     /// The burden drawn by the backpack meter and text, through
-    /// `pyreal_client_model::inventory::burden::inq_load`.
+    /// `pyreal_rules::burden::inq_load_in`.
     ///
     /// The source is the canonical local-player object row. Before that row exists, the parked
     /// `0x0013` description supplies the attribute cache and `EncumbranceVal`; once registered,
@@ -938,7 +938,7 @@ impl GameView for HudView<'_> {
     ///
     /// The two `experience_to_skill_level` calls are the trained-skill footer's
     /// own, and they are made here rather than in the panel for the same reason the skill's name
-    /// is: `dereth-ui-screens` must not depend on `pyreal-client-model` or on the experience table.
+    /// is: the retired retail UI could not depend on `pyreal-client-model` or on the experience table.
     fn skill_advancement(&self, id: u32) -> Option<pyreal_client_contract::SkillAdvancement> {
         let q = self.player_desc()?;
         let xp = self.hud.xp_table.as_ref()?;
@@ -1393,8 +1393,8 @@ impl GameView for HudView<'_> {
     ///
     /// Everything here uses `pyreal_client_model::housing` to compose payment text, compute both rent-period
     /// boundaries, and construct the warning message, plus the three
-    /// physics-crate calls, which are the reason this crossing exists at all: `dereth-ui-screens`
-    /// has no `pyreal-physics`, and `pyreal-client-model` does not either.
+    /// physics-crate calls, which are the reason this crossing exists at all: the retired retail UI
+    /// had no `pyreal-physics`, and `pyreal-client-model` does not either.
     fn house_data(&self) -> Option<pyreal_client_contract::HouseDataView> {
         use pyreal_client_model::housing;
         let h = self.world.house.as_ref()?;
@@ -1518,7 +1518,7 @@ impl GameView for HudView<'_> {
     }
 
     /// Join the player's contract-tracker rows to the DAT contract table.
-    /// As with the two queries above, this layer resolves the data so `dereth-ui-screens`
+    /// As with the two queries above, this layer resolves the data so the interface
     /// need not access the DAT object.
     ///
     /// Every string here is produced by a `pyreal_client_model::quests` function, so the panel transcribes
@@ -1588,7 +1588,7 @@ impl GameView for HudView<'_> {
     /// The one thing computed here rather than carried is the per-fellow experience share, and it
     /// is computed here for the reason [`Self::skill_advancement`]'s two lookups are: both the
     /// even-split and level-proportional paths read the experience table,
-    /// and `dereth-ui-screens` must not depend on `pyreal-client-model` or on a dat table.
+    /// and the retired retail UI could not depend on `pyreal-client-model` or on a dat table.
     ///
     /// The arithmetic returns zero when sharing is disabled, uses the member count for an even
     /// split, or divides this member's level proportion by the fellowship total. It then multiplies
@@ -2276,9 +2276,7 @@ impl GameView for HudView<'_> {
             patron_title: am::inq::string(p, 0x23),
             // The same key number as `patron_title`, in the **int** table.
             allegiance_followers: am::inq::int(p, 0x23),
-            base_armor: p
-                .base_armor
-                .map(|a| a.map(|v| i32::try_from(v).unwrap_or(i32::MAX))),
+            base_armor: p.base_armor.map(|a| a.map(u32::cast_signed)),
             ratings: [
                 0x133u32, 0x134, 0x139, 0x13A, 0x13B, 0x13C, 0x143, 0x15E, 0x15F, 0x17D, 0x17E,
                 0x182, 0x183,

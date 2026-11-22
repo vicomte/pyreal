@@ -1257,6 +1257,23 @@ impl OverlayWriter {
         Ok(held)
     }
 
+    /// The ids of the records the overlay holds.
+    pub fn record_ids(&self) -> impl Iterator<Item = DataId> + '_ {
+        self.manifest.hashes.keys().map(|&k| DataId(k))
+    }
+
+    /// Lift the overlay's deletion of `id` under `mask`, so the base's records it hid are read
+    /// again: for a deletion a newer overlay of the world no longer makes. Answers whether the
+    /// overlay made it.
+    pub fn lift_tombstone(&mut self, id: u32, mask: u32) -> bool {
+        let lifted = self.tombstones.remove(&(id, mask)).is_some();
+        if lifted && mask != 0 && !self.tombstones.keys().any(|&(_, m)| m == mask) {
+            self.masks.remove(&mask);
+        }
+        self.dirty |= lifted;
+        lifted
+    }
+
     /// Make the overlay's iteration list the world's whole list, `iterations`, reported as it is.
     ///
     /// # Errors

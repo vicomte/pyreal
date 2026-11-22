@@ -142,6 +142,40 @@ fn add_to_bar_puts_the_chosen_spell_at_the_end_of_the_current_spell_bar() {
     );
 }
 
+/// Whether Add to Bar, with the spellbook opened and its first row clicked, asks for Flame Bolt.
+fn flame_bolt_listed_and_added(state: &GameState) -> bool {
+    let mut h = open_on_flame_bolt(state);
+    let l = list(&h);
+    let b = body(&h);
+    let pane = Rect::new(l.right() + 12.0, l.y, b.right() - l.right() - 12.0, l.h);
+    let x = pane.x + 10.0;
+    let bw = (pane.w - 20.0 - 8.0) / 2.0;
+    let add = Rect::new(x, pane.bottom() - 36.0, bw, 28.0);
+    click(&mut h, state, centre(add)).contains(&UiRequest::AddSpellFavorite {
+        spell_id: FLAME_BOLT,
+        index: 2,
+        tab: 0,
+    })
+}
+
+#[test]
+fn a_school_switched_off_in_the_saved_filter_still_lists_that_school_s_spells_on_its_tab() {
+    use pyreal_client_contract::spellbook::{school_mask, DEFAULT_SPELL_FILTERS};
+    let mut state = caster(MAGIC);
+    state.world_services.spell_filters = DEFAULT_SPELL_FILTERS & !school_mask(1);
+    assert!(flame_bolt_listed_and_added(&state));
+}
+
+#[test]
+fn a_world_whose_spellbook_has_no_filter_lists_spells_of_a_level_switched_off() {
+    use pyreal_client_contract::spellbook::{level_mask, DEFAULT_SPELL_FILTERS};
+    let mut state = caster(MAGIC);
+    state.world_services.spell_filters = DEFAULT_SPELL_FILTERS & !level_mask(1);
+    assert!(!flame_bolt_listed_and_added(&state));
+    state.world_services.era_ui.spell_filter_panel = false;
+    assert!(flame_bolt_listed_and_added(&state));
+}
+
 /// The spell-bar requests among `requests`.
 fn favourites(requests: Vec<UiRequest>) -> Vec<UiRequest> {
     requests
@@ -437,32 +471,4 @@ fn the_next_character_s_spells_are_not_spells_learned() {
     });
     h.frame(&second);
     assert!(h.ui.windows.is_open(WindowId::Actions));
-}
-
-/// A spell filter that hides the open tab's school leaves a way to show it again: the empty list
-/// offers it, and a press turns that school back on.
-#[test]
-fn a_school_the_filter_hides_can_be_shown_again_from_its_tab() {
-    use pyreal_client_contract::spellbook::{school_mask, DEFAULT_SPELL_FILTERS};
-    let mut state = caster(MAGIC);
-    state.world_services.spell_filters = DEFAULT_SPELL_FILTERS & !school_mask(1);
-    let mut h = Harness::new(Default::default());
-    h.frame(&state);
-    h.ui.windows.open(WindowId::Actions, 0.0);
-    for _ in 0..12 {
-        h.frame(&state);
-    }
-    let l = list(&h);
-    h.move_to(l.x + 10.0 + 90.0, l.y + 28.0 + 14.0);
-    h.frame(&state);
-    h.press();
-    let mut asked = h.frame(&state).requests;
-    h.release();
-    asked.extend(h.frame(&state).requests);
-    assert!(
-        asked.contains(&UiRequest::SetSpellbookFilter {
-            mask: DEFAULT_SPELL_FILTERS
-        }),
-        "{asked:?}"
-    );
 }

@@ -590,6 +590,7 @@ mod tests {
             failures: 0,
             levels: (None, None),
             retired: None,
+            requires: Vec::new(),
         }
     }
 
@@ -687,6 +688,7 @@ mod tests {
                     failures: 0,
                     levels: (None, None),
                     retired: None,
+                    requires: Vec::new(),
                 })
                 .collect();
             let portals: Vec<&PortalEdge> = edges.iter().collect();
@@ -883,6 +885,7 @@ mod tests {
             failures: 0,
             levels: (None, None),
             retired: None,
+            requires: Vec::new(),
         };
         let config = JourneyConfig::default();
         // The exit portal stands in the other part: no journey without the hand-back.

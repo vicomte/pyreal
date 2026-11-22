@@ -7,6 +7,8 @@ pub struct EraUiFacts {
     pub void_magic: bool,
     pub spell_level_eight: bool,
     pub spell_favorite_tabs: usize,
+    /// The spellbook filters its rows by school and level.
+    pub spell_filter_panel: bool,
 }
 impl Default for EraUiFacts {
     fn default() -> Self {
@@ -21,16 +23,19 @@ impl EraUiFacts {
                 void_magic: true,
                 spell_level_eight: true,
                 spell_favorite_tabs: 8,
+                spell_filter_panel: true,
             },
             EraId::Launch => Self {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
+                spell_filter_panel: false,
             },
             EraId::Infiltration => Self {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
+                spell_filter_panel: true,
             },
         }
     }
@@ -281,6 +286,7 @@ mod tests {
                 void_magic: false,
                 spell_level_eight: false,
                 spell_favorite_tabs: 7,
+                spell_filter_panel: true,
             }
         );
         let mut late = world(EraId::Eor);
@@ -291,6 +297,7 @@ mod tests {
                 void_magic: true,
                 spell_level_eight: true,
                 spell_favorite_tabs: 8,
+                spell_filter_panel: true,
             }
         );
         late.era.announced_features.set("luminance", false);
@@ -322,6 +329,7 @@ mod tests {
             void_magic: false,
             spell_level_eight: true,
             spell_favorite_tabs: 7,
+            spell_filter_panel: true,
         };
         assert!(!facts.spell_filter(0x2000));
         assert!(facts.spell_filter(0x800));
@@ -452,6 +460,7 @@ mod tests {
                 void_magic: false,
                 spell_level_eight: true,
                 spell_favorite_tabs: 7,
+                spell_filter_panel: true,
             }),
             ..Default::default()
         };

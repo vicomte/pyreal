@@ -49,10 +49,7 @@ fn flower_corner(cl: Clump, vertex: u32, t: f32, raise: f32, before: bool) -> Fl
     let up = vec3<f32>(0.0, 0.0, 1.0);
     // Leaning its own way and with the wind, its length kept.
     var reach = fwd * tall * sin(mix(0.05, 0.3, cover_unit(h1))) + cover_tip(root.xy, tall, h0, t);
-    let l = length(reach);
-    if (l > 0.8 * tall) {
-        reach *= 0.8 * tall / l;
-    }
+    reach = cover_hold(reach, tall);
     let rise = sqrt(max(tall * tall - dot(reach, reach), 0.04 * tall * tall));
     let tip = root + vec3<f32>(reach, rise);
     let bend = root + vec3<f32>(reach * 0.2, rise * 0.55);

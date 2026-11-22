@@ -79,6 +79,16 @@ const FROM_POOL: u32 = 2;
 /// within this many metres back from it, starting this far under the pool's surface.
 const HEAD_MOST: f32 = 25.0;
 const HEAD_SINK: f32 = 0.15;
+/// Water less than this many metres under a lip is the pool it leaves, not one it falls into;
+/// nor is water more than `LYING` metres over its ground whose level changes more than
+/// `STILL_RISE` metres across `STILL_STEP` either side.
+const LEFT: f32 = 0.25;
+const LYING: f32 = 2.0;
+const STILL_STEP: f32 = 0.5;
+const STILL_RISE: f32 = 0.25;
+/// Where two lips' water lands further apart in height than this, metres, the foot between them
+/// runs down the hillside: no foam or mist is laid along it.
+const LAND_STEP: f32 = 3.0;
 
 /// Whether an emitter throws a waterfall's water: endless, its large cards thrown along its frame
 /// and pulled hard down.
@@ -140,9 +150,31 @@ fn mid(lo: f32, hi: f32) -> f32 {
     0.5 * (lo + hi)
 }
 
-/// What the land is at a place: its height (the water's where it is water) and whether it is
-/// water, where known.
-type Ground<'a> = &'a dyn Fn(Vec2) -> Option<(f32, bool)>;
+/// What the land is at a place, where known: the ground's height, and the water's level where it
+/// is water.
+type Ground<'a> = &'a dyn Fn(Vec2) -> Option<(f32, Option<f32>)>;
+
+/// The top of the land at `p` for water falling at `under` metres, and whether it is water. The
+/// pool above, carried out over the cliff metres over its slope, is not landed in; water lying on
+/// its slope (retail's painted falls) is.
+fn top(ground: Ground, p: Vec2, under: f32) -> Option<(f32, bool)> {
+    let (g, water) = ground(p)?;
+    let level = |q: Vec2| ground(q).and_then(|l| l.1);
+    let still = |w: f32| {
+        w - g <= LYING
+            || [Vec2::X, Vec2::Y].iter().all(|&d| {
+                match (level(p + d * STILL_STEP), level(p - d * STILL_STEP)) {
+                    (Some(a), Some(b)) => (a - b).abs() <= STILL_RISE,
+                    (Some(a), None) | (None, Some(a)) => (a - w).abs() * 2.0 <= STILL_RISE,
+                    (None, None) => true,
+                }
+            })
+    };
+    Some(match water.filter(|w| *w < under && still(*w)) {
+        Some(w) => (w.max(g), true),
+        None => (g, false),
+    })
+}
 
 /// Where a fall's water ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,13 +187,14 @@ enum Landing {
 /// Seconds the water from `lip` falls before it meets `ground`, and what it meets; retail's
 /// cards' life where the ground is not known.
 fn landing(lip: &Lip, ground: Ground) -> (f32, Landing) {
+    let under = lip.at.z - LEFT;
     let mut clear = false;
     let mut t = 0.0;
     let mut last = 0.0;
     while t < WALK_MOST {
         t += WALK_STEP;
         let p = lip.at_time(t);
-        let Some((g, _)) = ground(p.truncate()) else {
+        let Some((g, _)) = top(ground, p.truncate(), under) else {
             return (lip.life, Landing::Unknown);
         };
         if p.z > g + 0.2 {
@@ -172,13 +205,13 @@ fn landing(lip: &Lip, ground: Ground) -> (f32, Landing) {
             for _ in 0..6 {
                 let m = 0.5 * (lo + hi);
                 let q = lip.at_time(m);
-                if ground(q.truncate()).is_some_and(|(g, _)| q.z > g) {
+                if top(ground, q.truncate(), under).is_some_and(|(g, _)| q.z > g) {
                     lo = m;
                 } else {
                     hi = m;
                 }
             }
-            let wet = ground(lip.at_time(hi).truncate()).is_some_and(|(_, w)| w);
+            let wet = top(ground, lip.at_time(hi).truncate(), under).is_some_and(|(_, w)| w);
             return (hi, if wet { Landing::Water } else { Landing::Ground });
         }
         last = t;
@@ -199,11 +232,11 @@ fn head(lip: &Lip, ground: Ground) -> Vec<(Vec3, f32)> {
             return Vec::new();
         }
         let at = lip.at.truncate() - lip.dir * d;
-        let Some((g, wet)) = ground(at) else {
+        let Some((g, water)) = ground(at) else {
             return Vec::new();
         };
-        if wet {
-            break at.extend(g - HEAD_SINK);
+        if let Some(w) = water {
+            break at.extend(w.max(g) - HEAD_SINK);
         }
         back.push((at, g));
     };
@@ -243,7 +276,7 @@ fn path(lip: &Lip, ground: Ground) -> Walked {
     let mut run = 0.0;
     while run < SLIDE_MOST {
         let next = at.truncate() + lip.dir * SLIDE_STEP;
-        let Some((g, wet)) = ground(next) else {
+        let Some((g, wet)) = top(ground, next, at.z) else {
             break;
         };
         // It stops where the land levels off or climbs.
@@ -578,6 +611,9 @@ pub fn frame_falls(
             }
             let (pa, pb) = (ra[ROWS].0, rb[ROWS].0);
             landed.push(pa);
+            if (pa.z - pb.z).abs() > LAND_STEP {
+                continue;
+            }
             let reach = half * FOAM_REACH;
             let middle = (pa + pb) * 0.5;
             if ea == Landing::Water
@@ -867,9 +903,9 @@ mod tests {
         // A bank as high as the lip behind it, a pool at nought beyond.
         let ground = |p: Vec2| {
             Some(if p.y < 0.5 {
-                (30.5, false)
+                (30.5, None)
             } else {
-                (0.0, true)
+                (0.0, Some(0.0))
             })
         };
         let (t, landed) = landing(&lip, &ground);
@@ -882,6 +918,62 @@ mod tests {
         let unknown = |_: Vec2| None;
         assert_eq!(landing(&lip, &unknown), (1.8, Landing::Unknown));
     }
+
+    /// The land's water carries the pool above out over the brink of a fall: water from a lip
+    /// falls through it, down the cliff to the pool below, and lands on no water higher than the
+    /// lip.
+    #[test]
+    fn water_falls_through_the_pool_it_leaves_to_the_one_below() {
+        let lip = Lip {
+            at: Vec3::new(0.0, 0.0, 29.85),
+            dir: Vec2::Y,
+            speed: 11.25,
+            rise: 0.25,
+            pull: 20.0,
+            life: 3.0,
+            half: 5.0,
+            cell: 0,
+        };
+        // The pool at 30 m reaches 12 m out over a cliff that falls to a pool at nought, at its own
+        // level or sloping down towards the pool below.
+        for slope in [0.0, 0.8] {
+            let ground = move |p: Vec2| {
+                let h = (30.0 - p.y.max(0.0) * 2.5).max(0.0);
+                let band = 30.0 - p.y.max(0.0) * slope;
+                Some((
+                    h,
+                    if p.y < 12.0 {
+                        Some(band)
+                    } else {
+                        (h <= 0.0).then_some(0.0)
+                    },
+                ))
+            };
+            let (t, landed) = landing(&lip, &ground);
+            assert_eq!(landed, Landing::Water);
+            assert!(
+                lip.at_time(t).z.abs() < 0.3,
+                "{slope}: lands at {:?}",
+                lip.at_time(t)
+            );
+            let (points, end, _) = path(&lip, &ground);
+            assert_eq!(end, Landing::Water);
+            assert!(points[points.len() - 1].0.z.abs() < 0.3);
+        }
+        // A slope painted as water lying on it is landed on where the water meets it.
+        let painted = |p: Vec2| {
+            let h = (30.0 - p.y.max(0.0) * 0.8).max(0.0);
+            Some((h, Some(h)))
+        };
+        let (t, landed) = landing(&lip, &painted);
+        assert_eq!(landed, Landing::Water);
+        let at = lip.at_time(t);
+        assert!(
+            at.z > 1.0 && (at.z - painted(at.truncate()).unwrap().0).abs() < 0.3,
+            "{at}"
+        );
+    }
+
     /// Water that lands on the slope runs on down it to the pool.
     #[test]
     fn water_landing_on_the_slope_runs_down_it_to_the_pool() {
@@ -898,7 +990,7 @@ mod tests {
         // A slope falling a metre a metre from the lip to a pool at nought, 30 m out.
         let ground = |p: Vec2| {
             let h = 30.0 - p.y.max(0.0) - 0.5;
-            Some(if h <= 0.0 { (0.0, true) } else { (h, false) })
+            Some((h, (h <= 0.0).then_some(0.0)))
         };
         let (points, end, from_pool) = path(&lip, &ground);
         assert!(!from_pool);
@@ -927,11 +1019,11 @@ mod tests {
         // A pool at 30 m behind y = -8, a dry beach at 30.2 m up to the lip, a drop to nought.
         let ground = |p: Vec2| {
             Some(if p.y < -8.0 {
-                (30.0, true)
+                (29.0, Some(30.0))
             } else if p.y < 0.5 {
-                (30.2, false)
+                (30.2, None)
             } else {
-                (0.0, true)
+                (0.0, Some(0.0))
             })
         };
         let (points, end, from_pool) = path(&lip, &ground);
@@ -945,7 +1037,7 @@ mod tests {
             .windows(2)
             .all(|w| w[1].1 > w[0].1 && w[1].0.z >= w[0].0.z - 1e-4));
         assert!(to_lip.iter().all(|p| p.0.z >= 30.0 - 0.2));
-        let far = |_: Vec2| Some((30.2, false));
+        let far = |_: Vec2| Some((30.2, None));
         assert!(head(&lip, &far).is_empty());
     }
 }

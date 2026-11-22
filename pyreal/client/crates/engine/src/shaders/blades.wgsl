@@ -111,7 +111,7 @@ fn blades(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lo
         let tall_here = grows.y / grows.x;
         let dry_here = grows.z / grows.x;
         let w = cover_world(p);
-        var share = grows.x * patches(w, patchy) * keep;
+        var share = grows.x * patches(w, patchy) * keep * sand_bare(vec4<u32>(a.word, b.word, d.word, e.word), f, p);
         // Off the road, and thinning toward a building's walls.
         let roads = on_road(a.word) | (on_road(b.word) << 1u) | (on_road(e.word) << 2u) | (on_road(d.word) << 3u);
         let road = road_keep(roads, f, p);

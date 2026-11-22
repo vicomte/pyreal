@@ -214,10 +214,7 @@ fn blade_corner(cl: Clump, vertex: u32, t: f32, raise: f32, before: bool) -> Bla
     let tall = max(cl.at.w * raise * mix(0.6, 1.15, cover_unit(h3)), 0.01);
     let lean = mix(0.15, 0.6, cover_unit(cover_mix(h3)));
     var reach = fwd * tall * sin(lean) + cover_tip(root.xy, tall, hb, t);
-    let l = length(reach);
-    if (l > 0.8 * tall) {
-        reach *= 0.8 * tall / l;
-    }
+    reach = cover_hold(reach, tall);
     // A curve from the root to the tip, its length kept: stiff at the root, bent at the tip.
     let rise = sqrt(max(tall * tall - dot(reach, reach), 0.04 * tall * tall));
     let tip = root + vec3<f32>(reach, rise);

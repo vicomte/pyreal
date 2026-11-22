@@ -89,7 +89,8 @@ struct POut {
     @location(0) at: vec2<f32>,
     @location(1) fade: f32,
     // A flake's: half its smear's length and its radius, pixels; how soft its edge is; how
-    // brightly the sun shines through it.
+    // brightly the sun shines through it. A drop's: half its width drawn and its core's width,
+    // pixels, and its core's alpha.
     @location(2) @interpolate(flat) shape: vec4<f32>,
 }
 
@@ -223,7 +224,6 @@ fn vs_precip(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> 
             vec2<f32>(0.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
             vec2<f32>(0.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
         )[v % 6u];
-        let width = max(precip.c.y, metre_px * 1.2);
         let b = frame.view_proj * vec4<f32>(p - vel * precip.c.x, 1.0);
         // A streak reaching behind the eye would smear across the view: left out.
         if (b.w <= 0.05) {
@@ -235,14 +235,19 @@ fn vs_precip(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> 
         if (dot(dir, dir) < 1.0) {
             dir = vec2<f32>(0.0, -1.0);
         }
-        let across = normalize(vec2<f32>(-dir.y, dir.x)) * px * (width / metre_px) * 0.5;
+        // Its core at least a pixel across, drawn a pixel wider each side and filtered there, so
+        // a thin streak stays one even line at any slant.
+        let true_px = precip.c.y / max(metre_px, 1e-6);
+        let core = max(true_px, 1.0);
+        let half_px = core * 0.5 + 1.0;
+        let across = normalize(vec2<f32>(-dir.y, dir.x)) * px * half_px;
         let s = mix(sa, sb, corner.x) + across * corner.y;
         let w = mix(a.w, b.w, corner.x);
         let z = mix(a.z / a.w, b.z / b.w, corner.x);
         out.clip = vec4<f32>(s * w, z * w, w);
         out.at = vec2<f32>(corner.x * 2.0 - 1.0, corner.y);
-        // A streak thinner than a pixel keeps its light, spread thinner.
-        fade *= min(1.0, width / max(metre_px, 1e-4));
+        // Its light across it as before: a thin streak's spread over the pixel it covers.
+        out.shape = vec4<f32>(half_px, core, 0.275 * max(true_px, 1.2) / core, 0.0);
     }
     out.fade = fade;
     return out;
@@ -269,7 +274,10 @@ fn fs_precip(in: POut) -> PrecipOut {
         // Lit from all round, the bright snow below too.
         colour = frame.sky_light.rgb * 1.6 + sun * (0.35 + in.shape.w);
     } else {
-        alpha = (1.0 - abs(in.at.y)) * (1.0 - smoothstep(0.6, 1.0, abs(in.at.x))) * 0.55;
+        // The core's cover of each pixel, its edges a pixel's filter wide.
+        let off = abs(in.at.y) * in.shape.x;
+        let cover = clamp(in.shape.y * 0.5 + 0.5 - off, 0.0, 1.0);
+        alpha = cover * (1.0 - smoothstep(0.6, 1.0, abs(in.at.x))) * in.shape.z;
         colour = frame.sky_light.rgb * 1.3 + sun * 0.06;
     }
     alpha *= in.fade;

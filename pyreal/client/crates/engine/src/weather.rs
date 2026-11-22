@@ -56,9 +56,12 @@ pub const SNOW_NEAR_FLAKES: u32 = 7_000;
 /// How fast they fall, metres a second.
 pub const RAIN_SPEED: f32 = 9.0;
 pub const SNOW_SPEED: f32 = 1.0;
-/// How hard a storm's gale drives the rain sideways, metres a second: about 18 degrees off the
+/// How hard a storm's gale drives the rain sideways, metres a second: about 26 degrees off the
 /// fall.
-pub const STORM_PUSH: f32 = 3.6;
+pub const STORM_PUSH: f32 = 5.6;
+/// How hard a light rain drifts with the breeze, metres a second per unit of breeze: about 13
+/// degrees off the fall in a fresh breeze.
+pub const RAIN_DRIFT: f32 = 3.8;
 /// How hard a blizzard drives the snow, metres a second.
 pub const BLIZZARD_PUSH: f32 = 8.0;
 /// How long fresh snow takes to cover the ground while it snows, and to melt once it stops,
@@ -548,6 +551,17 @@ impl Weather {
         ) * f64::from(dt);
     }
 
+    /// The way the rain or snow is driven now, east and north, whichever falls more.
+    #[must_use]
+    pub fn blown_way(&self) -> Option<glam::Vec2> {
+        let push = if self.snow > self.rain {
+            self.snow_push
+        } else {
+            self.push
+        };
+        push.try_normalize()
+    }
+
     /// A storm's gust now, -1 to 1.
     #[must_use]
     pub fn gust(&self) -> f32 {
@@ -759,11 +773,11 @@ pub fn rain_wind(clock: f64, breeze: glam::Vec3, storm: f32) -> (glam::Vec2, f32
     use pyreal_primitives::num::math::{atan2f, cosf, sinf};
     #[allow(clippy::cast_possible_truncation)]
     let t = (clock % 100_000.0) as f32;
-    let calm = glam::Vec2::new(breeze.x, breeze.y) * 2.5;
+    let calm = glam::Vec2::new(breeze.x, breeze.y) * RAIN_DRIFT;
     let heading =
         atan2f(breeze.y, breeze.x) + 0.08 * sinf(t * 0.021) + 0.04 * sinf(t * 0.053 + 2.0);
     let swell = 0.6 * sinf(t * 0.11 + 0.7) + 0.4 * sinf(t * 0.047 + 1.9);
-    let gale = glam::Vec2::new(cosf(heading), sinf(heading)) * STORM_PUSH * (1.0 + 0.08 * swell);
+    let gale = glam::Vec2::new(cosf(heading), sinf(heading)) * STORM_PUSH * (1.0 + 0.12 * swell);
     let gust = 0.6 * sinf(t * 0.37 + 0.3) + 0.4 * sinf(t * 0.83 + 1.1);
     (calm.lerp(gale, storm.clamp(0.0, 1.0)), gust)
 }

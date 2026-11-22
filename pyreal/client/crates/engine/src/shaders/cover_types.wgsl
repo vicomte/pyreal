@@ -87,7 +87,6 @@ fn cover_world(p: vec2<f32>) -> vec2<f32> {
 fn cover_tip(foot: vec2<f32>, tall: f32, seed: u32, t: f32) -> vec2<f32> {
     let strength = length(frame.wind.xy);
     let along = select(vec2<f32>(0.82, 0.57), frame.wind.xy / max(strength, 1e-4), strength > 1e-4);
-    let side = vec2<f32>(-along.y, along.x);
     let h0 = cover_mix(seed);
     let h1 = cover_mix(h0);
     let h2 = cover_mix(h1);
@@ -105,16 +104,31 @@ fn cover_tip(foot: vec2<f32>, tall: f32, seed: u32, t: f32) -> vec2<f32> {
         + 0.4 * sin(t * turns.y * rate + cover_unit(h2 ^ h0) * COVER_TAU);
     let flutter = shake * (0.025 + 0.04 * gust) * min(strength * 1.6, 1.0);
     let eddy = (n.y - 0.5) * 0.12 * strength;
-    return (frame.wind.xy * ((0.3 + 0.24 * gust) * swell + 0.5 * flutter) + side * (flutter + eddy)
-        + lean) * tall;
+    // A storm leans it steadily the way the rain is driven, about half its sway again.
+    let way = gale_way(along);
+    let storm = frame.gale.x * (0.16 + 0.14 * gust) * swell;
+    return (way * strength * ((0.3 + 0.24 * gust) * swell + 0.5 * flutter + storm)
+        + vec2<f32>(-way.y, way.x) * (flutter + eddy) + lean) * tall;
+}
+
+// A stem `tall` metres high blown `tip` held short of lying flat. In a storm it gives more slowly
+// as it nears flat, so it still sways while it leans.
+fn cover_hold(tip: vec2<f32>, tall: f32) -> vec2<f32> {
+    let most = 0.8 * tall;
+    let l = length(tip);
+    if (frame.gale.x > 0.0) {
+        let knee = mix(most, 0.5 * tall, frame.gale.x);
+        let room = max(most - knee, 1e-4);
+        let held = select(l, knee + room * tanh((l - knee) / room), l > knee);
+        return tip * (min(held, most) / max(l, 1e-6));
+    }
+    return select(tip, tip * (most / max(l, 1e-6)), l > most);
 }
 
 // How far a point `rise` (0 the foot, 1 the top) up a stem `tall` metres high moves when its tip
 // is blown `tip`: bent on a curve stiff at the foot, its length kept.
 fn cover_bend(tip: vec2<f32>, rise: f32, tall: f32) -> vec3<f32> {
-    let most = 0.8 * tall;
-    let l = length(tip);
-    let d = select(tip, tip * (most / max(l, 1e-6)), l > most);
+    let d = cover_hold(tip, tall);
     let r = clamp(rise, 0.0, 1.0);
     let up = sqrt(max(tall * tall - dot(d, d), 0.0)) - tall;
     return vec3<f32>(d * (0.3 * r + 0.7 * r * r), up * r * r);

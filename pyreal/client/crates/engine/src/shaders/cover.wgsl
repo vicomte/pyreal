@@ -148,6 +148,19 @@ fn grows_on(k: CoverKind, word: u32) -> f32 {
     return select(on, on * SAND_SHARE, t >= 10u && t <= 12u);
 }
 
+// 1 on sand (yellow, grey, rock-strewn), whose pictures retail lays over the grass beside it.
+fn sand_at(word: u32) -> f32 {
+    let t = word & LW_TYPE;
+    return select(0.0, 1.0, t >= 10u && t <= 12u);
+}
+
+// The share of plants kept at render-space `p`, `f` across a cell of corner words `w`: none where
+// retail lays the sand's picture over the grass.
+fn sand_bare(w: vec4<u32>, f: vec2<f32>, p: vec2<f32>) -> f32 {
+    let sand = mix(mix(sand_at(w.x), sand_at(w.y), f.x), mix(sand_at(w.z), sand_at(w.w), f.x), f.y);
+    return 1.0 - smoothstep(0.1, 0.35, sand + (land_noise(p + vec2<f32>(9.3, 31.7), 3.0) - 0.5) * 0.15);
+}
+
 fn on_road(word: u32) -> u32 {
     return u32(((word >> LW_ROAD_SHIFT) & 3u) != 0u);
 }
@@ -261,9 +274,10 @@ fn place(@builtin(workgroup_id) wg: vec3<u32>, @builtin(num_workgroups) groups: 
     let clearing = smoothstep(0.3, 3.0, gap) * object_keep(c, p);
     let share = mix(mix(grows_on(k, a.word), grows_on(k, b.word), f.x),
                     mix(grows_on(k, d.word), grows_on(k, e.word), f.x), f.y) * clearing;
+    let bare = sand_bare(vec4<u32>(a.word, b.word, d.word, e.word), f, p);
     // The edge of what it grows on wanders a little, the same each visit.
     let wander = (land_noise(p, 7.0) - 0.5) * 0.5 * min(share * 4.0, 1.0);
-    var keep = share + wander * clearing;
+    var keep = (share + wander * clearing) * bare;
     if (keep <= h) {
         return;
     }

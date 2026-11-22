@@ -21,6 +21,7 @@ fixtures/** -text
 *.jpeg binary
 *.gif binary
 *.bmp binary
+*.tiff binary
 *.ico binary
 *.pgm binary
 *.mp4 binary

@@ -14,7 +14,7 @@
 //! | system | the release file |
 //! |---|---|
 //! | Windows | `pyreal-<v>-windows-x86_64.zip`: `Pyreal.exe`, `pyreal-plugin.exe` and the notices, under `pyreal-<v>/` |
-//! | macOS | `Pyreal-<v>-macos-<arch>.dmg`: `Pyreal.app` beside a link to Applications, the client and the tool in `Contents/MacOS`, the notices in `Contents/Resources` |
+//! | macOS | `Pyreal-<v>-macos-<arch>.dmg`: `Pyreal.app` beside a link to Applications in a laid-out window, the client and the tool in `Contents/MacOS`, the notices in `Contents/Resources` |
 //! | Linux | `pyreal-<v>-linux-x86_64.tar.gz`: `pyreal`, `pyreal-plugin` and the notices, under `pyreal-<v>/` |
 //!
 //! The plugin author's tool is also a file of its own for the same platform
@@ -31,7 +31,8 @@
 //! **The base art pack.** `--base-pack <file>` ships it as [`BASE_PACK`] (beside the client, in
 //! `Contents/Resources` on macOS), which the client always draws, under the pack the player
 //! chooses. Without it the client draws without one. It is the one data file the deny scan lets
-//! in.
+//! in, and only when its header is a packed art pack's. It has no size cap: it is as large as the
+//! art needs.
 //!
 //! **macOS:** the bundle is laid out as `bundle-macos` lays it out ([`crate::bundle::lay_out`])
 //! and signed with the identity in `APPLE_SIGNING_IDENTITY`, under the hardened runtime, or ad
@@ -121,11 +122,11 @@ pub const HORIZON_FONT_LICENCES: &str = "pyreal/client/crates/horizon/fonts/lice
 /// The notices every package carries beside its programs.
 pub const NOTICES: &[&str] = &["LICENSE", "NOTICE.txt", "THIRD-PARTY-LICENSES.html"];
 
-/// No single file of a package is larger than this: the base art pack is the largest. The smallest
-/// retail data file is hundreds of megabytes more.
+/// No file of a package but the base pack is larger than this. The programs are tens of megabytes,
+/// so a larger file is something that should not be there.
 pub const FILE_CAP: u64 = 320 << 20;
 
-/// No package holds more than this in all.
+/// No package holds more than this in all, the base pack aside, for the same reason.
 pub const TOTAL_CAP: u64 = 512 << 20;
 
 /// The base art pack's name in a package, whatever `--base-pack` names.
@@ -200,10 +201,24 @@ fn notices_in(target: Target) -> &'static str {
     }
 }
 
-/// The base pack at `path`, checked: a file, and not empty.
+/// The base pack at `path`, checked: a file, not empty, and a packed art pack by its header.
 pub fn check_base_pack(path: &Path) -> Result<(), String> {
     match std::fs::metadata(path) {
-        Ok(m) if m.is_file() && m.len() > 0 => Ok(()),
+        Ok(m) if m.is_file() && m.len() > 0 => {
+            use std::io::Read;
+            let mut head = Vec::new();
+            std::fs::File::open(path)
+                .and_then(|f| f.take(guard::HEAD_LEN as u64).read_to_end(&mut head))
+                .map_err(|e| format!("the base pack {}: {e}", path.display()))?;
+            if guard::is_packed_art_pack(&head) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the base pack {} is not a packed art pack",
+                    path.display()
+                ))
+            }
+        }
         Ok(m) if m.is_file() => Err(format!("the base pack {} is empty", path.display())),
         Ok(_) => Err(format!("the base pack {} is not a file", path.display())),
         Err(e) => Err(format!("the base pack {}: {e}", path.display())),
@@ -521,6 +536,7 @@ pub fn build_env(ws: &Path, facts: &BuildFacts, target: Target) -> Vec<(String, 
         ("CARGO_ENCODED_RUSTFLAGS".to_owned(), flags.join("\u{1f}")),
         ("SOURCE_DATE_EPOCH".to_owned(), facts.epoch.to_string()),
         ("PYREAL_BUILD_COMMIT".to_owned(), facts.commit.clone()),
+        (super::build_hash::ENV.to_owned(), facts.hash.clone()),
         ("PYREAL_BUILD_TARGET".to_owned(), target.triple.to_owned()),
         (SOURCE_URL_ENV.to_owned(), facts.source_url.clone()),
         ("LUAU_CXXFLAGS".to_owned(), LUAU_RELEASE_FLAGS.to_owned()),
@@ -900,7 +916,14 @@ impl Job<'_> {
                 .ok_or_else(|| format!("{} has no parent folder", dir.display()))?;
             let identity = dmg::signing_identity();
             let notary = dmg::Notary::from_env()?;
-            dmg::make(folder, &path, identity.as_deref(), notary.as_ref())?;
+            dmg::make(
+                &self.stage.join("dmg"),
+                folder,
+                root,
+                &path,
+                identity.as_deref(),
+                notary.as_ref(),
+            )?;
             dmg::check(
                 self.stage, &path, root, &required, &optional, FILE_CAP, TOTAL_CAP,
             )?;

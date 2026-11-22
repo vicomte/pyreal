@@ -12,20 +12,20 @@
 //! ```text
 //! engine-view --dat-dir <dir> [--later-dat-dir <dir>] [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
 //!             [--report "<report line>" | --library <file> --name <place>]
-//!             [--objects SETUP,BLOCK,X,Y;...]
+//!             [--objects SETUP,BLOCK,X,Y[,Z];...] [--statics]
 //!             [--time 0.5] [--size 1280x720] [--radius 4] [--fov DEG] [--exposure 1.0]
 //!             [--ev STOPS] [--retail] [--no-bloom] [--rain] [--storm] [--snow] [--blizzard] [--no-shadows] [--shadow-distance M] [--no-lamps] [--no-ao] [--clouds 0-3]
-//!             [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx]
+//!             [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--light-reach 1.5] [--tone neutral|aces|agx]
 //!             [--no-surfaces] [--no-relief] [--relief 0-3] [--no-height-blend] [--no-triplanar] [--no-detail]
-//!             [--no-macro]
+//!             [--no-macro] [--no-distant] [--fog-density 0.4] [--smoothing 0-3]
 //!             [--day-group N] [--clock SECONDS] [--frames 8] [--out place.png] [--window]
-//!             [--walk] [--no-cut] [--no-hiz] [--lod-bias 1.0] [--cards-from 1.0] [--far BLOCKS] [--fog-end METRES]
-//!             [--object SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]]] [--character male|female[@X,Y[,Z]]]
+//!             [--studio] [--walk] [--no-cut] [--no-hiz] [--lod-bias 1.0] [--lod-pixels 0] [--no-caster-cull] [--particles-every-pixel] [--cards-from 1.0] [--far BLOCKS] [--fog-end METRES]
+//!             [--object SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]][;KEY=VALUE]...] [--character male|female[@X,Y[,Z]][;KEY=VALUE]...]
 //!             [--stance HandCombat] [--motion WalkForward] [--time-in-anim SECONDS] [--facing DEG]
 //!             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
 //!             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0]
 //!             [--budget MS] [--ui overlay.png] [--select X,Y] [--hover X,Y]
-//!             [--no-particles] [--no-flames] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--retail-fountains] [--no-wind] [--stride VX,VY]
+//!             [--no-particles] [--no-flames] [--no-face-detail] [--no-weather] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--retail-fountains] [--no-wind] [--stride VX,VY]
 //!             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
 //! ```
 //!
@@ -53,8 +53,12 @@
 //! dresses one) stand where they are put, block-local in the view's block, or in a row in front
 //! of the camera, facing it (or `--facing`, a compass heading), in `--stance` doing `--motion`,
 //! `--time-in-anim` seconds into it; `--dress` (repeated, each worn over the last), `--wear` (the
-//! items it wears, which cover its own dress and leave the setup's own parts elsewhere) and
-//! `--translucency` describe them as a server describes a creature.
+//! items it wears, which cover its own dress and leave the setup's own parts elsewhere, or go over a
+//! character's creation dress) and
+//! `--translucency` describe them as a server describes a creature. A body's own `;KEY=VALUE`
+//! settings (`stance`, `motion`, `facing`, `time`, `stride`, `dress`, `wear`, `script`,
+//! `translucency`, and `lift`, metres over the ground it keeps as it walks) win over those flags
+//! for it alone.
 
 mod bodies;
 
@@ -68,7 +72,9 @@ use pyreal_dat::RetailDatStore;
 use pyreal_engine::body::Body;
 use pyreal_engine::cells::OUTSIDE;
 use pyreal_engine::renderer::{Calibration, Exposure, ToneCurve};
-use pyreal_engine::world::{ground_height, load_area, load_far, load_far_trees, Area, AssetLoader};
+use pyreal_engine::world::{
+    ground_height, load_area_smoothed, load_far, load_far_trees, Area, AssetLoader,
+};
 use pyreal_engine::{Camera, Engine, Gpu, PoolSizes, SkyLight};
 use pyreal_primitives::DataId;
 
@@ -115,7 +121,11 @@ struct Args {
     no_cover: bool,
     /// The surfaces' depth (5h), each part on or off.
     surfaces: pyreal_engine::renderer::Surfaces,
+    fog_density: Option<f32>,
+    smoothing: u8,
     cover_reach: f32,
+    /// How far lamps are lit, as a multiple of the renderer's distance (Light Draw Distance).
+    light_reach: Option<f32>,
     no_lamps: bool,
     no_ao: bool,
     /// Cloud Detail: 0 the dats' flat deck, 1 to 3 the volumetric clouds.
@@ -140,7 +150,7 @@ struct Args {
     /// The dat cell a report's camera stood in.
     cell: Option<u32>,
     /// Objects to place: setup, block and block-local x and y.
-    objects: Vec<(u32, u16, f32, f32)>,
+    objects: Vec<Placed>,
     /// Print every cell the portal walk saw, with its screen rectangle.
     walk: bool,
     /// Leave the ground whole inside rooms.
@@ -153,6 +163,12 @@ struct Args {
     tod_ground: bool,
     /// How far each degrade level is kept, as a multiple of the dats' distances (0: never degrade).
     lod_bias: f32,
+    /// The drawn pixels a level's mean triangle edge must cover (the renderer's own when `None`).
+    lod_pixels: Option<f32>,
+    /// Every caster drawn into every cascade, whether or not its shadow can reach the view.
+    no_caster_cull: bool,
+    /// Blended particles lit at every pixel, as before they were lit once a particle.
+    particles_every_pixel: bool,
     /// Where the pack's levels of pictures take over (`AssetLoader::cards_from`); zero for never.
     cards_from: Option<f32>,
     /// Blocks out the far terrain reaches; zero for none.
@@ -198,6 +214,10 @@ struct Args {
     retail_fountains: bool,
     /// No wind: the grass, shrubs and trees stand still.
     no_wind: bool,
+    /// `--objects` setups placed as the world places its statics, not stood up as bodies.
+    statics: bool,
+    /// A neutral stage: no world, a flat grey floor and a low grey sun over the camera's left shoulder.
+    studio: bool,
     /// Every body walked at this velocity, metres a second east and north.
     stride: Option<(f32, f32)>,
     /// The camera turned this many degrees a frame, clockwise.
@@ -207,6 +227,14 @@ struct Args {
     orbit: f32,
     /// Seconds into portal space to draw in place of the view, in the first portal's colour.
     tunnel: Option<f32>,
+    /// The bodies drawn alone as character creation's preview draws them.
+    preview: bool,
+    /// Faces given their detail off the frame, as the game gives it, frame by frame.
+    faces_async: bool,
+    /// Players' heads drawn as the dats draw them, with no face detail or modelled hair.
+    no_face_detail: bool,
+    /// Pyreal's weather off (Weather Effects): its rain and snow, fresh snow cover and footprints.
+    no_weather: bool,
     /// How much of Rez'arel's and Alb'arel's faces are lit, 0 new to 1 full.
     moon_phase: Option<(f32, f32)>,
     /// Every this many frames written beside `--out`, numbered.
@@ -272,7 +300,10 @@ impl Default for Args {
             water_detail: 1,
             no_cover: false,
             surfaces: pyreal_engine::renderer::Surfaces::ALL,
+            fog_density: None,
+            smoothing: 0,
             cover_reach: 1.0,
+            light_reach: None,
             no_lamps: false,
             no_ao: false,
             clouds: 2,
@@ -296,6 +327,9 @@ impl Default for Args {
             no_high_res: false,
             tod_ground: false,
             lod_bias: 1.0,
+            lod_pixels: None,
+            no_caster_cull: false,
+            particles_every_pixel: false,
             cards_from: None,
             far: 24,
             fog_end: None,
@@ -319,10 +353,16 @@ impl Default for Args {
             retail_falls: false,
             retail_fountains: false,
             no_wind: false,
+            statics: false,
+            studio: false,
             stride: None,
             turn: 0.0,
             orbit: 0.0,
             tunnel: None,
+            preview: false,
+            faces_async: false,
+            no_face_detail: false,
+            no_weather: false,
             moon_phase: None,
             save_every: 0,
             set_time: None,
@@ -356,17 +396,21 @@ fn hex_u32(s: &str) -> Result<u32, String> {
     u32::from_str_radix(t, 16).map_err(|e| format!("{s}: {e}"))
 }
 
-/// `setup,block,x,y` entries, `;` between them.
-fn objects(spec: &str) -> Result<Vec<(u32, u16, f32, f32)>, String> {
+/// An object placed by `--objects`: its id, its block, where in it, and its height if given.
+type Placed = (u32, u16, f32, f32, Option<f32>);
+
+/// `setup,block,x,y[,z]` entries, `;` between them; with no height an object stands on the ground.
+fn objects(spec: &str) -> Result<Vec<Placed>, String> {
     spec.split(';')
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .map(|e| {
             let f: Vec<&str> = e.split(',').collect();
-            if f.len() != 4 {
-                return Err(format!("{e}: an object is setup,block,x,y"));
+            if f.len() != 4 && f.len() != 5 {
+                return Err(format!("{e}: an object is setup,block,x,y[,z]"));
             }
-            Ok((hex_u32(f[0])?, hex_u16(f[1])?, num(f[2])?, num(f[3])?))
+            let z = f.get(4).map(|z| num(z)).transpose()?;
+            Ok((hex_u32(f[0])?, hex_u16(f[1])?, num(f[2])?, num(f[3])?, z))
         })
         .collect()
 }
@@ -421,18 +465,18 @@ fn apply_report(a: &mut Args, line: &str) -> Result<(), String> {
 const USAGE: &str =
     "engine-view --dat-dir <dir> [--later-dat-dir <dir>] [--overlay <dir>] [--block 0xA9B4 --at X,Y[,Z] --heading DEG --pitch DEG]
             [--report \"<report line>\" | --library <file> --name <place>]
-            [--objects SETUP,BLOCK,X,Y;...] [--art-pack <file>] [--base-pack <file>]
-            [--object SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]]] [--character male|female[@X,Y[,Z]]]
+            [--objects SETUP,BLOCK,X,Y[,Z];...] [--statics] [--art-pack <file>] [--base-pack <file>]
+            [--object SETUP[/MOTION_TABLE][*SCALE][@X,Y[,Z]][;KEY=VALUE]...] [--character male|female[@X,Y[,Z]][;KEY=VALUE]...]
             [--stance HandCombat] [--motion WalkForward] [--time-in-anim SECONDS] [--facing DEG]
             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
             [--time 0.5] [--size 1280x720] [--radius 4] [--fov DEG] [--exposure 1.0]
             [--ev STOPS] [--retail] [--no-bloom] [--rain] [--storm] [--snow] [--blizzard] [--no-shadows] [--shadow-distance M] [--no-lamps] [--no-ao] [--clouds 0-3]
-            [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--tone neutral|aces|agx] [--day-group N] [--clock SECONDS] [--frames 8]
+            [--no-bounce] [--no-lamp-rays] [--god-rays 0-3] [--no-water] [--water-detail 0-2] [--no-cover] [--cover-reach 1.0] [--light-reach 1.5] [--tone neutral|aces|agx] [--day-group N] [--clock SECONDS] [--frames 8]
             [--no-surfaces] [--no-relief] [--relief 0-3] [--no-height-blend] [--no-triplanar] [--no-detail] [--no-macro]
-            [--out place.png] [--window] [--walk] [--no-cut] [--no-hiz] [--no-high-res] [--ground-coloring classic|tod] [--lod-bias 1.0] [--cards-from 1.0]
+            [--out place.png] [--window] [--studio] [--walk] [--no-cut] [--no-hiz] [--no-high-res] [--ground-coloring classic|tod] [--lod-bias 1.0] [--lod-pixels 0] [--no-caster-cull] [--particles-every-pixel] [--cards-from 1.0]
             [--far BLOCKS] [--fog-end METRES]
             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0] [--budget MS]
-            [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--oit]
+            [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--no-face-detail] [--no-weather] [--oit]
             [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--no-wind] [--stride VX,VY]
             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]";
 
@@ -505,7 +549,11 @@ fn parse() -> Result<Args, String> {
             "--no-triplanar" => a.surfaces.triplanar = false,
             "--no-detail" => a.surfaces.detail = false,
             "--no-macro" => a.surfaces.macro_variation = false,
+            "--smoothing" => a.smoothing = val()?.parse().map_err(|_| "--smoothing")?,
+            "--fog-density" => a.fog_density = Some(num(&val()?)?),
+            "--no-distant" => a.surfaces.distant = false,
             "--cover-reach" => a.cover_reach = num(&val()?)?,
+            "--light-reach" => a.light_reach = Some(num(&val()?)?),
             "--no-lamps" => a.no_lamps = true,
             "--no-ao" => a.no_ao = true,
             "--clouds" => a.clouds = val()?.parse().map_err(|_| "--clouds")?,
@@ -537,6 +585,9 @@ fn parse() -> Result<Args, String> {
                 }
             }
             "--lod-bias" => a.lod_bias = num(&val()?)?,
+            "--lod-pixels" => a.lod_pixels = Some(num(&val()?)?),
+            "--no-caster-cull" => a.no_caster_cull = true,
+            "--particles-every-pixel" => a.particles_every_pixel = true,
             "--cards-from" => a.cards_from = Some(num(&val()?)?),
             "--far" => a.far = val()?.parse().map_err(|_| "--far")?,
             "--fog-end" => a.fog_end = Some(num(&val()?)?),
@@ -567,6 +618,8 @@ fn parse() -> Result<Args, String> {
             "--retail-falls" => a.retail_falls = true,
             "--retail-fountains" => a.retail_fountains = true,
             "--no-wind" => a.no_wind = true,
+            "--statics" => a.statics = true,
+            "--studio" => a.studio = true,
             "--stride" => {
                 let v = val()?;
                 let (x, y) = v.split_once(',').ok_or("--stride takes VX,VY")?;
@@ -575,6 +628,10 @@ fn parse() -> Result<Args, String> {
             "--turn" => a.turn = num(&val()?)?,
             "--orbit" => a.orbit = num(&val()?)?,
             "--tunnel" => a.tunnel = Some(num(&val()?)?),
+            "--preview" => a.preview = true,
+            "--faces-async" => a.faces_async = true,
+            "--no-face-detail" => a.no_face_detail = true,
+            "--no-weather" => a.no_weather = true,
             "--moon-phase" => {
                 let v = val()?;
                 let (r, l) = v.split_once(',').ok_or("--moon-phase takes REZ,ALB")?;
@@ -724,6 +781,18 @@ fn view(a: &Args) -> Result<View, String> {
     if let Some(end) = a.fog_end {
         light.fog_end = end;
     }
+    if a.studio {
+        light.sun_dir = studio_sun(&camera);
+        // Neutral: each light grey at its own brightness, so pictures keep their colours.
+        let grey = |c: Vec3| Vec3::splat(c.dot(Vec3::new(0.2126, 0.7152, 0.0722)));
+        light.sun = grey(light.sun);
+        light.ambient = grey(light.ambient);
+        light.sun_light = grey(light.sun_light);
+        light.sky_light = grey(light.sky_light);
+        light.fog = grey(light.fog);
+        light.fog_start = 1.0e5;
+        light.fog_end = 2.0e5;
+    }
     println!(
         "camera {:#06X} {:.2}, yaw {:.3}, pitch {:.3}, vertical field of view {:.1} degrees",
         a.block,
@@ -747,7 +816,10 @@ fn view(a: &Args) -> Result<View, String> {
 /// The frames a headless run draws its bodies through, a sixtieth of a second apart.
 const FRAME_STEP: f64 = 1.0 / 60.0;
 
-fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
+/// The loader, the bodies, and each body's own walk and scripts.
+type Loaded = (AssetLoader, Vec<Body>, Vec<bodies::Pose>);
+
+fn load(engine: &mut Engine, v: &View, a: &Args) -> Loaded {
     let t = Instant::now();
     if !a.no_particles {
         engine.particles.assets = Some(Arc::new(
@@ -770,7 +842,7 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
             Ok(pack) => {
                 let p = &pack.pack;
                 println!(
-                    "art pack {} ({}), opened in {:.0} ms: {} models, {} materials, {} grounds, {} pictures, {} lights, {} moons, {} kinds of cover; {} problems",
+                    "art pack {} ({}), opened in {:.0} ms: {} models, {} materials, {} grounds, {} pictures, {} lights, {} swaying, {} moons, {} kinds of cover; {} problems",
                     p.name,
                     p.hash,
                     t.elapsed().as_secs_f64() * 1e3,
@@ -779,6 +851,7 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
                     p.grounds.len(),
                     p.images.len(),
                     p.lights.len(),
+                    p.sways.len(),
                     p.moons.len(),
                     p.ground_cover.len(),
                     p.problems.len()
@@ -799,7 +872,17 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
         center: a.block,
         radius: a.radius,
     };
-    load_area(engine, &mut loader, &v.store, &v.region, area);
+    // One view drawn at once: faces are given their detail on the spot, unless asked to wait as
+    // the game does.
+    loader.faces_now = !a.faces_async;
+    if a.no_face_detail {
+        pyreal_engine::face_detail::set_enabled(false);
+    }
+    if a.studio {
+        studio_floor(engine, v.camera.position);
+    } else {
+        load_area_smoothed(engine, &mut loader, &v.store, &v.region, area, a.smoothing);
+    }
     let heavens = pyreal_engine::heavens::Heavens::load(engine, &mut loader, &v.store, &v.region);
     let (cards, decks, other, pack_moons) = heavens.counts();
     let now = heavens.at(v.light.group, v.light.time, a.clock.unwrap_or(0.0));
@@ -809,11 +892,20 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
         if now.deck.is_some() { " and a cloud deck" } else { "" }
     );
     engine.heavens = Some(heavens);
-    if a.far > a.radius {
+    if a.far > a.radius && !a.studio {
         // The finest far level reaches past the near square's corners.
         #[allow(clippy::cast_precision_loss)]
         let first = (a.radius as f32 + 0.5) * 192.0 * 1.5 + 384.0;
-        load_far(engine, &mut loader, &v.store, &v.region, area, a.far, first);
+        load_far(
+            engine,
+            &mut loader,
+            &v.store,
+            &v.region,
+            area,
+            a.far,
+            first,
+            a.smoothing > 0,
+        );
         let rings = pyreal_engine::world::far_tree_rings(a.radius, a.far);
         let t = std::time::Instant::now();
         let n = load_far_trees(engine, &mut loader, &v.store, &v.region, area, rings, first);
@@ -861,18 +953,20 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
             Some(z) if drawn => Vec3::new(at.x, at.y, z),
             _ => at,
         };
-        specs.push((*spec, at, true));
+        let at = at + Vec3::Z * spec.pose.lift.unwrap_or(0.0);
+        specs.push((spec.clone(), at, true));
     }
     // A library place's objects: setups stand as bodies, anything else as it rests.
-    for &(setup, block, x, y) in &a.objects {
+    for &(setup, block, x, y, z) in &a.objects {
         let (bx, by) = (i32::from(block >> 8), i32::from(block & 0xFF));
-        let z = ground_height(&v.store, &v.region, block, x, y).unwrap_or(0.0);
+        let z = z.unwrap_or_else(|| ground_height(&v.store, &v.region, block, x, y).unwrap_or(0.0));
         let at = area.block_origin(bx, by) + Vec3::new(x, y, z);
-        if setup >> 24 == 0x02 {
+        if setup >> 24 == 0x02 && !a.statics {
             let spec = bodies::Spec {
                 kind: bodies::Kind::Setup(setup, None),
                 at: None,
                 scale: 1.0,
+                pose: bodies::Pose::default(),
             };
             specs.push((spec, at, false));
             continue;
@@ -889,10 +983,11 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
     }
     let mut made = Vec::new();
     let mut made_setups = Vec::new();
+    let mut poses = Vec::new();
     let named = a.bodies.len();
     for (spec, at, asked) in specs {
         let to_eye = v.camera.position - at;
-        let yaw = match a.facing_deg {
+        let yaw = match spec.pose.facing.or(a.facing_deg) {
             _ if !asked => 0.0,
             Some(h) => -h.to_radians(),
             None => pyreal_primitives::num::math::atan2f(-to_eye.x, to_eye.y),
@@ -907,27 +1002,47 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
                 z: q.z,
             },
         );
+        let own = &spec.pose;
         let (stance, motion) = if asked {
-            (a.stance, a.motion)
+            (own.stance.or(a.stance), own.motion.or(a.motion))
         } else {
             (None, None)
         };
-        let dress = if asked { &a.dress[..] } else { &[] };
-        let worn = if asked { &a.worn[..] } else { &[] };
-        match bodies::make(&v.store, spec, frame, stance, motion, dress, worn) {
+        let pick = |mine: &[bodies::Dress], all: &[bodies::Dress]| -> Vec<bodies::Dress> {
+            match () {
+                () if !asked => Vec::new(),
+                () if !mine.is_empty() => mine.to_vec(),
+                () => all.to_vec(),
+            }
+        };
+        let dress = pick(&own.dress, &a.dress);
+        let worn = pick(&own.wear, &a.worn);
+        match bodies::make(&v.store, &spec, frame, stance, motion, &dress, &worn) {
             Ok(mut b) => {
-                if let Some(t) = a.translucency.filter(|_| asked) {
+                if let Some(t) = own.translucency.or(a.translucency).filter(|_| asked) {
                     b.driver.set_described_translucency(t);
                 }
                 // Drawn through the headless frames, the last one at the time asked for.
                 #[allow(clippy::cast_precision_loss)]
                 let lead = (a.frames.max(1) - 1) as f64 * FRAME_STEP;
-                bodies::run(&mut b, (a.time_in_anim - lead).max(0.0));
+                bodies::run(&mut b, (own.time.unwrap_or(a.time_in_anim) - lead).max(0.0));
                 made_setups.push(match spec.kind {
                     bodies::Kind::Setup(s, _) => Some(DataId(s)),
                     bodies::Kind::Character(_) => None,
                 });
                 made.push(b);
+                let mut pose = if asked {
+                    own.clone()
+                } else {
+                    bodies::Pose::default()
+                };
+                pose.stride = pose.stride.or(a.stride);
+                pose.keep_height =
+                    asked && (pose.lift.is_some() || spec.at.is_some_and(|(_, _, z)| z.is_some()));
+                if asked {
+                    pose.scripts.extend_from_slice(&a.body_scripts);
+                }
+                poses.push(pose);
             }
             Err(e) => println!("body: {e}"),
         }
@@ -972,7 +1087,7 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> (AssetLoader, Vec<Body>) {
         t.elapsed().as_secs_f64() * 1e3,
         loader.stats
     );
-    (loader, made)
+    (loader, made, poses)
 }
 
 /// The ground's height under render-space point `p`, in the view's area.
@@ -1171,12 +1286,21 @@ fn headless(a: &Args) -> Result<(), String> {
     }
     engine.renderer.hiz = !a.no_hiz;
     engine.renderer.lod_bias = a.lod_bias;
-    let (mut loader, mut bodies) = load(&mut engine, &v, a);
+    if let Some(px) = a.lod_pixels {
+        engine.renderer.lod_pixels = px;
+    }
+    engine.renderer.caster_cull = !a.no_caster_cull;
+    engine.renderer.particles_lit_once = !a.particles_every_pixel;
+    let (mut loader, mut bodies, poses) = load(&mut engine, &v, a);
     let statics = engine.lamps.len();
     engine.renderer.cover_reach = a.cover_reach;
     if let Some(path) = &a.ui {
         let view = load_ui(&engine, path, a.size)?;
-        engine.renderer.ui = Some(pyreal_engine::temporal::Ui { view, gamma: false });
+        engine.renderer.ui = Some(pyreal_engine::temporal::Ui {
+            view,
+            gamma: false,
+            backdrops: Vec::new(),
+        });
     }
     let mut timings: Vec<(String, Vec<f64>)> = Vec::new();
     let mut spans = Vec::new();
@@ -1190,24 +1314,31 @@ fn headless(a: &Args) -> Result<(), String> {
             println!("frame {at}: the time of day set to {time:.3}");
         }
         if frame > 0 {
-            if let Some((x, y)) = a.stride {
-                #[allow(clippy::cast_possible_truncation)]
-                let step = FRAME_STEP as f32;
-                for b in &mut bodies {
+            #[allow(clippy::cast_possible_truncation)]
+            let step = FRAME_STEP as f32;
+            for (b, pose) in bodies.iter_mut().zip(&poses) {
+                if let Some((x, y)) = pose.stride {
                     b.frame.origin.x += x * step;
                     b.frame.origin.y += y * step;
-                    // On the drawn ground, as the client stands a walker.
+                    // On the drawn ground, as the client stands a walker; indoors or flying at its height.
                     let at = glam::Vec2::new(b.frame.origin.x, b.frame.origin.y);
-                    if let Some(z) = engine.land.as_ref().and_then(|l| l.drawn_height(at)) {
-                        b.frame.origin.z = z;
+                    let lift = pose.lift.unwrap_or(0.0);
+                    let land = engine.land.as_ref().filter(|_| {
+                        b.cell == OUTSIDE && (pose.lift.is_some() || !pose.keep_height)
+                    });
+                    if let Some(z) = land.and_then(|l| l.drawn_height(at)) {
+                        b.frame.origin.z = z + lift;
                     }
+                    // The room it has walked into, for its particles.
+                    let o = b.frame.origin;
+                    b.cell = bodies::cell_at(&engine, Vec3::new(o.x, o.y, o.z + 0.5), a.block);
                 }
             }
             #[allow(clippy::cast_precision_loss)]
             let t = frame as f64 * FRAME_STEP;
-            for &(script, at) in &a.body_scripts {
-                if at <= t && at > t - FRAME_STEP {
-                    for b in bodies.iter_mut().take(a.bodies.len()) {
+            for (b, pose) in bodies.iter_mut().zip(&poses) {
+                for &(script, at) in &pose.scripts {
+                    if at <= t && at > t - FRAME_STEP {
                         let _ = b
                             .driver
                             .play_script_internal(pyreal_primitives::DataId(script));
@@ -1239,6 +1370,17 @@ fn headless(a: &Args) -> Result<(), String> {
             statics,
             camera.position,
         );
+        if a.faces_async {
+            loader.tick_faces(&mut engine, &v.store);
+            for b in &bodies {
+                for i in b.instances().iter().flatten() {
+                    if let Some(mesh) = engine.scene.instance(*i).map(|x| x.mesh) {
+                        loader.want_faces(&mut engine, &v.store, mesh);
+                    }
+                }
+            }
+            let _ = engine.upload();
+        }
         // The output and its read-back as `render_to_rgba`, with the render call timed alone.
         let target = engine.gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("output"),
@@ -1386,11 +1528,157 @@ fn headless(a: &Args) -> Result<(), String> {
     if let Some(t) = a.tunnel {
         pixels = tunnel(&engine, a, t);
     }
+    if a.preview {
+        pixels = preview(&mut engine, &mut loader, &v.store, &bodies, &camera, a.size);
+    }
     if let Some(out) = &a.out {
         write_png(out, a.size, &pixels)?;
         println!("wrote {}", out.display());
     }
     Ok(())
+}
+
+/// The studio's light: over the camera's left shoulder, 25 degrees above the floor, so relief
+/// rakes across what faces the camera.
+fn studio_sun(camera: &Camera) -> Vec3 {
+    let f = camera.forward();
+    let f = Vec3::new(f.x, f.y, 0.0).normalize_or(Vec3::Y);
+    let left = Vec3::new(-f.y, f.x, 0.0);
+    let (s, c) = pyreal_primitives::num::math::sin_cosf(25f32.to_radians());
+    ((-f * 0.6 + left * 0.8).normalize() * c + Vec3::Z * s).normalize()
+}
+
+/// The studio's floor: a level grey square 80 m across at height 0 under the camera, one plain
+/// material and no picture.
+fn studio_floor(engine: &mut Engine, under: Vec3) {
+    use pyreal_engine::asset::material::{MaterialRecord, NO_TEXTURE};
+    use pyreal_engine::asset::mesh::{MeshData, Sides, SubMesh, Vertex};
+    use pyreal_engine::scene::{Instance, PipelineKind};
+    const HALF: f32 = 40.0;
+    let record = MaterialRecord {
+        base_color: [0.18, 0.18, 0.18, 1.0],
+        textures: [NO_TEXTURE; 6],
+        roughness: 0.9,
+        ..MaterialRecord::default()
+    };
+    let Ok(material) = engine.materials.add_material(record) else {
+        println!("studio: no room for the floor's material");
+        return;
+    };
+    engine.materials.pin_material(material);
+    let corner = |x: f32, y: f32| Vertex {
+        position: [x * HALF, y * HALF, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        uv: [x, y],
+        extra: [0, 0],
+    };
+    let mesh = MeshData {
+        vertices: vec![
+            corner(-1.0, -1.0),
+            corner(1.0, -1.0),
+            corner(1.0, 1.0),
+            corner(-1.0, 1.0),
+        ],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        submeshes: vec![SubMesh {
+            surface_index: 0,
+            surface: None,
+            sides: Sides::One,
+            first_index: 0,
+            index_count: 6,
+        }],
+        center: [0.0; 3],
+        radius: HALF * std::f32::consts::SQRT_2,
+    };
+    let at = glam::Affine3A::from_translation(Vec3::new(under.x, under.y, 0.0));
+    let placed = engine
+        .scene
+        .add_mesh(&engine.gpu, &mesh, |_| {
+            Some((material, PipelineKind::Opaque))
+        })
+        .and_then(|m| {
+            engine.scene.add_instance(Instance {
+                mesh: m,
+                transform: at,
+                previous: at,
+                object: 0,
+                cell: OUTSIDE,
+                sway: 0,
+            })
+        });
+    if let Err(e) = placed {
+        println!("studio: the floor: {e}");
+    }
+}
+
+/// The bodies' parts drawn by the preview pass from `camera`, lit as character creation lights its
+/// figure: one light from above, in front and to the left, over an ambient.
+fn preview(
+    engine: &mut Engine,
+    loader: &mut AssetLoader,
+    store: &RetailDatStore,
+    bodies: &[Body],
+    camera: &Camera,
+    size: (u32, u32),
+) -> Vec<u8> {
+    use pyreal_engine::preview::{PreviewDraw, PreviewPass, PreviewView};
+    let mut draws = Vec::new();
+    for b in bodies {
+        let setup = b.driver.part_array.setup.clone();
+        for (k, p) in b.driver.part_array.parts.iter().enumerate() {
+            if p.no_draw() || p.gfxobj_id.0 == 0 {
+                continue;
+            }
+            let dress = pyreal_engine::world::Dress::of(p.surface_overrides.as_ref());
+            // As the creation screen dresses its figure: a part worn over the setup's own model
+            // shaded inside it.
+            let own = setup.as_ref().and_then(|s| s.parts.get(k)).copied();
+            let mesh = pyreal_engine::asset::object::near_mesh(store, p.gfxobj_id)
+                .and_then(|g| loader.mesh_worn(engine, store, g, own, &dress));
+            if let Some(mesh) = mesh {
+                draws.push(PreviewDraw::part(
+                    mesh,
+                    pyreal_engine::body::part_affine(&p.pos, p.gfxobj_scale),
+                ));
+            }
+        }
+    }
+    let _ = engine.upload();
+    #[allow(clippy::cast_precision_loss)]
+    let aspect = size.0 as f32 / size.1 as f32;
+    let back = -camera.forward();
+    let light_dir = (back + Vec3::Z * 0.6 - camera.right() * 0.4).normalize();
+    let view = PreviewView {
+        view_proj: glam::Mat4::perspective_rh(camera.fov_y, aspect, 0.05, 500.0) * camera.view(),
+        light_dir,
+        light: Vec3::splat(1.0),
+        ambient: Vec3::splat(0.35),
+    };
+    let target = engine.gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("preview"),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: pyreal_engine::overlay::FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let mut pass = PreviewPass::new(&engine.gpu, &engine.materials);
+    pass.draw(
+        &engine.gpu,
+        &engine.scene,
+        &engine.materials,
+        &view,
+        &draws,
+        &target,
+    );
+    println!("preview: {} parts", draws.len());
+    pyreal_engine::read_texture(&engine.gpu, &target, 4)
 }
 
 /// Portal space `seconds` in, in the colour of the first placed portal as the engine drew it.
@@ -1549,18 +1837,27 @@ fn apply_light(engine: &mut Engine, a: &Args) {
         r.weather
             .falls(pyreal_engine::weather::Fall::ByLand, a.blizzard);
     }
+    if a.no_weather {
+        r.weather.on = false;
+    }
     if let Some((rez, alb)) = a.moon_phase {
         // Rez'arel's and Alb'arel's graphics objects.
         r.atmosphere.moon_phases = [(0x0100_1F67, rez), (0x0100_1F6A, alb)];
     }
     r.shadows = !a.no_shadows;
+    if let Some(k) = a.light_reach {
+        r.lamp_reach = pyreal_engine::lamps::LAMP_DISTANCE * k;
+    }
     if let Some(d) = a.shadow_distance {
         r.shadow_distance = d;
     }
-    r.water_on = !a.no_water;
+    r.water_on = !a.no_water && !a.studio;
     r.water.finest = pyreal_engine::water::finest_level(a.water_detail);
     r.cover_on = !a.no_cover;
     r.surfaces = a.surfaces;
+    if let Some(d) = a.fog_density {
+        r.atmosphere.fog_density = d;
+    }
     r.lamps = !a.no_lamps;
     r.ambient_occlusion = !a.no_ao;
     r.atmosphere.cloud_detail = a.clouds.min(3);
@@ -1679,7 +1976,7 @@ mod window {
             let v = view(a)?;
             engine.renderer.weather.snowy_types = pyreal_engine::weather::snowy_types(&v.region);
             engine.renderer.weather.soft_types = pyreal_engine::weather::soft_types(&v.region);
-            let (loader, bodies) = load(&mut engine, &v, a);
+            let (loader, bodies, _) = load(&mut engine, &v, a);
             let statics = engine.lamps.len();
             Ok(Running {
                 window,

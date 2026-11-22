@@ -1,0 +1,634 @@
+{
+  "format": 1,
+  "size": [
+    3840,
+    2160
+  ],
+  "shots": [
+    {
+      "slug": "forest",
+      "name": "Forest",
+      "caption": "A forest in the morning",
+      "alt": "A forest in the morning, retail on the left and Pyreal on the right",
+      "order": 0,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0xBC9E",
+        "cell": "0xBC9E0008",
+        "x": 2.6645756,
+        "y": 191.3623,
+        "z": 55.577576,
+        "yaw": -1.5223632,
+        "pitch": -0.25000003,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0xBC9E0008",
+        "x": 8.471231,
+        "y": 191.643677,
+        "z": 52.593124,
+        "rotation": [
+          0.722295,
+          0.0,
+          0.0,
+          -0.691585
+        ]
+      },
+      "time": 0.45,
+      "clock": 307465514.43431,
+      "weather": "clear",
+      "exposure": 0.64,
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "forest-god-rays",
+      "name": "Forest at dawn",
+      "caption": "A knight in Covenant armour fighting a Diamond Golem under the dawn sunbeams",
+      "alt": "Pyreal in a forest at dawn, a knight in golden Covenant armour fighting a Diamond Golem as sunbeams fall through the trees",
+      "order": 1,
+      "site": true,
+      "site_top": false,
+      "readme": "pyreal",
+      "world": "eor",
+      "camera": {
+        "block": "0xA1AA",
+        "cell": "0xA1AA002B",
+        "x": 129.65292,
+        "y": 50.32029,
+        "z": 55.62102,
+        "yaw": -2.025001,
+        "pitch": -0.0149998795,
+        "fov": 90.0
+      },
+      "time": 0.263,
+      "clock": 309317042.685189,
+      "weather": "clear",
+      "player": {
+        "cell": "0xA1AA002A",
+        "x": 135.043854,
+        "y": 47.688076,
+        "z": 54.030994,
+        "rotation": [
+          0.529742,
+          0.0,
+          0.0,
+          -0.848159
+        ]
+      },
+      "exposure": 2.26,
+      "scene": {
+        "frames": 30,
+        "bodies": [
+          {
+            "name": "knight",
+            "character": "male",
+            "ahead": 3.0,
+            "right": 1.6,
+            "facing": {
+              "toward": "golem"
+            },
+            "stance": "HandCombat",
+            "motion": "AttackMed1",
+            "time": 0.3,
+            "wear": [
+              "0x100003E4,21,0.5",
+              "0x100003E1,21,0.5",
+              "0x100003DC,21,0.5",
+              "0x100003DD,21,0.5",
+              "0x100003DE,21,0.5",
+              "0x100003E3,21,0.5",
+              "0x100003DF,21,0.5",
+              "0x100003E0,21,0.5",
+              "0x100003E2,21,0.5"
+            ]
+          },
+          {
+            "name": "golem",
+            "setup": "0x020007D7",
+            "motion_table": "0x09000081",
+            "ahead": 6.5,
+            "right": -1.5,
+            "facing": {
+              "toward": "knight"
+            },
+            "stance": "HandCombat",
+            "dress": [
+              "0x1000020F,61,0.5,0x04000F68"
+            ],
+            "translucency": 0.3
+          }
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "wai-jhou",
+      "name": "Wai Jhou",
+      "caption": "Wai Jhou's pagoda over its lagoon in the morning",
+      "alt": "Wai Jhou's pagoda over its lagoon, retail on the left and Pyreal on the right",
+      "order": 2,
+      "site": true,
+      "site_top": true,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x3F32",
+        "cell": "0x3F310010",
+        "x": 39.83756,
+        "y": -6.078308,
+        "z": 2.8617737,
+        "yaw": -5.4999466,
+        "pitch": -0.16499998,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x3F320009",
+        "x": 32.181648,
+        "y": 1.610757,
+        "z": -0.445,
+        "rotation": [
+          -0.924292,
+          0.0,
+          -0.0,
+          -0.381686
+        ]
+      },
+      "time": 0.456,
+      "clock": 308678450.900909,
+      "weather": "clear",
+      "exposure": 0.86,
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "stoneport-shore",
+      "name": "Stoneport",
+      "caption": "The sea off the shore near Stoneport at dawn",
+      "alt": "The sea off the shore near Stoneport, retail on the left and Pyreal on the right",
+      "order": 3,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0xE260",
+        "cell": "0xE25F0040",
+        "x": 171.0777,
+        "y": -1.930893,
+        "z": 6.436075,
+        "yaw": -1.0176573,
+        "pitch": -0.2094,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0xE2600039",
+        "x": 180.204285,
+        "y": 3.703986,
+        "z": -0.445,
+        "rotation": [
+          0.872095,
+          0.0,
+          0.0,
+          -0.489336
+        ]
+      },
+      "time": 0.256,
+      "clock": 308676923.11923,
+      "weather": "clear",
+      "exposure": 0.4,
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "manor-fountains",
+      "name": "Fountains",
+      "caption": "Three fountains before a manor at dawn",
+      "alt": "Three fountains before a manor at dawn, retail on the left and Pyreal on the right",
+      "order": 4,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0xF754",
+        "cell": "0xF7540009",
+        "x": 30.625645,
+        "y": 2.18816,
+        "z": 59.882065,
+        "yaw": -0.8024144,
+        "pitch": -0.24000016,
+        "fov": 90.0
+      },
+      "time": 0.33,
+      "clock": 309393420.252655,
+      "weather": "clear",
+      "exposure": 0.42,
+      "player": {
+        "cell": "0xF7540009",
+        "x": 37.609959,
+        "y": 8.938693,
+        "z": 56.005001,
+        "rotation": [
+          0.92059,
+          0.0,
+          0.0,
+          -0.39053
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "fiun-outpost",
+      "name": "Fiun Outpost",
+      "caption": "Ice trees near Fiun Outpost at noon",
+      "alt": "Ice trees near Fiun Outpost, retail on the left and Pyreal on the right",
+      "order": 5,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x38F5",
+        "cell": "0x38F50032",
+        "x": 166.78079,
+        "y": 34.34814,
+        "z": 147.7332,
+        "yaw": -2.1565251,
+        "pitch": -0.16000032,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x38F5003A",
+        "x": 176.652618,
+        "y": 27.799215,
+        "z": 144.321579,
+        "rotation": [
+          0.47286,
+          0.0,
+          0.0,
+          -0.881138
+        ]
+      },
+      "time": 0.501,
+      "clock": 308678794.316243,
+      "weather": "clear",
+      "exposure": 0.165,
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "north-mountains-footprints",
+      "name": "Mid North Mountains",
+      "caption": "Snow in the Mid North Mountains, a runner chased by a Hoary Mattekar and leaving footprints",
+      "alt": "A runner in Alduressa armour chased by a Hoary Mattekar through the snow of the Mid North Mountains, leaving footprints, retail on the left and Pyreal on the right",
+      "order": 6,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x7DEB",
+        "cell": "0x7DEB000F",
+        "x": 32.826508,
+        "y": 160.99019,
+        "z": 127.0,
+        "yaw": -5.808065,
+        "pitch": -0.1222,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x7DEB0010",
+        "x": 27.582361,
+        "y": 171.18428,
+        "z": 125.099602,
+        "rotation": [
+          -0.974781,
+          0.0,
+          -0.0,
+          -0.223165
+        ]
+      },
+      "time": 0.501,
+      "clock": 308678797.033428,
+      "weather": "clear",
+      "exposure": 0.19,
+      "scene": {
+        "frames": 240,
+        "bodies": [
+          {
+            "name": "runner",
+            "character": "female",
+            "ahead": 8,
+            "right": 1.5,
+            "facing": 80,
+            "run": 4.0,
+            "motion": "RunForward",
+            "wear": [
+              "0x100005C8,2,0.5",
+              "0x100005BF,2,0.5",
+              "0x1000060E,2,0.5",
+              "0x100005BD,2,0.5",
+              "0x100005D3,2,0.5"
+            ]
+          },
+          {
+            "name": "mattekar",
+            "setup": "0x02000486",
+            "at": [
+              23.11,
+              167.49
+            ],
+            "facing": 80,
+            "run": 4.0,
+            "motion": "RunForward",
+            "motion_table": "0x09000067",
+            "scale": 5.0,
+            "dress": [
+              "0x10000111,9,0.5,0x04000BD5"
+            ]
+          }
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "yaraq-creatures",
+      "name": "Yaraq",
+      "caption": "The desert outside Yaraq at Morntide, with a Water Golem",
+      "alt": "The desert outside Yaraq with a Water Golem, retail on the left and Pyreal on the right",
+      "order": 7,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x7E62",
+        "cell": "0x7E620025",
+        "x": 118.80204,
+        "y": 104.17224,
+        "z": 15.738274,
+        "yaw": -0.12000369,
+        "pitch": -0.23499973,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x7E620025",
+        "x": 119.500587,
+        "y": 109.965393,
+        "z": 12.841217,
+        "rotation": [
+          0.9982,
+          0.0,
+          0.0,
+          -0.059966
+        ]
+      },
+      "time": 0.401,
+      "clock": 309394321.488705,
+      "weather": "clear",
+      "exposure": 0.188,
+      "scene": {
+        "frames": 30,
+        "bodies": [
+          {
+            "name": "golem",
+            "setup": "0x020007E6",
+            "motion_table": "0x09000081",
+            "scale": 1.1,
+            "ahead": 5.0,
+            "right": 0.8,
+            "translucency": 0.2
+          }
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "obsidian-plains-battle",
+      "name": "Obsidian Plains",
+      "caption": "A robed mage's Lightning Bolt flying at a Virindi Inquisitor on the Obsidian Plains",
+      "alt": "A robed mage casting a Lightning Bolt at a Virindi Inquisitor on the Obsidian Plains, retail on the left and Pyreal on the right",
+      "order": 8,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x322E",
+        "cell": "0x322E0003",
+        "x": 19.666872,
+        "y": 61.950695,
+        "z": 44.04447,
+        "yaw": -4.8016887,
+        "pitch": -0.23500009,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x322E0003",
+        "x": 14.823669,
+        "y": 62.384361,
+        "z": 41.380226,
+        "rotation": [
+          -0.737964,
+          0.0,
+          0.0,
+          -0.67484
+        ]
+      },
+      "time": 0.87,
+      "clock": 309397902.183625,
+      "weather": "clear",
+      "exposure": 1.89,
+      "scene": {
+        "frames": 30,
+        "bodies": [
+          {
+            "name": "mage",
+            "character": "male",
+            "ahead": 3.8,
+            "right": -2.0,
+            "facing": {
+              "toward": "virindi"
+            },
+            "stance": "Magic",
+            "motion": "MagicThrowMissile",
+            "time": 0.35,
+            "wear": [
+              "0x100003EC,39,0.5"
+            ]
+          },
+          {
+            "name": "virindi",
+            "setup": "0x020009F6",
+            "motion_table": "0x09000028",
+            "ahead": 5.2,
+            "right": 2.9,
+            "facing": {
+              "toward": "mage"
+            },
+            "stance": "Magic",
+            "dress": [
+              "0x100000C1,11,0.5,0x040009B2"
+            ]
+          },
+          {
+            "name": "bolt",
+            "setup": "0x020003F0",
+            "scale": 0.8,
+            "ahead": 4.75,
+            "right": 1.3,
+            "facing": {
+              "toward": "virindi"
+            },
+            "run": 15.0,
+            "scripts": [
+              "0x3300013C@0.33"
+            ],
+            "lift": 1.35
+          }
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    },
+    {
+      "slug": "caulcano-creatures",
+      "name": "Caulcano",
+      "caption": "Caulcano's lava at midnight, with fire elementals, a Magma Golem and a volcanic vent",
+      "alt": "Caulcano's lava with fire elementals and a Magma Golem, retail on the left and Pyreal on the right",
+      "order": 9,
+      "site": true,
+      "site_top": false,
+      "readme": "compare",
+      "world": "eor",
+      "camera": {
+        "block": "0x0809",
+        "cell": "0x0809003A",
+        "x": 181.22256,
+        "y": 29.914536,
+        "z": 18.146816,
+        "yaw": -2.8781862,
+        "pitch": -0.1222,
+        "fov": 90.0
+      },
+      "player": {
+        "cell": "0x08090039",
+        "x": 182.977478,
+        "y": 23.406954,
+        "z": 14.756876,
+        "rotation": [
+          0.163466,
+          0.0,
+          0.0,
+          -0.986549
+        ]
+      },
+      "time": 0.003,
+      "clock": 309391294.521406,
+      "weather": "clear",
+      "exposure": 3840,
+      "scene": {
+        "frames": 30,
+        "bodies": [
+          {
+            "name": "flamma",
+            "setup": "0x020006A3",
+            "motion_table": "0x0900008F",
+            "scale": 1.3,
+            "ahead": 4.5,
+            "right": -1.3
+          },
+          {
+            "name": "hellfire",
+            "setup": "0x0200089D",
+            "motion_table": "0x0900008F",
+            "scale": 1.7,
+            "ahead": 5.5,
+            "right": 1.4
+          },
+          {
+            "name": "magma golem exarch",
+            "setup": "0x020007CB",
+            "motion_table": "0x09000081",
+            "scale": 1.75,
+            "ahead": 22.0,
+            "right": -0.5
+          },
+          {
+            "name": "inferno",
+            "setup": "0x020006A3",
+            "motion_table": "0x0900008F",
+            "scale": 1.7,
+            "ahead": 15.0,
+            "right": -2.5
+          },
+          {
+            "name": "flamma 2",
+            "setup": "0x020006A3",
+            "motion_table": "0x0900008F",
+            "scale": 1.3,
+            "ahead": 19.0,
+            "right": 15.0
+          },
+          {
+            "name": "hellfire 2",
+            "setup": "0x0200089D",
+            "motion_table": "0x0900008F",
+            "scale": 1.7,
+            "ahead": 34.0,
+            "right": 3.5
+          }
+        ],
+        "objects": [
+          {
+            "name": "Volcanic Vent",
+            "setup": "0x02000840",
+            "block": "0x0909",
+            "x": 8.2,
+            "y": 10.7
+          }
+        ]
+      },
+      "captured": {
+        "date": "2026-11-21",
+        "commit": "49bc522c",
+        "base_pack": "0.5.0"
+      }
+    }
+  ]
+}

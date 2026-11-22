@@ -396,6 +396,117 @@ fn a_disk_image_is_checked_against_its_manifest_line() {
     assert!(!super::dmg::recorded(part, "Q.dmg", 12, "abcd"));
 }
 
+/// The Finder's settings are written as plists macOS reads back.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_finder_settings_are_plists_macos_reads() {
+    use super::finder::Plist;
+    let plist = Plist::Dict(vec![
+        ("on", Plist::Bool(true)),
+        ("n", Plist::Int(2)),
+        ("size", Plist::Real(160.0)),
+        ("name", Plist::Str("a name longer than fifteen".to_owned())),
+        ("data", Plist::Data(vec![7; 40])),
+    ]);
+    let mut child = std::process::Command::new("plutil")
+        .args(["-convert", "xml1", "-o", "-", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("plutil runs");
+    std::io::Write::write_all(child.stdin.as_mut().unwrap(), &plist.to_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "plutil refused the plist");
+    let xml: String = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .collect();
+    for want in [
+        "<key>on</key><true/>",
+        "<key>n</key><integer>2</integer>",
+        "<key>size</key><real>160</real>",
+        "<key>name</key><string>anamelongerthanfifteen</string>",
+        "<key>data</key><data>BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw==</data>",
+    ] {
+        assert!(xml.contains(want), "{want} in {xml}");
+    }
+}
+
+/// The disk image holds the app, the link, and the window's settings and picture, and the
+/// settings name both icons and the picture.
+#[cfg(target_os = "macos")]
+#[test]
+fn the_disk_image_opens_in_the_laid_out_window() {
+    use super::{dmg, finder};
+    let dir = std::env::temp_dir().join(format!("xtask-dmg-layout-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let folder = dir.join("tree");
+    let app = folder.join("Pyreal.app");
+    let resources = app.join("Contents/Resources");
+    std::fs::create_dir_all(&resources).unwrap();
+    std::fs::copy(
+        workspace_root().join("pyreal/client/assets/Pyreal.icns"),
+        resources.join("Pyreal.icns"),
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("Contents/Info.plist"),
+        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\
+         <key>CFBundleIconFile</key><string>Pyreal</string></dict></plist>",
+    )
+    .unwrap();
+    let image = dir.join("P.dmg");
+    dmg::make(
+        &dir.join("scratch"),
+        &folder,
+        "Pyreal.app",
+        &image,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let mount = dir.join("mount");
+    std::fs::create_dir_all(&mount).unwrap();
+    let attach = std::process::Command::new("hdiutil")
+        .args([
+            "attach",
+            "-readonly",
+            "-nobrowse",
+            "-noautoopen",
+            "-mountpoint",
+        ])
+        .arg(&mount)
+        .arg(&image)
+        .status()
+        .unwrap();
+    assert!(attach.success());
+    let top: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&mount)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .filter(|(n, _)| {
+            !matches!(
+                n.as_str(),
+                ".fseventsd" | ".Trashes" | ".HFS+ Private Directory Data\r"
+            )
+        })
+        .collect();
+    let findings = dmg::top_findings(&top, "Pyreal.app");
+    let settings = std::fs::read(mount.join(finder::DS_STORE)).unwrap();
+    let _ = std::process::Command::new("hdiutil")
+        .args(["detach", "-force"])
+        .arg(&mount)
+        .status();
+    assert_eq!(findings, Vec::<String>::new());
+    assert_eq!(settings.len(), finder::DS_STORE_LEN);
+    assert_eq!(&settings[..8], b"\0\0\0\x01Bud1");
+    let has = |needle: &[u8]| settings.windows(needle.len()).any(|w| w == needle);
+    let utf16 = |s: &str| -> Vec<u8> { s.encode_utf16().flat_map(u16::to_be_bytes).collect() };
+    assert!(has(&utf16("Pyreal.app")) && has(&utf16("Applications")));
+    assert!(has(b"backgroundImageAlias") && has(b"/.background/background-"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn every_horizon_typeface_has_its_open_font_licence_beside_the_glyph_pages() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

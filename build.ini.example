@@ -3,7 +3,7 @@
 
 [signing]
 # The Apple certificate to sign with, by its SHA-1 hash. Two certificates in the keychain are named
-# "Apple Development: Jacob Johnston (T24CPK4YBN)", so the name alone is ambiguous to codesign.
+# "Apple Development: Your Name (TEAMID1234)", so the name alone is ambiguous to codesign.
 # List them with: security find-identity -v -p codesigning
 identity = 
 

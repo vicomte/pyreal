@@ -5,12 +5,16 @@
 
 pub(crate) mod archive;
 pub mod dmg;
+mod finder;
 mod guard;
 mod headers;
 mod notice;
 pub mod pyreal;
 pub(crate) mod targets;
 pub mod version;
+// The build hash's rule, shared with the client's build script.
+#[path = "../../../../pyreal/client/build_hash.rs"]
+pub mod build_hash;
 
 #[cfg(test)]
 mod pyreal_tests;
@@ -29,6 +33,9 @@ use targets::{Host, Os};
 #[derive(Debug, Clone)]
 pub struct BuildFacts {
     pub commit: String,
+    /// The build hash the client compiles in ([`build_hash`]): the one `build.py` hands on,
+    /// else the commit's own; empty without git.
+    pub hash: String,
     /// Seconds since 1970: `SOURCE_DATE_EPOCH`, else the commit's time.
     pub epoch: i64,
     /// The public repository the release files are downloaded from ([`pyreal::SOURCE_URL_ENV`]);
@@ -80,6 +87,10 @@ pub fn build_facts(ws: &Path, allow_dirty: bool) -> Result<BuildFacts, String> {
         ));
     }
     let commit = git(ws, &["rev-parse", "HEAD"])?;
+    let hash = build_hash::pick(std::env::var(build_hash::ENV).ok().as_deref(), || {
+        git(ws, &build_hash::GIT_ARGS).ok()
+    })
+    .unwrap_or_default();
     let epoch = match std::env::var("SOURCE_DATE_EPOCH") {
         Ok(v) => v
             .trim()
@@ -95,6 +106,7 @@ pub fn build_facts(ws: &Path, allow_dirty: bool) -> Result<BuildFacts, String> {
     };
     Ok(BuildFacts {
         commit,
+        hash,
         epoch,
         source_url,
     })

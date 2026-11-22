@@ -1,6 +1,7 @@
 # Pyreal
 
-![Pyreal in a sunlit forest, a mage in purple robes facing a Young Banderling in the tall grass](docs/screenshots/feature-forest.webp)
+<!-- shot: forest-god-rays -->
+![Pyreal in a forest at dawn, a knight in golden Covenant armour fighting a Diamond Golem as sunbeams fall through the trees](docs/screenshots/forest-god-rays-pyreal.jpg)
 
 Welcome! Pyreal is my custom, experimental fork of
 [Dereth](https://github.com/dereth-network/dereth). I fell in love with Asheron's Call decades
@@ -39,6 +40,7 @@ Pyreal also owes a lot to:
   [dereth-enhanced-environment](https://github.com/jacobjohnston/dereth-enhanced-environment)
   repository.
 
+<!-- shot: wai-jhou -->
 ![Wai Jhou's pagoda over its lagoon, retail on the left and Pyreal on the right](docs/screenshots/wai-jhou-compare.jpg)
 
 ## What Pyreal adds
@@ -50,32 +52,45 @@ graphics cards, and everything below comes from it.
   and flames, sun shadows stretching across the whole view, and lamplight that falls just where it
   should. Corners and crevices are gently shaded, and light bounces off walls and the ground. Every
   torch, sconce, candle and brazier burns with a real flickering flame.
+
+<!-- shot: forest -->
+![A forest in the morning, retail on the left and Pyreal on the right](docs/screenshots/forest-compare.jpg)
+
 - **Sky and weather.** A sky that changes through the day, clouds with depth that cast shadows and
   follow the weather, sunbeams through the trees, fog, and thunderstorms with lightning. Snow falls
   on snowy lands and settles on the ground and rooftops, you leave footprints as you walk, and rain
   stays off anything under a roof.
 
-![A forest in the morning, retail on the left and Pyreal on the right](docs/screenshots/forest-compare.jpg)
+<!-- shot: north-mountains-footprints -->
+![A runner in Alduressa armour chased by a Hoary Mattekar through the snow of the Mid North Mountains, leaving footprints, retail on the left and Pyreal on the right](docs/screenshots/north-mountains-footprints-compare.jpg)
 
 - **Water.** Waves that rise and fall, a sea swell that rolls in and breaks into surf, water lapping
   up every beach, calm lakes and rivers, and froth and a wake around anything wading through.
 
+<!-- shot: stoneport-shore -->
 ![The sea off the shore near Stoneport, retail on the left and Pyreal on the right](docs/screenshots/stoneport-shore-compare.jpg)
+
+<!-- shot: manor-fountains -->
+![Three fountains before a manor at dawn, retail on the left and Pyreal on the right](docs/screenshots/manor-fountains-compare.jpg)
 
 - **The land.** Softer, smoother hills, roads and walls with real depth, grass and wildflowers that
   ripple in passing breezes, trees that lean and sway, and a view that stretches all the way to the
   horizon.
 
+<!-- shot: fiun-outpost -->
 ![Ice trees near Fiun Outpost, retail on the left and Pyreal on the right](docs/screenshots/fiun-outpost-compare.jpg)
 
 - **Creatures.** Smoke, dust, steam, frost and acid creatures swirl as living clouds, fire creatures
   burn as living flame, golems look like what they're made of, and storm creatures crackle with
   forked lightning.
 
-![Caulcano's lava with fire creatures, retail on the left and Pyreal on the right](docs/screenshots/caulcano-creatures-compare.jpg)
+<!-- shot: caulcano-creatures -->
+![Caulcano's lava with fire elementals and a Magma Golem, retail on the left and Pyreal on the right](docs/screenshots/caulcano-creatures-compare.jpg)
 
-![The Obsidian Plains with shadow creatures, retail on the left and Pyreal on the right](docs/screenshots/obsidian-plains-creatures-compare.jpg)
+<!-- shot: obsidian-plains-battle -->
+![A robed mage casting a Lightning Bolt at a Virindi Inquisitor on the Obsidian Plains, retail on the left and Pyreal on the right](docs/screenshots/obsidian-plains-battle-compare.jpg)
 
+<!-- shot: yaraq-creatures -->
 ![The desert outside Yaraq with a Water Golem, retail on the left and Pyreal on the right](docs/screenshots/yaraq-creatures-compare.jpg)
 
 - **Places.** Fine silk cobwebs in the dungeons, glowing lava, glacier ice, moons as round worlds
@@ -90,8 +105,6 @@ graphics cards, and everything below comes from it.
   between them whenever you like.
 
 You'll find every change in each release in [CHANGELOG.md](CHANGELOG.md).
-
-![Snow in the Mid North Mountains with frost creatures, retail on the left and Pyreal on the right](docs/screenshots/north-mountains-creatures-compare.jpg)
 
 ## Your game files
 

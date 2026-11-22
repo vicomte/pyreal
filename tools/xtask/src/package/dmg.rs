@@ -1,11 +1,17 @@
-//! The macOS release file: `Pyreal.app` on a disk image beside a link to Applications, signed
-//! with the Developer ID in `APPLE_SIGNING_IDENTITY`, then notarized and stapled when an App Store
-//! Connect API key is named ([`Notary::from_env`]).
+//! The macOS release file: `Pyreal.app` on a disk image beside a link to Applications, in a
+//! Finder window with Pyreal's picture behind them ([`finder`]), signed with the Developer ID in
+//! `APPLE_SIGNING_IDENTITY`, then notarized and stapled when an App Store Connect API key is named
+//! ([`Notary::from_env`]).
 
 use std::path::Path;
 use std::process::Command;
 
+use super::finder;
 use super::guard::{self, Entry};
+use crate::util::workspace_root;
+
+/// The window's picture in the repository, made by `render-dmg-background.py` beside it.
+pub const BACKGROUND_SOURCE: &str = "pyreal/client/assets/dmg-background.tiff";
 
 /// The link beside the app that a player drags it onto.
 pub const APPLICATIONS: &str = "Applications";
@@ -114,10 +120,13 @@ pub fn recorded(text: &str, name: &str, size: usize, sha256: &str) -> bool {
     })
 }
 
-/// Make `out` from `folder` (holding `Pyreal.app`, signed): the app beside a link to
-/// Applications, the image signed with `identity`, and notarized and stapled by `notary`.
+/// Make `out` from `folder` (holding the signed app `app`): the app beside a link to
+/// Applications in the laid-out window, the image signed with `identity`, and notarized and
+/// stapled by `notary`. The writable image the window is laid out on is made under `scratch`.
 pub fn make(
+    scratch: &Path,
     folder: &Path,
+    app: &str,
     out: &Path,
     identity: Option<&str>,
     notary: Option<&Notary>,
@@ -129,10 +138,27 @@ pub fn make(
     #[cfg(unix)]
     std::os::unix::fs::symlink("/Applications", &link)
         .map_err(|e| format!("{}: {e}", link.display()))?;
+    let pictures = folder.join(finder::BACKGROUND_DIR);
+    if pictures.exists() {
+        std::fs::remove_dir_all(&pictures).map_err(|e| format!("{}: {e}", pictures.display()))?;
+    }
+    std::fs::create_dir_all(&pictures).map_err(|e| format!("{}: {e}", pictures.display()))?;
+    let source = workspace_root().join(BACKGROUND_SOURCE);
+    let tiff = std::fs::read(&source).map_err(|e| format!("{}: {e}", source.display()))?;
+    let picture = finder::background_name(&tiff);
+    std::fs::write(pictures.join(&picture), &tiff)
+        .map_err(|e| format!("{}: {e}", pictures.display()))?;
+    // Room for the settings, written once the image's file ids exist.
+    let settings = folder.join(finder::DS_STORE);
+    std::fs::write(&settings, vec![0u8; finder::DS_STORE_LEN])
+        .map_err(|e| format!("{}: {e}", settings.display()))?;
     if out.exists() {
         std::fs::remove_file(out).map_err(|e| format!("{}: {e}", out.display()))?;
     }
+    std::fs::create_dir_all(scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
+    let writable = scratch.join("dmg-layout.dmg");
     let folder_s = folder.display().to_string();
+    let writable_s = writable.display().to_string();
     let out_s = out.display().to_string();
     let create = [
         "create",
@@ -143,9 +169,9 @@ pub fn make(
         "-fs",
         "HFS+",
         "-format",
-        "UDZO",
+        "UDRW",
         "-ov",
-        &out_s,
+        &writable_s,
     ];
     // hdiutil sometimes finds the new image busy on a shared machine; a second try clears it.
     let mut made = Err(String::new());
@@ -157,6 +183,20 @@ pub fn make(
         std::thread::sleep(std::time::Duration::from_secs(5));
     }
     made?;
+    lay_out(scratch, &writable_s, app, &picture)?;
+    run(
+        "hdiutil",
+        &[
+            "convert",
+            &writable_s,
+            "-format",
+            "UDZO",
+            "-ov",
+            "-o",
+            &out_s,
+        ],
+    )?;
+    std::fs::remove_file(&writable).map_err(|e| format!("{writable_s}: {e}"))?;
     if let Some(id) = identity {
         let mut args = vec!["--force", "--sign", id];
         if notary.is_some() {
@@ -185,6 +225,33 @@ pub fn make(
     Ok(())
 }
 
+/// Write the window's settings onto the writable image `image`, mounted under `scratch`.
+fn lay_out(scratch: &Path, image: &str, app: &str, picture: &str) -> Result<(), String> {
+    let mount = scratch.join("dmg-layout");
+    std::fs::create_dir_all(&mount).map_err(|e| format!("{}: {e}", mount.display()))?;
+    let mount_s = mount.display().to_string();
+    run(
+        "hdiutil",
+        &[
+            "attach",
+            "-readwrite",
+            "-nobrowse",
+            "-noautoopen",
+            "-noverify",
+            "-mountpoint",
+            &mount_s,
+            image,
+        ],
+    )?;
+    let written = finder::ds_store(VOLUME, &mount, app, APPLICATIONS, picture).and_then(|bytes| {
+        let path = mount.join(finder::DS_STORE);
+        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+    });
+    let detached = run("hdiutil", &["detach", &mount_s, "-force"]);
+    written?;
+    detached
+}
+
 /// Submit `file` and wait; anything but Accepted prints Apple's log and fails.
 fn notarize(n: &Notary, file: &str) -> Result<(), String> {
     let args = n.submit_args(file);
@@ -209,7 +276,8 @@ fn notarize(n: &Notary, file: &str) -> Result<(), String> {
 }
 
 /// The deny scan of a written disk image, mounted read-only under `scratch`: its top holds
-/// `Pyreal.app` and the Applications link alone, and the app passes [`guard::scan_tree`].
+/// `Pyreal.app`, the Applications link and the window's settings and picture alone, and the app
+/// passes [`guard::scan_tree`].
 pub fn check(
     scratch: &Path,
     image: &Path,
@@ -279,15 +347,25 @@ fn scan_mounted(
     Ok(findings)
 }
 
-/// What is wrong with the image's top level: anything but the app folder and the link to
-/// `/Applications`.
-fn top_findings(top: &[(String, std::path::PathBuf)], app: &str) -> Vec<String> {
+/// What is wrong with the image's top level: anything but the app folder, the link to
+/// `/Applications`, the window's settings and its folder holding the picture alone.
+pub(super) fn top_findings(top: &[(String, std::path::PathBuf)], app: &str) -> Vec<String> {
     let mut findings = Vec::new();
     for (name, path) in top {
         let ok = if name == app {
             path.symlink_metadata().is_ok_and(|m| m.is_dir())
         } else if name == APPLICATIONS {
             std::fs::read_link(path).is_ok_and(|t| t == Path::new("/Applications"))
+        } else if name == finder::DS_STORE {
+            path.symlink_metadata().is_ok_and(|m| m.is_file())
+        } else if name == finder::BACKGROUND_DIR {
+            std::fs::read_dir(path).is_ok_and(|entries| {
+                let names: Vec<_> = entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                matches!(names.as_slice(), [n] if n.starts_with("background-") && n.ends_with(".tiff"))
+            })
         } else {
             false
         };
@@ -295,7 +373,7 @@ fn top_findings(top: &[(String, std::path::PathBuf)], app: &str) -> Vec<String> 
             findings.push(format!("{name}: not part of the disk image"));
         }
     }
-    for want in [app, APPLICATIONS] {
+    for want in [app, APPLICATIONS, finder::DS_STORE, finder::BACKGROUND_DIR] {
         if !top.iter().any(|(n, _)| n == want) {
             findings.push(format!("{want}: missing from the disk image"));
         }

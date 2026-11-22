@@ -1,16 +1,18 @@
 # Tools
 
-The workspace's programs include `xtask/`, `corpus/`, `pack/`, `art/`, `pcap/` and `plugin/`. They are
-crates like any other, but they are things people run, so each has
-its own page. The workspace carries no scripts: every check and runner is Rust, reached through
-`cargo xtask`. `sweep-timings/` holds the recorded per-test times the sweep deals shards by.
+The workspace's programs include `xtask/`, `art/`, `engine-view/`, `gpu-probe/` and `plugin/`. They
+are crates like any other, but they are things people run, so each has its own section. Every
+check and runner is Rust, reached through `cargo xtask`. Two scripts sit beside them:
+`screenshots/capture.py`, which draws the screenshot library, and `report_library.py`, which
+draws the report library's places.
+`sweep-timings/` holds the recorded per-test times the sweep deals shards by.
 
-## `xtask` — the task runner
+## `xtask`: the task runner
 
 `cargo xtask <task>` runs the checks this workspace holds itself to, each from one command: the CI
 tiers (`ci prepush|tier0|smoke|tier1|tier2`), the tests
 (`test`, in the `test-release` profile), the lints clippy cannot express (`lint`, `comment-lint`,
-`test-lint`, `seams`, `crate-docs`, `fmt-check`, `doc`), the source rules (`licence` and `output-hygiene`, both also in `ci tier0`), the repository-wide
+`tier-targets`, `seams`, `crate-docs`, `fmt-check`, `doc`), the source rules (`licence` and `output-hygiene`, both also in `ci tier0`), the repository-wide
 checks (`line-endings --tree`, `skip-claims --tree`) and the per-track acceptance gates
 (`gate <track>`, `gates`). `cargo xtask` with no task prints the full list. Its source is
 `xtask/`; each check's module opens with the rule it enforces.
@@ -23,7 +25,7 @@ each a failure, never a skip. It holds the known-red table and fails on a stale 
 and the shard logs and per-test timings go under `sweep/` in cargo's target directory. `cargo
 xtask sweep --help` lists the rest.
 
-## `pyreal-plugin` — the plugin author's tool
+## `pyreal-plugin`: the plugin author's tool
 
 Makes a new plugin repository from its template (`new`), checks a plugin as the hosts check it
 and compiles its scripts (`check`), packs it into a zip with its SHA-256 beside it (`pack`),
@@ -36,30 +38,7 @@ the client released with it, and each Pyreal release carries it prebuilt for eve
 `docs/plugins/guide/publishing.md`, and the formats are in `docs/plugins/packages.md` and
 `docs/plugins/sources.md`.
 
-## `dereth-corpus` — recording sessions and the message corpus
-
-Records a session between the retail client and a server through a logging proxy
-(`record <slug>`), pseudonymises it before anything is kept (`scrub`), and regenerates the
-message corpus, the capture index and the manifest from the recordings (`corpus`, and
-`corpus --check`, which `cargo test -p dereth-corpus` runs). See [`corpus/README.md`](corpus/README.md)
-for how to add a recording and how tests read the corpus.
-
-## Lyceum's `lyceum` — content packs, bake, import and the client layer
-
-The pack tool is Lyceum's now, a product of its own beside the client and the server:
-[`lyceum/`](../lyceum/README.md) holds the editor, the Foundry and the `lyceum` command, which
-builds a world's packs into its overlay, bakes an overlay into a copy of a player's files, takes
-modified files apart into an overlay, and packs Pyreal's client layer:
-
-```text
-cargo run -p lyceum-cli -- layer core/client-runtime/assets/classic-portal/pack.tsv
-cargo run -p lyceum-cli -- layer <manifest> --check
-```
-
-The client builds in the classic portal's layer from `core/client-runtime/assets/classic-portal/`;
-`cargo test -p lyceum-foundry` fails while that container is not what its manifest makes.
-
-## `pyreal-art` — the art survey and art packs
+## `pyreal-art`: the art survey and art packs
 
 Surveys every model the world is built from, over your own dats: the scenery the client grows on
 every landblock (placed as the client places it), each landblock's statics and buildings, the
@@ -110,15 +89,33 @@ and says whether the file is what it packs into now, and which records are not. 
 cannot read or make is listed and left out, as the client leaves it out of the folder. One file
 holds up to 2 GB.
 
-## `dereth-pcap` — the community-capture index
+## `engine-view`: drawing a place with the engine
 
-Reads a folder of retail packet captures you bring yourself (pcap, pcapng, zip, 7z), reassembles
-and decodes every session with the workspace's own transport and codecs, and writes a SQLite
-index: `ingest`, `stats`, `query` and `triage` (decode failures grouped by type and error, as
-markdown). See [`pcap/README.md`](pcap/README.md) for the workflow and for what these captures can
-and cannot tell you.
+Draws a place with the engine, headless to a PNG or in a window with a free camera, and reports
+each pass's GPU time and what was drawn. The place is a landblock and a block-local position, or a
+report line's camera; it can place objects and dressed characters, play scripts, and turn each of
+the engine's additions off. `src/main.rs` opens with the full list of flags.
 
-## `pyreal-gpu-probe` — what the GPU layer can do here
+```text
+cargo run --profile test-release -p pyreal-engine-view -- --dat-dir <dats> --report "<report line>" --out place.png
+cargo run --profile test-release -p pyreal-engine-view -- --dat-dir <dats> --block 0xA9B4 --at 96,96 --window
+```
+
+## `screenshots/capture.py`: the screenshot library
+
+Draws the README's and the site's pictures from `docs/screenshots/shots.json`: each shot at 3840 by
+2160 as retail (engine-view on the data files alone, every Pyreal addition off) and as Pyreal on its
+Ultra preset, and both side by side. It then rewrites the README's pictures and the table in
+`docs/screenshots/README.md`. engine-view stages a shot's creatures and characters, each with its
+own stance, motion, heading, dress, walk and scripts. The script's header says what it needs, and
+`docs/screenshots/README.md` describes a shot's entry.
+
+```text
+tools/screenshots/capture.py [SLUG...] [--docs] [--draft DIR [--size WxH]]
+tools/screenshots/capture.py add <slug> "<report line>"
+```
+
+## `pyreal-gpu-probe`: what the GPU layer can do here
 
 Asks the high-performance adapter for a device with every feature and limit it offers, and for
 each thing the renderer's design depends on (bindless textures, multi-draw indirect, ray

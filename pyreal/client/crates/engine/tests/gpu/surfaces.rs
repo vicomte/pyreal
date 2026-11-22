@@ -12,7 +12,7 @@ use pyreal_engine::asset::texture::{PixelLayout, TexturePixels};
 use pyreal_engine::ground_tint;
 use pyreal_engine::renderer::{Exposure, Surfaces, RELIEF_HIGH, TRIPLANAR_FROM, TRIPLANAR_WHOLE};
 use pyreal_engine::scene::{Instance, PipelineKind};
-use pyreal_engine::world::{ground_height, load_area, Area, AssetLoader};
+use pyreal_engine::world::{ground_height, load_area, load_far, Area, AssetLoader};
 use pyreal_engine::{Camera, Engine, SkyLight};
 use pyreal_terrain::consts::ROAD_TERRAIN_TYPE;
 use pyreal_terrain::land::merge::get_terrain_tex;
@@ -639,4 +639,77 @@ fn steep_ground_alone_is_stood_up() {
     let (gentle, moved) = changed(&on, &off, &up, |u| u > TRIPLANAR_FROM + 0.17);
     assert!(gentle > 10_000, "{gentle} gentle pixels");
     assert_eq!(moved, 0, "{moved} of {gentle} gentle pixels changed");
+}
+
+/// Past about 50 m the distant ground keeps texture the pictures lose to their mean: from a
+/// hillside over Holtburg's river (the developer's report, 0xA8B3), neighbouring pixels on the far
+/// hills differ more with the distant ground on, and the ground at the eye's feet is as it was.
+#[test]
+fn the_distant_ground_keeps_its_texture_and_the_near_ground_is_unchanged() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut e = engine();
+    e.renderer.exposure = Exposure::Manual(1.0);
+    let mut loader = AssetLoader::default();
+    let area = Area {
+        center: 0xA8B3,
+        radius: 1,
+    };
+    load_area(&mut e, &mut loader, &store, &region, area);
+    load_far(&mut e, &mut loader, &store, &region, area, 6, 672.0, false);
+    let camera = Camera {
+        position: Vec3::new(193.7, 164.9, 95.3),
+        yaw: -5.97,
+        pitch: -0.13,
+        fov_y: 60.7f32.to_radians(),
+        far: 6.5 * 192.0,
+        ..Camera::default()
+    };
+    let light = SkyLight::at(&region, 0, 0.33);
+    let size = (320u32, 200u32);
+    let mut frame = |distant: bool| {
+        e.renderer.surfaces = Surfaces {
+            distant,
+            ..Surfaces::ALL
+        };
+        e.render_to_rgba(&camera, &light, size).expect("a frame")
+    };
+    frame(true);
+    let (on, off) = (frame(true), frame(false));
+    let (w, h) = (size.0 as usize, size.1 as usize);
+    let luma = |f: &[u8], x: usize, y: usize| {
+        let p = &f[(y * w + x) * 4..];
+        0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2])
+    };
+    // The far hills: the right half, between a third and a half of the way down.
+    let contrast = |f: &[u8]| {
+        let mut sum = 0.0;
+        let mut n = 0.0;
+        for y in h / 3..h / 2 {
+            for x in w / 2..w - 1 {
+                sum += (luma(f, x, y) - luma(f, x + 1, y)).abs();
+                n += 1.0;
+            }
+        }
+        sum / n
+    };
+    let (c_on, c_off) = (contrast(&on), contrast(&off));
+    assert!(
+        c_on > c_off * 1.15,
+        "the far hills' texture: {c_on:.2} on, {c_off:.2} off"
+    );
+    // The ground a few metres off, along the bottom rows.
+    let mut near = 0.0;
+    let mut n = 0.0;
+    for y in h - 8..h {
+        for x in 0..w {
+            near += (luma(&on, x, y) - luma(&off, x, y)).abs();
+            n += 1.0;
+        }
+    }
+    assert!(
+        near / n < 0.5,
+        "the near ground moved by {:.2} on average",
+        near / n
+    );
 }

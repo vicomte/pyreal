@@ -119,7 +119,10 @@ checks run before the push.
 ## What the packages are
 
 - The Mac release is `Pyreal-<version>-macos-aarch64.dmg`: `Pyreal.app` beside a link to
-  Applications. The app is signed with the Developer ID under the hardened runtime, with Apple's
+  Applications, in a Finder window with Pyreal's parchment picture behind large icons. The
+  packager writes the window's settings itself, so a release runner makes the same window; the
+  picture is `pyreal/client/assets/dmg-background.svg`, rendered by `render-dmg-background.py`
+  beside it. The app is signed with the Developer ID under the hardened runtime, with Apple's
   secure timestamp. The disk image is signed, sent to Apple's notary service, and stapled once
   Apple accepts it, so it opens without a warning even offline. A rejection fails the run and
   prints Apple's log. The app is not sandboxed: notarizing does not need it, and Pyreal reads the

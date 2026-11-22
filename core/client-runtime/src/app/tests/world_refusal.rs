@@ -850,3 +850,260 @@ fn a_worlds_served_spells_replace_the_retail_table_read_before_sign_in() {
         .spell_beneficial
         .contains_key(&PATCHED_SPELL));
 }
+
+/// The portal and cell iterations `app`'s answer to the server's question carries.
+fn answered_iterations(app: &App<NullShell>) -> (i32, i32) {
+    let world = crate::world_overlay::laid_world(&app.store);
+    let r = crate::app::ddd_interrogation_response(
+        &app.store,
+        0,
+        app.ddd.keeps_overlay(),
+        world.as_deref(),
+    );
+    let of = |id: u32| {
+        r.iters_with_keys
+            .iter()
+            .find(|l| l.dat_file_id == id)
+            .map_or(-1, |l| l.iterations.iterations)
+    };
+    (of(1), of(2))
+}
+
+/// A world on 1999 files signed in to after one on the later files, in one run, answers with the
+/// 1999 files' iterations, with the later files kept beside them for the ground.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail, February 2005 and 1999 dats: --features retail-dats"
+)]
+fn a_1999_world_after_a_later_one_answers_with_the_1999_files_iterations() {
+    let store = retail_store();
+    let classic = pyreal_dat::testing::classic_dat_dir().expect("the February 2005 dats");
+    let launch = pyreal_dat::testing::launch_dat_dir().expect("the 1999 dats");
+    let scratch = pyreal_dat::testing::ScratchDir::new("launch-after-later").expect("scratch");
+    keep_cache_in(&scratch.path().join("cache"));
+    let settings = scratch.path().join("settings");
+    std::fs::create_dir_all(&settings).unwrap();
+    // The 2005 world plays the later files with an overlay of its own over them.
+    let root = scratch.path().join("cache/overlays/127.0.0.1-9010");
+    write_picture(
+        &crate::world_overlay::world_folder(&root, "Local 2005"),
+        store.portal(),
+        "Local 2005",
+        b"theirs",
+    );
+    crate::world_overlay::remember_world(&root, "Local 2005").unwrap();
+
+    let mut app = bring_up(
+        Config {
+            connect: false,
+            ..connecting(&settings)
+        },
+        &store,
+    );
+    app.use_data_files(&pyreal_dat::testing::dat_dir(), Some(&classic))
+        .expect("the retail files");
+    let start = |port: u16, era: &str, pair: &Path| SessionStart {
+        host: "127.0.0.1".into(),
+        port,
+        account: "builder".into(),
+        password: "password".into(),
+        dat_dir: pyreal_dat::testing::dat_dir(),
+        classic_dat_dir: Some(pair.to_path_buf()),
+        world: vec![("era".into(), era.into())],
+        plugin_policy: None,
+    };
+    let net = |port: u16| {
+        crate::net::ClientNetwork::new("127.0.0.1", port, "builder", "password", 1)
+            .expect("an endpoint")
+    };
+    app.begin_session_on(
+        &mut NullShell,
+        &start(9010, "infiltration", &classic),
+        net(9010),
+    )
+    .expect("the 2005 session");
+    assert_eq!(
+        answered_iterations(&app).1,
+        982,
+        "the 2005 world's own, the later files"
+    );
+    app.end_session(&mut NullShell);
+
+    app.begin_session_on(&mut NullShell, &start(9020, "launch", &launch), net(9020))
+        .expect("the 1999 session");
+    assert_eq!(answered_iterations(&app), (102, 67), "the 1999 files");
+    assert!(
+        app.store.modern_files().is_some(),
+        "the later files stay beside them for the ground"
+    );
+}
+
+/// A 2005 world kept at port 9010 when it played the later files, under its old name, and a run
+/// on the later files with the February 2005 pair beside them that connects to it.
+fn moved_2005_world(name: &str) -> (pyreal_dat::testing::ScratchDir, PathBuf, Config) {
+    let store = retail_store();
+    let classic = pyreal_dat::testing::classic_dat_dir().expect("the February 2005 dats");
+    let scratch = pyreal_dat::testing::ScratchDir::new(name).expect("scratch");
+    keep_cache_in(&scratch.path().join("cache"));
+    let settings = scratch.path().join("settings");
+    std::fs::create_dir_all(&settings).unwrap();
+    let root = scratch.path().join("cache/overlays/127.0.0.1-9010");
+    write_picture(
+        &crate::world_overlay::world_folder(&root, "Local"),
+        store.portal(),
+        "Local",
+        b"local",
+    );
+    crate::world_overlay::remember_world(&root, "Local").unwrap();
+    let cfg = Config {
+        port: 9010,
+        dat_dir: pyreal_dat::testing::dat_dir(),
+        classic_dat_dir: Some(classic),
+        era: Some(pyreal_primitives::EraId::Infiltration),
+        ..connecting(&settings)
+    };
+    (scratch, root, cfg)
+}
+
+/// The world's manifest, its overlay made over `base` as the file `base_name`.
+fn manifest_over(world: &str, base_name: &str, base: &DatFile) -> DddOverlayManifest {
+    DddOverlayManifest {
+        world_key: world.into(),
+        total_bytes: 0,
+        files: vec![pyreal_protocol::admin::OverlayFileManifest {
+            dat_file_type: 0,
+            dat_file_id: 1,
+            base_name: base_name.into(),
+            base_fingerprint: pyreal_dat::overlay::fingerprint(base),
+            base_records: None,
+            base_iterations: 0,
+            exact_iterations: false,
+            revisions: Vec::new(),
+            records: Vec::new(),
+            tombstones: Vec::new(),
+        }],
+    }
+}
+
+/// A world moved from the later files to the February 2005 ones, under a new name, is answered
+/// for from the 2005 files when it names itself and asks again: the folder kept from its old name
+/// opened the later files, and the world's overlay lies over the 2005 ones. The patch then goes on.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail and February 2005 dats: --features retail-dats"
+)]
+fn a_world_moved_to_the_2005_files_is_answered_for_from_them_when_it_asks_again() {
+    let (_scratch, root, cfg) = moved_2005_world("moved-2005");
+    let classic = RetailDatStore::open_classic_dir(cfg.classic_dat_dir.as_deref().unwrap())
+        .expect("the February 2005 dats");
+    let mut app = bring_up(cfg, &retail_store());
+    app.link = Some(crate::net::NetLink::replay(
+        crate::net::ClientNetwork::new("127.0.0.1", 9010, "builder", "password", 1)
+            .expect("an endpoint"),
+    ));
+    assert_eq!(
+        app.store.era(),
+        pyreal_dat::ContainerEra::Modern,
+        "the old name's folder"
+    );
+    let renamed = manifest_over("Local 2005", "portal.dat", classic.portal());
+    let mut shell = NullShell;
+    app.process_logon_event_queue(
+        &mut shell,
+        vec![
+            SessionEvent::Ddd(DddEvent::Interrogation(DddInterrogation::default())),
+            SessionEvent::Ddd(DddEvent::OverlayManifest(Box::new(renamed.clone()))),
+        ],
+    );
+    assert_eq!(app.world_refused(), None, "{:?}", app.ddd().notices());
+    assert_eq!(app.store.era(), pyreal_dat::ContainerEra::Classic);
+    assert_eq!(answered_iterations(&app), (2112, 1593), "the 2005 files");
+    assert!(
+        app.store.modern_files().is_some(),
+        "the later files beside them"
+    );
+    assert_eq!(
+        app.ddd().dir(),
+        Some(crate::world_overlay::world_folder(&root, "Local 2005").as_path())
+    );
+    // The server asks again, and its manifest ahead of the patch names the files now open.
+    app.process_logon_event_queue(
+        &mut shell,
+        vec![
+            SessionEvent::Ddd(DddEvent::Interrogation(DddInterrogation::default())),
+            SessionEvent::Ddd(DddEvent::OverlayManifest(Box::new(renamed))),
+            SessionEvent::Ddd(DddEvent::Begin(DddBeginDdd::default())),
+            SessionEvent::Ddd(DddEvent::End),
+        ],
+    );
+    assert_eq!(app.world_refused(), None, "{:?}", app.ddd().notices());
+    assert!(app.host_state().patch_finished);
+}
+
+/// A sign-in in the same run opens the files a fresh run would: once a world's folder changed
+/// under the files open, the next session's files follow the folder it starts on.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail and February 2005 dats: --features retail-dats"
+)]
+fn a_sign_in_after_the_worlds_folder_changed_opens_the_files_a_fresh_run_would() {
+    let (_scratch, root, cfg) = moved_2005_world("moved-folder");
+    let store = retail_store();
+    let start = SessionStart {
+        host: "127.0.0.1".into(),
+        port: 9010,
+        account: "builder".into(),
+        password: "password".into(),
+        dat_dir: cfg.dat_dir.clone(),
+        classic_dat_dir: cfg.classic_dat_dir.clone(),
+        world: vec![("era".into(), "infiltration".into())],
+        plugin_policy: None,
+    };
+    let net = || {
+        crate::net::ClientNetwork::new("127.0.0.1", 9010, "builder", "password", 1)
+            .expect("an endpoint")
+    };
+    let mut app = bring_up(
+        Config {
+            connect: false,
+            ..cfg
+        },
+        &store,
+    );
+    app.begin_session_on(&mut NullShell, &start, net())
+        .expect("the session");
+    assert_eq!(
+        app.store.era(),
+        pyreal_dat::ContainerEra::Modern,
+        "the old name's folder"
+    );
+    // The world names itself anew, over the files open, and its new folder is empty.
+    let mut shell = NullShell;
+    app.process_logon_event_queue(
+        &mut shell,
+        vec![
+            SessionEvent::Ddd(DddEvent::Interrogation(DddInterrogation::default())),
+            SessionEvent::Ddd(DddEvent::OverlayManifest(Box::new(manifest_over(
+                "Local 2005",
+                "client_portal.dat",
+                store.portal(),
+            )))),
+        ],
+    );
+    assert_eq!(
+        app.ddd().dir(),
+        Some(crate::world_overlay::world_folder(&root, "Local 2005").as_path())
+    );
+    app.end_session(&mut shell);
+    app.begin_session_on(&mut shell, &start, net())
+        .expect("the next session");
+    assert_eq!(
+        app.store.era(),
+        pyreal_dat::ContainerEra::Classic,
+        "the era's files"
+    );
+    assert_eq!(answered_iterations(&app), (2112, 1593));
+}

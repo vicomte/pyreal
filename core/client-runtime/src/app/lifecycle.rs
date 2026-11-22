@@ -163,9 +163,13 @@ impl<S: Shell> App<S> {
         cfg.vg_password.clone_from(&start.password);
         cfg.connect = true;
         cfg.plugin_policy.clone_from(&start.plugin_policy);
+        // The set the world is drawn from is held to the files open too: the world's folder may
+        // have changed since they were opened (a world that named itself as another).
+        let world_set = crate::assets::world_set(&cfg);
         let files_change = cfg.dat_dir != start.dat_dir
             || cfg.classic_dat_dir != start.classic_dat_dir
-            || crate::assets::world_set(&cfg) != crate::assets::world_set(&self.cfg);
+            || world_set != crate::assets::world_set(&self.cfg)
+            || world_set.is_some_and(|set| set != self.store.era());
         cfg.dat_dir.clone_from(&start.dat_dir);
         cfg.classic_dat_dir.clone_from(&start.classic_dat_dir);
         // The world's served records, kept from its last session, are read before its characters

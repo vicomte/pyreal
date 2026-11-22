@@ -44,7 +44,8 @@ pub struct FrontDoor {
     /// The plan the session up was started from, and the password typed for it, kept once the
     /// server takes the login.
     session: Option<(LaunchPlan, Option<Typed>)>,
-    /// Each address's status ping this run: its era and systems, `None` when it did not answer.
+    /// Each address's status ping this run: its era and systems, `None` when it did not answer
+    /// (asked again at the next sign-in).
     pings: std::collections::BTreeMap<(String, u16), Option<StatusReply>>,
     /// The status pings being asked, each on a thread of its own.
     asking:
@@ -575,7 +576,10 @@ impl FrontDoor {
     }
 
     /// A world nobody named an era for: the era and systems its status ping names, asked once a
-    /// run on a thread of its own. `false` while the answer is still to come.
+    /// run on a thread of its own and remembered for the world. A ping that goes unanswered (a
+    /// server still starting) is asked again at the next sign-in, and the era remembered stands in
+    /// for it: without one the world would be played with the later files. `false` while the
+    /// answer is still to come.
     fn learn_era(&mut self, world: &mut pyreal_launch::World) -> bool {
         let Some(at) = world.endpoint.as_ref().map(|e| (e.address.clone(), e.port)) else {
             return true;
@@ -594,13 +598,29 @@ impl FrontDoor {
             }
             return false;
         };
-        if let Some(r) = reply {
-            let systems = pyreal_primitives::EraFeatureBits {
-                table_version: r.era_table_version,
-                bytes: r.era_features.clone(),
-            };
-            world.take_status_ping(&r.era, &systems);
-            tracing::info!("{}:{} plays {:?} (its status ping)", at.0, at.1, world.era);
+        let Some(r) = reply else {
+            self.pings.remove(&at);
+            let remembered = self.state.remembered_era(&world.slug).map(str::to_owned);
+            tracing::warn!(
+                "{}:{} did not answer its status ping; it plays {remembered:?}, the era it named last",
+                at.0,
+                at.1
+            );
+            if world.era.is_none() && remembered.is_some() {
+                world.era = remembered;
+                world.era_source = Some(pyreal_launch::world::Told::World);
+            }
+            return true;
+        };
+        let systems = pyreal_primitives::EraFeatureBits {
+            table_version: r.era_table_version,
+            bytes: r.era_features.clone(),
+        };
+        let era = r.era.trim().to_owned();
+        world.take_status_ping(&era, &systems);
+        tracing::info!("{}:{} plays {:?} (its status ping)", at.0, at.1, world.era);
+        if !era.is_empty() && self.state.remember_era(&world.slug, &era) {
+            self.save();
         }
         true
     }
@@ -1096,6 +1116,107 @@ mod tests {
         assert!(door.learn_era(&mut again));
         assert_eq!(again.era, world.era);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A status ping answered with `era` once, on a port of its own, which then goes quiet.
+    fn answer_one_ping(era: &'static str) -> (u16, std::thread::JoinHandle<()>) {
+        use pyreal_transport::status_ping::{self, Request, Token, WorldState};
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = server.local_addr().unwrap().port();
+        let answering = std::thread::spawn(move || {
+            let token = Token {
+                window: 7,
+                mac: [3; 16],
+            };
+            let bits =
+                pyreal_primitives::EraFeatureBits::of(pyreal_primitives::EraFeatures::LAUNCH);
+            let mut buf = [0u8; 512];
+            for _ in 0..2 {
+                let (n, from) = server.recv_from(&mut buf).unwrap();
+                let reply = match status_ping::parse_request(&buf[..n]) {
+                    Some(Request::Hello) => status_ping::token_reply(token),
+                    Some(Request::Ask(t)) if t == token => StatusReply {
+                        format_version: 1,
+                        state: WorldState::Open,
+                        players: 0,
+                        era: era.into(),
+                        era_table_version: bits.table_version,
+                        era_features: bits.bytes.clone(),
+                        software: "Empyrean".into(),
+                        software_version: "0.3.15".into(),
+                        world_name: "Local Launch".into(),
+                    }
+                    .encode(),
+                    _ => continue,
+                };
+                server.send_to(&reply, from).unwrap();
+            }
+        });
+        (port, answering)
+    }
+
+    /// The era a world's ping last named holds when its ping later goes unanswered, as it does
+    /// while the server starts: a Launch world still signs in with the 1999 pair and is told its
+    /// era, rather than being played with the later files. The unanswered ping is asked again.
+    #[test]
+    fn an_unanswered_status_ping_keeps_the_era_the_world_named_last() {
+        let root = tmp("ping-lost");
+        let [m, c, o] = three_sets(&root);
+        let dir = root.join("Pyreal");
+        let (port, answering) = answer_one_ping("launch");
+        let learn = |door: &mut FrontDoor, world: &mut pyreal_launch::World| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !door.learn_era(world) {
+                assert!(std::time::Instant::now() < deadline, "no answer");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                door.collect_pings();
+            }
+        };
+        let slug = {
+            let mut door = FrontDoor::open(&dir, None, Box::new(MemoryVault::default()), None);
+            door.set_dats(&m, &c, &o).unwrap();
+            let slug = door
+                .state
+                .add_custom_world(
+                    "Launch",
+                    "127.0.0.1",
+                    &port.to_string(),
+                    None,
+                    pyreal_launch::Emulator::Unknown,
+                )
+                .unwrap();
+            let mut world = door.state.world(&slug).unwrap().to_world();
+            learn(&mut door, &mut world);
+            assert_eq!(world.era.as_deref(), Some("launch"));
+            assert_eq!(door.state.remembered_era(&slug), Some("launch"));
+            slug
+        };
+        answering.join().unwrap();
+
+        // The next run: the world's server is not up yet.
+        let mut door = FrontDoor::open(&dir, None, Box::new(MemoryVault::default()), None);
+        let mut world = door.state.world(&slug).unwrap().to_world();
+        learn(&mut door, &mut world);
+        assert_eq!(world.era.as_deref(), Some("launch"), "the era named last");
+        assert!(door.pings.is_empty(), "asked again at the next sign-in");
+        let dirs = door.dat_dirs_for(&world).unwrap();
+        assert_eq!(
+            (dirs.dat_dir.clone(), dirs.classic_dat_dir.clone()),
+            (m.into(), Some(o.into()))
+        );
+        let plan = pyreal_launch::plan(&pyreal_launch::LaunchRequest {
+            world: &world,
+            account: "ethangar",
+            dat_dir: Some(dirs.dat_dir),
+            classic_dat_dir: dirs.classic_dat_dir,
+            plugin_policy_file: None,
+            plugins: Vec::new(),
+        })
+        .unwrap();
+        assert!(session_start(&plan, "pw")
+            .world
+            .contains(&("era".to_owned(), "launch".to_owned())));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A world that does not answer its status ping does not hold the frame while it is asked.

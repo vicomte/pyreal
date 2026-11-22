@@ -129,6 +129,8 @@ pub struct PortalFrame {
     pub travelled: f32,
     /// The tunnel's shape.
     pub seed: u32,
+    /// Which trip this is: only a new one starts the flight afresh.
+    pub trip: u32,
     pub palette: Palette,
     /// The world was on screen as the tunnel opened, so its last picture is warped in.
     pub from_world: bool,
@@ -285,7 +287,7 @@ pub struct Shot {
 pub struct Flight {
     z: f32,
     last: Option<f32>,
-    seed: u32,
+    trip: Option<u32>,
     light: f32,
     roll: f32,
 }
@@ -300,19 +302,19 @@ impl Flight {
     /// The shot at `f`, the picture's aspect `aspect` and its vertical half-view tangent `tan`.
     pub fn shot(&mut self, f: &PortalFrame, aspect: f32, tan: f32) -> Shot {
         let spine = Spine::new(f.seed);
-        // A step back of more than a few frames is a new trip; less is two clocks disagreeing.
-        let new_trip = self.last.is_none_or(|l| f.travelled + 0.25 < l) || self.seed != f.seed;
-        if new_trip {
+        // Only a new trip starts afresh; a moment handed over late is two clocks disagreeing.
+        if self.trip != Some(f.trip) {
             *self = Self {
                 z: 0.0,
                 last: Some(f.travelled),
-                seed: f.seed,
+                trip: Some(f.trip),
                 light: LIGHT_FAR,
                 roll: 0.0,
             };
         }
-        let dt = (f.travelled - self.last.unwrap_or(f.travelled)).clamp(0.0, 0.25);
-        self.last = Some(f.travelled);
+        let last = self.last.unwrap_or(f.travelled);
+        let dt = (f.travelled - last).clamp(0.0, 0.25);
+        self.last = Some(f.travelled.max(last));
         let out = if f.leg == Leg::TunnelOut {
             ease(f.phase)
         } else {
@@ -1021,7 +1023,8 @@ pub const COLLAPSE_SAMPLES: usize = 33;
 #[derive(Debug, Clone)]
 pub struct Show {
     pub frame: PortalFrame,
-    /// When `frame` was the moment: the thread carries it on from here at its own pace.
+    /// When `frame` was the moment (when the runtime read its clock, not when it was handed
+    /// over): the thread carries it on from here at its own pace.
     pub at: Instant,
     /// The world's last picture, while it is swallowed.
     pub world: Option<wgpu::TextureView>,
@@ -1033,6 +1036,21 @@ pub struct Show {
 }
 
 impl Show {
+    /// The moment `since` seconds after the hand-over, never earlier than `drawn` on its trip.
+    #[must_use]
+    pub fn carried(&self, since: f32, drawn: Option<PortalFrame>) -> PortalFrame {
+        let mut f = self.frame;
+        f.phase += since;
+        f.travelled += since;
+        if let Some(d) = drawn.filter(|d| d.trip == f.trip) {
+            f.travelled = f.travelled.max(d.travelled);
+            if d.leg == f.leg {
+                f.phase = f.phase.max(d.phase);
+            }
+        }
+        f
+    }
+
     /// The tunnel's field of view at moment `f`, degrees.
     #[must_use]
     pub fn fov_at(&self, f: &PortalFrame) -> f32 {
@@ -1146,7 +1164,7 @@ fn run(
 ) {
     let (lock, wake) = shared;
     let state = || lock.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut last: Option<(u32, f32)> = None;
+    let mut last: Option<PortalFrame> = None;
     loop {
         let show = {
             let mut s = state();
@@ -1181,17 +1199,8 @@ fn run(
                 continue;
             }
         };
-        // The moment carried on by the time since it was handed over, never back.
-        let dt = show.at.elapsed().as_secs_f32().min(30.0);
-        let mut f = show.frame;
-        f.phase += dt;
-        f.travelled += dt;
-        if let Some((seed, t)) = last {
-            if seed == f.seed && f.travelled < t && t - f.travelled < 0.25 {
-                f.travelled = t;
-            }
-        }
-        last = Some((f.seed, f.travelled));
+        let f = show.carried(show.at.elapsed().as_secs_f32().min(30.0), last);
+        last = Some(f);
         let size = (frame.texture.width(), frame.texture.height());
         let view = frame.texture.create_view(&Default::default());
         {
@@ -1223,6 +1232,7 @@ mod tests {
             phase,
             travelled,
             seed: 7,
+            trip: 1,
             palette: Palette::PORTAL,
             from_world: true,
         }
@@ -1286,6 +1296,95 @@ mod tests {
         assert!((show.fov_at(&frame(Leg::TunnelOut, 0.5, 4.5)) - (FOV_Y + 16.0)).abs() < 1e-3);
         assert!((show.fov_at(&frame(Leg::TunnelOut, 2.0, 6.0)) - (FOV_Y + 32.0)).abs() < 1e-3);
         assert!((show.fov_at(&frame(Leg::Tunnel, 0.5, 2.0)) - FOV_Y).abs() < 1e-6);
+    }
+
+    fn show(f: PortalFrame) -> Show {
+        Show {
+            frame: f,
+            at: Instant::now(),
+            world: None,
+            ui: None,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            collapse: [FOV_Y; COLLAPSE_SAMPLES],
+        }
+    }
+
+    #[test]
+    fn the_thread_never_draws_a_moment_earlier_than_it_has_on_the_same_trip() {
+        let late = show(frame(Leg::Continue, 1.0, 3.0));
+        let drawn = frame(Leg::Continue, 1.58, 3.58);
+        let f = late.carried(0.01, Some(drawn));
+        assert!((f.travelled - 3.58).abs() < 1e-6 && (f.phase - 1.58).abs() < 1e-6);
+        // A new leg's phase starts again; another trip's moment is taken as it is.
+        let f = late.carried(0.01, Some(frame(Leg::Tunnel, 2.5, 3.58)));
+        assert!((f.phase - 1.01).abs() < 1e-6 && (f.travelled - 3.58).abs() < 1e-6);
+        let f = late.carried(0.01, Some(PortalFrame { trip: 0, ..drawn }));
+        assert!((f.travelled - 3.01).abs() < 1e-6);
+    }
+
+    /// The 0.2.0 login: the frame thread stalled 580 ms placing the world, then handed over the
+    /// moment it read before the stall, stamped after it.
+    #[test]
+    fn a_stalled_frame_thread_never_restarts_the_tunnel() {
+        let mut flight = Flight::default();
+        let mut drawn = None;
+        let mut eye = 0.0;
+        let mut light = f32::NAN;
+        let mut draw = |s: &Show, since: f32, drawn: &mut Option<PortalFrame>| {
+            let f = s.carried(since, *drawn);
+            *drawn = Some(f);
+            let shot = flight.shot(&f, 1.6, 0.7);
+            assert!(
+                flight.z >= eye,
+                "the eye went back at {}: {eye} to {}",
+                f.travelled,
+                flight.z
+            );
+            if light.is_finite() {
+                assert!(
+                    (flight.light - light).abs() < 30.0,
+                    "the light jumped at {}",
+                    f.travelled
+                );
+            }
+            eye = flight.z;
+            light = flight.light;
+            shot
+        };
+        let step = 1.0 / 60.0;
+        let before = show(frame(Leg::Continue, 1.0, 3.0));
+        let mut since = 0.0;
+        while since < 0.59 {
+            draw(&before, since, &mut drawn);
+            since += step;
+        }
+        let late = show(frame(Leg::Continue, 1.0, 3.0));
+        for since in [0.0, step, 2.0 * step] {
+            draw(&late, since, &mut drawn);
+        }
+        let caught_up = show(frame(Leg::Continue, 1.6, 3.6));
+        draw(&caught_up, 0.0, &mut drawn);
+        assert!(eye > 20.0, "the flight went on: {eye}");
+    }
+
+    #[test]
+    fn a_new_trip_starts_the_flight_afresh() {
+        let mut flight = Flight::default();
+        for i in 0..60 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = 2.0 + i as f32 / 60.0;
+            flight.shot(&frame(Leg::Tunnel, t, t), 1.6, 0.7);
+        }
+        assert!(flight.z > 20.0);
+        flight.shot(
+            &PortalFrame {
+                trip: 2,
+                ..frame(Leg::TunnelIn, 0.5, 1.5)
+            },
+            1.6,
+            0.7,
+        );
+        assert!(flight.z.abs() < 1e-6 && (flight.light - LIGHT_FAR).abs() < 1e-3);
     }
 
     #[test]

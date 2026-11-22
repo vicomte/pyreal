@@ -304,6 +304,45 @@ fn the_portal_walk_stays_inside_a_dungeon() {
     assert!(seen >= 4 && seen * 4 < g.cells().len(), "{seen} rooms seen");
 }
 
+/// The developer's report in the dungeon at 0x5A45: the walkway floor of 0x5A450219 and the top
+/// of the shaft under it, 0x5A450166, are both pictured portals facing up at 12 m. The shaft's top
+/// faces out of its room and is set back below the walkway floor, so the two no longer flicker.
+#[test]
+fn a_shafts_top_lies_under_the_walkway_floor_over_it() {
+    use pyreal_assets::geometry::Environment;
+    use pyreal_assets::world::EnvCell;
+    use pyreal_engine::asset::mesh::{cell_mesh, OUTWARD_PORTAL_SETBACK};
+    let store = pyreal_dat::testing::open_store_or_fail();
+    // The heights of each cell's level triangles, in the block's metres.
+    let level = |id: u32| {
+        let cell: EnvCell = decode(&store, DbType::Cell, DataId(id)).expect("the cell");
+        let env: Environment =
+            decode(&store, DbType::Environment, cell.environment).expect("its environment");
+        let mesh = cell_mesh(&env.cells[usize::from(cell.cell_struct)], &cell.surfaces);
+        let mut heights: Vec<f32> = mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| t.map(|i| mesh.vertices[i as usize].position[2]))
+            .filter(|z| z[0] == z[1] && z[1] == z[2])
+            .map(|z| z[0] + cell.frame.origin.z)
+            .collect();
+        heights.sort_by(f32::total_cmp);
+        heights.dedup();
+        heights
+    };
+    let near = |hs: &[f32], h: f32| hs.iter().any(|z| (z - h).abs() < 1e-4);
+    let walkway = level(0x5A45_0219);
+    assert!(near(&walkway, 12.0), "the walkway floor: {walkway:?}");
+    let shaft = level(0x5A45_0166);
+    assert!(!near(&shaft, 12.0), "the shaft's top: {shaft:?}");
+    assert!(
+        near(&shaft, 12.0 - OUTWARD_PORTAL_SETBACK),
+        "the shaft's top: {shaft:?}"
+    );
+}
+
 /// Holtburg's first building: from its main room, looking at one of its outdoor doors, the
 /// outdoors is seen; looking at the same door from outdoors, the room is.
 #[test]

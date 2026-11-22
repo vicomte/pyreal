@@ -245,19 +245,27 @@ fn land_snowy(p: vec2<f32>) -> f32 {
 }
 
 // How much of the land at render-space `p` is of the terrain types `mask` (one bit a type),
-// 0 to 1, blended as [`land_snowy`] blends.
+// 0 to 1, blended as [`land_snowy`] blends. Past the land field it reads the far field, whose
+// clamped edge would otherwise run on to the horizon.
 fn land_typed(p: vec2<f32>, mask: u32) -> f32 {
-    if (mask == 0u || !has_land()) {
+    if (mask == 0u) {
         return 0.0;
     }
-    let q = (p - frame.land.xy) / LAND_CELL;
+    var q = (p - frame.land.xy) / LAND_CELL;
+    let far = !has_land() || any(q < vec2<f32>(0.0)) || any(q >= frame.land.zw - 1.0);
+    if (far) {
+        if (!far_heights_on()) {
+            return 0.0;
+        }
+        q = (p - far_rings.origin) / LAND_CELL;
+    }
     let c = vec2<i32>(floor(q));
     let f = q - floor(q);
     let s = vec4<f32>(
-        f32((mask >> (land_vertex(c).word & LW_TYPE)) & 1u),
-        f32((mask >> (land_vertex(c + vec2<i32>(1, 0)).word & LW_TYPE)) & 1u),
-        f32((mask >> (land_vertex(c + vec2<i32>(0, 1)).word & LW_TYPE)) & 1u),
-        f32((mask >> (land_vertex(c + vec2<i32>(1, 1)).word & LW_TYPE)) & 1u));
+        f32((mask >> (water_vertex(c, far).word & LW_TYPE)) & 1u),
+        f32((mask >> (water_vertex(c + vec2<i32>(1, 0), far).word & LW_TYPE)) & 1u),
+        f32((mask >> (water_vertex(c + vec2<i32>(0, 1), far).word & LW_TYPE)) & 1u),
+        f32((mask >> (water_vertex(c + vec2<i32>(1, 1), far).word & LW_TYPE)) & 1u));
     if (all(s == vec4<f32>(0.0)) || all(s == vec4<f32>(1.0))) {
         return s.x;
     }

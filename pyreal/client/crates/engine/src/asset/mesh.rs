@@ -6,6 +6,7 @@
 //! negative surface (`sides_type == 2`) also draws its back, as a reversed fan with
 //! `neg_surface`, `neg_uv_indices` and the normal turned round.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use pyreal_assets::geometry::CellStruct;
@@ -511,11 +512,76 @@ fn hit(o: glam::Vec3, d: glam::Vec3, t: &[glam::Vec3; 3]) -> Option<f32> {
 /// An indoor cell's drawing polygons as a mesh, against the cell's own surface list. A portal
 /// polygon with no picture is an opening and is left out (its surface is wholly transparent);
 /// one with a picture is drawn, as retail draws it: a floor over the room below (0x8A020135).
+/// A one-sided one facing out of its room is set back [`OUTWARD_PORTAL_SETBACK`].
 #[must_use]
 pub fn cell_mesh(cs: &CellStruct, surfaces: &[DataId]) -> MeshData {
-    let polygons = cs.polygons.iter().enumerate().filter_map(|(i, p)| {
+    let mut vertices = Cow::Borrowed(cs.vertex_array.vertices.as_slice());
+    #[allow(clippy::cast_precision_loss)]
+    let centre = vertices
+        .iter()
+        .fold([0.0f32; 3], |s, v| {
+            [
+                s[0] + v.position.x,
+                s[1] + v.position.y,
+                s[2] + v.position.z,
+            ]
+        })
+        .map(|c| c / vertices.len().max(1) as f32);
+    let mut polygons: Vec<Cow<'_, Polygon>> = Vec::with_capacity(cs.polygons.len());
+    for (i, p) in cs.polygons.iter().enumerate() {
         let portal = u16::try_from(i).is_ok_and(|i| cs.portals.contains(&i));
-        (!portal || p.pos_uv_indices.is_some()).then_some(p)
-    });
-    build(&cs.vertex_array.vertices, polygons, surfaces)
+        if portal && p.pos_uv_indices.is_none() {
+            continue;
+        }
+        let setback = if portal && p.sides_type == 0 {
+            outward(&vertices, p, centre)
+        } else {
+            None
+        };
+        polygons.push(match setback {
+            Some(n) => set_back(vertices.to_mut(), p, n).map_or(Cow::Borrowed(p), Cow::Owned),
+            None => Cow::Borrowed(p),
+        });
+    }
+    build(&vertices, polygons.iter().map(|p| &**p), surfaces)
+}
+
+/// How far a one-sided pictured portal facing out of its room is set back into it, metres: the
+/// room it opens onto may lay its own floor on the same plane (0x5A450166's top under the walkway
+/// floor of 0x5A450219), and that one then wins the depth test instead of flickering with it.
+pub const OUTWARD_PORTAL_SETBACK: f32 = 0.01;
+
+/// The face normal of `p` when its front faces away from `centre`, the room's middle.
+fn outward(vertices: &[SwVertex], p: &Polygon, centre: [f32; 3]) -> Option<[f32; 3]> {
+    let at: Vec<[f32; 3]> = p
+        .vertex_ids
+        .iter()
+        .map(|&i| {
+            let v = vertices.get(usize::from(i))?.position;
+            Some([v.x, v.y, v.z])
+        })
+        .collect::<Option<_>>()?;
+    let n = face_normal(&at)?;
+    let mid = at
+        .iter()
+        .fold([0.0f32; 3], |s, a| [s[0] + a[0], s[1] + a[1], s[2] + a[2]]);
+    #[allow(clippy::cast_precision_loss)]
+    let away: f32 = (0..3)
+        .map(|k| n[k] * (mid[k] / at.len() as f32 - centre[k]))
+        .sum();
+    (away > 0.0).then_some(n)
+}
+
+/// `p` on its own copies of its corners, moved back along `n` by [`OUTWARD_PORTAL_SETBACK`].
+fn set_back(vertices: &mut Vec<SwVertex>, p: &Polygon, n: [f32; 3]) -> Option<Polygon> {
+    let mut moved = p.clone();
+    for id in &mut moved.vertex_ids {
+        let mut v = vertices.get(usize::from(*id))?.clone();
+        v.position.x -= n[0] * OUTWARD_PORTAL_SETBACK;
+        v.position.y -= n[1] * OUTWARD_PORTAL_SETBACK;
+        v.position.z -= n[2] * OUTWARD_PORTAL_SETBACK;
+        *id = u16::try_from(vertices.len()).ok()?;
+        vertices.push(v);
+    }
+    Some(moved)
 }

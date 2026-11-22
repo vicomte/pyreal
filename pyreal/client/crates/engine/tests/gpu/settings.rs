@@ -1,10 +1,12 @@
 //! Each of the settings the client's options page has for the engine changes the frame: the
-//! weather (rain, snow, wet ground), the air's light (God Rays), the clouds' detail, the
+//! weather (rain, snow, wet ground, fresh snow kept to snowy land far off), the air's light (God Rays), the clouds' detail, the
 //! lamps' reach (Light Draw Distance) and their flicker.
 
 use glam::Vec3;
 use pyreal_engine::weather::Fall;
-use pyreal_engine::world::{ground_height, load_area, Area, AssetLoader};
+use pyreal_engine::world::{
+    ground_height, load_area, load_area_smoothed, load_far, Area, AssetLoader,
+};
 use pyreal_engine::{Camera, Engine, SkyLight};
 
 /// Holtburg loaded round its centre, with the region's sky.
@@ -471,5 +473,89 @@ fn a_roof_keeps_the_rain_off() {
         "the roofed ground stays dry ({} against {still}) as the open soaks ({})",
         mean(roofed),
         mean(bare)
+    );
+}
+
+/// Fresh snow past the loaded land lies only on the far field's snowy ground: from a snowy hilltop
+/// over green land (the developer's report, 0xB5BF), the far ground does not take the cover of the
+/// loaded land's snowy edge, which once ran on to the horizon in bands.
+#[test]
+fn fresh_snow_past_the_loaded_land_keeps_to_snowy_ground() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = super::engine();
+    let mut loader = AssetLoader::default();
+    let area = Area {
+        center: 0xB5BF,
+        radius: 4,
+    };
+    load_area_smoothed(&mut engine, &mut loader, &store, &region, area, 2);
+    load_far(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        area,
+        12,
+        1344.0,
+        true,
+    );
+    let camera = Camera {
+        position: Vec3::new(190.87, 77.34, 422.58),
+        yaw: -3.038,
+        pitch: -0.195,
+        fov_y: 58.34f32.to_radians(),
+        far: 12.5 * 192.0,
+        ..Camera::default()
+    };
+    // Fog Density off, as the developer had it.
+    engine.renderer.atmosphere.fog_density = 0.0;
+    let w = &mut engine.renderer.weather;
+    w.snowy_types = pyreal_engine::weather::snowy_types(&region);
+    w.falls(Fall::Nothing, false);
+    let frame = |engine: &mut Engine, cover: f32| {
+        engine.renderer.weather.cover = cover;
+        frames(engine, &region, &camera, 0.518, 2)
+    };
+    let bare = frame(&mut engine, 0.0);
+    let covered = frame(&mut engine, 1.0);
+    let depth = super::words(&engine, engine.renderer.depth_texture());
+    keep("far-snow-bare", &bare);
+    keep("far-snow-covered", &covered);
+    // The far ground's pixels: two cells or more past the loaded square, nine blocks across.
+    let (w, h) = (256usize, 144usize);
+    #[allow(clippy::cast_precision_loss)]
+    let inverse = camera.view_projection(w as f32 / h as f32).inverse();
+    let (mut far, mut whitened) = (0u32, 0u32);
+    for i in 0..w * h {
+        let d = f32::from_bits(depth[i]);
+        if d <= 0.0 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let ndc = glam::Vec2::new(
+            ((i % w) as f32 + 0.5) / w as f32 * 2.0 - 1.0,
+            1.0 - ((i / w) as f32 + 0.5) / h as f32 * 2.0,
+        );
+        let p = inverse.project_point3(ndc.extend(d));
+        if (p.x - 96.0).abs().max((p.y - 96.0).abs()) < 864.0 + 48.0 {
+            continue;
+        }
+        far += 1;
+        let luma = |f: &[u8]| {
+            let c = &f[i * 4..];
+            0.2126 * f32::from(c[0]) + 0.7152 * f32::from(c[1]) + 0.0722 * f32::from(c[2])
+        };
+        if luma(&covered) > luma(&bare) + 25.0 {
+            whitened += 1;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let share = f64::from(whitened) / f64::from(far.max(1));
+    eprintln!("{far} far pixels, {share:.3} of them whitened");
+    assert!(far > 2000, "the far ground fills the view: {far} pixels");
+    assert!(
+        share < 0.05,
+        "fresh snow whitened {share:.3} of the far ground"
     );
 }

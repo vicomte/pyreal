@@ -3,7 +3,7 @@
 use pyreal_assets::geometry::CellStruct;
 use pyreal_assets::{BspTree, GfxObj, Polygon, SwVertex, VertexArray};
 use pyreal_engine::asset::mesh::{
-    cell_mesh, gfxobj_mesh, oct_decode, oct_encode, Sides, HOLD_U, HOLD_V,
+    cell_mesh, gfxobj_mesh, oct_decode, oct_encode, Sides, HOLD_U, HOLD_V, OUTWARD_PORTAL_SETBACK,
 };
 use pyreal_engine::asset::object::setup_parts;
 use pyreal_primitives::{DataId, Vec3};
@@ -220,6 +220,45 @@ fn a_polygon_within_one_repeat_is_held_to_its_edge() {
         let got: Vec<(u32, [f32; 2])> = mesh.vertices.iter().map(|v| (v.extra[0], v.uv)).collect();
         assert_eq!(got, uvs.map(|uv| (hold, uv)).to_vec(), "picture {k}");
     }
+}
+
+/// A room's pictured portals: its floor faces into the room and stays; its top faces out of it
+/// (seen only from the room above, whose own floor lies there) and is set back into the room.
+#[test]
+fn a_cells_pictured_portal_facing_out_is_set_back() {
+    let at = |id: i16, x: f32, y: f32, z: f32| SwVertex {
+        position: Vec3::new(x, y, z),
+        ..vertex(id, x, y)
+    };
+    let corners = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let vertices = (0..8)
+        .map(|i: i16| {
+            let (x, y) = corners[usize::from(i.unsigned_abs()) % 4];
+            at(i, x, y, if i < 4 { 0.0 } else { 3.0 })
+        })
+        .collect();
+    let cell = CellStruct {
+        cellstruct_id: 0,
+        vertex_array: VertexArray {
+            vertex_type: 1,
+            vertices,
+        },
+        // Both wound to face up.
+        polygons: vec![
+            polygon(0, 0, 0, &[0, 1, 2, 3]),
+            polygon(0, 0, 0, &[4, 5, 6, 7]),
+        ],
+        portals: vec![0, 1],
+        cell_bsp: BspTree { nodes: Vec::new() },
+        physics_polygons: Vec::new(),
+        physics_bsp: BspTree { nodes: Vec::new() },
+        drawing_bsp: None,
+    };
+    let mesh = cell_mesh(&cell, &[DataId(0x0800_0377)]);
+    let mut heights: Vec<f32> = mesh.vertices.iter().map(|v| v.position[2]).collect();
+    heights.sort_by(f32::total_cmp);
+    heights.dedup();
+    assert_eq!(heights, vec![0.0, 3.0 - OUTWARD_PORTAL_SETBACK]);
 }
 
 /// An object with no drawing polygons has nothing to draw.

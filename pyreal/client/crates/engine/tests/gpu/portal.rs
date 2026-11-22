@@ -35,6 +35,7 @@ fn the_tunnel_at_4k_costs_a_few_milliseconds() {
             phase: t,
             travelled: t,
             seed: 7,
+            trip: 0,
             palette: Palette::PORTAL,
             from_world: false,
         }

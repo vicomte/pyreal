@@ -440,6 +440,10 @@ pub struct SceneRenderer {
     pub view_distance: Option<f32>,
     /// The teleport's moment while it runs.
     portal_look: Option<pyreal_client_contract::teleport::PortalLook>,
+    /// When the runtime handed over `portal_look`, which the portal thread carries on from.
+    portal_look_at: std::time::Instant,
+    /// Trips through portal space so far, numbering each.
+    portal_trips: u32,
     /// The colour of the portal stepped through, taken as the trip began.
     portal_colour: Option<glam::Vec3>,
     /// Portal space drawn by the engine (the tunnel flown through) in place of the swirl.
@@ -924,6 +928,8 @@ impl SceneRenderer {
             world_hidden: false,
             view_distance: None,
             portal_look: None,
+            portal_look_at: std::time::Instant::now(),
+            portal_trips: 0,
             portal_colour: None,
             portal_enhanced: true,
             portal,
@@ -1945,7 +1951,7 @@ impl SceneRenderer {
                 .map(|t| t.create_view(&Default::default()));
             let show = pyreal_engine::portal::Show {
                 frame: f,
-                at: std::time::Instant::now(),
+                at: self.portal_look_at,
                 world: last,
                 ui: ui.clone(),
                 format: self.format,
@@ -2320,12 +2326,14 @@ impl SceneRenderer {
         // Behind portal space the landblocks are built a few milliseconds a frame.
         self.sim.stream_budget = (look.is_some() && self.windowed()).then_some(4.0);
         if look.is_some() && self.portal_look.is_none() {
+            self.portal_trips = self.portal_trips.wrapping_add(1);
             self.portal_from_world = self.world_drawn_last;
             self.portal_colour = look
                 .and_then(|l| l.portal_setup)
                 .and_then(|setup| self.engine.particles.portal_colour(setup));
         }
         self.portal_look = look;
+        self.portal_look_at = std::time::Instant::now();
     }
 
     /// Whether the device draws to a window.
@@ -2392,6 +2400,7 @@ impl SceneRenderer {
             phase: look.phase as f32,
             travelled: look.travelled as f32,
             seed: look.seed,
+            trip: self.portal_trips,
             palette: {
                 use pyreal_client_contract::teleport::PortalSource as Src;
                 match look.source {

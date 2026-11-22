@@ -2,16 +2,17 @@
 //! hook that runs them before each push.
 //!
 //! CI runs the tests and clippy on Linux alone, a smoke set on Windows, and packages each system.
-//! The Mac's build, tests and clippy run here, with the rules and the docs first because they fail
-//! a release in seconds. A pass on a clean tree is recorded, so the hook does not run them again
-//! for the commit that passed.
+//! The Mac's build, tests and clippy run here, with the rules, the changelog and the docs first
+//! because they fail a release in seconds, and clippy for Windows and Linux after the Mac's own. A
+//! pass on a clean tree is recorded, so the hook does not run them again for the commit that
+//! passed.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::util::{target_dir, workspace_root, Profile};
-use crate::Tier0Part;
+use crate::util::{print_table, target_dir, workspace_root, Profile, Report};
+use crate::{changelog, cross_clippy, Tier0Part};
 
 /// Prepush's parts, cheapest first.
 pub(crate) const PARTS: [Tier0Part; 5] = [
@@ -34,7 +35,7 @@ exec cargo xtask ci prepush --hook
 /// `cargo xtask ci prepush [--list] [--hook]`.
 pub(crate) fn prepush(args: &[String], profile: Profile) -> i32 {
     if args.iter().any(|a| a == "--list") {
-        return crate::print_plan(&crate::tier0_plan(profile, &PARTS));
+        return crate::print_plan(&plan(profile));
     }
     if args.iter().any(|a| a == "--hook") {
         let mut input = String::new();
@@ -67,11 +68,56 @@ pub(crate) fn prepush(args: &[String], profile: Profile) -> i32 {
             }
         }
     }
-    let code = crate::tier0_parts(profile, &PARTS, "CI prepush -- before pushing");
+    let code = print_table("CI prepush -- before pushing", &reports(profile));
     if code == 0 && profile == Profile::TestRelease {
         record_pass();
     }
     code
+}
+
+/// The rows tier 0 has no part for, and the part each follows.
+fn after(part: Tier0Part) -> Extra {
+    match part {
+        Tier0Part::Rules => Extra::Changelog,
+        Tier0Part::Clippy => Extra::CrossClippy,
+        _ => Extra::Nothing,
+    }
+}
+
+/// A prepush row beyond tier 0's.
+#[derive(Debug, PartialEq, Eq)]
+enum Extra {
+    Nothing,
+    /// `cargo xtask changelog`: tier 0 runs in CI too, which has no `main` to compare with.
+    Changelog,
+    /// `cargo xtask cross-clippy`: CI runs clippy on Windows and Linux itself.
+    CrossClippy,
+}
+
+fn reports(profile: Profile) -> Vec<Report> {
+    let mut rows = Vec::new();
+    for part in PARTS {
+        rows.extend(crate::tier0_reports(profile, &[part]));
+        match after(part) {
+            Extra::Changelog => rows.push(changelog::report()),
+            Extra::CrossClippy => rows.extend(cross_clippy::reports()),
+            Extra::Nothing => {}
+        }
+    }
+    rows
+}
+
+fn plan(profile: Profile) -> Vec<String> {
+    let mut lines = Vec::new();
+    for part in PARTS {
+        lines.extend(crate::tier0_plan(profile, &[part]));
+        match after(part) {
+            Extra::Changelog => lines.push("xtask changelog".to_owned()),
+            Extra::CrossClippy => lines.extend(cross_clippy::plan()),
+            Extra::Nothing => {}
+        }
+    }
+    lines
 }
 
 /// What the hook does for a push of `pushed` (the commits it sends) when `passed` is the commit
@@ -225,6 +271,21 @@ mod tests {
         assert_eq!(sorted, Tier0Part::ALL);
         assert_eq!(PARTS[..2], [Tier0Part::Rules, Tier0Part::Docs]);
         assert_eq!(PARTS.last(), Some(&Tier0Part::Test));
+    }
+
+    /// **Prepush checks the changelog with the rules and clippy for the other systems after the
+    /// Mac's**, so each fails as early as the checks like it.
+    #[test]
+    fn prepush_adds_the_changelog_and_cross_clippy() {
+        let order: Vec<Extra> = PARTS.into_iter().map(after).collect();
+        assert_eq!(order[0], Extra::Changelog);
+        assert_eq!(PARTS[0], Tier0Part::Rules);
+        let clippy = PARTS.iter().position(|p| *p == Tier0Part::Clippy).unwrap();
+        assert_eq!(order[clippy], Extra::CrossClippy);
+        let plan = plan(Profile::TestRelease);
+        let at = |needle: &str| plan.iter().position(|l| l.contains(needle)).unwrap();
+        assert!(at("xtask changelog") < at("xtask doc"));
+        assert!(at("--features retail-dats --target x86_64-") > at("cargo clippy --workspace"));
     }
 
     /// **The hook reads what git pushes**: one object per ref, a deletion none, each once.

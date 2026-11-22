@@ -64,18 +64,31 @@ The Release workflow then:
 - builds the base art pack from the commit `base-pack.toml` pins, fetched from the
   `dereth-enhanced-environment` repository with its LFS files;
 - packages Pyreal on each system with `cargo xtask package pyreal` (the Mac disk image, the
-  Windows zip, the Linux tarball and the plugin tool for each), signing and notarizing the Mac
-  disk image on the way, and starts each packaged program once (`--version`);
-- publishes a GitHub Release named `Pyreal 0.2.0` with every file, `SHA256SUMS`, `MANIFEST.txt`,
+  Windows zip and the Linux tarball), signing and notarizing the Mac disk image on the way, and
+  starts each packaged client once (`--version`). The packages build
+  while the checks run;
+- once the checks and every package pass, publishes a GitHub Release named `Pyreal 0.2.0` with every file, `SHA256SUMS`, `MANIFEST.txt`,
   `release.json`, and the version's CHANGELOG.md section as its notes.
 
-Each client checks for a newer release when it opens by reading `release.json` from
-`releases/latest/download/` in the repository its build names (`PYREAL_BUILD_SOURCE_URL`). It reads
-the `product`, `version`, `tag` and `prerelease` fields, so those stay in the index. GitHub's latest
-release is never a pre-release, and a stable client is never told of one. A client built without
-the source URL never checks. To see the notice from a checkout, build with both
-`PYREAL_BUILD_SOURCE_URL=https://github.com/jacobjohnston/pyreal` and an older
-`PYREAL_CHECK_AS_VERSION`, such as `0.1.1`.
+Each client checks for a newer release once a day when it opens. It reads the website's copy of
+the latest index, https://pyrealclient.app/release.json, named by `PYREAL_BUILD_UPDATE_URL`. When
+the site does not answer with a Pyreal index, it reads `release.json` from `releases/latest/download/`
+in the repository its build names (`PYREAL_BUILD_SOURCE_URL`). It reads the `product`, `version`,
+`tag` and `prerelease` fields, so those stay in the index, and from the site's copy also `page`, the
+site page its Download button opens. Without it the button opens the site's front page, or the
+GitHub Release when the answer came from GitHub. A client built with neither URL never checks.
+
+The website's build copies the latest GitHub Release's `release.json` into the site and adds
+`page`, so the site's copy changes when the site is deployed for a release. GitHub's latest
+release is never a pre-release, the site's build refuses one, and a stable client is never told
+of one. Clients 0.2.0 and older read only GitHub's copy, so every release keeps publishing
+`release.json`.
+
+To see the notice from a checkout, build with an older `PYREAL_CHECK_AS_VERSION`, such as `0.1.1`,
+and `PYREAL_BUILD_UPDATE_URL=https://pyrealclient.app/release.json`, or
+`PYREAL_BUILD_SOURCE_URL=https://github.com/jacobjohnston/pyreal` for GitHub's copy.
+`PYREAL_BUILD_UPDATE_URL` can also name a local file served with `python3 -m http.server`. The
+answer is kept a day in `update-check.json` in the settings folder; delete it to check again.
 
 ## What runs where
 
@@ -90,6 +103,7 @@ checks run before the push.
 | Clippy | CI, Linux and Windows | It reads the code each system compiles alone, quickly |
 | The tests of the crates with Windows code (`cargo xtask ci smoke`) | CI, Windows | Their Windows paths run nowhere else |
 | The build, the tests and clippy on the Mac | The Mac, before the push (`cargo xtask ci prepush`) | The Mac is where Pyreal is made and played |
+| Clippy for Windows and Linux, and the changelog | The Mac, before the push (`cargo xtask ci prepush`) | A one-system mistake fails before CI starts, and only a checkout has `main` to compare with |
 | The shipped build, its packaging and that it starts | CI, each system's package job | Only the system itself can build, link, sign and start it |
 
 ## When something fails
@@ -111,8 +125,10 @@ checks run before the push.
   version tag publishes a Release.
 - Build caches are saved only by runs on `main`, and a tag's run reads `main`'s. Running CI by hand
   on `main` before tagging warms the checks' caches. Running Release by hand on `main` now and then
-  also keeps the package builds and the base pack cached, which saves fetching the pack's LFS
-  files (about 500 MB) again, but it spends Mac minutes.
+  also keeps the package builds cached, but it spends Mac minutes.
+- The base pack is kept for 30 days as an artifact named by its pinned SHA-256
+  (`base-pack-<sha256>`). A later run with the same pin, on any tag or branch, takes it instead of
+  fetching the pack's LFS files (about 600 MB) and building it again.
 - On Windows, `mach-dxcompiler` downloads DXC from GitHub while it builds. The workflows give its
   API call the run's token, so shared runners don't run out of unauthenticated requests.
 

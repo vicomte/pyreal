@@ -21,6 +21,8 @@ pyreal-animation.workspace = true
 # A character dressed as creation dresses one: the creation tables and their palette sets.
 pyreal-chargen.workspace = true
 pyreal-assets.workspace = true
+# A headless run times the GPU, so it queues on the machine lock.
+pyreal-machine-lock.workspace = true
 wgpu = "30"
 glam.workspace = true
 png.workspace = true

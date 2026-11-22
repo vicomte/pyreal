@@ -3,9 +3,9 @@
 //!
 //! **Depends on** `pyreal-engine` (everything it draws), `pyreal-dat` (opening the dats),
 //! `pyreal-primitives` (the ids of objects a report names), `pyreal-world-data` (the region and
-//! the animation assets), `pyreal-animation` (motion commands), and `pyreal-chargen` with
-//! `pyreal-assets` (a character dressed as creation dresses one). **Used by** nothing; people run
-//! it to work on the engine.
+//! the animation assets), `pyreal-animation` (motion commands), `pyreal-chargen` with
+//! `pyreal-assets` (a character dressed as creation dresses one), and `pyreal-machine-lock` (a
+//! headless run's turn on the GPU). **Used by** nothing; people run it to work on the engine.
 //!
 //! **Must never** be depended on by the client: it is a development viewer.
 //!
@@ -46,7 +46,9 @@
 //! cell puts the eye inside, where the portal walk starts. A library place's objects (its `doors`
 //! or `setup,block,x,y` entries, the ones a server would make) are placed on the ground. The dats are a folder of end-of-retail files or
 //! of the older `portal.dat` and `cell.dat`. In a window, WASD and Q/E move, the right mouse
-//! button looks, Shift is faster, and a left click selects what is under the cursor.
+//! button looks, Shift is faster, and a left click selects what is under the cursor. A headless
+//! run waits for the machine lock (`pyreal-machine-lock`), so its timings are not shared with a
+//! build or another GPU run; `PYREAL_MACHINE_LOCK=off` skips it.
 //!
 //! Bodies are animated: a library place's setups, each `--object` (a setup, with the motion table
 //! it moves by when not its own and the scale its weenie gives it) and each `--character` (an Aluvian dressed as character creation
@@ -58,7 +60,7 @@
 //! `--translucency` describe them as a server describes a creature. A body's own `;KEY=VALUE`
 //! settings (`stance`, `motion`, `facing`, `time`, `stride`, `dress`, `wear`, `script`,
 //! `translucency`, and `lift`, metres over the ground it keeps as it walks) win over those flags
-//! for it alone.
+//! for it alone; `fade` fades every part as the close camera fades the player.
 
 mod bodies;
 
@@ -1022,6 +1024,9 @@ fn load(engine: &mut Engine, v: &View, a: &Args) -> Loaded {
                 if let Some(t) = own.translucency.or(a.translucency).filter(|_| asked) {
                     b.driver.set_described_translucency(t);
                 }
+                if let Some(t) = own.fade.filter(|_| asked) {
+                    b.driver.set_translucency(t);
+                }
                 // Drawn through the headless frames, the last one at the time asked for.
                 #[allow(clippy::cast_precision_loss)]
                 let lead = (a.frames.max(1) - 1) as f64 * FRAME_STEP;
@@ -1257,6 +1262,8 @@ fn mib(b: u64) -> f64 {
 }
 
 fn headless(a: &Args) -> Result<(), String> {
+    // Its pass timings are only worth reading with the GPU to itself.
+    let _lock = pyreal_machine_lock::acquire("engine-view").map_err(|e| e.to_string())?;
     let v = view(a)?;
     let gpu = Gpu::headless().map_err(|e| e.to_string())?;
     println!("adapter: {}", gpu.adapter.get_info().name);
@@ -1710,6 +1717,7 @@ fn tunnel(engine: &Engine, a: &Args, seconds: f32) -> Vec<u8> {
         phase: seconds,
         travelled: seconds,
         seed: 7,
+        trip: 0,
         palette: colour.map_or(Palette::PORTAL, |c| Palette::PORTAL.toward(c)),
         from_world: false,
     };

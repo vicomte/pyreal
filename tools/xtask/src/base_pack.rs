@@ -115,6 +115,11 @@ pub fn base_pack(args: &[String]) -> i32 {
     }
 }
 
+/// The pinned pack, built when it is not there yet.
+pub fn pinned() -> Result<PathBuf, String> {
+    build().map(|()| out_file())
+}
+
 /// Where the packed file goes.
 #[must_use]
 pub fn out_file() -> PathBuf {

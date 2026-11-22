@@ -1,8 +1,9 @@
 //! The workspace task runner: the gate tiers, the clippy policy, the seams and the checks clippy
 //! cannot express.
 //!
-//! **Depends on** one of the workspace's crates: `pyreal-dat`, for the tests' lookup of the retail
-//! dats (`pyreal_dat::testing`); otherwise it runs `cargo` and reads the workspace's files.
+//! **Depends on** two of the workspace's crates: `pyreal-dat`, for the tests' lookup of the retail
+//! dats (`pyreal_dat::testing`), and `pyreal-machine-lock`, the GPU tiers' turn on the machine;
+//! otherwise it runs `cargo` and reads the workspace's files.
 //! **Used by**
 //! nothing: it is the `cargo xtask` binary (the alias is in `.cargo/config.toml`).
 //!
@@ -19,6 +20,7 @@
 //! | when a test might lean on data you have | `cargo xtask ci no-data` | nothing: the tests as public CI runs them |
 //! | with the retail data | `cargo xtask ci tier1` | the dats and `world.pack` |
 //! | on hardware | `cargo xtask ci tier2` | a graphics device and the dats |
+//! | after a graphics change | `cargo xtask golden` | the same, and the goldens beside the dats |
 //!
 //! The expensive comparisons wait until the cheap ones hold: golden images against a renderer built
 //! on unproven float precision produce an unbounded stream of false differences. The single checks
@@ -30,10 +32,14 @@
 
 mod base_pack;
 mod bundle;
+mod changelog;
 mod check;
 mod comment_lint;
 mod crate_docs;
+mod cross_clippy;
 mod gates;
+mod golden;
+mod guards;
 mod licence;
 mod line_endings;
 mod lint;
@@ -62,8 +68,9 @@ When to run what:
                             fast lints. Needs nothing. --base <ref> (default: origin/HEAD,
                             origin/main or main), -p <crate> to name the crates
   ci prepush                before pushing or opening a PR: tier0, cheapest first (the rules, the
-                            docs, clippy, the build, the tests). CI runs the tests and clippy on
-                            Linux only, so this is where the Mac's run. --list: what it would run
+                            changelog, the docs, clippy, clippy for Windows and Linux, the build,
+                            the tests). CI runs the tests and clippy on Linux only, so this is
+                            where the Mac's run. Runs on battery too. --list: what it would run
   ci tier0                  everything that needs no data: the build, every no-data test, clippy,
                             every rule below and the docs. --only build,test,clippy,docs,rules:
                             those parts alone, in that order (CI runs test and clippy on Linux,
@@ -80,6 +87,16 @@ When to run what:
   ci tier2                  on hardware: the gpu tier and the retail comparisons. Needs a graphics
                             device and the dats. The client's gpu binary runs sharded
                             (PYREAL_TEST_SHARDS=N); --serial: one process
+  golden [--update] [--only SLUG,...]
+                            tier2's retail comparisons alone: each scene drawn with retail's look
+                            against its golden picture, and Pyreal's look measured against
+                            retail's. The goldens live outside the repository (PYREAL_GOLDEN_DIR,
+                            else Golden beside the dats' folder); --update draws them again
+                            tier0, tier1 and tier2 refuse to run on battery unless --on-battery
+                            (or PYREAL_ON_BATTERY=1); tier1, tier2 and the gates wait for the
+                            machine lock
+  lock [-- <command>]       who holds the machine lock that GPU runs, timing runs and build.py
+                            queue on, or <command> run holding it (PYREAL_MACHINE_LOCK=off skips)
 
 Rules (each a row of `check` or `ci tier0`):
   fmt-check                 cargo fmt --all --check
@@ -99,6 +116,11 @@ Rules (each a row of `check` or `ci tier0`):
                             git checkout, default the workspace)
   skip-claims --tree [ROOT] no test skips when the retail dats are absent, and no comment claims
                             one does
+  changelog                 a branch that changes what players get (since its merge base with
+                            main) updates CHANGELOG.md's Unreleased section, or says it has nothing
+                            for players: a `Changelog: none` commit trailer or PYREAL_CHANGELOG=none
+  cross-clippy              clippy -D warnings for Windows and Linux from this machine, their C
+                            stood in (needs `rustup target add` for each)
 
 Tests:
   build [ARGS]              cargo build of the workspace (ARGS go to cargo: `cargo xtask build
@@ -175,7 +197,9 @@ fn main() {
         Some("skip-claims") => skip_claims::skip_claims(&args[1..]),
         Some("sweep") => sweep::sweep(&args[1..]),
         Some("gate") => match gate_name(&args) {
-            Some(g) => gates::gate(g, threads(&args), profile),
+            Some(g) => with_machine_lock(&format!("cargo xtask gate {g}"), || {
+                gates::gate(g, threads(&args), profile)
+            }),
             None => {
                 eprintln!(
                     "gate: name one, e.g. `cargo xtask gate physics`; known: {}",
@@ -184,7 +208,19 @@ fn main() {
                 2
             }
         },
-        Some("gates") => all_gates(&args, profile),
+        Some("gates") => with_machine_lock("cargo xtask gates", || all_gates(&args, profile)),
+        Some("golden") => match guards::mains_power("cargo xtask golden", &args) {
+            Ok(()) => {
+                with_machine_lock("cargo xtask golden", || golden::golden(&args[1..], profile))
+            }
+            Err(e) => {
+                eprintln!("golden: {e}");
+                1
+            }
+        },
+        Some("changelog") => changelog::changelog(),
+        Some("cross-clippy") => cross_clippy::cross_clippy(),
+        Some("lock") => guards::lock(&args[1..]),
         Some("bundle-macos") => bundle::bundle_macos(&args[1..]),
         Some("package") => package::package(&args[1..]),
         Some("base-pack") => base_pack::base_pack(&args[1..]),
@@ -371,6 +407,11 @@ fn tier0_test_commands(profile: Profile) -> Vec<(String, Vec<&'static str>)> {
 /// given. The build, the tests, clippy and the docs cover the whole workspace in one invocation
 /// each. Each cargo row says how long it took: the numbers to read when tier 0 gets slow.
 fn tier0_parts(profile: Profile, parts: &[Tier0Part], title: &str) -> i32 {
+    print_table(title, &tier0_reports(profile, parts))
+}
+
+/// The rows of [`tier0_parts`], run.
+fn tier0_reports(profile: Profile, parts: &[Tier0Part]) -> Vec<Report> {
     let ws = workspace_root();
     let mut reports = Vec::new();
     for part in parts {
@@ -396,7 +437,7 @@ fn tier0_parts(profile: Profile, parts: &[Tier0Part], title: &str) -> i32 {
             reports.extend(rows);
         }
     }
-    print_table(title, &reports)
+    reports
 }
 
 /// What [`tier0_parts`] would run for `parts`, one line per row, for `--list`.
@@ -440,7 +481,6 @@ const SMOKE_CRATES: &[&str] = &[
     "pyreal-dat",
     "pyreal-input",
     "pyreal-launch",
-    "pyreal-plugin",
     "pyreal-primitives",
 ];
 
@@ -524,13 +564,8 @@ fn tier2(args: &[String], profile: Profile) -> i32 {
             step(&label, call.run())
         })
         .collect();
-    // NOT-BUILT rather than NO-ORACLE: the comparison code does not exist, so there is nothing a
-    // host could have declined to run.
-    reports.push(Report::new(
-        "retail comparisons",
-        Outcome::NotRun(NotRun::NotBuilt),
-        "golden images and long physics traces against retail are not built yet",
-    ));
+    reports.extend(golden::tier2_rows(profile));
+    reports.push(golden::physics_traces_row());
     print_table("CI tier 2 -- hardware and retail comparisons", &reports)
 }
 
@@ -553,7 +588,7 @@ enum CiTier {
 
 /// The usage line of `cargo xtask ci`.
 const CI_USAGE: &str = "usage: cargo xtask ci prepush|tier0|smoke|no-data|tier1|tier2 \
-     [--only part,...] [--list] [--hook] [--serial] [--debug]";
+     [--only part,...] [--list] [--hook] [--serial] [--debug] [--on-battery]";
 
 /// The tier `cargo xtask ci <args>` asks for.
 fn ci_request(args: &[String]) -> Result<CiTier, String> {
@@ -590,6 +625,10 @@ fn ci(args: &[String]) -> i32 {
         eprintln!("ci: --list is for prepush, tier0 and smoke\n{CI_USAGE}");
         return 2;
     }
+    if let Err(e) = ci_guards(args, list) {
+        eprintln!("ci: {e}");
+        return 1;
+    }
     match ci_request(args) {
         Ok(CiTier::Zero) if list => print_plan(&tier0_plan(profile, &parts)),
         Ok(CiTier::Zero) => tier0_parts(profile, &parts, TIER0_TITLE),
@@ -599,11 +638,33 @@ fn ci(args: &[String]) -> i32 {
         }
         Ok(CiTier::Smoke) => smoke(profile),
         Ok(CiTier::NoData) => no_data::no_data(no_data::commands(profile)),
-        Ok(CiTier::One) => tier1(args, profile),
-        Ok(CiTier::Two) => tier2(args, profile),
+        Ok(CiTier::One) => with_machine_lock("cargo xtask ci tier1", || tier1(args, profile)),
+        Ok(CiTier::Two) => with_machine_lock("cargo xtask ci tier2", || tier2(args, profile)),
         Err(e) => {
             eprintln!("ci: {e}\n{CI_USAGE}");
             2
+        }
+    }
+}
+
+/// The battery guard of the tiers that load the machine: tier 0, tier 1 and tier 2 wait for mains
+/// power unless told otherwise (`ci prepush` does not).
+fn ci_guards(args: &[String], list: bool) -> Result<(), String> {
+    match ci_request(args) {
+        Ok(CiTier::Zero | CiTier::One | CiTier::Two) if !list => {
+            guards::mains_power(&format!("cargo xtask ci {}", args[0]), args)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `body`'s exit code, run holding the machine lock (see [`guards`]).
+fn with_machine_lock(what: &str, body: impl FnOnce() -> i32) -> i32 {
+    match guards::machine_lock(what) {
+        Ok(_lock) => body(),
+        Err(e) => {
+            eprintln!("{what}: {e}");
+            1
         }
     }
 }
@@ -625,6 +686,11 @@ fn print_plan(lines: &[String]) -> i32 {
 /// find out whether the problem is theirs. This names the crates; whoever owns them decides.
 fn clippy_step(ws: &std::path::Path, label: &str, argv: &[&str]) -> Report {
     let (ok, out) = util::run_captured(ws, "cargo", argv);
+    clippy_report(label, ok, &out)
+}
+
+/// A clippy row from its success and its output, naming the crates responsible when it failed.
+fn clippy_report(label: &str, ok: bool, out: &str) -> Report {
     if ok {
         return Report::new(label, Outcome::Pass, String::new());
     }

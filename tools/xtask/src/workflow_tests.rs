@@ -60,23 +60,43 @@ fn ci_runs_tests_and_clippy_on_linux_clippy_and_smoke_tests_on_windows_and_the_r
     );
 }
 
-/// **Every package's programs start on the system that built them**, the one run of the shipped
+/// **Every package's program starts on the system that built it**, the one run of the shipped
 /// build on the Mac and Windows.
 #[test]
-fn every_package_job_starts_the_programs_it_packaged() {
+fn every_package_job_starts_the_program_it_packaged() {
     let release = read(".github/workflows/release.yml");
     let package = job(&release, "package");
     let built = package
         .find("cargo xtask package pyreal")
         .expect("the package step");
     let started = package
-        .find("name: The packaged programs start")
+        .find("name: The packaged program starts")
         .expect("the start step");
     assert!(built < started);
     let step = &package[started..];
-    assert!(step.contains("foreach ($name in 'pyreal', 'pyreal-plugin')"));
+    assert!(step.contains("\"pyreal$suffix\""));
     assert!(step.contains("-ArgumentList '--version' -Wait"));
     assert!(step.contains("$run.ExitCode -ne 0"));
+}
+
+/// **Nothing is published until the checks pass**, while the packages build alongside them.
+#[test]
+fn the_publish_waits_for_the_checks_and_the_packages_do_not() {
+    let release = read(".github/workflows/release.yml");
+    let needs = |name: &str| {
+        job(&release, name)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("needs: "))
+            .unwrap_or_else(|| panic!("{name} needs nothing"))
+            .to_owned()
+    };
+    let publish = needs("release");
+    assert!(
+        publish.contains("checks") && publish.contains("package"),
+        "{publish}"
+    );
+    assert!(job(&release, "release").contains("if: github.ref_type == 'tag'"));
+    assert!(!needs("package").contains("checks"), "{}", needs("package"));
 }
 
 /// **A step that fails does not hide the next one's failures**: every part after the first runs

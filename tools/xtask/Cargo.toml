@@ -24,6 +24,11 @@ regex = "1"
 toml.workspace = true
 # Where the gates look for the retail dats: the same lookup the tests they run use.
 pyreal-dat = { workspace = true, features = ["test-support"] }
+# The GPU tiers and the gates queue on the machine lock.
+pyreal-machine-lock.workspace = true
+
+# The retail comparisons read and write their pictures.
+png.workspace = true
 
 # `package`: the release archives (a .zip for Windows, a .tar.gz elsewhere, with zlib-rs's
 # deflate) and their checksums.

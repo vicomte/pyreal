@@ -1,0 +1,11 @@
+[package]
+name = "pyreal-machine-lock"
+description = "One lock per machine for work that takes the GPU or every core, so timing runs, the GPU test tiers and release builds queue instead of skewing each other."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -53,7 +53,8 @@ jobs:
           Write-Output "::notice title=version::Pyreal $version"
 
   # The tests and clippy on Linux, clippy and a smoke set on Windows, and the rules and docs once. The Mac's
-  # are run before the push (`cargo xtask ci prepush`); its package job builds and signs.
+  # are run before the push (`cargo xtask ci prepush`); its package job builds and signs. The packages
+  # build alongside them, and only the publish waits for them.
   checks:
     needs: version
     uses: ./.github/workflows/ci.yml
@@ -65,22 +66,59 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # To find the same pack among earlier runs' artifacts.
+      actions: read
     defaults:
       run:
         shell: pwsh
     env:
       CARGO_INCREMENTAL: '0'
+    outputs:
+      artifact: ${{ steps.pin.outputs.artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Keyed on the pin, so an unchanged pack is not fetched again. Saved only by runs on main.
+      - name: Read the pin
+        id: pin
+        run: |
+          $pin = Get-Content base-pack.toml -Raw
+          $sha = [regex]::Match($pin, '(?m)^sha256\s*=\s*"([0-9a-f]{64})"').Groups[1].Value
+          $bytes = [regex]::Match($pin, '(?m)^bytes\s*=\s*(\d+)').Groups[1].Value
+          if (-not $sha -or -not $bytes) { Write-Error "base-pack.toml names no sha256 or bytes"; exit 1 }
+          "sha256=$sha" >> $env:GITHUB_OUTPUT
+          "bytes=$bytes" >> $env:GITHUB_OUTPUT
+          "artifact=base-pack-$sha" >> $env:GITHUB_OUTPUT
+      # Artifacts are kept across tags, where caches are not: an earlier run's pack with the pinned
+      # SHA-256 is the same file. Anything else falls through to the build below.
       - name: The pack from an earlier run
         id: cached
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: target/base-pack/base-pack.dat
-          key: base-pack-${{ hashFiles('base-pack.toml') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.pin.outputs.artifact }}
+          SHA256: ${{ steps.pin.outputs.sha256 }}
+          BYTES: ${{ steps.pin.outputs.bytes }}
+        run: |
+          $list = gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts?name=$env:NAME&per_page=20" | ConvertFrom-Json
+          $found = @($list.artifacts | Where-Object { -not $_.expired }) | Select-Object -First 1
+          if (-not $found) { Write-Output "no earlier run kept $env:NAME"; exit 0 }
+          $dir = Join-Path $env:RUNNER_TEMP 'earlier-pack'
+          gh run download $found.workflow_run.id --repo $env:GITHUB_REPOSITORY --name $env:NAME --dir $dir
+          if ($LASTEXITCODE -ne 0) { Write-Output "::warning::could not download $env:NAME; building it"; exit 0 }
+          $file = Join-Path $dir 'base-pack.dat'
+          $item = Get-Item $file -ErrorAction SilentlyContinue
+          $hash = if ($item) { (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower() } else { '' }
+          if ($hash -ne $env:SHA256 -or $item.Length -ne [long]$env:BYTES) {
+            Write-Output "::warning::run $($found.workflow_run.id)'s $env:NAME is not the pinned file; building it"
+            exit 0
+          }
+          New-Item -ItemType Directory -Force -Path target/base-pack | Out-Null
+          Move-Item $file target/base-pack/base-pack.dat -Force
+          Write-Output "::notice title=base pack::reused from run $($found.workflow_run.id)"
+          "cache-hit=true" >> $env:GITHUB_OUTPUT
       - name: Install the workspace Rust version
         if: steps.cached.outputs.cache-hit != 'true'
         run: |
@@ -91,7 +129,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           rustup override set $toolchain
       # base-pack.toml names the repository as ../dereth-enhanced-environment, beside the checkout.
-      # Only the pinned commit and its LFS files (about 500 MB) are fetched.
+      # Only the pinned commit and its LFS files (about 25,000 files, 600 MB) are fetched, many at
+      # once: at git-lfs's default of 8 the fetch took 7 minutes.
       - name: Fetch the pinned pack source
         if: steps.cached.outputs.cache-hit != 'true'
         run: |
@@ -104,28 +143,24 @@ jobs:
           git -C $repo fetch --quiet --depth 1 origin $commit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git -C $repo lfs install --local
+          git -C $repo config lfs.concurrenttransfers 32
           git -C $repo lfs fetch origin $commit
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build the base pack
         if: steps.cached.outputs.cache-hit != 'true'
         run: cargo xtask base-pack build
-      - name: Keep the pack for later runs
-        if: steps.cached.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: target/base-pack/base-pack.dat
-          key: base-pack-${{ hashFiles('base-pack.toml') }}
+      # Named by its SHA-256 and kept a month, so a later run with the same pin takes it.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: base-pack
+          name: ${{ steps.pin.outputs.artifact }}
           path: target/base-pack/base-pack.dat
-          retention-days: 3
+          retention-days: 30
           if-no-files-found: error
 
-  # Each system's release files, built natively, after the checks pass.
+  # Each system's release files, built natively while the checks run.
   package:
     name: package (${{ matrix.os }})
-    needs: [version, checks, base-pack]
+    needs: [version, base-pack]
     strategy:
       fail-fast: false
       matrix:
@@ -143,8 +178,11 @@ jobs:
         shell: pwsh
     env:
       CARGO_INCREMENTAL: '0'
-      # The public repository: the plugin template's workflows download the plugin tool from it.
+      # The public repository: the update check reads its latest release when the website does not
+      # answer.
       PYREAL_BUILD_SOURCE_URL: https://github.com/jacobjohnston/pyreal
+      # The website's copy of the latest release.json, which the update check reads first.
+      PYREAL_BUILD_UPDATE_URL: https://pyrealclient.app/release.json
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -180,12 +218,31 @@ jobs:
         with:
           key: package-${{ matrix.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # It writes THIRD-PARTY-LICENSES.html into each package. Its release build, checked against
+      # the SHA-256 below, rather than 2 to 3.5 minutes building it.
       - name: Install cargo-about
-        # It writes THIRD-PARTY-LICENSES.html into each package.
-        run: cargo install --locked cargo-about --version 0.9.3 --features cli
+        env:
+          VERSION: 0.9.3
+        run: |
+          $target, $sha256 = switch ($env:RUNNER_OS) {
+            'Linux' { 'x86_64-unknown-linux-musl', '3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4' }
+            'Windows' { 'x86_64-pc-windows-msvc', '9e2942533ef1c592c4a70bdb384cae1550a3f5fc9ae40379b6662e3d2f16fe02' }
+            'macOS' { 'aarch64-apple-darwin', '45520df8680978a6e7c4023ace0e3f311c73efc208cd68e5a7f4ed4822fa0349' }
+          }
+          $name = "cargo-about-$env:VERSION-$target"
+          $archive = Join-Path $env:RUNNER_TEMP "$name.tar.gz"
+          Invoke-WebRequest -Uri "https://github.com/EmbarkStudios/cargo-about/releases/download/$env:VERSION/$name.tar.gz" -OutFile $archive
+          $got = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
+          if ($got -ne $sha256) { Write-Error "$name.tar.gz hashes to $got, not $sha256"; exit 1 }
+          # A relative name: Git's tar on Windows reads `D:` in a path as a remote host.
+          Push-Location $env:RUNNER_TEMP
+          tar -xzf "$name.tar.gz"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          Join-Path $env:RUNNER_TEMP $name >> $env:GITHUB_PATH
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: base-pack
+          name: ${{ needs.base-pack.outputs.artifact }}
           path: ${{ runner.temp }}/base-pack
       # The Developer ID and the notarizing key, from the `release` environment. A version tag
       # needs them; a manual run without them packages an ad hoc signed, unnotarized app.
@@ -243,19 +300,17 @@ jobs:
           # The index is written once over every system's files, by the release job.
           Remove-Item -ErrorAction SilentlyContinue out/release/SHA256SUMS, out/release/release.json, out/release/MANIFEST.txt
           Get-ChildItem out/release | Format-Table Name, Length
-      # The programs just packaged start on this system: every library they link is found, and each
+      # The program just packaged starts on this system: every library it links is found, and it
       # says its version. Start-Process waits for the Windows client, which has no console.
-      - name: The packaged programs start
+      - name: The packaged program starts
         run: |
           $triple = ((rustc -vV) -match '^host: ' | Select-Object -First 1).Substring(6).Trim()
           $suffix = if ($IsWindows) { '.exe' } else { '' }
-          foreach ($name in 'pyreal', 'pyreal-plugin') {
-            $exe = Join-Path "target/$triple/release" "$name$suffix"
-            $out = Join-Path $env:RUNNER_TEMP "$name-version.txt"
-            $run = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out
-            Get-Content $out -ErrorAction SilentlyContinue
-            if ($run.ExitCode -ne 0) { Write-Error "$name --version exited with $($run.ExitCode)"; exit 1 }
-          }
+          $exe = Join-Path "target/$triple/release" "pyreal$suffix"
+          $out = Join-Path $env:RUNNER_TEMP "pyreal-version.txt"
+          $run = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $out
+          Get-Content $out -ErrorAction SilentlyContinue
+          if ($run.ExitCode -ne 0) { Write-Error "pyreal --version exited with $($run.ExitCode)"; exit 1 }
       - name: Remove the Mac signing keychain and key
         if: always() && runner.os == 'macOS'
         shell: bash
@@ -271,10 +326,12 @@ jobs:
           retention-days: 7
 
   # The GitHub Release for a version tag: every system's files, the index over them, and the
-  # version's section of CHANGELOG.md as its notes.
+  # version's section of CHANGELOG.md as its notes, only once the checks and every package pass.
+  # Clients 0.2.0 and older check for updates by reading the release's release.json, and the
+  # website copies it, so it is always published.
   release:
     name: publish
-    needs: [version, package]
+    needs: [version, checks, package]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 30

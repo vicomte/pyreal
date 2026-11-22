@@ -4,6 +4,10 @@
     python3 build.py                check, build, sign and verify the app
     python3 build.py --check        check only: tools, certificate, git
     python3 build.py --allow-dirty  build uncommitted changes too
+    python3 build.py --on-battery   build on battery too (or PYREAL_ON_BATTERY=1)
+
+A build waits for the machine lock that `cargo xtask ci tier1`/`tier2` and engine-view's timing
+runs also take (tools/machine-lock), and names whoever holds it while it waits.
 
 Settings live in build.ini beside this file. The packaging itself is `cargo xtask package pyreal`;
 this script supplies its environment, unpacks Pyreal.app into dist/<commit>/ and checks it. The app
@@ -13,6 +17,7 @@ target/base-pack/ first; the player chooses any other in the client.
 
 import argparse
 import configparser
+import fcntl
 import os
 import re
 import shutil
@@ -20,6 +25,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -52,6 +58,40 @@ CLEARED_ENV = [
 
 class Failed(Exception):
     pass
+
+
+def on_battery():
+    """Whether the Mac draws from its battery, as `pmset -g batt` says on its first line."""
+    out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, check=False)
+    return "'Battery Power'" in (out.stdout.splitlines() or [""])[0]
+
+
+def machine_lock(env):
+    """Takes the machine lock (tools/machine-lock's file and note), waiting while it is held."""
+    if env.get("PYREAL_MACHINE_LOCK") in ("off", "held"):
+        return None
+    folder = Path.home() / "Library" / "Caches" / "pyreal"
+    folder.mkdir(parents=True, exist_ok=True)
+    lock = open(folder / "machine.lock", "a")
+    said, said_at = None, 0.0
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            note = (folder / "machine.holder").read_text() if (folder / "machine.holder").exists() else ""
+            holder = dict(line.split("=", 1) for line in note.splitlines() if "=" in line)
+            if holder != said or time.time() - said_at >= 60:
+                age = int(time.time()) - int(holder.get("since", time.time()))
+                print(f"waiting for the machine lock: held by `{holder.get('what', 'another process')}` "
+                      f"(pid {holder.get('pid', '?')}) in {holder.get('dir', '?')}, "
+                      f"for {age // 60}m {age % 60:02d}s", flush=True)
+                said, said_at = holder, time.time()
+            time.sleep(2)
+    (folder / "machine.holder").write_text(
+        f"pid={os.getpid()}\nwhat=build.py\ndir={ROOT}\nsince={int(time.time())}\n")
+    env["PYREAL_MACHINE_LOCK"] = "held"
+    return lock
 
 
 def resolve(path):
@@ -266,6 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--check", action="store_true", help="check only, build nothing")
     parser.add_argument("--allow-dirty", action="store_true", help="build uncommitted changes too")
+    parser.add_argument("--on-battery", action="store_true", help="build on battery too")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -282,6 +323,10 @@ def main():
     print(f"Ready: commit {commit}, signing with {cfg['identity']}, outputs to {out}")
     if args.check:
         return
+    if on_battery() and not args.on_battery and os.environ.get("PYREAL_ON_BATTERY") != "1":
+        raise Failed("not building on battery: plug the Mac in, or pass --on-battery "
+                     "(or set PYREAL_ON_BATTERY=1) to build anyway")
+    held = machine_lock(env)  # let go when build.py exits
 
     build_client(out, cfg, env, args.allow_dirty)
     shutil.rmtree(ROOT / STAGE, ignore_errors=True)

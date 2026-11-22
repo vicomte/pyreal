@@ -9,10 +9,60 @@
 | With your game data | `cargo xtask ci tier1` |
 | On a graphics device | `cargo xtask ci tier2` |
 
-`ci prepush` runs every check that needs no data, cheapest first: the rules, the docs, clippy, the
-build and the tests. CI runs nothing on a Mac, so this is the Mac's run. `cargo xtask install-hook`
-makes git run it before each push, and skip it when it already passed on the commit being pushed
-with nothing uncommitted. `git push --no-verify` skips it. `--list` shows what it would run.
+`ci prepush` runs every check that needs no data, cheapest first: the rules, the changelog, the
+docs, clippy, clippy for Windows and Linux, the build and the tests. CI runs nothing on a Mac, so
+this is the Mac's run. `cargo xtask install-hook` makes git run it before each push, and skip it
+when it already passed on the commit being pushed with nothing uncommitted. `git push --no-verify`
+skips it. `--list` shows what it would run.
+
+**Clippy for Windows and Linux** (`cargo xtask cross-clippy`) catches code that only builds on one
+system, such as an unguarded `std::os::unix`, before CI does. It needs each target's standard
+library once: `rustup target add x86_64-pc-windows-msvc x86_64-unknown-linux-gnu`. Without it the
+rows say NO-HOST with that command and prepush goes on. Nothing else is installed: the C a few
+dependencies carry is stood in for by scripts xtask writes to Pyreal's cache folder, because clippy
+never links. So this checks the Rust for each system and CI still builds the C.
+
+**The changelog** (`cargo xtask changelog`). A branch that changes what players get, since its merge
+base with `main`, adds to the Unreleased section of [CHANGELOG.md](CHANGELOG.md). What players get
+is the code under `core/`, `pyreal/client/` and `pyreal/desktop/`, shaders and
+options included, and `base-pack.toml`; tests, examples, fixtures, `Cargo.toml` files, Markdown,
+`tools/`, docs and notes are not. On `main` itself it compares with `origin/main`, so a push of
+`main` needs a changelog change too. A branch with nothing for players says so with a trailer on
+any of its commits, a line of its own after a blank line in the message (a title is never a
+trailer):
+
+```text
+Made the sweep print its shard count
+
+Changelog: none
+```
+
+`PYREAL_CHANGELOG=none` does the same for one run.
+
+## Heavy runs
+
+**On battery**, `cargo xtask ci tier0`, `tier1`, `tier2`, `cargo xtask golden` and
+`python3 build.py` stop with a note.
+`--on-battery`, or `PYREAL_ON_BATTERY=1`, runs them anyway. `ci prepush` always runs.
+
+**The machine lock.** `ci tier1`, `ci tier2`, `cargo xtask gate`, `cargo xtask gates`,
+`cargo xtask golden`, `python3 build.py` and engine-view's headless runs take one lock for the
+whole machine (`machine.lock` in `~/Library/Caches/pyreal`), so parallel runs queue instead of
+skewing each other's timings. A run that waits says who holds the lock, where, and for how long.
+The lock goes when its holder exits, however it exits. `cargo xtask lock` says who holds it, and
+`cargo xtask lock -- <command>` runs any command holding it, for a timing run of your own. The
+processes a holder starts do not wait on it. `PYREAL_MACHINE_LOCK=off` skips it.
+
+**The retail comparisons** (`cargo xtask golden`, and rows of `ci tier2`). A few places from
+`pyreal/client/tests/gpu/report-library.txt`, listed in `tools/xtask/src/golden.rs`, are drawn by
+engine-view with retail's look and with Pyreal's over the base pack. The retail-look pictures must
+match golden pictures within a small tolerance. Pyreal's must stay near retail's in coarse measures:
+mean lightness over the frame and each ninth of it, colour cast and the lightness histogram. The
+goldens come from the retail data, so they are never committed: they live in `PYREAL_GOLDEN_DIR`,
+or in `Golden` beside the folder `PYREAL_TEST_DAT_DIR` names, one folder per graphics adapter.
+Without them the row is NOT RUN. `cargo xtask golden --update` draws them again after a change to
+the retail look that was meant. Each run leaves its pictures, and differences from the goldens that
+failed, in `target/golden/`.
 
 `cargo xtask` with no arguments lists every check. [docs/BUILDING.md](docs/BUILDING.md) says how to
 build and run Pyreal.
@@ -77,3 +127,4 @@ and out repeatedly over socket-free endpoints and is the test to run after touch
 
 - The code is rustfmt-clean (`cargo fmt --all`).
 - A behaviour change comes with the test that pins it.
+- A change players notice adds its line to the Unreleased section of [CHANGELOG.md](CHANGELOG.md).

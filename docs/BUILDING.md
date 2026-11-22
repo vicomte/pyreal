@@ -24,10 +24,13 @@ connects straight away, for development. `--dat-dir <dir>` names the folder of g
 
 `python3 build.py` builds `dist/<commit>/Pyreal.app`, signed and checked, from the settings in
 `build.ini` (copy `build.ini.example`). Releases are built by GitHub Actions from a version tag.
+On battery it stops unless given `--on-battery`, and it waits its turn on the machine lock
+([CONTRIBUTING.md](../CONTRIBUTING.md#heavy-runs)).
 
 `cargo run --release -p pyreal-engine-view -- --dat-dir <dir> --window` opens the engine's own
 viewer on a place, with a free camera. `--help` lists the place, the time, the art pack and every
-switch. A headless client run can stand where an `@report` line says and capture it:
+switch. A headless run waits for the machine lock, so its pass timings are its own. A headless
+client run can stand where an `@report` line says and capture it:
 `pyreal --headless --no-ui --report <file> --capture <png>`.
 
 `pyreal --explore [place]` flies a free camera through the world with no server, from `@loc`'s

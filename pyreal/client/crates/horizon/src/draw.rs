@@ -10,7 +10,7 @@ use pyreal_primitives::TextureData;
 
 pub use pyreal_ui_kit::draw::{
     current_clip, on_pixels, quad_vertices, whole, with_alpha, Anchor, Anchored, Argb, DrawList,
-    OverlayStats, Quad, Rect, Spot, TextureSink, MADE_KEPT, MADE_PER_FRAME, WHITE,
+    Quad, Rect, Spot, TextureSink, MADE_KEPT, MADE_PER_FRAME, WHITE,
 };
 
 use crate::art::Art;
@@ -105,7 +105,7 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 OverlayItem::Triangles { texture, .. } => Some(*texture),
-                OverlayItem::Preview { .. } => None,
+                OverlayItem::Preview { .. } | OverlayItem::Backdrop { .. } => None,
             })
             .collect()
     }
@@ -172,7 +172,7 @@ mod tests {
                     space: PreviewSpace::PaperDoll,
                     ..
                 } => "doll",
-                OverlayItem::Preview { .. } => "other",
+                OverlayItem::Preview { .. } | OverlayItem::Backdrop { .. } => "other",
             })
             .collect();
         assert_eq!(kinds, ["other", "quads", "doll", "quads"]);
@@ -198,7 +198,7 @@ mod tests {
                         )
                     })
                     .collect(),
-                OverlayItem::Preview { .. } => Vec::new(),
+                OverlayItem::Preview { .. } | OverlayItem::Backdrop { .. } => Vec::new(),
             })
             .collect()
     }

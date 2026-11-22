@@ -854,6 +854,15 @@ const CLIENT: [Heading; 7] = [
                     Bool(false),
                 ),
             ),
+            tip(
+                super::ui_effects::BLUR_NOTE,
+                Impact::Low,
+                pref(
+                    super::ui_effects::BLUR_CAPTION,
+                    Value::Check(crate::options::names::UI_BLUR),
+                    Bool(true),
+                ),
+            ),
         ],
     },
     Heading {
@@ -938,7 +947,7 @@ const CLIENT: [Heading; 7] = [
                 pref(
                     "Terrain Draw Distance",
                     Value::Menu(crate::options::names::LANDSCAPE_DRAW_DISTANCE),
-                    Int(8),
+                    Int(crate::options::fidelity::TERRAIN_DEFAULT),
                 ),
             ),
             tip(
@@ -1005,6 +1014,15 @@ const CLIENT: [Heading; 7] = [
                     super::portal_style::CAPTION,
                     Value::Menu(crate::options::names::PORTAL_STYLE),
                     Int(super::portal_style::DEFAULT),
+                ),
+            ),
+            tip(
+                super::face_detail::NOTE,
+                Impact::Low,
+                pref(
+                    super::face_detail::CAPTION,
+                    Value::Check(crate::options::names::DETAILED_FACES),
+                    Bool(true),
                 ),
             ),
         ],

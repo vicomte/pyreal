@@ -121,6 +121,8 @@ pub struct Mesh {
     pub draws: Vec<Draw>,
     pub center: Vec3,
     pub radius: f32,
+    /// Its triangles' mean edge, model units; zero when it has none.
+    pub edge: f32,
     /// The coarser mesh drawn from [`Self::lod_switch`] metres on ([`LOD_NONE`] when there is
     /// none, [`LOD_NOTHING`] when nothing is drawn there).
     pub lod_next: u32,
@@ -132,6 +134,32 @@ pub struct Mesh {
     pub shares: Option<MeshId>,
     /// Whether it is in the pools; a freed mesh's slot waits to be reused.
     pub live: bool,
+}
+
+/// Bytes a mesh takes in the cull pass's mesh table (`cull.wgsl` `MeshInfo`).
+const MESH_INFO_SIZE: u64 = 48;
+
+/// The mean length of `mesh`'s triangles' edges, model units.
+fn mean_edge(mesh: &MeshData) -> f32 {
+    let at = |i: u32| {
+        mesh.vertices
+            .get(i as usize)
+            .map(|v| Vec3::from(v.position))
+    };
+    let (mut sum, mut n) = (0.0f64, 0u32);
+    for &[i, j, k] in mesh.indices.as_chunks::<3>().0 {
+        if let (Some(a), Some(b), Some(c)) = (at(i), at(j), at(k)) {
+            sum += f64::from(a.distance(b) + b.distance(c) + c.distance(a));
+            n += 3;
+        }
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let mean = if n == 0 {
+        0.0
+    } else {
+        (sum / f64::from(n)) as f32
+    };
+    mean
 }
 
 /// A mesh drawn with the part's own frame.
@@ -451,7 +479,7 @@ impl Scene {
             cuts: Pool::new(device, "cut volumes", 16, sizes.cuts, U::STORAGE)?,
             cut_lists: Pool::new(device, "cut lists", 4, sizes.cut_lists, U::STORAGE)?,
             cell_rects: buffer("cell rectangles", sizes.cells * 16, U::STORAGE),
-            mesh_table: buffer("mesh table", sizes.meshes * 32, U::STORAGE),
+            mesh_table: buffer("mesh table", sizes.meshes * MESH_INFO_SIZE, U::STORAGE),
             mesh_buckets: buffer("mesh buckets", sizes.buckets * 4, U::STORAGE),
             bucket_table: buffer("bucket table", sizes.buckets * 8, U::STORAGE),
             args: buffer(
@@ -567,6 +595,7 @@ impl Scene {
                 draws,
                 center: Vec3::from(mesh.center),
                 radius: mesh.radius,
+                edge: mean_edge(mesh),
                 lod_next: LOD_NONE,
                 lod_switch: f32::MAX,
                 billboard: BILLBOARD_NONE,
@@ -616,6 +645,16 @@ impl Scene {
         }
         self.vertices.write(queue, m.first_vertex, bytes);
         true
+    }
+
+    /// Whether a live instance draws `mesh` anywhere in its degrade chain; `None` while the counts
+    /// wait to be taken again.
+    #[must_use]
+    pub fn drawn_by_any(&self, mesh: MeshId) -> Option<bool> {
+        if self.recount {
+            return None;
+        }
+        Some(self.chain_count.get(mesh.0 as usize).copied().unwrap_or(0) > 0)
     }
 
     pub fn free_mesh(&mut self, id: MeshId) {
@@ -1322,7 +1361,8 @@ impl Scene {
         for (k, b) in buckets.iter().enumerate() {
             by_mesh[b.mesh.0 as usize].push(u32::try_from(k).unwrap_or(0));
         }
-        let mut mesh_bytes = Vec::with_capacity(self.meshes.len() * 32);
+        let mut mesh_bytes =
+            Vec::with_capacity(self.meshes.len() * usize::try_from(MESH_INFO_SIZE).unwrap_or(48));
         let mut list = Vec::new();
         for (m, mesh) in self.meshes.iter().enumerate() {
             let first = u32::try_from(list.len()).unwrap_or(0);
@@ -1333,6 +1373,9 @@ impl Scene {
             // The bucket count, with the billboard mode in its top byte.
             let count = u32::try_from(by_mesh[m].len()).unwrap_or(0) | (mesh.billboard << 24);
             for v in [first, count, mesh.lod_next, mesh.lod_switch.to_bits()] {
+                mesh_bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            for v in [mesh.edge, 0.0, 0.0, 0.0] {
                 mesh_bytes.extend_from_slice(&v.to_le_bytes());
             }
         }

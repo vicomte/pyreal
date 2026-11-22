@@ -14,6 +14,8 @@ pub struct Drift {
     module: wgpu::ShaderModule,
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// The interface's see-through grounds, the lights blurred under them (UI Blur).
+    grounds: wgpu::Buffer,
     /// Bound where there is no interface.
     blank: wgpu::TextureView,
     pipeline: Option<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
@@ -53,7 +55,14 @@ impl Drift {
                     },
                     count: None,
                 },
+                crate::frost::uniform_entry(2),
             ],
+        });
+        let grounds = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("portal lights grounds"),
+            size: crate::frost::UNIFORM_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("portal lights"),
@@ -81,6 +90,7 @@ impl Drift {
             module,
             layout,
             uniforms,
+            grounds,
             blank,
             pipeline: None,
         }
@@ -148,11 +158,14 @@ impl Drift {
             size.1.max(1) as f32,
             f32::from(u8::from(ui.is_some_and(|u| u.gamma))),
             f32::from(u8::from(ui.is_some())),
-            0.0,
+            crate::frost::blur_pixels(size.1),
             0.0,
         ];
         let bytes: Vec<u8> = values.iter().flat_map(|f| f.to_ne_bytes()).collect();
         gpu.queue.write_buffer(&self.uniforms, 0, &bytes);
+        let grounds = ui.map_or(&[][..], |u| &u.backdrops[..]);
+        gpu.queue
+            .write_buffer(&self.grounds, 0, &crate::frost::uniform(grounds));
         let pipeline = self.pipeline(gpu, format);
         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("portal lights"),
@@ -167,6 +180,10 @@ impl Drift {
                     resource: wgpu::BindingResource::TextureView(
                         ui.map_or(&self.blank, |u| &u.view),
                     ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.grounds.as_entire_binding(),
                 },
             ],
         });

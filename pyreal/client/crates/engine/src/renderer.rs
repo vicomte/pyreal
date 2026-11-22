@@ -58,11 +58,12 @@ const COMMON: &str = concat!(
 );
 const SCENE: &str = include_str!("shaders/scene.wgsl");
 const MATERIALS: &str = include_str!("shaders/materials.wgsl");
+const FACE: &str = include_str!("shaders/face.wgsl");
 const FULLSCREEN: &str = include_str!("shaders/fullscreen.wgsl");
 
 /// The WGSL of each module, assembled from the shared files.
 pub mod source {
-    use super::{COMMON, FULLSCREEN, MATERIALS, SCENE};
+    use super::{COMMON, FACE, FULLSCREEN, MATERIALS, SCENE};
 
     #[must_use]
     pub fn pick() -> String {
@@ -100,7 +101,7 @@ pub mod source {
     #[must_use]
     pub fn gbuffer() -> String {
         format!(
-            "enable wgpu_binding_array;\n{COMMON}\n{SCENE}\n{MATERIALS}\n{}",
+            "enable wgpu_binding_array;\n{COMMON}\n{SCENE}\n{MATERIALS}\n{FACE}\n{}",
             include_str!("shaders/gbuffer.wgsl")
         )
     }
@@ -494,8 +495,17 @@ pub fn graph_decl() -> GraphDecl {
             PassDecl::new("resolve", PassKind::Render)
                 .reads(&["ldr", "depth", "motion", "ids", "reactive"])
                 .writes(&["picture"]),
-            PassDecl::new("composite", PassKind::Render)
+            PassDecl::new("ui blur down", PassKind::Render)
                 .reads(&["picture", "ui"])
+                .writes(&["blur a"]),
+            PassDecl::new("ui blur across", PassKind::Render)
+                .reads(&["blur a"])
+                .writes(&["blur b"]),
+            PassDecl::new("ui blur up and down", PassKind::Render)
+                .reads(&["blur b"])
+                .writes(&["blur"]),
+            PassDecl::new("composite", PassKind::Render)
+                .reads(&["picture", "ui", "blur"])
                 .writes(&["output"]),
         ],
         imported: vec![
@@ -566,6 +576,10 @@ pub struct View<'a> {
     pub heavens: Option<&'a crate::heavens::HeavensNow>,
     /// The lamps that can reach the view, nearest first ([`crate::lamps::frame_lamps`]).
     pub lamps: &'a [crate::lamps::Lamp],
+    /// Each of `lamps`' rooms, as (first, count) into `room_boxes`; none for everywhere.
+    pub lamp_rooms: &'a [(u32, u32)],
+    /// The rooms' boxes, least and greatest corners.
+    pub room_boxes: &'a [(glam::Vec3, glam::Vec3)],
     /// The lamps that light the probes' rays ([`crate::lamps::probe_lamps`]).
     pub probe_lamps: &'a [crate::lamps::Lamp],
     /// The flames seen, nearest first ([`crate::flames::frame_flames`]).
@@ -592,6 +606,14 @@ pub struct View<'a> {
     /// The room the eye stands in, when it does: no rain falls in it.
     pub eye_room: Option<&'a crate::cells::Volume>,
 }
+
+/// The object shader's overrides for the slim pipelines (`gbuffer.wgsl`): no faces, no stone.
+const SLIM_OBJECTS: &[(&str, f64)] = &[("HAS_FACE", 0.0), ("HAS_PROJECTED", 0.0)];
+
+/// The drawn pixels a level's mean triangle edge must cover before it gives way to the next: the
+/// detail Object Detail asks for past the game's own distances, never finer than the picture can
+/// show. Off: a mean edge misjudges foliage, whose coarser levels look fuller at low drawn sizes.
+pub const LOD_PIXELS: f32 = 0.0;
 
 /// What a distance is multiplied by before the degrade switches: this view's screen-size scale
 /// against [`DEGRADE_FOV_Y`]'s, over `bias` (zero when `bias` keeps every near level).
@@ -640,7 +662,7 @@ pub fn indoor_physical(light: &SkyLight, open_to_sky: bool, lamps_lit: bool) -> 
 }
 
 /// The frame uniform's bytes.
-pub const FRAME_SIZE: u64 = 1264;
+pub const FRAME_SIZE: u64 = 1280;
 /// Where the waypoint's ring lies in the frame uniform: after the shadows' pools of darkness.
 const WAYPOINT_AT: usize = 1216;
 /// The most shadows' pools of darkness a frame lays.
@@ -711,6 +733,8 @@ pub mod flags {
     pub const DETAIL: u32 = 4096;
     pub const MACRO: u32 = 8192;
     pub const WEBS: u32 = 16384;
+    pub const DISTANT: u32 = 32768;
+    pub const PARTICLES_ONCE: u32 = 65536;
 }
 
 /// The surfaces' depth, each on its own so its cost and its look can be told
@@ -728,6 +752,8 @@ pub struct Surfaces {
     pub detail: bool,
     /// Tint and a second, turned placement of the ground's pictures across large areas.
     pub macro_variation: bool,
+    /// The distant ground's shape, colour, facets, grain and hill shadows, past about 50 m.
+    pub distant: bool,
 }
 
 impl Surfaces {
@@ -737,6 +763,7 @@ impl Surfaces {
         triplanar: true,
         detail: true,
         macro_variation: true,
+        distant: true,
     };
     pub const NONE: Self = Self {
         relief: 0,
@@ -744,6 +771,7 @@ impl Surfaces {
         triplanar: false,
         detail: false,
         macro_variation: false,
+        distant: false,
     };
 
     /// The frame's feature flags these turn on.
@@ -755,6 +783,7 @@ impl Surfaces {
             (self.triplanar, flags::TRIPLANAR),
             (self.detail, flags::DETAIL),
             (self.macro_variation, flags::MACRO),
+            (self.distant, flags::DISTANT),
         ]
         .iter()
         .filter(|(on, _)| *on)
@@ -795,7 +824,7 @@ pub const DETAIL_REACH: f32 = 18.0;
 pub const KEY_LAMPS: usize = 4;
 /// The cull parameters' bytes: six planes, the view-projection, the instance count, the
 /// pyramid's description, the degrade scale and the eye.
-pub const CULL_PARAMS_SIZE: u64 = 224;
+pub const CULL_PARAMS_SIZE: u64 = 336;
 /// How much farther each cascade's casters seem to the degrade than to the eye: the shadow of a
 /// coarser level is as good, and the cascades hold far more of the world than the view.
 pub const CASCADE_DEGRADE: [f32; 4] = [3.0, 6.0, 12.0, 24.0];
@@ -807,7 +836,7 @@ pub fn caster_degrade(c: usize, bias: f32) -> f32 {
     CASCADE_DEGRADE[c.min(CASCADE_DEGRADE.len() - 1)] * bias.max(1.0).sqrt()
 }
 /// The stride of the cascades' cull parameters in their buffer.
-const SHADOW_PARAMS_STRIDE: u64 = 256;
+const SHADOW_PARAMS_STRIDE: u64 = 512;
 
 /// The vertical field of view the dats' degrade distances are kept at: the client's 90 degrees
 /// across a 16:9 view. A narrower view keeps detail further out, as screen size asks.
@@ -1112,6 +1141,15 @@ pub struct Renderer {
     /// Multiplies the distance each degrade level is kept to; zero keeps every mesh at its near
     /// level.
     pub lod_bias: f32,
+    /// How many drawn pixels a level's mean triangle edge must cover, or it gives way to the next
+    /// level, though never sooner than at a [`Self::lod_bias`] of one; zero for no such limit
+    /// ([`LOD_PIXELS`]).
+    pub lod_pixels: f32,
+    /// Whether each cascade leaves out casters whose shadow cannot reach its slice of the view.
+    pub caster_cull: bool,
+    /// Whether blended particles take better lighting's light at four points of their card and
+    /// blend it, in place of working it out at every pixel (`particles.wgsl` `lit_once`).
+    pub particles_lit_once: bool,
     /// How far from the eye a tree is its card, as the far rings past the loaded land draw it,
     /// metres (0: no far trees).
     pub card_edge: f32,
@@ -1120,6 +1158,9 @@ pub struct Renderer {
     cull_params: wgpu::Buffer,
     stats: wgpu::Buffer,
     pipelines: Vec<(PipelineKind, wgpu::RenderPipeline)>,
+    /// The opaque and two-sided pipelines without faces or untextured stone, for every bucket
+    /// whose material is neither.
+    slim_pipelines: Vec<(PipelineKind, wgpu::RenderPipeline)>,
     lighting_layout: wgpu::BindGroupLayout,
     lighting_pipeline: wgpu::RenderPipeline,
     tonemap_layout: wgpu::BindGroupLayout,
@@ -1771,79 +1812,88 @@ impl Renderer {
             },
             alpha: wgpu::BlendComponent::OVER,
         };
+        // A deferred kind's pipeline; `slim` leaves faces and untextured stone out of it.
+        let mesh_pipeline = |kind: PipelineKind, slim: bool| {
+            let (module, fs, cull, blend) = match kind {
+                PipelineKind::Opaque => {
+                    (&gbuffer_module, "fs_object", Some(wgpu::Face::Back), None)
+                }
+                PipelineKind::TwoSided => (&gbuffer_module, "fs_object", None, None),
+                PipelineKind::Terrain => {
+                    (&gbuffer_module, "fs_terrain", Some(wgpu::Face::Back), None)
+                }
+                PipelineKind::Translucent
+                | PipelineKind::Additive
+                | PipelineKind::Web
+                | PipelineKind::Ice
+                | PipelineKind::Pool => {
+                    unreachable!("forward pipelines are made with the light's layout")
+                }
+            };
+            let (g, mesh_layout, module, vertex_layout, gbuffer_targets) = (
+                gpu.clone(),
+                mesh_layout.clone(),
+                module.clone(),
+                vertex_layout.clone(),
+                gbuffer_targets.clone(),
+            );
+            jobs.run(move || {
+                let forward_target = [Some(wgpu::ColorTargetState {
+                    format: HDR,
+                    blend,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })];
+                let targets: &[Option<wgpu::ColorTargetState>] = if kind.deferred() {
+                    &gbuffer_targets
+                } else {
+                    &forward_target
+                };
+                g.render_pipeline(wgpu::RenderPipelineDescriptor {
+                    label: Some("mesh"),
+                    layout: Some(&mesh_layout),
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[Some(vertex_layout)],
+                    },
+                    primitive: wgpu::PrimitiveState {
+                        front_face: wgpu::FrontFace::Ccw,
+                        cull_mode: cull,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(wgpu::DepthStencilState {
+                        format: DEPTH,
+                        depth_write_enabled: Some(kind.deferred()),
+                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some(fs),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: if slim { SLIM_OBJECTS } else { &[] },
+                            ..Default::default()
+                        },
+                        targets,
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+        };
         let mut pipelines: Vec<(PipelineKind, crate::jobs::Pending<wgpu::RenderPipeline>)> =
             PipelineKind::ALL
                 .iter()
                 .filter(|k| k.deferred())
-                .map(|&kind| {
-                    let (module, fs, cull, blend) = match kind {
-                        PipelineKind::Opaque => {
-                            (&gbuffer_module, "fs_object", Some(wgpu::Face::Back), None)
-                        }
-                        PipelineKind::TwoSided => (&gbuffer_module, "fs_object", None, None),
-                        PipelineKind::Terrain => {
-                            (&gbuffer_module, "fs_terrain", Some(wgpu::Face::Back), None)
-                        }
-                        PipelineKind::Translucent
-                        | PipelineKind::Additive
-                        | PipelineKind::Web
-                        | PipelineKind::Ice
-                        | PipelineKind::Pool => {
-                            unreachable!("forward pipelines are made with the light's layout")
-                        }
-                    };
-                    let (g, mesh_layout, module, vertex_layout, gbuffer_targets) = (
-                        gpu.clone(),
-                        mesh_layout.clone(),
-                        module.clone(),
-                        vertex_layout.clone(),
-                        gbuffer_targets.clone(),
-                    );
-                    let pipeline = jobs.run(move || {
-                        let forward_target = [Some(wgpu::ColorTargetState {
-                            format: HDR,
-                            blend,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })];
-                        let targets: &[Option<wgpu::ColorTargetState>] = if kind.deferred() {
-                            &gbuffer_targets
-                        } else {
-                            &forward_target
-                        };
-                        g.render_pipeline(wgpu::RenderPipelineDescriptor {
-                            label: Some("mesh"),
-                            layout: Some(&mesh_layout),
-                            vertex: wgpu::VertexState {
-                                module: &module,
-                                entry_point: Some("vs_main"),
-                                compilation_options: Default::default(),
-                                buffers: &[Some(vertex_layout)],
-                            },
-                            primitive: wgpu::PrimitiveState {
-                                front_face: wgpu::FrontFace::Ccw,
-                                cull_mode: cull,
-                                ..Default::default()
-                            },
-                            depth_stencil: Some(wgpu::DepthStencilState {
-                                format: DEPTH,
-                                depth_write_enabled: Some(kind.deferred()),
-                                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                                stencil: Default::default(),
-                                bias: Default::default(),
-                            }),
-                            multisample: Default::default(),
-                            fragment: Some(wgpu::FragmentState {
-                                module: &module,
-                                entry_point: Some(fs),
-                                compilation_options: Default::default(),
-                                targets,
-                            }),
-                            multiview_mask: None,
-                            cache: None,
-                        })
-                    });
-                    (kind, pipeline)
-                })
+                .map(|&kind| (kind, mesh_pipeline(kind, false)))
+                .collect();
+        let slim_pipelines: Vec<(PipelineKind, crate::jobs::Pending<wgpu::RenderPipeline>)> =
+            [PipelineKind::Opaque, PipelineKind::TwoSided]
+                .into_iter()
+                .map(|kind| (kind, mesh_pipeline(kind, true)))
                 .collect();
 
         // The sun's shadow casters: depth alone, both faces, cut-outs cut.
@@ -1944,7 +1994,8 @@ impl Renderer {
         // The lamps and their clusters.
         let lamp_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame lamps"),
-            size: crate::lamps::LAMP_SIZE * crate::lamps::MAX_FRAME_LAMPS as u64,
+            size: crate::lamps::LAMP_SIZE
+                * (crate::lamps::MAX_FRAME_LAMPS + crate::lamps::MAX_ROOM_BOXES) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2102,24 +2153,36 @@ impl Renderer {
             );
             (pipeline, layout)
         });
+        // The particles' vertices take the sun's shadow, the lamps and the probes too
+        // (`particles.wgsl` `lit_once`).
+        let lit = |e: wgpu::BindGroupLayoutEntry| wgpu::BindGroupLayoutEntry {
+            visibility: S::VERTEX_FRAGMENT,
+            ..e
+        };
         let light_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("light"),
             entries: &[
-                texture(0, wgpu::TextureSampleType::Depth),
+                lit(texture(0, wgpu::TextureSampleType::Depth)),
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: S::FRAGMENT,
+                    visibility: S::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
-                storage(2, true, S::FRAGMENT),
-                storage(3, true, S::FRAGMENT),
-                storage(4, true, S::FRAGMENT),
-                texture(5, wgpu::TextureSampleType::Float { filterable: false }),
-                texture(6, wgpu::TextureSampleType::Float { filterable: false }),
-                storage(7, true, S::FRAGMENT),
-                uniform(8, S::FRAGMENT),
-                texture(9, wgpu::TextureSampleType::Depth),
+                storage(2, true, S::VERTEX_FRAGMENT),
+                storage(3, true, S::VERTEX_FRAGMENT),
+                storage(4, true, S::VERTEX_FRAGMENT),
+                lit(texture(
+                    5,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                )),
+                lit(texture(
+                    6,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                )),
+                storage(7, true, S::VERTEX_FRAGMENT),
+                uniform(8, S::VERTEX_FRAGMENT),
+                lit(texture(9, wgpu::TextureSampleType::Depth)),
                 texture(10, wgpu::TextureSampleType::Depth),
                 uniform(11, S::VERTEX),
                 storage(12, true, S::VERTEX_FRAGMENT),
@@ -2696,6 +2759,7 @@ impl Renderer {
                 texture(3, wgpu::TextureSampleType::Depth),
                 texture(4, wgpu::TextureSampleType::Float { filterable: true }),
                 texture(5, wgpu::TextureSampleType::Float { filterable: true }),
+                texture(6, wgpu::TextureSampleType::Uint),
             ],
         });
         let tonemap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2914,7 +2978,12 @@ impl Renderer {
                         fragment: Some(wgpu::FragmentState {
                             module: &cover_module,
                             entry_point: Some(fs),
-                            compilation_options: Default::default(),
+                            // The cover's plants are the pack's own models: never a face, never
+                            // a retail surface's stone.
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: if fs == "fs_cover" { SLIM_OBJECTS } else { &[] },
+                                ..Default::default()
+                            },
                             targets: &cover_targets,
                         }),
                         multiview_mask: None,
@@ -3225,6 +3294,10 @@ impl Renderer {
         );
         let pipelines: Vec<(PipelineKind, wgpu::RenderPipeline)> =
             pipelines.into_iter().map(|(k, p)| (k, p.wait())).collect();
+        let slim_pipelines: Vec<(PipelineKind, wgpu::RenderPipeline)> = slim_pipelines
+            .into_iter()
+            .map(|(k, p)| (k, p.wait()))
+            .collect();
         let shadow_pipelines = shadow_pipelines.map(crate::jobs::Pending::wait);
         let oit_pipelines = oit_pipelines.map(crate::jobs::Pending::wait);
         let particle_pipelines = particle_pipelines.map(crate::jobs::Pending::wait);
@@ -3352,11 +3425,15 @@ impl Renderer {
             hiz_down_layout,
             hiz: true,
             lod_bias: 1.0,
+            lod_pixels: LOD_PIXELS,
+            caster_cull: true,
+            particles_lit_once: true,
             card_edge: 0.0,
             sorted_draws: 0,
             cull_params,
             stats,
             pipelines,
+            slim_pipelines,
             lighting_layout,
             lighting_pipeline: lighting_pipeline.wait(),
             tonemap_layout,
@@ -3588,6 +3665,7 @@ impl Renderer {
                     view(3, &views[T_DEPTH]),
                     view(4, &clouds_view),
                     view(5, &self.clouds.shadow),
+                    view(6, &views[T_IDS]),
                 ],
             });
             self.post.resize(
@@ -4128,6 +4206,9 @@ impl Renderer {
         if cascades.is_some() {
             features |= flags::SHADOWS;
         }
+        if self.particles_lit_once {
+            features |= flags::PARTICLES_ONCE;
+        }
         // What stands over the ground round the eye, while anything falls or the ground is wet.
         let shelter = (view.outside && self.weather.sheltering())
             .then(|| crate::weather::Shelter::around(camera.position));
@@ -4143,7 +4224,8 @@ impl Renderer {
         }
         // The nearest few shadowed lamps whose light reaches near the eye get ray-traced slots.
         let mut slots = [u32::MAX; 4];
-        if self.lamps && self.lamp_rays && self.ray_pipeline.is_some() {
+        // The client's lamps cast no shadows: the physical light alone traces them.
+        if physical && self.lamps && self.lamp_rays && self.ray_pipeline.is_some() {
             let mut k = 0;
             for (i, l) in view
                 .lamps
@@ -4162,7 +4244,9 @@ impl Renderer {
         }
         if self.lamps && !view.lamps.is_empty() {
             features |= flags::LAMPS;
-            let bytes: Vec<u8> = view
+            let count = view.lamps.len().min(crate::lamps::MAX_FRAME_LAMPS);
+            let first = u32::try_from(count).unwrap_or(0);
+            let mut bytes: Vec<u8> = view
                 .lamps
                 .iter()
                 .take(crate::lamps::MAX_FRAME_LAMPS)
@@ -4178,9 +4262,17 @@ impl Renderer {
                     } else {
                         l.seed
                     };
-                    crate::lamps::lamp_bytes(l, slot, seed)
+                    let rooms = view
+                        .lamp_rooms
+                        .get(k)
+                        .filter(|r| r.1 > 0)
+                        .map_or((0, 0), |r| (first + r.0, r.1));
+                    crate::lamps::lamp_bytes_in(l, slot, seed, rooms)
                 })
                 .collect();
+            for (lo, hi) in view.room_boxes.iter().take(crate::lamps::MAX_ROOM_BOXES) {
+                bytes.extend_from_slice(&crate::lamps::room_box_bytes(*lo, *hi));
+            }
             gpu.queue.write_buffer(&self.lamp_buffer, 0, &bytes);
             if slots[0] != u32::MAX {
                 features |= flags::LAMP_RAYS;
@@ -4321,6 +4413,13 @@ impl Renderer {
         let storm = self.weather.storminess();
         let wind = crate::wind::wind(light.time, self.clock);
         let sway = self.foliage_wind * (1.0 + 1.3 * storm);
+        // In a storm the growth leans steadily the way the rain is driven.
+        let gale_way = self
+            .weather
+            .blown_way()
+            .filter(|_| storm > 0.0)
+            .unwrap_or(glam::Vec2::ZERO);
+        let gale = [self.foliage_wind * storm, gale_way.x, gale_way.y, 0.0];
         #[allow(clippy::cast_possible_truncation)]
         let last_clock = (self.last_clock.unwrap_or(self.clock) % 86_400.0) as f32;
         #[allow(clippy::cast_possible_truncation)]
@@ -4489,6 +4588,7 @@ impl Renderer {
         // The bed's mud picture: its slot and repeats a metre.
         let (bed_slot, bed_per_m) = self.bed.unwrap_or((0, 0.0));
         f32s(&mut frame, &[f32::from_bits(bed_slot), bed_per_m, 0.0, 0.0]);
+        f32s(&mut frame, &gale);
         frame.resize(usize::try_from(FRAME_SIZE).unwrap_or(0), 0);
         gpu.queue.write_buffer(&self.frame_buffer, 0, &frame);
 
@@ -4543,15 +4643,20 @@ impl Renderer {
             &camera.position.extend(self.card_edge).to_array(),
         );
         params.extend_from_slice(&[0u8; 16]);
+        let pixel = self.pixel_limit(camera);
+        f32s(&mut params, &[pixel, self.lod_bias.max(1.0), 0.0, 0.0]);
+        params.resize(usize::try_from(CULL_PARAMS_SIZE).unwrap_or(336), 0);
         gpu.queue.write_buffer(&self.cull_params, 0, &params);
         // Each cascade's: its box, the eye's degrade, its own arguments and list.
         let bucket_count = u32::try_from(scene.buckets().len()).unwrap_or(0);
         let list = u32::try_from(scene.sizes.visible).unwrap_or(u32::MAX);
+        let view_planes = camera.frustum(aspect);
+        let fall = -light.sun_dir.normalize_or(glam::Vec3::Z);
         if let Some(cs) = self.cascades.as_ref() {
             let mut bytes =
                 vec![0u8; usize::try_from(SHADOW_PARAMS_STRIDE).unwrap_or(256) * cs.len()];
             for (c, cascade) in cs.iter().enumerate() {
-                let mut p = Vec::with_capacity(224);
+                let mut p = Vec::with_capacity(336);
                 for plane in cascade.planes {
                     f32s(&mut p, &plane.to_array());
                 }
@@ -4577,6 +4682,34 @@ impl Renderer {
                 for v in [1, k * bucket_count, (k + 1) * list, coarser] {
                     p.extend_from_slice(&v.to_le_bytes());
                 }
+                f32s(&mut p, &[pixel, self.lod_bias.max(1.0), 0.0, 0.0]);
+                // What its casters must be able to shade: the view's sides and the cascade's
+                // slice of it, from where the last cascade's blend band begins; and its depth
+                // along the sun, as far as any caster in it can throw a shadow on a receiver.
+                for plane in &view_planes[..4] {
+                    // A side no caster lies past keeps them all.
+                    let plane = if self.caster_cull {
+                        *plane
+                    } else {
+                        glam::Vec4::ZERO
+                    };
+                    f32s(&mut p, &plane.to_array());
+                }
+                let end = |i: usize| cs.get(i).map_or(camera.near, |x| x.far);
+                let start = match c {
+                    0 => camera.near,
+                    _ => {
+                        let before = if c > 1 { end(c - 2) } else { camera.near };
+                        end(c - 1) - crate::shadows::BLEND * (end(c - 1) - before)
+                    }
+                };
+                let (start, far) = if self.caster_cull {
+                    (start, cascade.far)
+                } else {
+                    (f32::MIN, f32::MAX)
+                };
+                f32s(&mut p, &camera.forward().extend(start).to_array());
+                f32s(&mut p, &(fall * cascade.depth).extend(far).to_array());
                 let at = c * usize::try_from(SHADOW_PARAMS_STRIDE).unwrap_or(256);
                 bytes[at..at + p.len()].copy_from_slice(&p);
             }
@@ -4609,6 +4742,7 @@ impl Renderer {
             for v in [2, k * bucket_count, (k + 1) * list, 1.0f32.to_bits()] {
                 p.extend_from_slice(&v.to_le_bytes());
             }
+            p.resize(usize::try_from(CULL_PARAMS_SIZE).unwrap_or(336), 0);
             gpu.queue
                 .write_buffer(&self.shadow_params, u64::from(k) * SHADOW_PARAMS_STRIDE, &p);
         }
@@ -4837,7 +4971,7 @@ impl Renderer {
                     );
                 }
                 if let Some(far) = view.far {
-                    far.draw_depth(&mut pass, &self.frame_group);
+                    far.draw_depth(&mut pass, &self.frame_group, &material_group);
                 }
             }
         }
@@ -4886,11 +5020,15 @@ impl Renderer {
                 if !deferred || !b.draw.pipeline.deferred() {
                     continue;
                 }
-                if current != Some(b.draw.pipeline) {
-                    current = Some(b.draw.pipeline);
-                    if let Some((_, p)) = self
-                        .pipelines
-                        .iter()
+                let rich = materials.material(b.draw.material).is_none_or(|m| {
+                    use crate::asset::material::flags;
+                    m.flags & (flags::FACE | flags::PROJECTED) != 0
+                });
+                if current != Some((b.draw.pipeline, rich)) {
+                    current = Some((b.draw.pipeline, rich));
+                    let slim = self.slim_pipelines.iter().filter(|_| !rich);
+                    if let Some((_, p)) = slim
+                        .chain(&self.pipelines)
                         .find(|(kind, _)| *kind == b.draw.pipeline)
                     {
                         pass.set_pipeline(p);
@@ -4952,7 +5090,7 @@ impl Renderer {
                 pass.draw_indirect(&c.blade_args, 48);
             }
             if let (Some(far), true) = (view.far, view.outside) {
-                far.draw(&mut pass, &self.frame_group);
+                far.draw(&mut pass, &self.frame_group, &material_group);
             }
             pass.set_pipeline(&self.sky_motion_pipeline);
             pass.set_bind_group(0, &self.frame_group, &[]);
@@ -5798,6 +5936,18 @@ impl Renderer {
     pub fn collect_timings(&mut self, gpu: &Gpu, wait: bool) -> &[PassTiming] {
         self.graph.collect(gpu, wait);
         self.graph.timings()
+    }
+
+    /// The cull's pixel limit: a drawn pixel's angle at this view's drawn size times
+    /// [`Self::lod_pixels`]; zero with no limit, or while every mesh is kept at its near level.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn pixel_limit(&self, camera: &Camera) -> f32 {
+        if self.lod_pixels <= 0.0 || self.lod_bias <= 0.0 || self.internal.1 == 0 {
+            return 0.0;
+        }
+        let tan = pyreal_primitives::num::math::tanf(camera.fov_y * 0.5);
+        2.0 * tan / self.internal.1 as f32 * self.lod_pixels
     }
 
     /// The last timed frame's GPU time, first pass's start to last pass's end, ms.

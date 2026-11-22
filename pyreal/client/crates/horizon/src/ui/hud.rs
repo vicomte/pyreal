@@ -16,7 +16,7 @@ use pyreal_client_contract::UiRequest;
 use crate::art::{Family, Sprite};
 use crate::draw::{with_alpha, Anchor, Argb, Rect, WHITE};
 use crate::ui::colours;
-use crate::ui::game::{BlipKind, ChatLine, GameState, Relation};
+use crate::ui::game::{BlipKind, GameState, Relation};
 use crate::ui::kit::{self, Ctx};
 use crate::ui::paint::{Align, Painter, TextStyle};
 use crate::ui::panels::{WindowId, Windows};
@@ -285,9 +285,6 @@ pub(crate) fn menu_icon(p: &mut Painter<'_>, r: Rect, icon: &str, lit: bool) {
         p.sprite(&icon, r, if lit { WHITE } else { 0xFFD0_D0D0 });
     }
 }
-
-/// The game's options-panel action, which opens and closes the Settings window.
-pub const ACTION_OPTIONS: u32 = 0x1000_001A;
 
 /// The monster to select for Tab: the nearest first, then each further one in turn (`nearer_first`),
 /// or the furthest first, then each nearer one (Shift+Tab), round again at the end. Monsters only:
@@ -661,17 +658,6 @@ impl Hud {
         self.spell_tab
     }
 
-    /// The log window holds `lines` and nothing else: the history another interface hands over.
-    /// The game's floating feedback is left out, as it never reaches a chat window.
-    pub fn replace_log(&mut self, lines: Vec<ChatLine>) {
-        self.log.replace(
-            lines
-                .into_iter()
-                .filter(|l| l.chat_type != FEEDBACK_CHAT_TYPE)
-                .collect(),
-        );
-    }
-
     /// Whether the log-out question is up.
     #[must_use]
     pub const fn log_out_open(&self) -> bool {
@@ -752,12 +738,12 @@ impl Hud {
             self.notices.drain(..extra);
         }
         // Ask the server for the selection's health once per new selection, as the game's own
-        // target panel does.
+        // target panel does, and for none (id 0) once nothing is selected, so the server drops it.
         let target_id = state.target.as_ref().map(|t| t.id);
         if target_id != self.queried {
-            if let Some(id) = target_id {
-                out.requests.push(UiRequest::QueryHealth(id));
-            }
+            out.requests.push(UiRequest::QueryHealth(
+                target_id.unwrap_or(pyreal_primitives::ObjectId(0)),
+            ));
             self.queried = target_id;
         }
         if state.level != self.level_seen {

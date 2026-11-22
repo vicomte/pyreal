@@ -245,8 +245,11 @@ pub fn init() -> usize {
     super::performance::register();
     super::update_check::register();
     super::portal_style::register();
+    super::face_detail::register();
+    super::ui_effects::register();
     super::ground_coloring::register();
     super::sound_style::register();
+    super::auto_quality::register();
     // The high-fidelity presentation's options.
     super::fidelity::register();
     // The weather's own sound, which only the high-fidelity presentation's weather makes.
@@ -662,20 +665,6 @@ pub fn inq_choice_values(name: &str) -> Option<&'static [i32]> {
     Some(enum_choices(name).map_or(&[][..], |c| c.values))
 }
 
-/// The choice labels, behind the same
-/// unsigned-32-bit type gate as [`inq_choice_values`].
-///
-/// `Some(&[])` for `Display.Resolution` and `Display.RefreshRate`: both are registered, and their
-/// list is the one the device's display-preference setup builds out of the adapter's
-/// own modes, which this build has not enumerated. See [`display_choice`].
-#[must_use]
-pub fn inq_choice_strings(name: &str) -> Option<&'static [&'static str]> {
-    if !is_registered_as(name, DataType::UInt) {
-        return None;
-    }
-    Some(enum_choices(name).map_or(&[][..], |c| c.labels))
-}
-
 impl EnumChoices {
     /// The string-to-value conversion, the non-empty-choice-list arm.
     ///
@@ -692,8 +681,7 @@ impl EnumChoices {
     ///    fourth choice `High` and lands as **11**; the value 3 is what `VeryLow` lands as. Retail
     ///    only ever writes the label, so this arm is reached by a hand-edited file.
     /// 2. **An index that is negative or past the end selects 0**, per the conversion's own bounds
-    ///    check — the same reading `pyreal_client_runtime::render_prefs::filtering_choice`
-    ///    already took for `Render.TextureFiltering`.
+    ///    check.
     ///
     /// Resolve a stored value back to its choice index, the half
     /// the value-to-string conversion needs.
@@ -994,11 +982,11 @@ pub fn choice_caption(label: &str) -> &str {
 
 /// The choice strings and values together, as the owned pair a run-time list needs.
 ///
-/// The `&'static` [`inq_choice_strings`] and [`inq_choice_values`] answer the eight compiled-in
-/// lists and are unchanged; this is the form the menu control's user-preference setup needs,
-/// because the two display lists are owned strings formatted at device initialization and cannot be
-/// `&'static str`. `None` keeps the choice queries' "not registered, or not the unsigned 32-bit
-/// type" answer, which is a different thing from a registered preference with an empty list.
+/// The `&'static` [`inq_choice_values`] answers the eight compiled-in lists and is unchanged;
+/// this is the form the menu control's user-preference setup needs, because the two display lists
+/// are owned strings formatted at device initialization and cannot be `&'static str`. `None`
+/// keeps the choice queries' "not registered, or not the unsigned 32-bit type" answer, which is a
+/// different thing from a registered preference with an empty list.
 #[must_use]
 pub fn choice_rows(name: &str) -> Option<Vec<Choice>> {
     if !is_registered_as(name, DataType::UInt) {
@@ -1144,12 +1132,16 @@ mod tests {
     #[test]
     fn loading_a_preferences_file_overwrites_only_the_registered_names() {
         assert_eq!(init(), 27, "the 27 attached preferences all register");
-        // ...beside this client's performance panel, update check, portal style, ground coloring
-        // and sound style, the high-fidelity presentation's boxes and menus, and the weather
-        // sound's two.
+        // ...beside this client's performance panel, update check, portal style, detailed faces,
+        // UI Blur, ground coloring and sound style, the quality chosen for this machine's two, the
+        // high-fidelity presentation's boxes and menus, and the weather sound's two.
         assert_eq!(
             len(),
-            32 + super::super::fidelity::OPTIONS.len() + super::super::fidelity::MENUS.len() + 2
+            33 + 2
+                + 1
+                + super::super::fidelity::OPTIONS.len()
+                + super::super::fidelity::MENUS.len()
+                + 2
         );
         // The registration defaults are in force before any file is read.
         assert_eq!(

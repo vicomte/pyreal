@@ -26,6 +26,7 @@
 //! the shared store's or the game's, so a change made in another interface shows here. A choice of
 //! several is a dropdown box whose list opens over the window.
 
+use pyreal_client_contract::options::auto_quality;
 use pyreal_client_contract::options::fidelity;
 use pyreal_client_contract::options::names;
 use pyreal_client_contract::options::sheet::{self, Impact, PageId, Row, Value};
@@ -269,6 +270,39 @@ impl Windows {
             .take_if(|(k, _)| k == key)
             .map(|(_, i)| i)
             .filter(|i| *i < names.len() && *i != at)
+    }
+
+    /// The preset suggested for the graphics card, with a button that sets it while it is not
+    /// the one in use.
+    fn suggested_preset(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        adapter: &auto_quality::Adapter,
+        (list, y, row_h): (Rect, f32, f32),
+        out: &mut Outcome,
+    ) {
+        let k = p.scale;
+        let suggested = auto_quality::suggest(adapter);
+        self.caption(
+            p,
+            ctx,
+            Rect::new(list.x + 16.0 * k, y, list.w * 0.53, row_h),
+            list,
+            auto_quality::SUGGESTION_CAPTION,
+            Some(auto_quality::SUGGESTION_NOTE),
+            None,
+            Some(Impact::Information),
+        );
+        let control = Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+        let label = auto_quality::use_label(adapter);
+        let unused = !suggested.in_use(store::inq_value);
+        if self.button(p, ctx, control, &label, unused) {
+            self.options_page.preset = Some(suggested.0);
+            for (name, value) in auto_quality::values_choosing(suggested, adapter) {
+                set_preference(name, value, out);
+            }
+        }
     }
 
     /// A button, its place noted under its caption.
@@ -823,6 +857,21 @@ Press Escape to leave it as it is.",
                                     set_preference(name, value, out);
                                 }
                             }
+                        }
+                    }
+                    Line::Suggested => {
+                        if let Some(adapter) = state.graphics_adapter.as_ref() {
+                            self.suggested_preset(p, ctx, adapter, (list, y, row_h), out);
+                        }
+                    }
+                    Line::SuggestedFor => {
+                        if let Some(adapter) = state.graphics_adapter.as_ref() {
+                            let dim = TextStyle::new(Family::Body, 13.0, ctx.colours.dim())
+                                .edge(ctx.colours.edge());
+                            let at = Rect::new(list.x + list.w * 0.55, y, list.w * 0.42, row_h);
+                            let name = adapter.short_name();
+                            p.text_in(&dim, at, Align::Centre, &name);
+                            self.mark(&name, at);
                         }
                     }
                     Line::WindowSize => {
@@ -1481,6 +1530,10 @@ enum Line {
     Heading(&'static str),
     /// The experimental effects' quality presets.
     Preset,
+    /// The preset suggested for the graphics card, and a button that sets it.
+    Suggested,
+    /// The graphics card's name, under the suggested preset's button.
+    SuggestedFor,
     Row(&'static Row),
     /// A line of plain words under a heading or a row: the experimental effects' warning, or why
     /// an effect's box is greyed.
@@ -1628,6 +1681,9 @@ fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
         if screen {
             out.push(Line::Heading(fidelity::QUALITY_HEADING));
             out.push(Line::Preset);
+            if state.graphics_adapter.is_some() {
+                out.extend([Line::Suggested, Line::SuggestedFor]);
+            }
             if effects_status(state).is_some() {
                 out.push(Line::EffectsStatus);
             }
@@ -1635,8 +1691,12 @@ fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
         out.push(Line::Heading(heading.title));
         for row in rows {
             // This interface's scale and the window's size, which its own edges set, before Full
-            // Screen.
-            if screen && row.caption == FULL_SCREEN {
+            // Screen, or before UI Blur where the page leaves Full Screen off.
+            let before = [
+                FULL_SCREEN,
+                pyreal_client_contract::options::ui_effects::BLUR_CAPTION,
+            ];
+            if screen && before.contains(&row.caption) {
                 out.extend([
                     Line::Scale,
                     Line::WindowSize,

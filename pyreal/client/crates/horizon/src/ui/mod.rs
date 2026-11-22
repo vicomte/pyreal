@@ -435,6 +435,13 @@ impl HorizonUi {
                 self.screen = Screen::Lobby;
             }
         }
+        // The map's world is built in the background from the log-on, so the map opens drawn.
+        if matches!(
+            self.screen,
+            Screen::Entering | Screen::Game | Screen::Explore
+        ) {
+            self.windows.map_view.preload(&self.art);
+        }
         match self.screen {
             Screen::Worlds => {
                 let view = self.front_door.clone().unwrap_or_default();

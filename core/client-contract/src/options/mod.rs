@@ -3,11 +3,13 @@
 //! Runtime configuration and host adapters read this store directly. The interface's option pages
 //! bind to the same values; their widgets and drafts stay in the interface crate.
 
+pub mod auto_quality;
 pub mod cloud_detail;
 pub mod config;
 pub mod depth_mapping;
 pub mod draw_distance;
 pub mod dynamic_resolution;
+pub mod face_detail;
 pub mod fidelity;
 pub mod fog_density;
 pub mod god_rays;
@@ -26,6 +28,7 @@ pub mod shadow_distance;
 pub mod sheet;
 pub mod sound_style;
 pub mod store;
+pub mod ui_effects;
 pub mod update_check;
 pub mod water_detail;
 pub mod weather_sound;

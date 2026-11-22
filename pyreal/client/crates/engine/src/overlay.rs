@@ -123,6 +123,8 @@ pub struct Overlay {
     /// triangles in reverse, so that laid under what is there the last asked still lands on top.
     world_vertices: Vec<u8>,
     batches: Vec<Batch>,
+    /// This frame's see-through grounds (UI Blur).
+    backdrops: Vec<crate::frost::Backdrop>,
     vertex_buffer: Option<wgpu::Buffer>,
     target: Option<(wgpu::Texture, wgpu::TextureView)>,
     whole_layout: wgpu::BindGroupLayout,
@@ -302,6 +304,7 @@ impl Overlay {
             vertices: Vec::new(),
             world_vertices: Vec::new(),
             batches: Vec::new(),
+            backdrops: Vec::new(),
             vertex_buffer: None,
             target: None,
             whole_layout,
@@ -502,6 +505,18 @@ impl Overlay {
         self.vertices.clear();
         self.world_vertices.clear();
         self.batches.clear();
+        self.backdrops.clear();
+    }
+
+    /// A see-through ground this frame: the world behind `rect` (pixels: left, top, width,
+    /// height) is blurred `strength` as strongly (UI Blur).
+    pub fn push_backdrop(&mut self, rect: (u32, u32, u32, u32), strength: f32) {
+        #[allow(clippy::cast_precision_loss)]
+        let f = |v: u32| v as f32;
+        self.backdrops.push(crate::frost::Backdrop {
+            rect: [f(rect.0), f(rect.1), f(rect.0 + rect.2), f(rect.1 + rect.3)],
+            strength,
+        });
     }
 
     /// Adds triangles (three vertices each) over picture `key`, clipped to `clip` when given.
@@ -794,6 +809,7 @@ impl Overlay {
         crate::temporal::Ui {
             view: view.clone(),
             gamma: true,
+            backdrops: self.backdrops.clone(),
         }
     }
 

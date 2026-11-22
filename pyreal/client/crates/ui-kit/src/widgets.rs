@@ -142,6 +142,7 @@ fn own_panel_at(p: &mut Painter<'_>, r: Rect, alpha: f32, titled: bool, grounds:
             r.w - (inset[0] + inset[2]) * k,
             r.h - (inset[1] + inset[3]) * k,
         );
+        p.backdrop(body);
         for _ in 0..grounds {
             p.tiled(
                 &fill,
@@ -181,6 +182,7 @@ fn own_plate(p: &mut Painter<'_>, r: Rect, alpha: f32, grounds: u32) -> bool {
         return false;
     };
     let tint = crate::draw::with_alpha(WHITE, alpha);
+    p.backdrop(r);
     for _ in 0..grounds {
         p.tiled(&fill, r, 1.0, tint);
     }
@@ -344,6 +346,7 @@ pub fn grounded_panel(p: &mut Painter<'_>, r: Rect, alpha: f32, grounds: u32) {
         return;
     }
     let pal = *p.art.palette();
+    p.backdrop(r);
     for _ in 0..grounds {
         p.fill(r, crate::draw::with_alpha(pal.panel, alpha));
     }
@@ -1090,6 +1093,7 @@ pub fn tooltip(p: &mut Painter<'_>, ctx: &Ctx<'_>, title: &str, lines: &[String]
         // The skin's own plate, as the game's tooltips are drawn.
     } else if p.art.has_piece("window.tl") {
         // With the own art: no frame, a dark ground with a fine bronze rule round it.
+        p.backdrop(r);
         p.fill(r, 0xEC12_161C);
         p.outline(r, 1.0_f32.max(k), 0xC0A0_7C48);
         p.outline(r.inset(1.0_f32.max(k)), 1.0_f32.max(k), 0x6000_0000);

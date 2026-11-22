@@ -9,8 +9,8 @@ use pyreal_engine::renderer::graph_decl;
 /// the water's depth, the water, its depth merged into the world's, the rain's puddles, the ice,
 /// translucency (sorted, or order-independent and
 /// laid over), the rain and snow, the air's froxels and their light laid over, exposure, bloom,
-/// tone map, the interface's marks in the world, the temporal resolve or upscale and the
-/// composite with the UI, in that order.
+/// tone map, the interface's marks in the world, the temporal resolve or upscale, the world
+/// blurred for the UI's see-through grounds and the composite with the UI, in that order.
 #[test]
 fn the_engines_frame_graph_validates() {
     let g = graph_decl();
@@ -54,6 +54,9 @@ fn the_engines_frame_graph_validates() {
             "tonemap",
             "world marks",
             "resolve",
+            "ui blur down",
+            "ui blur across",
+            "ui blur up and down",
             "composite"
         ]
     );

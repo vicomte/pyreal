@@ -41,6 +41,7 @@ fn every_module_validates() {
     validate("oit", &source::oit());
     validate("resolve", &pyreal_engine::temporal::resolve_source());
     validate("composite", &pyreal_engine::temporal::composite_source());
+    validate("ui blur", pyreal_engine::frost::source());
     let [overlay, whole] = pyreal_engine::overlay::sources();
     validate("overlay", overlay);
     validate("whole picture", whole);

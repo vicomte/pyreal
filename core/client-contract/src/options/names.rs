@@ -8,6 +8,8 @@ pub const CAMERA_ALIGN_TO_SLOPE: &str = "Camera.AlignToSlope";
 pub const CAMERA_STIFFNESS: &str = "Camera.Stiffness";
 /// `Debug.PerformancePanel`.
 pub const PERFORMANCE_PANEL: &str = "Debug.PerformancePanel";
+/// `Display.DetailedFaces`.
+pub const DETAILED_FACES: &str = "Display.DetailedFaces";
 /// `Display.FullScreen`.
 pub const DISPLAY_FULL_SCREEN: &str = "Display.FullScreen";
 /// `Display.GroundColoring`.
@@ -22,6 +24,8 @@ pub const DISPLAY_RENDER_SCALE: &str = "Display.RenderScale";
 pub const DISPLAY_RESOLUTION: &str = "Display.Resolution";
 /// `Display.SyncToRefresh`.
 pub const DISPLAY_SYNC_TO_REFRESH: &str = "Display.SyncToRefresh";
+/// `Display.UIBlur`.
+pub const UI_BLUR: &str = "Display.UIBlur";
 /// `Input.InvertMouseLookYAxis`.
 pub const INVERT_MOUSE_LOOK_Y_AXIS: &str = "Input.InvertMouseLookYAxis";
 /// `Input.KeymapFile`.
@@ -58,8 +62,6 @@ pub const SCENERY_DRAW_DISTANCE: &str = "Render.SceneryDrawDistance";
 pub const SCREEN_BRIGHTNESS: &str = "Render.ScreenBrightness";
 /// `Render.Sky`.
 pub const SKY: &str = "Render.Sky";
-/// `Render.TerrainBlending`.
-pub const TERRAIN_BLENDING: &str = "Render.TerrainBlending";
 /// `Sound.AmbientSoundDisabled`.
 pub const AMBIENT_SOUND_DISABLED: &str = "Sound.AmbientSoundDisabled";
 /// `Sound.AmbientSoundVolume`.
@@ -91,8 +93,6 @@ pub const CHAT_FONT_SIZE: &str = "UI.ChatFontSize";
 /// switch the profile keeps as `True` or `False`; a number above 1 (from `--set-at`) asks its
 /// effect for that quality level, 0 Off, 1 Low, 2 Medium, 3 High, 4 Ultra.
 pub mod fidelity {
-    /// `Fidelity.Lighting`: per-pixel sun and sky light in high dynamic range.
-    pub const LIGHTING: &str = "Fidelity.Lighting";
     /// `Fidelity.Shadows`: the sun's shadows, drawn inside the lighting.
     pub const SHADOWS: &str = "Fidelity.Shadows";
     /// `Fidelity.GlobalIllumination`: bounced light, drawn inside the lighting.
@@ -155,13 +155,10 @@ pub mod fidelity {
     /// `Fidelity.RenderScale`: the share of the frame's pixels the better lighting draws the world
     /// at, each way, percent, or 1 for Dynamic; the picture is rebuilt at the frame's size.
     pub const RENDER_SCALE: &str = "Fidelity.RenderScale";
-    /// `Fidelity.Debug`: a diagnostic view, set only by `--set-at`: 0 Off, 1 Passthrough,
-    /// 2 Depth, 3 Normals, 4 AO, 5 Shadows, 6 Census, 7 Parity (re-shaded with no pass).
-    pub const DEBUG: &str = "Fidelity.Debug";
     /// Names an older profile or report may hold that no option takes any more, read as nothing:
-    /// the scenery follows the landscape's draw distance, the retail look and the art pack choice
-    /// are gone, and the lamps, the physical sky, the water, the slope materials and the damp are
-    /// always drawn.
+    /// the scenery follows the landscape's draw distance, the retail look, the art pack choice and
+    /// the diagnostic views are gone, and the better lighting, the lamps, the physical sky, the
+    /// water, the slope materials and the damp are always drawn.
     pub const RETIRED: &[&str] = &[
         "Fidelity.TreeDrawDistance",
         "Fidelity.Interface",
@@ -172,11 +169,12 @@ pub mod fidelity {
         "Fidelity.Water",
         "Fidelity.NoSlopeMaterials",
         "Fidelity.NoDamp",
+        "Fidelity.Lighting",
+        "Fidelity.Debug",
     ];
 
     /// Every name the profile and `--set-at` may set, the boxes first and the menus after them.
     pub const NAMES: &[&str] = &[
-        LIGHTING,
         SHADOWS,
         GLOBAL_ILLUMINATION,
         AMBIENT_OCCLUSION,
@@ -201,6 +199,5 @@ pub mod fidelity {
         LANDSCAPE_SMOOTHING,
         DYNAMIC_RESOLUTION,
         RENDER_SCALE,
-        DEBUG,
     ];
 }

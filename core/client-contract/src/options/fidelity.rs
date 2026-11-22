@@ -8,7 +8,7 @@
 //! ([`super::shadow_distance`]) on the Horizon interface's Display page, among its topics'
 //! headings.
 //!
-//! The presentation always draws the better lighting (`Fidelity.Lighting`, which no box sets). The
+//! The presentation always draws the better lighting. The
 //! lamps also need a graphics device that traces rays. [`blocked`] says which of these holds for a
 //! box, and the presentation follows the same rules, so a box the page leaves out or greys draws
 //! nothing. (The bounced light darkens the creases itself, so the ambient occlusion stands aside in
@@ -35,8 +35,9 @@
 //! elsewhere.
 //!
 //! The effects start on. The quality presets set several of them at once, and the terrain's draw
-//! distance with them ([`PRESET_VALUES`]); the defaults of the boxes and the menus are the Medium
-//! preset's.
+//! distance, the portal style and Detailed Faces with them ([`PRESET_VALUES`]); the defaults of the boxes and the
+//! menus are the Medium preset's. The Display tab's other options are the player's own
+//! ([`LEFT_TO_THE_PLAYER`]).
 //!
 //! The options are registered with the value store ([`register`]), so the page reads and writes
 //! them like any other option and the profile keeps them in its `[Fidelity]` section.
@@ -231,6 +232,9 @@ pub const PRESET_NAMES: [&str; 4] = ["Low", "Medium", "High", "Ultra"];
 /// The name for settings that match no preset.
 pub const CUSTOM_PRESET: &str = "Custom";
 
+/// The terrain draw distance until the player changes it: Very High, as the Medium preset has it.
+pub const TERRAIN_DEFAULT: i32 = 15;
+
 const ON: PrefValue = PrefValue::Bool(true);
 const OFF: PrefValue = PrefValue::Bool(false);
 
@@ -240,13 +244,21 @@ pub const PRESET_VALUES: &[(&str, [PrefValue; PRESET_NAMES.len()])] = &[
     (fidelity::SHADOWS, [OFF, ON, ON, ON]),
     (
         super::names::LANDSCAPE_DRAW_DISTANCE,
-        [Int(5), Int(8), Int(15), Int(25)],
+        [Int(11), Int(TERRAIN_DEFAULT), Int(48), Int(127)],
     ),
     (fidelity::GLOBAL_ILLUMINATION, [OFF, ON, ON, ON]),
     (fidelity::AMBIENT_OCCLUSION, [OFF, ON, ON, ON]),
     (fidelity::WEATHER, [OFF, ON, ON, ON]),
     (fidelity::NO_ANTI_ALIASING, [ON, OFF, OFF, OFF]),
-    (fidelity::DEPTH_MAPPING, [Int(0), Int(3), Int(3), Int(3)]),
+    (
+        fidelity::DEPTH_MAPPING,
+        [
+            Int(super::depth_mapping::OFF),
+            Int(super::depth_mapping::MEDIUM),
+            Int(super::depth_mapping::MEDIUM),
+            Int(super::depth_mapping::MEDIUM),
+        ],
+    ),
     (fidelity::GOD_RAYS, [Int(0), Int(1), Int(1), Int(1)]),
     (
         fidelity::CLOUD_DETAIL,
@@ -267,6 +279,27 @@ pub const PRESET_VALUES: &[(&str, [PrefValue; PRESET_NAMES.len()])] = &[
         ],
     ),
     (fidelity::NO_WIND, [ON, OFF, OFF, OFF]),
+    (fidelity::NO_SILK_COBWEBS, [ON, OFF, OFF, OFF]),
+    (fidelity::NO_HIGH_RES_TEXTURES, [ON, OFF, OFF, OFF]),
+    (
+        fidelity::LANDSCAPE_SMOOTHING,
+        [
+            Int(super::landscape_smoothing::OFF),
+            Int(super::landscape_smoothing::MEDIUM),
+            Int(super::landscape_smoothing::MEDIUM),
+            Int(super::landscape_smoothing::MEDIUM),
+        ],
+    ),
+    (
+        super::names::PORTAL_STYLE,
+        [
+            Int(super::portal_style::ORIGINAL),
+            Int(super::portal_style::ENHANCED),
+            Int(super::portal_style::ENHANCED),
+            Int(super::portal_style::ENHANCED),
+        ],
+    ),
+    (super::names::DETAILED_FACES, [OFF, ON, ON, ON]),
     (
         fidelity::GROUND_COVER_DRAW_DISTANCE,
         [Int(super::draw_distance::OFF), Int(100), Int(300), Int(500)],
@@ -291,6 +324,20 @@ pub const PRESET_VALUES: &[(&str, [PrefValue; PRESET_NAMES.len()])] = &[
         fidelity::DYNAMIC_RESOLUTION,
         [Int(60), Int(60), Int(60), Int(60)],
     ),
+];
+
+/// The Display tab's options no preset sets: looks, comfort and the display's own settings.
+pub const LEFT_TO_THE_PLAYER: &[&str] = &[
+    fidelity::VSYNC,
+    fidelity::HDR,
+    fidelity::NO_FLAME_FLICKER,
+    fidelity::FOG_DENSITY,
+    fidelity::GRASS_HEIGHT,
+    super::names::GROUND_COLORING,
+    super::names::SCREEN_BRIGHTNESS,
+    super::names::FIELD_OF_VIEW,
+    super::names::DISPLAY_FULL_SCREEN,
+    super::names::UI_BLUR,
 ];
 
 /// One quality preset, by its place in [`PRESET_NAMES`].
@@ -578,16 +625,6 @@ pub struct Availability {
 /// whole.
 const REASON_SHOWN: usize = 48;
 
-/// What the chat window tells a player who ticks a box on a device started without the effects:
-/// the next start has them.
-pub const REFUSED_UNTIL_RESTART: &str =
-    "The experimental rendering effects take effect at the next start: restart to apply them.";
-
-/// What the chat window tells a player who ticks a box on a device that lacks what the effects
-/// draw with.
-pub const REFUSED_BACKEND: &str =
-    "The experimental rendering effects are off: this graphics backend can't run them.";
-
 impl Availability {
     /// Whether the boxes can be ticked here: the client has the effects. Elsewhere the page shows
     /// them greyed.
@@ -623,17 +660,6 @@ impl Availability {
         }
         None
     }
-
-    /// What the chat window tells a player whose ticked box this device cannot draw: that the
-    /// next start applies them, or that this backend cannot run them.
-    #[must_use]
-    pub fn refusal(&self) -> &'static str {
-        if self.widened {
-            REFUSED_BACKEND
-        } else {
-            REFUSED_UNTIL_RESTART
-        }
-    }
 }
 
 #[cfg(test)]
@@ -651,8 +677,6 @@ mod tests {
             assert!(fidelity::NAMES.contains(name), "{name}");
             assert!(find(name).is_none(), "{name} is a menu and a box");
         }
-        assert!(find(fidelity::DEBUG).is_none(), "the debug view has no box");
-        assert_eq!(needs(fidelity::DEBUG), None);
     }
 
     #[test]
@@ -687,7 +711,9 @@ mod tests {
         for (name, _) in PRESET_VALUES {
             assert!(
                 fidelity::NAMES.contains(name)
-                    || *name == super::super::names::LANDSCAPE_DRAW_DISTANCE,
+                    || *name == super::super::names::LANDSCAPE_DRAW_DISTANCE
+                    || *name == super::super::names::PORTAL_STYLE
+                    || *name == super::super::names::DETAILED_FACES,
                 "{name}"
             );
         }
@@ -712,6 +738,12 @@ mod tests {
         )));
         assert!(low.contains(&(fidelity::LIGHT_DRAW_DISTANCE, Int(100))));
         assert!(low.contains(&(fidelity::RENDER_SCALE, Int(DYNAMIC))));
+        assert!(low.contains(&(fidelity::NO_HIGH_RES_TEXTURES, PrefValue::Bool(true))));
+        assert!(low.contains(&(
+            super::super::names::PORTAL_STYLE,
+            Int(super::super::portal_style::ORIGINAL)
+        )));
+        assert!(low.contains(&(super::super::names::DETAILED_FACES, PrefValue::Bool(false))));
         let ultra = PRESETS[3].values();
         assert!(ultra.iter().all(|(name, v)| match find(name) {
             Some(o) => *v == PrefValue::Bool(!o.inverted),
@@ -723,14 +755,30 @@ mod tests {
             None if *name == fidelity::LIGHT_DRAW_DISTANCE => *v == Int(500),
             None if *name == fidelity::SHADOW_DISTANCE => *v == Int(500),
             None if *name == fidelity::OBJECT_DETAIL => *v == Int(300),
-            None if *name == super::super::names::LANDSCAPE_DRAW_DISTANCE => *v == Int(25),
+            None if *name == super::super::names::LANDSCAPE_DRAW_DISTANCE => *v == Int(127),
+            None if *name == super::super::names::PORTAL_STYLE => {
+                *v == Int(super::super::portal_style::ENHANCED)
+            }
+            None if *name == super::super::names::DETAILED_FACES => *v == PrefValue::Bool(true),
+            None if *name == fidelity::LANDSCAPE_SMOOTHING => {
+                *v == Int(super::super::landscape_smoothing::MEDIUM)
+            }
             None if super::super::draw_distance::is_a_distance(name) => *v == Int(500),
-            None => *v == Int(super::super::depth_mapping::MOST),
+            None => *v == Int(super::super::depth_mapping::MEDIUM),
         }));
         // The defaults of the boxes and the menus are the Medium preset's.
         let defaults = |name: &str| match find(name) {
             Some(o) => Some(PrefValue::Bool(o.on_by_default)),
-            None if name == super::super::names::LANDSCAPE_DRAW_DISTANCE => Some(Int(8)),
+            None if name == super::super::names::LANDSCAPE_DRAW_DISTANCE => {
+                Some(Int(TERRAIN_DEFAULT))
+            }
+            None if name == super::super::names::PORTAL_STYLE => {
+                Some(Int(super::super::portal_style::DEFAULT))
+            }
+            None if name == super::super::names::DETAILED_FACES => Some(PrefValue::Bool(true)),
+            None if name == fidelity::LANDSCAPE_SMOOTHING => {
+                Some(Int(super::super::landscape_smoothing::DEFAULT))
+            }
             None if menu_default(name).is_some() => menu_default(name),
             None if name == fidelity::GOD_RAYS => Some(Int(super::super::god_rays::DEFAULT)),
             None if name == fidelity::CLOUD_DETAIL => {
@@ -773,25 +821,80 @@ mod tests {
         assert_eq!(preset_in_use(own), None);
     }
 
-    /// The Depth Mapping menu starts at its greatest level, and the save leaves it out until it is
-    /// changed.
+    /// The Depth Mapping menu starts at Medium, as the Medium preset has it, and the save leaves it
+    /// out until it is changed.
     #[test]
-    fn the_depth_mapping_menu_starts_high_and_is_left_out_of_the_profile_until_chosen() {
+    fn the_depth_mapping_menu_starts_at_medium_and_is_left_out_of_the_profile_until_chosen() {
         use crate::persist::preferences::UserPreferences;
         let empty = UserPreferences::parse("").expect("an empty profile");
-        let high = PrefValue::Int(super::super::depth_mapping::MOST);
+        let medium = PrefValue::Int(super::super::depth_mapping::MEDIUM);
         assert_eq!(
             super::super::depth_mapping::DEFAULT,
-            super::super::depth_mapping::MOST
+            super::super::depth_mapping::MEDIUM
         );
-        assert!(left_out_of_save(fidelity::DEPTH_MAPPING, &high, &empty));
+        assert!(left_out_of_save(fidelity::DEPTH_MAPPING, &medium, &empty));
         assert!(!left_out_of_save(
             fidelity::DEPTH_MAPPING,
             &PrefValue::Int(super::super::depth_mapping::OFF),
             &empty
         ));
-        let named = UserPreferences::parse("[Fidelity]\r\nDepthMapping=High\r\n").expect("reads");
-        assert!(!left_out_of_save(fidelity::DEPTH_MAPPING, &high, &named));
+        assert!(!left_out_of_save(
+            fidelity::DEPTH_MAPPING,
+            &PrefValue::Int(super::super::depth_mapping::MOST),
+            &empty
+        ));
+        let named = UserPreferences::parse("[Fidelity]\r\nDepthMapping=Medium\r\n").expect("reads");
+        assert!(!left_out_of_save(fidelity::DEPTH_MAPPING, &medium, &named));
+    }
+
+    /// Every option on the Display tab's graphics headings is set by every preset or left to the
+    /// player, never both, and each preset value is one of its menu's choices.
+    #[test]
+    fn every_display_option_is_in_the_presets_or_left_to_the_player() {
+        use super::super::sheet::{self, PageId};
+        super::super::store::init();
+        let graphics = [
+            sheet::SCREEN_HEADING,
+            sheet::LIGHTING_HEADING,
+            sheet::SKY_HEADING,
+            sheet::SURFACES_HEADING,
+        ];
+        let shown: Vec<&str> = sheet::page(PageId::Client)
+            .headings
+            .iter()
+            .filter(|h| graphics.contains(&h.title))
+            .flat_map(|h| h.rows.iter())
+            .filter_map(sheet::Row::preference)
+            .collect();
+        let preset = |name: &str| PRESET_VALUES.iter().any(|(n, _)| *n == name);
+        for name in &shown {
+            assert!(
+                preset(name) != LEFT_TO_THE_PLAYER.contains(name),
+                "{name} must be in exactly one of PRESET_VALUES and LEFT_TO_THE_PLAYER"
+            );
+        }
+        for name in PRESET_VALUES
+            .iter()
+            .map(|(n, _)| *n)
+            .chain(LEFT_TO_THE_PLAYER.iter().copied())
+        {
+            assert!(shown.contains(&name), "{name} is on no graphics heading");
+        }
+        for (name, values) in PRESET_VALUES {
+            let Some(choices) = super::super::store::choice_rows(name) else {
+                assert!(
+                    values.iter().all(|v| matches!(v, PrefValue::Bool(_))),
+                    "{name}"
+                );
+                continue;
+            };
+            for v in values {
+                assert!(
+                    choices.iter().any(|c| PrefValue::Int(c.value) == *v),
+                    "{name} has no choice {v:?}"
+                );
+            }
+        }
     }
 
     /// The God Rays menu starts at Low, as the Medium preset has it, and the save leaves it out
@@ -905,8 +1008,8 @@ mod tests {
     #[test]
     fn every_box_draws_with_nothing_else_ticked() {
         use fidelity::{
-            AMBIENT_OCCLUSION, CLOUD_DETAIL, DEPTH_MAPPING, GLOBAL_ILLUMINATION, GOD_RAYS,
-            LIGHTING, NO_WIND, SHADOWS, WEATHER,
+            AMBIENT_OCCLUSION, CLOUD_DETAIL, DEPTH_MAPPING, GLOBAL_ILLUMINATION, GOD_RAYS, NO_WIND,
+            SHADOWS, WEATHER,
         };
         let with = |on: &'static [&'static str]| move |n: &str| on.contains(&n);
         for name in [
@@ -921,9 +1024,10 @@ mod tests {
         ] {
             assert_eq!(blocked(name, with(&[]), Some(false)), None, "{name}");
         }
-        assert!(find(LIGHTING).is_none(), "the better lighting has no box");
         // The retired boxes are no boxes: an older profile's are read as nothing.
         for name in [
+            "Fidelity.Lighting",
+            "Fidelity.Debug",
             "Fidelity.Lamps",
             "Fidelity.Sky",
             "Fidelity.Water",
@@ -965,7 +1069,6 @@ mod tests {
             active: false,
             failed: None,
         };
-        assert_eq!(started_without.refusal(), REFUSED_UNTIL_RESTART);
         assert_eq!(
             started_without.status(true).as_deref(),
             Some("Restart to apply")
@@ -976,7 +1079,6 @@ mod tests {
             supported: false,
             ..started_without.clone()
         };
-        assert_eq!(short.refusal(), REFUSED_BACKEND);
         assert_eq!(
             short.status(true).as_deref(),
             Some("This graphics backend can't run these effects")

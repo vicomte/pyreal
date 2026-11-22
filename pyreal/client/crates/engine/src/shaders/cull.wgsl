@@ -25,6 +25,38 @@ struct MeshInfo {
     // The coarser mesh drawn from `lod_switch` metres on (none, or nothing drawn).
     lod_next: u32,
     lod_switch: f32,
+    // x: its triangles' mean edge, model units (0: not known).
+    edge: vec4<f32>,
+}
+
+// Whether a caster's sphere, swept the length of the cascade along its shadow, misses the
+// cascade's slice of the view: wholly past one of the view's sides, or before or past the slice.
+fn shades_nothing(c: vec3<f32>, r: f32) -> bool {
+    let e = c + params.fall.xyz;
+    for (var p = 0u; p < 4u; p++) {
+        let pl = params.view_side[p];
+        if (dot(pl.xyz, c) + pl.w < -r && dot(pl.xyz, e) + pl.w < -r) {
+            return true;
+        }
+    }
+    let dc = dot(params.slice.xyz, c - params.eye.xyz);
+    let de = dot(params.slice.xyz, e - params.eye.xyz);
+    if (dc + r < params.slice.w && de + r < params.slice.w) {
+        return true;
+    }
+    return dc - r > params.fall.w && de - r > params.fall.w;
+}
+
+// How far `level` is along its switch, 1 at it: the distance's share of the switch, or sooner
+// where the level's triangles at `scale` and `dm` metres are finer than the pixel limit, though
+// never sooner than the game's own distance: the limit only takes back what Object Detail adds.
+fn switch_share(level: MeshInfo, ds: f32, dm: f32, scale: f32) -> f32 {
+    let t = ds / level.lod_switch;
+    if (params.pixel.x <= 0.0 || level.edge.x <= 0.0 || level.lod_next == LOD_NOTHING) {
+        return t;
+    }
+    let fine = dm * params.pixel.x / (level.edge.x * scale);
+    return max(t, min(fine, t * params.pixel.y));
 }
 
 // The mesh word of an empty slot.
@@ -77,6 +109,15 @@ struct Params {
     // for the shelter map (the rooms too); y: the first of its draw arguments; z: where its
     // visible list starts; w: how much farther its casters seem to the degrade (float bits).
     target_list: vec4<u32>,
+    // x: a drawn pixel's angle times the pixels a level's mean edge must cover (0: no such
+    // limit), so a level gives way where its triangles grow finer than the picture shows; y: the
+    // Object Detail scale, at least 1, which the limit never brings a switch nearer than.
+    pixel: vec4<f32>,
+    // For a cascade: the view's four sides; its slice of the view (xyz the view's forward, w where
+    // its receivers start); and the way and length its shadows fall (w where the slice ends).
+    view_side: array<vec4<f32>, 4>,
+    slice: vec4<f32>,
+    fall: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
@@ -194,6 +235,10 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>) {
         atomicAdd(&stats[2], 1u);
         return;
     }
+    // A sun's caster whose shadow cannot reach what its cascade covers of the view.
+    if (params.target_list.x == 1u && shades_nothing(center, radius)) {
+        return;
+    }
     // The degrade level its distance over its height scale asks for (the client's measure),
     // walking the chain from its near mesh. Over a band before a switch the eye's view and the
     // cascades draw both levels, each through the other's screen door; a cascade's casters turn
@@ -216,15 +261,13 @@ fn cull(@builtin(global_invocation_id) id: vec3<u32>) {
         }
         let fades = !shadow || (params.target_list.x == 1u && level.lod_next < LOD_NOTHING
             && (meshes[level.lod_next].bucket_count >> 24u) != IMPOSTOR);
-        var lo = level.lod_switch;
-        if (fades) {
-            lo = level.lod_switch * (1.0 - LOD_BAND);
-        }
-        if (ds < lo) {
+        let share = switch_share(level, ds, dm, radius / max(mesh.sphere.w, 1e-6));
+        let lo = select(1.0, 1.0 - LOD_BAND, fades);
+        if (share < lo) {
             break;
         }
-        if (fades && ds < level.lod_switch) {
-            let t = (ds - lo) / (level.lod_switch * LOD_BAND);
+        if (fades && share < 1.0) {
+            let t = (share - lo) / LOD_BAND;
             fade = max(u32(round(t * 127.0)), 1u);
             coarser = level.lod_next;
             break;

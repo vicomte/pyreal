@@ -134,6 +134,9 @@ pub enum OverlayItem {
     },
     /// A preview space, drawn into `rect` (in back-buffer pixels) at this point in the order.
     Preview { space: PreviewSpace, rect: Viewport },
+    /// A see-through ground over `rect` (in back-buffer pixels): the world behind it is blurred
+    /// `strength` (0..1) as strongly, where the player has UI Blur on. Not drawn in the order.
+    Backdrop { rect: Viewport, strength: f32 },
 }
 
 /// A picture laid on the ground under a world object and drawn with the world: on the terrain

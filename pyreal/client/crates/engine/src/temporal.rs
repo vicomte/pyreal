@@ -206,6 +206,8 @@ pub struct Ui {
     /// of a UI drawn as the old fixed-function devices drew one): it is laid over the world in
     /// that encoding too.
     pub gamma: bool,
+    /// Its see-through grounds the world behind is blurred under (UI Blur).
+    pub backdrops: Vec<crate::frost::Backdrop>,
 }
 
 /// The resolve's uniform bytes.
@@ -266,6 +268,9 @@ pub struct Temporal {
     composite_uniform: wgpu::Buffer,
     sampler: wgpu::Sampler,
     no_ui: wgpu::TextureView,
+    /// UI Blur's passes, and the grounds' uniform the composite reads.
+    frost: crate::frost::Frost,
+    grounds_uniform: wgpu::Buffer,
     out: Option<OutputTargets>,
     scaler: Option<crate::metalfx::TemporalScaler>,
     /// The sizes a scaler could not be made for, so it is not asked again each frame.
@@ -367,6 +372,8 @@ impl Temporal {
                 texture_entry(1, float),
                 sampler_entry(2),
                 uniform_entry(3),
+                texture_entry(4, float),
+                uniform_entry(5),
             ],
         });
         let pipeline = |label: &str,
@@ -463,6 +470,8 @@ impl Temporal {
             composite_pipeline,
             resolve_uniform: buffer("resolve", RESOLVE_SIZE),
             composite_uniform: buffer("composite", COMPOSITE_SIZE),
+            grounds_uniform: buffer("ui blur grounds", crate::frost::UNIFORM_SIZE),
+            frost: crate::frost::Frost::new(gpu),
             sampler,
             no_ui,
             out: None,
@@ -711,6 +720,17 @@ impl Temporal {
             }
         };
         let (pw, ph) = if mode == 2 { (ow, oh) } else { (iw, ih) };
+        // UI Blur, where a see-through ground asks for it.
+        let grounds: &[crate::frost::Backdrop] = ui.map_or(&[], |u| &u.backdrops);
+        let frost = if grounds.is_empty() {
+            crate::frost::Frost::skip(rec);
+            None
+        } else {
+            self.frost.record(gpu, rec, &picture, output_size, grounds)
+        };
+        let grounds = if frost.is_some() { grounds } else { &[] };
+        gpu.queue
+            .write_buffer(&self.grounds_uniform, 0, &crate::frost::uniform(grounds));
         let mut bytes = Vec::with_capacity(64);
         for v in [
             mode,
@@ -739,6 +759,11 @@ impl Temporal {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: self.composite_uniform.as_entire_binding(),
+                },
+                tex_view(4, frost.as_ref().unwrap_or(&self.no_ui)),
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: self.grounds_uniform.as_entire_binding(),
                 },
             ],
         });

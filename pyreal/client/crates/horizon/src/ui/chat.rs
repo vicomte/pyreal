@@ -637,18 +637,6 @@ impl ChatLog {
         }
     }
 
-    /// The log holds `lines` and nothing else.
-    pub fn replace(&mut self, lines: Vec<ChatLine>) {
-        self.dropped += self.lines.len();
-        self.selection = None;
-        self.lines = lines;
-        if self.lines.len() > CHAT_HISTORY {
-            let extra = self.lines.len() - CHAT_HISTORY;
-            self.lines.drain(..extra);
-        }
-        self.scroll.iter_mut().for_each(|s| *s = 0);
-    }
-
     /// Open the input line with `text`.
     pub fn open(&mut self, text: String) {
         self.told.clone_from(&text);
@@ -957,7 +945,11 @@ impl ChatLog {
         self.resize_grip(p, ctx, 0, showing, out);
         // Active while the pointer is over it or its line is being typed.
         let active = self.typing.is_some() || ctx.input.hover(&showing);
-        p.fill(r, ground(self.opacity.get(None, active)));
+        let opacity = self.opacity.get(None, active);
+        if opacity > 0.05 {
+            p.backdrop(r);
+        }
+        p.fill(r, ground(opacity));
         let labels: Vec<&str> = counted.iter().map(String::as_str).collect();
         let mut shown = docked.iter().position(|i| *i == self.tab).unwrap_or(0);
         if !labels.is_empty() {
@@ -1388,7 +1380,11 @@ impl ChatLog {
         let tr = tab(p, x, y);
         let lines = Rect::new(x, y + tab_h, w, h);
         let active = dragging || ctx.input.hover(&whole);
-        p.fill(lines, ground(self.opacity.get(Some(slot), active)));
+        let opacity = self.opacity.get(Some(slot), active);
+        if opacity > 0.05 {
+            p.backdrop(lines);
+        }
+        p.fill(lines, ground(opacity));
         self.controls.push((name.clone(), tr));
         // While the HUD Layout window is open, what is in it has no pointer.
         let pointer = ctx.input.mouse;

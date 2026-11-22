@@ -139,6 +139,8 @@ pub struct DrawList {
     /// The quads that stand over something in the world, and where it stood when they were
     /// drawn: [`Self::follow`] moves them to where it stands when the world is drawn.
     pub anchored: Vec<Anchored>,
+    /// The see-through grounds the world behind is blurred under, and how strongly (0..1).
+    pub backdrops: Vec<(Rect, f32)>,
 }
 
 /// Which point of an object in the world some quads stand on.
@@ -192,7 +194,31 @@ impl DrawList {
         self.quads.clear();
         self.clips.clear();
         self.anchored.clear();
+        self.backdrops.clear();
         CLIP.with(|c| c.set(None));
+    }
+
+    /// The see-through ground over `r` (cut to the clip in force), the world behind it blurred
+    /// `strength` (0..1) where the player has UI Blur on.
+    pub fn backdrop(&mut self, r: Rect, strength: f32) {
+        let r = match self.clips.last() {
+            Some(c) => match r.intersect(c) {
+                Some(r) => r,
+                None => return,
+            },
+            None => r,
+        };
+        let within = |o: &Rect| {
+            o.x <= r.x && o.y <= r.y && r.right() <= o.right() && r.bottom() <= o.bottom()
+        };
+        // One inside another as strong adds nothing.
+        let covered = self
+            .backdrops
+            .iter()
+            .any(|(o, s)| *s >= strength && within(o));
+        if r.w >= 1.0 && r.h >= 1.0 && strength > 0.0 && !covered {
+            self.backdrops.push((r, strength.min(1.0)));
+        }
     }
 
     /// Note that the quads from `from` to the end of the list stand on `anchor` of `id`, which
@@ -357,10 +383,7 @@ impl DrawList {
 /// What the overlay has drawn so far.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct OverlayStats {
-    pub textures_uploaded: u64,
     pub upload_failures: u64,
-    pub quads_drawn: u64,
-    pub quads_clipped: u64,
     /// Pictures made at the size they are drawn.
     pub pictures_made: u64,
 }
@@ -583,7 +606,6 @@ impl Overlay {
             };
             let q = &q;
             let Some(vertices) = quad_vertices(q, tex_size, size) else {
-                self.stats.quads_clipped += 1;
                 continue;
             };
             // Linear filtering unless the picture is drawn texel for texel.
@@ -598,7 +620,6 @@ impl Overlay {
             } else {
                 OverlayDepth::Over
             };
-            self.stats.quads_drawn += 1;
             if let Some(OverlayItem::Triangles {
                 texture: last,
                 sampler: last_sampler,
@@ -622,6 +643,21 @@ impl Overlay {
         }
         for (space, r, _) in spaces {
             self.items.push(preview(space, r));
+        }
+        for (r, strength) in &list.backdrops {
+            let r = snapped(*r);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // LINT-OK: a rectangle on screen, clamped to it, a few thousand pixels at most.
+            let px = |v: f32| v.max(0.0) as u32;
+            self.items.push(OverlayItem::Backdrop {
+                rect: Viewport {
+                    x: px(r.x),
+                    y: px(r.y),
+                    width: px(r.w),
+                    height: px(r.h),
+                },
+                strength: *strength,
+            });
         }
         self.let_go_unused(sink);
     }
@@ -737,9 +773,7 @@ impl Overlay {
             sink.upload(key, &data)
                 .then_some((key, (image.width, image.height)))
         });
-        if uploaded.is_some() {
-            self.stats.textures_uploaded += 1;
-        } else {
+        if uploaded.is_none() {
             self.stats.upload_failures += 1;
         }
         self.textures.insert(id, uploaded);
@@ -989,7 +1023,7 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 OverlayItem::Preview { space, rect } => Some((*space, *rect)),
-                OverlayItem::Triangles { .. } => None,
+                OverlayItem::Triangles { .. } | OverlayItem::Backdrop { .. } => None,
             })
             .collect();
         assert!(matches!(

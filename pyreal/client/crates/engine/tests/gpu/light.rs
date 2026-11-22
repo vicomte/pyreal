@@ -232,6 +232,127 @@ fn shadows_darken_the_ground_behind_a_building_at_noon_not_at_night() {
     );
 }
 
+/// Leaving out the casters whose shadow cannot reach the view changes nothing drawn: the same
+/// noon view over Holtburg's houses with every caster in every cascade and with the cull.
+#[test]
+fn casters_that_cannot_shade_the_view_are_left_out_unseen() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = loaded(
+        &store,
+        &region,
+        Area {
+            center: 0xA9B4,
+            radius: 2,
+        },
+    );
+    let z = ground_height(&store, &region, 0xA9B4, 96.0, 96.0).expect("the ground") + 2.0;
+    let camera = Camera {
+        position: Vec3::new(96.0, 96.0, z),
+        pitch: -0.17,
+        far: 400.0,
+        ..Camera::default()
+    };
+    let size = (320, 180);
+    let light = SkyLight::at(&region, 0, 0.5);
+    engine.renderer.exposure = Exposure::Manual(0.25);
+    engine.renderer.shadows = true;
+    let mut frame = |cull: bool| {
+        engine.renderer.caster_cull = cull;
+        engine
+            .render_to_rgba(&camera, &light, size)
+            .expect("a frame")
+    };
+    let all = frame(false);
+    let culled = frame(true);
+    let differ = all
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(culled.as_chunks::<4>().0)
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 16))
+        .count();
+    let pixels = (size.0 * size.1) as usize;
+    assert!(differ * 1000 < pixels, "{differ} of {pixels} pixels differ");
+}
+
+/// Blended particles lit at four points of their card look as those lit at every pixel: an
+/// Umbraen's trail of smoke over Holtburg at noon and at midnight.
+#[test]
+fn smoke_lit_once_a_particle_looks_as_lit_at_every_pixel() {
+    use std::sync::Arc;
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = loaded(
+        &store,
+        &region,
+        Area {
+            center: 0xA9B4,
+            radius: 1,
+        },
+    );
+    engine.particles.assets = Some(Arc::new(
+        pyreal_world_data::anim_assets::DatAnimAssets::new(Arc::clone(&store)),
+    ));
+    // The Umbraen male body, whose default script trails smoke.
+    let smoking = pyreal_primitives::DataId(0x0200_196F);
+    let mut loader = AssetLoader::default();
+    for g in engine.particles.setup_sprites(smoking) {
+        pyreal_engine::particles::prepare_sprite(&mut engine, &mut loader, &store, g);
+    }
+    let z = ground_height(&store, &region, 0xA9B4, 96.0, 96.0).expect("the ground");
+    let camera = Camera {
+        position: Vec3::new(96.0, 96.0, z + 1.6),
+        pitch: -0.1,
+        far: 400.0,
+        ..Camera::default()
+    };
+    let at = camera.position + camera.forward() * 3.0;
+    let foot = Vec3::new(at.x, at.y, z);
+    let frame = pyreal_primitives::Frame {
+        origin: pyreal_primitives::Vec3::new(foot.x, foot.y, foot.z),
+        ..pyreal_primitives::Frame::default()
+    };
+    assert!(engine.particles.spawn(smoking, frame, 1.0, 0, 1));
+    let mut now = 0.0;
+    for _ in 0..120 {
+        now += 1.0 / 60.0;
+        engine.particles.step(now, camera.position);
+    }
+    let size = (320, 180);
+    for (time, exposure) in [(0.5, 0.25), (0.0, 15_000.0)] {
+        let light = SkyLight::at(&region, 0, time);
+        engine.renderer.exposure = Exposure::Manual(exposure);
+        let mut frame = |once: bool| {
+            engine.renderer.particles_lit_once = once;
+            engine
+                .render_to_rgba(&camera, &light, size)
+                .expect("a frame")
+        };
+        // Frames a little apart differ by their own history; the smoke lit once a particle
+        // may differ by barely more than that.
+        let every = frame(false);
+        let again = frame(false);
+        let once = frame(true);
+        assert!(engine.renderer.particles_drawn > 0, "the smoke is drawn");
+        let differ = |a: &[u8], b: &[u8]| {
+            a.as_chunks::<4>()
+                .0
+                .iter()
+                .zip(b.as_chunks::<4>().0)
+                .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 12))
+                .count()
+        };
+        let (history, lit) = (differ(&every, &again), differ(&every, &once));
+        let pixels = (size.0 * size.1) as usize;
+        eprintln!("time {time}: {lit} pixels differ, {history} between two frames lit alike");
+        assert!(
+            lit <= history + pixels / 200,
+            "at {time}, {lit} pixels differ against {history} between two frames lit alike"
+        );
+    }
+}
+
 /// Each frame pixel's world point (`None` where nothing is drawn), from the depth target.
 pub fn world_points(engine: &Engine, camera: &Camera, (w, h): (u32, u32)) -> Vec<Option<Vec3>> {
     let depth = pyreal_engine::read_texture(
@@ -527,6 +648,8 @@ fn cluster_lists_hold_the_lamps_that_touch_them() {
             candela: 0.01,
             range: 0.5 + rnd() * 12.0,
             retail: glam::Vec4::ONE,
+            intensity: 1.0,
+            client: None,
             flicker: Flicker::Steady,
             shadows: false,
             cell: 0,

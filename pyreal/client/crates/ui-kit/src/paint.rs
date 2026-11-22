@@ -79,6 +79,11 @@ impl Painter<'_> {
         }
     }
 
+    /// The world behind the see-through ground over `r` is blurred, where UI Blur is on.
+    pub fn backdrop(&mut self, r: Rect) {
+        self.list.backdrop(r, self.fade);
+    }
+
     /// A sprite stretched over `dst` (in screen pixels).
     pub fn sprite(&mut self, s: &Sprite, dst: Rect, colour: Argb) {
         let c = self.a(colour);
@@ -89,12 +94,6 @@ impl Painter<'_> {
     pub fn sprite_turned(&mut self, s: &Sprite, dst: Rect, colour: Argb, turn: f32) {
         let c = self.a(colour);
         self.list.image_turned(s.tex, s.src, dst, c, turn);
-    }
-
-    /// A sprite at its own size times the scale, top-left at `(x, y)` screen pixels.
-    pub fn sprite_at(&mut self, s: &Sprite, x: f32, y: f32, colour: Argb) {
-        let dst = Rect::new(x, y, s.w * self.scale, s.h * self.scale);
-        self.sprite(s, dst, colour);
     }
 
     /// The interface's own piece `name`, sharp enough for the current scale.

@@ -296,6 +296,7 @@ fn the_ui_lands_texel_for_texel_whatever_the_render_scale() {
     engine.renderer.ui = Some(Ui {
         view: t.create_view(&Default::default()),
         gamma: false,
+        backdrops: Vec::new(),
     });
     let out = engine
         .render_to_rgba(&camera(), &SkyLight::default(), size)

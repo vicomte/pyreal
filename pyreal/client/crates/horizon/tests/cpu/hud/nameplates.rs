@@ -362,7 +362,7 @@ fn triangles(
                 .iter()
                 .map(|v| (*texture, *sampler, *depth, *v))
                 .collect(),
-            OverlayItem::Preview { .. } => Vec::new(),
+            OverlayItem::Preview { .. } | OverlayItem::Backdrop { .. } => Vec::new(),
         })
         .collect()
 }

@@ -34,6 +34,7 @@ fn modules() -> Vec<(&'static str, String)> {
         ("oit", source::oit()),
         ("resolve", pyreal_engine::temporal::resolve_source()),
         ("composite", pyreal_engine::temporal::composite_source()),
+        ("ui blur", pyreal_engine::frost::source().to_owned()),
         ("overlay", overlay.to_owned()),
         ("whole picture", whole.to_owned()),
         ("preview", pyreal_engine::preview::source()),
@@ -49,33 +50,55 @@ fn every_module_translates_for_vulkan_and_dx12() {
     use naga::valid::{Capabilities, ValidationFlags, Validator};
     let mut failures = Vec::new();
     for (name, wgsl) in modules() {
-        let module = naga::front::wgsl::parse_str(&wgsl).expect(name);
-        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
-            .validate(&module)
+        let parsed = naga::front::wgsl::parse_str(&wgsl).expect(name);
+        let parsed_info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&parsed)
             .expect(name);
-        let rays = wgsl.contains("wgpu_ray_query");
-        let spv_opts = spv::Options {
-            lang_version: if rays { (1, 4) } else { (1, 3) },
-            ..Default::default()
-        };
-        if let Err(e) = spv::write_vec(&module, &info, &spv_opts, None) {
-            failures.push(format!("{name}: SPIR-V: {e}"));
+        // A module with overrides is translated as wgpu translates each of its pipelines: with
+        // the overrides at their defaults, and with every one a pipeline sets to off.
+        let mut settings = vec![naga::back::PipelineConstants::default()];
+        if !parsed.overrides.is_empty() {
+            let mut off = naga::back::PipelineConstants::default();
+            for (_, o) in parsed.overrides.iter() {
+                if let Some(n) = &o.name {
+                    off.insert(n.clone(), 0.0);
+                }
+            }
+            settings.push(off);
         }
-        let models: &[hlsl::ShaderModel] = if rays {
-            &[hlsl::ShaderModel::V6_5]
-        } else {
-            &[hlsl::ShaderModel::V5_1, hlsl::ShaderModel::V6_0]
-        };
-        for &sm in models {
-            let opts = hlsl::Options {
-                shader_model: sm,
+        for constants in &settings {
+            let (module, info) = naga::back::pipeline_constants::process_overrides(
+                &parsed,
+                &parsed_info,
+                None,
+                constants,
+            )
+            .expect(name);
+            let (module, info) = (module.as_ref(), info.as_ref());
+            let rays = wgsl.contains("wgpu_ray_query");
+            let spv_opts = spv::Options {
+                lang_version: if rays { (1, 4) } else { (1, 3) },
                 ..Default::default()
             };
-            let pipe = hlsl::PipelineOptions::default();
-            let mut out = String::new();
-            let mut w = hlsl::Writer::new(&mut out, &opts, &pipe);
-            if let Err(e) = w.write(&module, &info, None) {
-                failures.push(format!("{name}: HLSL {sm:?}: {e}"));
+            if let Err(e) = spv::write_vec(module, info, &spv_opts, None) {
+                failures.push(format!("{name}: SPIR-V: {e}"));
+            }
+            let models: &[hlsl::ShaderModel] = if rays {
+                &[hlsl::ShaderModel::V6_5]
+            } else {
+                &[hlsl::ShaderModel::V5_1, hlsl::ShaderModel::V6_0]
+            };
+            for &sm in models {
+                let opts = hlsl::Options {
+                    shader_model: sm,
+                    ..Default::default()
+                };
+                let pipe = hlsl::PipelineOptions::default();
+                let mut out = String::new();
+                let mut w = hlsl::Writer::new(&mut out, &opts, &pipe);
+                if let Err(e) = w.write(module, info, None) {
+                    failures.push(format!("{name}: HLSL {sm:?}: {e}"));
+                }
             }
         }
     }

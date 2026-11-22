@@ -391,6 +391,90 @@ fn degrade_levels_thin_the_distance() {
     );
 }
 
+/// The tower on the hill west of Holtburg (0x01001117, 226 triangles, then 108, 14 and a card of
+/// three past 178 m, nothing past 442 m in retail): a static that large keeps its card out to the
+/// loaded land's edge, where retail's chain would leave a hole in front of the far land.
+#[test]
+fn a_far_tower_keeps_its_card_where_retail_drew_nothing() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = engine();
+    let mut loader = AssetLoader::default();
+    load_area(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        Area {
+            center: 0xA9B4,
+            radius: 4,
+        },
+    );
+    let scene = &engine.scene;
+    let tris = |m: pyreal_engine::scene::MeshId| scene.mesh(m).map_or(0, |m| m.index_count / 3);
+    let towers: Vec<_> = scene
+        .instances()
+        .map(|(_, i)| scene.lod_chain(i.mesh))
+        .filter(|c| c.iter().map(|m| tris(*m)).collect::<Vec<_>>() == [226, 108, 14, 3])
+        .collect();
+    assert!(!towers.is_empty(), "the tower is placed");
+    for chain in towers {
+        let card = scene.mesh(chain[3]).expect("its card");
+        assert_eq!(card.lod_next, pyreal_engine::scene::LOD_NONE);
+    }
+}
+
+/// The pixel limit: at a small drawn size the levels whose triangles the picture cannot show
+/// give way, so fewer triangles are drawn; with every mesh kept at its near level, or at the
+/// game's own distances, it does nothing.
+#[test]
+fn the_pixel_limit_leaves_out_detail_the_picture_cannot_show() {
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let mut engine = engine();
+    let mut loader = AssetLoader::default();
+    load_area(
+        &mut engine,
+        &mut loader,
+        &store,
+        &region,
+        Area {
+            center: 0xA9B4,
+            radius: 2,
+        },
+    );
+    // doors-through-foliage-1 in the report library: over the town to the lake.
+    let camera = Camera {
+        position: Vec3::new(100.481_93, 45.935_85, 96.153_54),
+        yaw: -5.819_972,
+        pitch: -0.415,
+        far: 500.0,
+        ..Camera::default()
+    };
+    let light = SkyLight::at(&region, 0, 0.5);
+    let mut visible = |bias: f32, pixels: f32| {
+        engine.renderer.lod_bias = bias;
+        engine.renderer.lod_pixels = pixels;
+        engine
+            .render_to_rgba(&camera, &light, (320, 180))
+            .expect("a frame");
+        engine
+            .renderer
+            .read_cull_stats(&engine.gpu)
+            .visible_triangles
+    };
+    let by_distance = visible(3.0, 0.0);
+    let limited = visible(3.0, 3.0);
+    assert!(limited < by_distance, "{limited} against {by_distance}");
+    let near = visible(0.0, 0.0);
+    let near_limited = visible(0.0, 3.0);
+    // Nor nearer than the game's own distances: at a scale of one the limit changes nothing.
+    let own = visible(1.0, 0.0);
+    let own_limited = visible(1.0, 3.0);
+    assert_eq!(own, own_limited);
+    assert_eq!(near, near_limited);
+}
+
 /// The high-performance adapter is fit, so the engine takes it as it is asked for and never
 /// looks further.
 #[test]

@@ -19,6 +19,30 @@ struct Composite {
 @group(0) @binding(1) var ui: texture_2d<f32>;
 @group(0) @binding(2) var lin: sampler;
 @group(0) @binding(3) var<uniform> cs: Composite;
+// UI Blur: the world blurred a quarter as big, and the see-through grounds it shows under.
+@group(0) @binding(4) var frost: texture_2d<f32>;
+@group(0) @binding(5) var<uniform> grounds: Grounds;
+
+struct Grounds {
+    // x: how many.
+    count: vec4<u32>,
+    // Left, top, right, bottom in output pixels.
+    rects: array<vec4<f32>, 16>,
+    // Their strengths, four to a row.
+    strength: array<vec4<f32>, 4>,
+}
+
+// How strongly the world under pixel `p` is blurred: the strongest ground over it.
+fn frosted(p: vec2<f32>) -> f32 {
+    var s = 0.0;
+    for (var i = 0u; i < min(grounds.count.x, 16u); i = i + 1u) {
+        let r = grounds.rects[i];
+        if (p.x >= r.x && p.y >= r.y && p.x < r.z && p.y < r.w) {
+            s = max(s, grounds.strength[i / 4u][i % 4u]);
+        }
+    }
+    return s;
+}
 
 @vertex
 fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
@@ -55,6 +79,13 @@ fn fs_composite(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
     }
     // Where the UI covers nothing, the world as it is (past SDR white on an EDR output).
     let u = textureLoad(ui, px, 0);
+    // Under a see-through ground, the world blurred.
+    if (grounds.count.x > 0u && u.a > 0.0) {
+        let s = frosted(p.xy);
+        if (s > 0.0) {
+            c = mix(c, textureSampleLevel(frost, lin, p.xy * cs.output.zw, 0.0).rgb, s);
+        }
+    }
     if (cs.mode.y != 0u && u.a > 0.0) {
         if (cs.mode.z != 0u) {
             c = srgb_decode(u.rgb + srgb_encode(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0))) * (1.0 - u.a));

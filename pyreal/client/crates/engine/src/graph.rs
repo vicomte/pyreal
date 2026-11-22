@@ -138,6 +138,8 @@ struct Timer {
     state: TimerState,
     /// The frame being recorded writes timestamps.
     recording: bool,
+    /// The passes the timed frame skipped ([`FrameRecorder::skip`]), whose timestamps are unwritten.
+    skipped: std::sync::Mutex<Vec<usize>>,
 }
 
 /// The graph, ready to record frames.
@@ -182,6 +184,7 @@ impl FrameGraph {
                 period_ns: f64::from(gpu.queue.get_timestamp_period()),
                 state: TimerState::Idle,
                 recording: false,
+                skipped: std::sync::Mutex::new(Vec::new()),
             }
         });
         Ok(Self {
@@ -202,6 +205,11 @@ impl FrameGraph {
     pub fn begin<'a>(&'a mut self, encoder: &'a mut wgpu::CommandEncoder) -> FrameRecorder<'a> {
         if let Some(t) = self.timer.as_mut() {
             t.recording = matches!(t.state, TimerState::Idle);
+            if t.recording {
+                if let Ok(mut s) = t.skipped.lock() {
+                    s.clear();
+                }
+            }
         }
         FrameRecorder {
             graph: self,
@@ -286,7 +294,15 @@ impl FrameGraph {
         t.readback.unmap();
         #[allow(clippy::cast_precision_loss)]
         let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * t.period_ns / 1e6;
-        let pairs = ticks.as_chunks::<2>().0;
+        // A skipped pass wrote no timestamps: it took no time.
+        let skipped = t.skipped.lock().map(|s| s.clone()).unwrap_or_default();
+        let pairs: Vec<[u64; 2]> = ticks
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(i, p)| if skipped.contains(&i) { [0, 0] } else { *p })
+            .collect();
         let first = pairs.iter().map(|p| p[0]).filter(|&t| t > 0).min();
         let last = pairs.iter().map(|p| p[1]).max();
         self.timed += 1;
@@ -298,7 +314,7 @@ impl FrameGraph {
             .decl
             .passes
             .iter()
-            .zip(ticks.as_chunks::<2>().0)
+            .zip(&pairs)
             .map(|(p, pair)| PassTiming {
                 name: p.name,
                 ms: ms(pair[0], pair[1]),
@@ -403,6 +419,17 @@ impl<'a> FrameRecorder<'a> {
             occlusion_query_set: None,
             multiview_mask: None,
         })
+    }
+
+    /// Passes over the pass named `name`, the next one declared, drawing nothing: a pass with
+    /// nothing to do this frame costs nothing.
+    pub fn skip(&mut self, name: &'static str, kind: PassKind) {
+        let at = self.step(name, kind);
+        if let Some(t) = self.timer() {
+            if let Ok(mut s) = t.skipped.lock() {
+                s.push(usize::try_from(at).unwrap_or(usize::MAX));
+            }
+        }
     }
 
     /// Ends the frame; every declared pass must have been recorded.

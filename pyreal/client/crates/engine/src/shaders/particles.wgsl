@@ -55,6 +55,59 @@ struct PartOut {
     @location(7) @interpolate(flat) center: vec3<f32>,
     // A creature's light's colour and strength.
     @location(8) @interpolate(flat) glow: vec4<f32>,
+    // Better lighting's light, worked out at four points of a particle's card (`lit_once`) and
+    // blended across it: a smoke billow's from
+    // +x, -x, +y, -y, +z and -z; any other blended picture's in the first two, what it adds
+    // whatever its colour and its light a unit of colour. Unused where `lit.w` is zero.
+    @location(9) @interpolate(flat) lit: vec4<f32>,
+    @location(10) l0: vec3<f32>,
+    @location(11) l1: vec3<f32>,
+    @location(12) l2: vec3<f32>,
+    @location(13) l3: vec3<f32>,
+    @location(14) l4: vec3<f32>,
+    @location(15) l5: vec3<f32>,
+}
+
+// A blended particle's light from the sun's shadow, the lamps and the probes changes little
+// across its card, so better lighting works it out at four points of the card and its pixels
+// only blend it: lighting every pixel of a cloud of overlapping cards cost tens of milliseconds a frame.
+fn lit_once(p: Particle, at: vec3<f32>, out: ptr<function, PartOut>) {
+    (*out).lit = vec4<f32>(0.0);
+    let mote = (p.flags & MOTE) == MOTE;
+    let fire = (p.flags & 3u) == 3u;
+    if (!has(F_PHYSICAL) || !has(F_PARTICLES_ONCE) || mote || fire || (p.flags & 4096u) != 0u || (p.flags >> 30u) != 0u) {
+        return;
+    }
+    let smoke = (p.flags & 2u) != 0u;
+    let m = materials[p.material & 0xFFFFFFu];
+    if (!smoke && (m.flags & M_ADDITIVE) != 0u) {
+        return;
+    }
+    let c = frame.view_proj * vec4<f32>(at, 1.0);
+    let px = (c.xy / max(c.w, 1e-6) * vec2<f32>(0.5, -0.5) + 0.5) * frame.params.zw;
+    let v = normalize(frame.camera.xyz - at);
+    let bits = G_FOLIAGE | select(0u, G_INDOOR, p.cell != 0u);
+    if (smoke) {
+        (*out).lit = vec4<f32>(2.0, 0.0, 0.0, 0.0);
+        (*out).l0 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(1.0, 0.0, 0.0), v, 1.0, 0.0, 0.0, bits, px);
+        (*out).l1 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(-1.0, 0.0, 0.0), v, 1.0, 0.0, 0.0, bits, px);
+        (*out).l2 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(0.0, 1.0, 0.0), v, 1.0, 0.0, 0.0, bits, px);
+        (*out).l3 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(0.0, -1.0, 0.0), v, 1.0, 0.0, 0.0, bits, px);
+        (*out).l4 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(0.0, 0.0, 1.0), v, 1.0, 0.0, 0.0, bits, px);
+        (*out).l5 = forward_light(SMOKE_ALBEDO, at, vec3<f32>(0.0, 0.0, -1.0), v, 1.0, 0.0, 0.0, bits, px);
+        return;
+    }
+    (*out).lit = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    let none = forward_light(vec3<f32>(0.0), at, v, v, 0.9, 0.0, 0.0, bits, px);
+    (*out).l0 = none;
+    (*out).l1 = forward_light(vec3<f32>(1.0), at, v, v, 0.9, 0.0, 0.0, bits, px) - none;
+}
+
+// A smoke billow's light at normal `n`, from its six sides' light.
+fn smoke_light_at(in: PartOut, n: vec3<f32>) -> vec3<f32> {
+    let w = n * n;
+    return w.x * select(in.l1, in.l0, n.x > 0.0) + w.y * select(in.l3, in.l2, n.y > 0.0)
+        + w.z * select(in.l5, in.l4, n.z > 0.0);
 }
 
 // A creature's light (`glow.rs`), a ball's and a star's: how bright its core is beside its halo
@@ -149,6 +202,8 @@ fn vs_particle(v: VsIn, @builtin(instance_index) i: u32) -> PartOut {
     out.size = length(p.m0.xyz);
     out.flags = p.flags;
     out.center = center;
+    // Halfway to each corner: within the round of a card's picture, and still its light's lean.
+    lit_once(p, mix(center, world, 0.5), &out);
     return out;
 }
 
@@ -280,8 +335,11 @@ fn smoke_seen(in: PartOut, soft: f32) -> Seen {
     let shade = smoke_density(q + sun * 0.3, age, seed);
     let indoor = in.cell != 0u;
     let bits = G_FOLIAGE | select(0u, G_INDOOR, indoor);
-    let lit = forward_light(SMOKE_ALBEDO, in.world, n, -dir, 1.0, 0.0, 0.0, bits, in.clip.xy)
-        * mix(1.0, 0.55, shade);
+    var light = smoke_light_at(in, n);
+    if (in.lit.x != 2.0) {
+        light = forward_light(SMOKE_ALBEDO, in.world, n, -dir, 1.0, 0.0, 0.0, bits, in.clip.xy);
+    }
+    let lit = light * mix(1.0, 0.55, shade);
     var out: Seen;
     out.additive = false;
     // It swells into being rather than appearing whole.
@@ -498,8 +556,11 @@ fn particle_seen(in: PartOut) -> Seen {
     let bits = G_FOLIAGE | select(0u, G_INDOOR, indoor);
     // A luminous blended picture is self-lit as retail draws it, never glowing past it.
     let self_lit = c.rgb * m.emissive.x / max(pre_exposure(), 1e-6);
-    let lit = max(forward_light(c.rgb, in.world, -dir, -dir, 0.9, 0.0, 0.0, bits, in.clip.xy),
-                  self_lit);
+    var light = c.rgb * in.l1 + in.l0;
+    if (in.lit.x != 1.0) {
+        light = forward_light(c.rgb, in.world, -dir, -dir, 0.9, 0.0, 0.0, bits, in.clip.xy);
+    }
+    let lit = max(light, self_lit);
     out.colour = vec4<f32>(through_air(lit, in.world, dir, indoor), a);
     return out;
 }

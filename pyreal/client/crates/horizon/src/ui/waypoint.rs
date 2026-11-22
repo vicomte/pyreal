@@ -1,8 +1,8 @@
 //! The waypoint: a place the player follows. A double click on the map sets it, as do `@way` in
 //! chat and a Journal page's Set Waypoint. While one is set the radar's rim carries an arrow the way
 //! to it, the ground round the character a ring with an arrow on it (as the Waypoints setting
-//! chooses), and a Clear Waypoint button stands under the radar. It clears itself once the
-//! player stands within [`ARRIVED_METRES`] of it.
+//! chooses) and how far it is beside the radar's arrow, and a Clear Waypoint button stands under
+//! the radar. It clears itself once the player stands within [`ARRIVED_METRES`] of it.
 //!
 //! The way is worked out from the game's coordinates, in a building's rooms too. A dungeon's
 //! coordinates are not where it lies, so in a dungeon neither the radar's arrow nor the ring is

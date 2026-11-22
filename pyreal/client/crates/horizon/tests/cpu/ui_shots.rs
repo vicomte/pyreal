@@ -195,7 +195,24 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
     let mut px = vec![[24.0f32, 26.0, 30.0]; sw * sh];
     for q in &h.list.quads {
         let image = q.tex.and_then(|t| art.image(t));
-        let mut r = q.dst;
+        // A turned quad covers its corners' bounds; each pixel is turned back into its own.
+        let (sin, cos) = (
+            pyreal_primitives::num::math::sinf(q.turn),
+            pyreal_primitives::num::math::cosf(q.turn),
+        );
+        let centre = (q.dst.x + q.dst.w / 2.0, q.dst.y + q.dst.h / 2.0);
+        let reach = (q.dst.w.abs() * cos.abs() + q.dst.h.abs() * sin.abs()) / 2.0;
+        let tall = (q.dst.w.abs() * sin.abs() + q.dst.h.abs() * cos.abs()) / 2.0;
+        let mut r = if q.turn == 0.0 {
+            q.dst
+        } else {
+            pyreal_horizon::draw::Rect::new(
+                centre.0 - reach,
+                centre.1 - tall,
+                2.0 * reach,
+                2.0 * tall,
+            )
+        };
         if let Some(c) = q.clip {
             match r.intersect(&c) {
                 Some(v) => r = v,
@@ -215,10 +232,18 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
                     (q.colour & 0xFF) as f32 / 255.0,
                     ((q.colour >> 24) & 0xFF) as f32 / 255.0,
                 ];
+                let (dx, dy) = (x as f32 + 0.5 - centre.0, y as f32 + 0.5 - centre.1);
+                let (fx, fy) = (
+                    centre.0 + dx * cos + dy * sin,
+                    centre.1 - dx * sin + dy * cos,
+                );
+                if q.turn != 0.0 && !q.dst.contains(fx, fy) {
+                    continue;
+                }
                 let texel = match &image {
                     Some(img) => {
-                        let u = q.src.x + (x as f32 + 0.5 - q.dst.x) / q.dst.w * q.src.w;
-                        let v = q.src.y + (y as f32 + 0.5 - q.dst.y) / q.dst.h * q.src.h;
+                        let u = q.src.x + (fx - q.dst.x) / q.dst.w * q.src.w;
+                        let v = q.src.y + (fy - q.dst.y) / q.dst.h * q.src.h;
                         let tx = (u.max(0.0) as usize).min(img.width as usize - 1);
                         let ty = (v.max(0.0) as usize).min(img.height as usize - 1);
                         let i = (ty * img.width as usize + tx) * 4;
@@ -284,6 +309,8 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
 /// `PYREAL_UI_HUD_SPELLS` puts that many spells in the first tab; `PYREAL_UI_HUD_STYLE` names
 /// the status bar style by its settings word.
 /// `PYREAL_UI_HUD_OPEN` opens `character` or `spellbook` in place of the fellowship window.
+/// `PYREAL_UI_HUD_WAYPOINT` (`ns,ew`) sets a waypoint, the character standing at
+/// `PYREAL_UI_HUD_HERE` (`ns,ew`, default `40.4,34.5`).
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
 fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
@@ -463,6 +490,20 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
         prompts: offer.into_iter().collect(),
         ..GameState::default()
     };
+    let pair = |v: String| {
+        let (a, b) = v.split_once(',')?;
+        Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
+    };
+    let waypoint = env("PYREAL_UI_HUD_WAYPOINT").and_then(pair);
+    if waypoint.is_some() {
+        let here = env("PYREAL_UI_HUD_HERE")
+            .and_then(pair)
+            .unwrap_or((40.4, 34.5));
+        state.here = Some(here);
+        #[allow(clippy::cast_possible_truncation)]
+        let coords = (here.0 as f32, here.1 as f32);
+        state.coords = Some(coords);
+    }
     if env("PYREAL_UI_HUD_ALONE").is_some() {
         state.player_id = Some(pyreal_primitives::ObjectId(1));
         state.fellowship_view = None;
@@ -555,6 +596,11 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
         screen: size,
     };
     h.frame(&state);
+    if let Some((ns, ew)) = waypoint {
+        h.ui.windows
+            .waypoints
+            .set(pyreal_horizon::ui::waypoint::Waypoint { ns, ew, name: None });
+    }
     if env("PYREAL_UI_HUD_LAYOUT").is_some() {
         h.ui.windows.open(WindowId::Layout, 0.0);
     } else if let Some(open) = env("PYREAL_UI_HUD_OPEN") {
@@ -788,6 +834,7 @@ fn draw_every_admin_section_for_a_person_to_look_at() {
 /// `PYREAL_MAP_ZOOM` (`4`) the view; `PYREAL_MAP_POINT` (`42.2,33.8`) where the pointer rests;
 /// `PYREAL_MAP_PLACES` a places document to draw in place of the built-in ones;
 /// `PYREAL_MAP_LIST` opens the Places list; `PYREAL_MAP_HIDE` turns kinds off (`npc,camp`).
+/// `PYREAL_MAP_LINK` (`42.2,33.8`) opens the map as a coordinate link does, at that place.
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS and PYREAL_MAP_DATS"]
 fn draw_the_map_and_its_places_for_a_person_to_look_at() {
@@ -863,6 +910,10 @@ fn draw_the_map_and_its_places_for_a_person_to_look_at() {
         if let Some(kind) = PlaceKind::named(name.trim()) {
             view.hidden.push(kind);
         }
+    }
+    if let Some(at) = env("PYREAL_MAP_LINK").map(pair) {
+        view.centre = map_pixel(at.0, at.1);
+        view.pin = Some((at, None));
     }
     for _ in 0..60 {
         h.frame(&state);

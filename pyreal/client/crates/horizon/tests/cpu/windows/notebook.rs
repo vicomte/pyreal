@@ -151,10 +151,11 @@ fn the_timers_tab_lists_every_timer_soonest_first() {
     );
 }
 
-/// A place written in a page's notes is a link: it opens the map centred on an arrow there, the
-/// arrow offers Create Waypoint, and choosing it sets the waypoint there under the page's title.
+/// A place written in a page's notes is a link: it opens the map centred on an arrow there with
+/// Create Waypoint beside it at once, kept there through a pan, and choosing it sets the waypoint
+/// there under the page's title.
 #[test]
-fn a_place_written_in_the_notes_opens_the_map_on_an_arrow_that_offers_create_waypoint() {
+fn a_place_written_in_the_notes_opens_the_map_on_an_arrow_with_create_waypoint_beside_it() {
     let mut state = with_notebook();
     for page in [&mut state.journal.draft, &mut state.journal.pages[0]] {
         page.notes = "Meet at 42.3N, 33.3E by the well.".into();
@@ -182,11 +183,24 @@ fn a_place_written_in_the_notes_opens_the_map_on_an_arrow_that_offers_create_way
     assert_eq!(view.pin, Some(((42.3, 33.3), Some("Drudges".into()))));
     let centre = pyreal_horizon::ui::panels::map::map_pixel(42.3, 33.3);
     assert_eq!(view.centre, centre, "centred on the place");
-    assert!(view.offer.is_none(), "the arrow alone, until it is clicked");
     h.frame(&state);
     let pin = h.ui.windows.map_view.pin_mark.expect("the arrow");
-    h.input.note_left_press(10_000);
-    click(&mut h, &state, (pin.x + pin.w / 2.0, pin.y + pin.h / 2.0));
+    let offer = h.ui.windows.map_view.offer.clone();
+    assert_eq!(offer, Some(((42.3, 33.3), Some("Drudges".into()))));
+    let button = h.ui.windows.map_view.offer_button.expect("Create Waypoint");
+    assert!(
+        (button.x - pin.right()).abs() < 20.0 || (pin.x - button.right()).abs() < 20.0,
+        "beside the arrow: {button:?} {pin:?}"
+    );
+    // A pan keeps it beside the arrow.
+    let from = (pin.x - 60.0, pin.y + 40.0);
+    h.move_to(from.0, from.1);
+    h.press();
+    h.frame(&state);
+    h.move_to(from.0 + 30.0, from.1 + 10.0);
+    h.frame(&state);
+    h.release();
+    h.frame(&state);
     let offer = h.ui.windows.map_view.offer.clone();
     assert_eq!(offer, Some(((42.3, 33.3), Some("Drudges".into()))));
     let button = h.ui.windows.map_view.offer_button.expect("Create Waypoint");

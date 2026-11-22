@@ -748,3 +748,30 @@ fn a_drag_offers_nothing_and_a_press_elsewhere_lets_create_waypoint_go() {
     click(&mut h, &state, middle(toggle));
     assert!(h.ui.windows.map_view.offer.is_none());
 }
+
+/// The player's own coordinates under the map are a link too, but its arrow offers no Create
+/// Waypoint: a waypoint where the player stands would be arrived at at once.
+#[test]
+fn the_player_s_own_coordinates_open_an_arrow_with_no_create_waypoint() {
+    let state = GameState {
+        coords: Some((40.4, 34.5)),
+        here: Some((40.4, 34.5)),
+        ..player()
+    };
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    h.ui.windows.open(WindowId::Map, 0.0);
+    h.frame(&state);
+    let coords =
+        h.ui.windows
+            .map_view
+            .bar
+            .iter()
+            .find(|(n, _)| *n == "Coordinates");
+    let link = coords.expect("the player's coordinates").1;
+    click(&mut h, &state, middle(link));
+    h.frame(&state);
+    assert!(h.ui.windows.map_view.pin.is_some(), "the arrow");
+    assert!(h.ui.windows.map_view.offer.is_none());
+    assert!(h.ui.windows.map_view.offer_button.is_none());
+}

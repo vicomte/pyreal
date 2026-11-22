@@ -1004,7 +1004,8 @@ impl Windows {
         let area = Rect::new(body.x + (body.w - side) / 2.0, body.y + top, side, side);
         self.map_view.settle(area);
         self.map_zoom_buttons(p, ctx, state, body, area);
-        // A press anywhere else in the window lets Create Waypoint go.
+        // A press anywhere else in the window lets Create Waypoint go, back to a link's arrow.
+        self.map_offer_pin(state);
         let offered = self.map_offer_rect(p, area);
         let mouse = ctx.input.mouse;
         if ctx.input.pressed[0]
@@ -1013,6 +1014,7 @@ impl Windows {
         {
             self.map_view.offer = None;
             self.map_view.offer_button = None;
+            self.map_offer_pin(state);
         }
         self.map_pointer(ctx, area, p.scale);
         self.draw_map(p, ctx, area);
@@ -1164,12 +1166,35 @@ impl Windows {
         (still && ctx.input.hover(&area)).then_some(mouse)
     }
 
-    /// Open the map on a place written as a link, an arrow standing on it that offers Create
-    /// Waypoint, named `name`.
+    /// Open the map on a place written as a link, an arrow standing on it with Create Waypoint
+    /// beside it, named `name`.
     pub(super) fn show_place_on_map(&mut self, at: (f64, f64), name: Option<String>, now: f64) {
         self.show_on_map(at.0, at.1, now);
         self.map_view.pin = Some((at, name));
         self.map_view.offer = None;
+    }
+
+    /// Offer Create Waypoint at a link's arrow while nothing else is offered, unless the player
+    /// stands there, the waypoint is there already or a teleport is armed.
+    fn map_offer_pin(&mut self, state: &GameState) {
+        let view = &mut self.map_view;
+        let Some((at, _)) = view.pin.as_ref().filter(|_| view.offer.is_none()) else {
+            return;
+        };
+        let here = crate::ui::waypoint::Waypoint {
+            ns: at.0,
+            ew: at.1,
+            name: None,
+        };
+        let near = |from: (f64, f64)| here.way_from(from).1 <= crate::ui::waypoint::ARRIVED_METRES;
+        let followed = self
+            .waypoints
+            .active
+            .as_ref()
+            .is_some_and(|w| near((w.ns, w.ew)));
+        if !self.admin.map_armed && !state.here.is_some_and(near) && !followed {
+            view.offer.clone_from(&view.pin);
+        }
     }
 
     /// Where Create Waypoint stands beside the place it is offered at, inside the picture; `None`
@@ -1228,10 +1253,10 @@ impl Windows {
                 view.pin_mark = Some(dst);
                 if ctx.over(&dst) {
                     let here = coords_text_f64((ns, ew));
-                    view.waypoint_tip = Some((
-                        name.clone().unwrap_or_else(|| here.clone()),
-                        vec![here, "Click to create a waypoint here.".to_owned()],
-                    ));
+                    view.waypoint_tip = Some(match name.clone() {
+                        Some(name) => (name, vec![here]),
+                        None => (here, Vec::new()),
+                    });
                 }
             }
         }

@@ -187,6 +187,8 @@ pub struct Hud {
     radar_zoom: f32,
     /// The heading the radar shows, easing after the character's, and when it was last moved.
     radar_heading: Option<(f32, f64)>,
+    /// How far the waypoint is as the radar showed it this frame, and where.
+    pub waypoint_distance: Option<(String, Rect)>,
     /// The minimap turns with the character; otherwise it stands north up.
     pub minimap_rotates: bool,
     /// How many rows the spell bar shows, as the player chose.
@@ -785,6 +787,7 @@ impl Hud {
             }};
         }
         element!("server", self.server_info(p, ctx, state));
+        self.waypoint_distance = None;
         element!(
             "minimap",
             self.minimap(p, ctx, state, &mut windows.waypoints, out)
@@ -2276,8 +2279,8 @@ impl Hud {
     }
 
     /// The waypoint on the minimap `r` turned to `heading` with `range` metres to its rim: an
-    /// arrow on the rim the way to it, a mark where it stands while it is in reach, and the Clear
-    /// Waypoint button under the coordinates.
+    /// arrow on the rim the way to it with how far it is inside, a mark where it stands while it is
+    /// in reach, and the Clear Waypoint button under the coordinates.
     fn minimap_waypoint(
         &mut self,
         p: &mut Painter<'_>,
@@ -2325,6 +2328,17 @@ impl Hud {
                 let (x, y) = (centre.0 + sin * rim, centre.1 - cos * rim);
                 p.sprite_turned(&arrow, Rect::new(x - s / 2.0, y - s / 2.0, s, s), WHITE, a);
             }
+            // How far it is, in the arrow's gold just inside it.
+            let text = wp::distance_text(metres);
+            let style = TextStyle::new(Family::Body, 12.0, 0xFFFF_B828).edge(0xFF00_0000);
+            // Its nearest edge kept clear of the rim arrow's inner end, whichever way it points.
+            let (w, h) = (p.measure(&style, &text) + 4.0 * k, 16.0 * k);
+            let reach_out = sin.abs() * w / 2.0 + cos.abs() * h / 2.0;
+            let inner = radius + 2.0 * k - 14.0 * k - 4.0 * k - reach_out;
+            let (x, y) = (centre.0 + sin * inner, centre.1 - cos * inner);
+            let at = Rect::new(x - w / 2.0, y - h / 2.0, w, h);
+            p.text_in(&style, at, Align::Centre, &text);
+            self.waypoint_distance = Some((text, at));
         }
         // Under the coordinates, while a waypoint is followed.
         let label = "Clear Waypoint";

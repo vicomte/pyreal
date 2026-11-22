@@ -81,6 +81,41 @@ fn cluster_of(px: vec2<f32>, depth: f32) -> u32 {
     return t.x + t.y * frame.cluster.x + s * frame.cluster.x * frame.cluster.y;
 }
 
+// A lamp's light as the client lights a room, unshadowed and steady, in its own colour space:
+// only the dats' own lights. A moving object's (and the viewer's) is Direct3D's, its colour over
+// the distance facing it, to its range. Any other is burned into the room: wrapped half way round,
+// over the distance cubed past a metre, to 1.3 of its falloff, no more than its colour.
+fn retail_lamp(l: Lamp, n: vec3<f32>, to: vec3<f32>, d: f32) -> vec3<f32> {
+    if ((l.flags & 1024u) == 0u || (l.flags & 2048u) != 0u) {
+        return vec3<f32>(0.0);
+    }
+    if ((l.flags & 131072u) != 0u) {
+        return l.retail * max(dot(n, to / d), 0.0) / d;
+    }
+    let reach = l.range * (1.3 / 1.5);
+    let n_dot = (dot(n, to) + d * 0.5) * 0.6666667;
+    if (d >= reach || n_dot <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let denom = select(d, d * d * d, d > 1.0);
+    let colour = l.retail / max(l.intensity, 1e-6);
+    return min(l.retail * (1.0 - d / reach) * (n_dot / denom), colour);
+}
+
+// Whether `l` lights `p`: inside one of its rooms' boxes, so no wall passes its light.
+fn lamp_reaches(l: Lamp, p: vec3<f32>) -> bool {
+    for (var j = 0u; j < l.rooms_count; j++) {
+        let b = lamps[l.rooms_first + j];
+        if (all(p >= b.position - ROOM_SLACK) && all(p <= b.colour + ROOM_SLACK)) {
+            return true;
+        }
+    }
+    return l.rooms_count == 0u;
+}
+
+// How far outside a room's box a lamp still lights, metres: the box's own wall faces.
+const ROOM_SLACK: f32 = 0.15;
+
 // `traced`: the point is the G-buffer's at `px`, so the ray-traced shadows there are its own
 // (a translucent surface's are not).
 fn lamp_light(world: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>,
@@ -130,7 +165,7 @@ fn lamp_light(world: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3
     for (var k = 0u; k < count; k++) {
         let l = lamps[cluster_lamps[cluster * CLUSTER_MOST + k]];
         // A lamp in a room lights the rooms; one outdoors, the outdoors.
-        if (((l.flags & 256u) != 0u) != indoor) {
+        if (((l.flags & 256u) != 0u) != indoor || !lamp_reaches(l, world)) {
             continue;
         }
         let to = l.position - world;
@@ -197,27 +232,33 @@ fn lamp_light(world: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3
             if (ndl > 0.0) {
                 out.specular += ggx(n, v, dir, rough, f0) * ndl * e;
             }
-        } else {
-            // The client's: its colour over the distance (inverse beyond a metre, as Direct3D's
-            // attenuation of 0, 1, 0 is), to its range.
+        } else if (volume) {
+            // A volume takes the client's light as its colour over the distance, to its range.
             out.diffuse += l.retail * flame * (lit / max(d, 1.0)) * (1.0 - smoothstep(0.85, 1.0, d / l.range)) * vis;
+        } else {
+            out.diffuse += retail_lamp(l, n, to, d);
         }
     }
     if (!indoor && has(F_PHYSICAL)) {
         out.diffuse += outdoors * outdoor_lamp_scale();
     }
     if (indoor && has(F_PHYSICAL)) {
-        // Retail sums a room's ambient and its lamps in its own colour space and clamps: the light
-        // between the pools is far more than an inverse square leaves. That sum, made linear at
-        // the room's scale, is the least a room's point takes. Held under one by its brightest
-        // channel, so a lamp's pool keeps its warmth rather than whitening.
-        let scale = room_whole();
-        // A sealed room's ambient as retail's dungeons read, not the client's bare 0.2.
-        let ambient = select(frame.indoor.rgb, max(frame.indoor.rgb, vec3<f32>(ROOM_AMBIENT)), frame.indoor.w > 0.5);
-        let sum = ambient + summed;
-        let held = min(sum / max(max(sum.r, max(sum.g, sum.b)), 1.0) + magic_summed, vec3<f32>(1.0));
-        let implied = pow(held, vec3<f32>(2.2)) * scale;
-        out.diffuse = max(out.diffuse, implied - frame.indoor_light.rgb);
+        out.diffuse = max(out.diffuse, room_floor(summed, magic_summed));
     }
     return out;
+}
+
+// Retail sums a room's ambient and its lamps (`summed`, magic's apart) in its own colour space and
+// clamps: the light between the pools is far more than an inverse square leaves. That sum, made
+// linear at the room's scale, is the least a room's point takes, with or without a lamp in view;
+// this is what it adds to the room's own light. Held under one by its brightest channel, so a
+// lamp's pool keeps its warmth rather than whitening.
+fn room_floor(summed: vec3<f32>, magic_summed: vec3<f32>) -> vec3<f32> {
+    let scale = room_whole();
+    // A sealed room's ambient as retail's dungeons read, not the client's bare 0.2.
+    let ambient = select(frame.indoor.rgb, max(frame.indoor.rgb, vec3<f32>(ROOM_AMBIENT)), frame.indoor.w > 0.5);
+    let sum = ambient + summed;
+    let held = min(sum / max(max(sum.r, max(sum.g, sum.b)), 1.0) + magic_summed, vec3<f32>(1.0));
+    let implied = pow(held, vec3<f32>(2.2)) * scale;
+    return implied - frame.indoor_light.rgb;
 }

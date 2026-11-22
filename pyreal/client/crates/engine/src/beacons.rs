@@ -124,6 +124,7 @@ pub fn drawn(
 #[must_use]
 pub fn lamp(foot: Vec3, cell: u32) -> crate::lamps::Lamp {
     let source = crate::lamps::LampSource {
+        client_offset: None,
         kind: crate::lamps::LampKind::Portal,
         offset: Vec3::ZERO,
         colour: LAMP_COLOUR,

@@ -301,6 +301,8 @@ pub fn lamp(at: Vec3, colour: Vec3, flash: f32, cell: u32) -> crate::lamps::Lamp
         candela: LAMP_INTENSITY * flash * room,
         range,
         retail: (colour * LAMP_INTENSITY * flash).extend(range),
+        intensity: LAMP_INTENSITY * flash,
+        client: None,
         flicker: crate::lamps::Flicker::Steady,
         shadows: false,
         cell,

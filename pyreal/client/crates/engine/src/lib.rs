@@ -60,11 +60,14 @@ pub mod cover;
 pub mod drawn;
 pub mod drift;
 pub mod evict;
+pub mod face_detail;
+pub mod faces;
 pub mod falls;
 pub mod far;
 pub mod flames;
 pub mod fountains;
 pub mod frame_work;
+pub mod frost;
 pub mod gates;
 pub mod glow;
 pub mod gpu;
@@ -74,6 +77,8 @@ pub mod heavens;
 pub mod jobs;
 pub mod lamps;
 pub mod land;
+pub mod later_models;
+pub mod later_rooms;
 pub mod materials;
 pub mod metalfx;
 pub mod overlay;
@@ -140,6 +145,9 @@ pub struct Engine {
     pub heavens: Option<heavens::Heavens>,
     /// Every placed object's lamps.
     pub lamps: Vec<lamps::Lamp>,
+    /// Where the client's viewer light stands (two metres over the player), render space; the
+    /// camera's position with none. The retail calibration lights rooms with it.
+    pub viewer: Option<glam::Vec3>,
     /// Where the bodies near the eye stand this frame (their feet, render space): they stir the
     /// water and push the grass aside.
     pub bodies: Vec<glam::Vec3>,
@@ -183,6 +191,7 @@ impl Engine {
             far: None,
             heavens: None,
             lamps: Vec::new(),
+            viewer: None,
             bodies: Vec::new(),
             umbrae: Vec::new(),
             clearings: Vec::new(),
@@ -433,12 +442,38 @@ impl Engine {
         if !fire_lamps.is_empty() {
             kept.to_mut().extend(fire_lamps);
         }
+        // The client lights from the dats' own places, not the flames a light is drawn at; the
+        // physical look does so in rooms, where the flame is on the wall.
+        if kept
+            .iter()
+            .any(|l| l.client.is_some() && (!physical || l.cell != 0))
+        {
+            let cells = &self.cells;
+            for l in kept.to_mut() {
+                if physical && l.cell == 0 {
+                    continue;
+                }
+                if let Some(at) = l.client.take() {
+                    // Its flicker's seed stays its flame's.
+                    if l.seed == 0 {
+                        l.seed = flames::seed_of(l.position);
+                    }
+                    l.position = at;
+                    l.cell = cells.cell_near(l.cell, at);
+                }
+            }
+        }
+        // The client's viewer light, in the room it stands in.
+        if !physical && self.renderer.lamps {
+            let at = self.viewer.unwrap_or(camera.position);
+            if let Some(cell) = self.cells.cell_at(at).or(self.visibility.eye_cell) {
+                kept.to_mut().push(lamps::viewer_lamp(at, cell));
+            }
+        }
         let lamps_lit = self.renderer.lamps && !kept.is_empty();
         let indoor_physical = crate::renderer::indoor_physical(light, open_to_sky, lamps_lit);
-        // The rooms seen this frame, by their boxes: a lamp lights them when its reach does,
-        // whichever room its object stands in, as retail burns a room's light from every static
-        // light in range (a torch on the far side of a doorway, or one whose object's cell is the
-        // next room's).
+        // The rooms seen this frame, by their boxes: a lamp in a room not seen whose reach touches
+        // one is a candidate (a torch on the far side of a doorway); walls are held below.
         let seen_rooms: Vec<(glam::Vec3, glam::Vec3)> = rects
             .iter()
             .enumerate()
@@ -520,11 +555,7 @@ impl Engine {
         let ground = |p: glam::Vec2| {
             let l = self.land.as_ref()?;
             let h = l.height_at(p)?;
-            Some(
-                l.water_at(p)
-                    .filter(|w| w.1 > 0.5)
-                    .map_or((h, false), |w| (w.0.max(h), true)),
-            )
+            Some((h, l.water_at(p).filter(|w| w.1 > 0.5).map(|w| w.0)))
         };
         let frame_falls = if self.particles.on {
             crate::falls::frame_falls(
@@ -554,6 +585,34 @@ impl Engine {
             seen,
             self.renderer.clock,
         );
+        // Walls hold a lamp's light: each lights only the rooms its light reaches through
+        // openings, and one that reaches no room seen is left out.
+        let mut room_boxes: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();
+        let mut lamp_rooms: Vec<(u32, u32)> = Vec::with_capacity(frame_lamps.len());
+        frame_lamps.retain(|l| {
+            let Some(rooms) =
+                self.cells
+                    .lamp_rooms(l.cell, l.position, l.range, lamps::ROOMS_PER_LAMP)
+            else {
+                lamp_rooms.push((0, 0));
+                return true;
+            };
+            if !rooms.iter().any(|&r| seen(r)) {
+                return false;
+            }
+            let boxes: Vec<_> = rooms
+                .iter()
+                .filter_map(|&r| self.cells.cell(r)?.volume.as_ref().map(|v| (v.min, v.max)))
+                .collect();
+            let first = u32::try_from(room_boxes.len()).unwrap_or(u32::MAX);
+            if boxes.is_empty() || room_boxes.len() + boxes.len() > lamps::MAX_ROOM_BOXES {
+                lamp_rooms.push((0, 0));
+            } else {
+                lamp_rooms.push((first, u32::try_from(boxes.len()).unwrap_or(0)));
+                room_boxes.extend(boxes);
+            }
+            true
+        });
         let body_water = self.water_lifts(camera.position);
         // The snowy land round the eye, worked out again as the eye moves; the bodies' prints.
         let w = &mut self.renderer.weather;
@@ -583,6 +642,8 @@ impl Engine {
                 rects: &self.visibility.rects,
                 heavens: heavens.as_ref(),
                 lamps: &frame_lamps,
+                lamp_rooms: &lamp_rooms,
+                room_boxes: &room_boxes,
                 probe_lamps: &probe_lamps,
                 flames: &frame_flames,
                 falls: &frame_falls.bytes,

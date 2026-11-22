@@ -253,3 +253,25 @@ fn a_volume_writes_its_box_then_its_planes() {
     assert!(v.contains(Vec3::new(1.0, 1.0, 0.0), 0.0));
     assert!(!v.contains(Vec3::new(1.0, 1.0, -0.1), 0.05));
 }
+
+/// A lamp lights its own room and the rooms its light reaches through doorways, never one beyond
+/// a wall, however near; one whose light reaches the outdoors lights everywhere.
+#[test]
+fn a_lamps_light_goes_through_doorways_and_not_walls() {
+    let mut g = house();
+    // Room C, east of A beyond a wall, with no way through.
+    let c = g.add(room(0x0102, (4.5, 8.5), (0.0, 4.0), Vec::new()));
+    g.link();
+    let (a, b) = (g.slot_of(0x0100).unwrap(), g.slot_of(0x0101).unwrap());
+    let rooms = |slot, at, range| g.lamp_rooms(slot, at, range, 24);
+    // By A's door: A and B.
+    assert_eq!(rooms(a, Vec3::new(2.0, 3.0, 2.0), 3.0), Some(vec![a, b]));
+    // At the far end of A, out of reach of its door: A alone.
+    assert_eq!(rooms(a, Vec3::new(2.0, 0.5, 2.0), 3.0), Some(vec![a]));
+    // In C, half a metre beyond A's east wall: C alone.
+    assert_eq!(rooms(c, Vec3::new(5.0, 2.0, 2.0), 6.0), Some(vec![c]));
+    // In B by its door to the outdoors: everywhere.
+    assert_eq!(rooms(b, Vec3::new(2.0, 7.0, 2.0), 3.0), None);
+    // Outdoors: everywhere.
+    assert_eq!(rooms(OUTSIDE, Vec3::ZERO, 3.0), None);
+}

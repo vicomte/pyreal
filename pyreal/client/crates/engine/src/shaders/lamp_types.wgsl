@@ -9,7 +9,7 @@ struct Lamp {
     // the dats' own (its light held within a metre); bit 11 a flame found without a light; bit 12
     // magic, the dats' light of a colour no lamp burns (a portal's, a spell's); bit 13 an acid
     // body's glow; bit 14 a strike of lightning; bit 15 a portal's own light (`gates::lamp`); bit
-    // 16 a held thing's light (`glow::HELD_SHARE`).
+    // 16 a held thing's light (`glow::HELD_SHARE`); bit 17 a moving object's light, not burned in.
     flags: u32,
     // The client's light: colour times intensity.
     retail: vec3<f32>,
@@ -17,9 +17,11 @@ struct Lamp {
     slot: u32,
     // The object it belongs to (its fixture never shadows it), low 24 bits.
     object: u32,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
+    // The rooms it lights, as box records after the lamps (first, count); no count for everywhere.
+    rooms_first: u32,
+    rooms_count: u32,
+    // The client's intensity, which `retail`'s colour is multiplied by.
+    intensity: f32,
 }
 
 // The most lamps a cluster holds.

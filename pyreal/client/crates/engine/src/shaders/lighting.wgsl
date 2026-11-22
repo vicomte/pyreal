@@ -7,6 +7,16 @@
 @group(1) @binding(3) var g_depth: texture_depth_2d;
 @group(1) @binding(4) var cloud_picture: texture_2d<f32>;
 @group(1) @binding(5) var cloud_shadows: texture_2d<f32>;
+// Each pixel's material, for a face's light through skin.
+@group(1) @binding(6) var g_ids: texture_2d<u32>;
+
+// A face's skin: how far the sun's light reaches round past its shadow edge, and its colour there
+// (light that has passed through skin comes out red).
+const SKIN_WRAP: f32 = 0.35;
+const SKIN_THROUGH: vec3<f32> = vec3<f32>(0.75, 0.32, 0.22);
+// An eye's catchlight: how bright, and how small (higher is smaller).
+const EYE_CATCH: f32 = 6.0;
+const EYE_CATCH_SHARP: f32 = 120.0;
 // What stands over the ground round the eye (rain.wgsl).
 @group(3) @binding(10) var shelter_map: texture_depth_2d;
 // The prints trodden into the snow round the eye (snow.rs): the dent and the heap round it.
@@ -145,6 +155,16 @@ fn fs_lighting(in: FsIn) -> @location(0) vec4<f32> {
     var n = oct_decode(textureLoad(g_normal, px, 0).xy);
     var m = textureLoad(g_material, px, 0);
     var bits = u32(m.a * 255.0 + 0.5);
+    // A face carries how much is skin in its metal channel (crate::face_detail).
+    var skin = 0.0;
+    var face = false;
+    // Only a pixel with something in that channel, or as smooth as an eye, is looked up: most of
+    // the world is neither.
+    if ((m.g > 0.0 || m.r < 0.1) && (materials[textureLoad(g_ids, px, 0).r].flags & M_FACE) != 0u) {
+        skin = m.g;
+        m.g = 0.0;
+        face = true;
+    }
     // Molten rock: its heat glowing whatever the light, the light on it a dark crust's.
     var molten = vec3<f32>(0.0);
     if ((bits & G_GLOWS) != 0u) {
@@ -240,6 +260,8 @@ fn fs_lighting(in: FsIn) -> @location(0) vec4<f32> {
     var lamp = LampLight(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0));
     if (has(F_LAMPS)) {
         lamp = lamp_light(world, n, v, m.r, mix(vec3<f32>(0.04), albedo, m.g), bits, depth, in.pos.xy, true);
+    } else if ((bits & G_INDOOR) != 0u && has(F_PHYSICAL)) {
+        lamp.diffuse = max(room_floor(vec3<f32>(0.0), vec3<f32>(0.0)), vec3<f32>(0.0));
     }
     // What a surface's relief keeps from its key light: the lamps', or the sun's.
     if ((bits & G_KEY_LAMP) != 0u) {
@@ -252,9 +274,15 @@ fn fs_lighting(in: FsIn) -> @location(0) vec4<f32> {
     if (has(F_AO)) {
         ao = ambient_occlusion(in.pos.xy);
     }
-    // Past the shadow distance the sun keeps the occlusion's darkening, not the full sun.
+    // Past the shadow distance the sun keeps the occlusion's darkening, not the full sun, and the
+    // hills' shadows from the far field's heights.
     if (has(F_SHADOWS) && (bits & G_INDOOR) == 0u) {
         sun_vis *= mix(ao, 1.0, shadow_reach(depth));
+        let last = frame.cascade_far.w;
+        let hills = smoothstep(last * 0.5, last * 0.9, depth);
+        if (hills > 0.0 && sun_vis > 0.0) {
+            sun_vis *= mix(1.0, far_hill_shadow(world), hills);
+        }
     }
     var bounce = vec4<f32>(0.0);
     if (has(F_GI)) {
@@ -272,6 +300,19 @@ fn fs_lighting(in: FsIn) -> @location(0) vec4<f32> {
         let f0 = mix(vec3<f32>(0.04), albedo, m.g);
         c += env_brdf(f0, m.r, max(dot(n, v), 0.0)) * (mix(flat, seen, up) - flat) * ao
             * (1.0 - bounce.a * 0.5);
+    }
+    // Light through skin: the sun reaches a little past the shadow edge, reddened.
+    if (skin > 0.0 && has(F_PHYSICAL) && (bits & G_INDOOR) == 0u) {
+        let ndl = dot(n, frame.sun_dir.xyz);
+        let wrap = max((ndl + SKIN_WRAP) / (1.0 + SKIN_WRAP), 0.0) - max(ndl, 0.0);
+        c += albedo * SKIN_THROUGH * frame.sun_light.rgb * wrap * skin * max(sun_vis, 0.35 * ao);
+    }
+    // Wet eyes: a round, wet surface shows the bright sky above as a small catchlight.
+    if (face && m.r < 0.08 && (bits & G_INDOOR) == 0u) {
+        let r = reflect(-v, n);
+        let window = normalize(vec3<f32>(0.0, 0.0, 0.2) + v);
+        let catch_light = pow(max(dot(r, window), 0.0), EYE_CATCH_SHARP);
+        c += frame.sky_light.rgb * catch_light * EYE_CATCH * ao;
     }
     if (covered > 0.0 && covered < 1.0) {
         let under = shade_lit(albedo, n, v, m.r, m.g, m.b, bits | G_NO_MIRROR, sun_vis, ao,

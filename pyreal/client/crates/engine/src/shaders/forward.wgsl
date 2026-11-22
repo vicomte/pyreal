@@ -27,6 +27,8 @@ fn forward_light(albedo: vec3<f32>, world: vec3<f32>, n: vec3<f32>, v: vec3<f32>
     if (has(F_LAMPS)) {
         lamp = lamp_light(world, n, v, rough, mix(vec3<f32>(0.04), albedo, metal), bits, depth, px,
                           false);
+    } else if ((bits & G_INDOOR) != 0u && has(F_PHYSICAL)) {
+        lamp.diffuse = max(room_floor(vec3<f32>(0.0), vec3<f32>(0.0)), vec3<f32>(0.0));
     }
     var bounce = vec4<f32>(0.0);
     if (has(F_GI)) {

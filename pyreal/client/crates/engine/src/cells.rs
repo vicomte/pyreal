@@ -476,6 +476,56 @@ impl CellGraph {
             .count()
     }
 
+    /// The rooms a lamp in `slot` at `at` lights: its own and those its light reaches through
+    /// openings within `range`. `None` lights everywhere: a lamp outdoors, one whose light reaches
+    /// the outside, or one reaching more than `most` rooms.
+    #[must_use]
+    pub fn lamp_rooms(&self, slot: u32, at: Vec3, range: f32, most: usize) -> Option<Vec<u32>> {
+        if slot == OUTSIDE {
+            return None;
+        }
+        self.cell(slot)?;
+        let mut rooms = vec![slot];
+        let mut next = 0;
+        while let Some(&here) = rooms.get(next) {
+            next += 1;
+            for p in &self.cell(here)?.portals {
+                let (lo, hi) = p.points.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), q| {
+                    (lo.min(*q), hi.max(*q))
+                });
+                if at.clamp(lo, hi).distance(at) >= range {
+                    continue;
+                }
+                let to = p.to?;
+                if !rooms.contains(&to) {
+                    if rooms.len() == most {
+                        return None;
+                    }
+                    rooms.push(to);
+                }
+            }
+        }
+        Some(rooms)
+    }
+
+    /// The cell holding `p`: `slot` itself, a room its portals lead to, or any; `slot` when none
+    /// does.
+    #[must_use]
+    pub fn cell_near(&self, slot: u32, p: Vec3) -> u32 {
+        let holds = |k: u32| {
+            self.cell(k)
+                .and_then(|c| c.volume.as_ref())
+                .is_some_and(|v| v.contains(p, 0.0))
+        };
+        if slot == OUTSIDE || holds(slot) {
+            return slot;
+        }
+        self.cell(slot)
+            .and_then(|c| c.portals.iter().filter_map(|q| q.to).find(|&k| holds(k)))
+            .or_else(|| self.cell_at(p))
+            .unwrap_or(slot)
+    }
+
     /// The cell whose volume holds `p`, the first by slot.
     #[must_use]
     pub fn cell_at(&self, p: Vec3) -> Option<u32> {

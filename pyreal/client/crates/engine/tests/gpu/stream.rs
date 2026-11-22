@@ -635,6 +635,8 @@ fn translate_moves_the_flames_with_their_lamps() {
         candela: 1.0,
         range: 5.0,
         retail: glam::Vec4::ONE,
+        intensity: 1.0,
+        client: None,
         flicker: pyreal_engine::lamps::Flicker::Flame,
         shadows: false,
         cell: 0,

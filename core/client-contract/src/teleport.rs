@@ -129,9 +129,6 @@ pub mod portal_space {
     pub const LIGHT_INTENSITY: f32 = 2.0;
     /// Set light 0's direction.
     pub const LIGHT_DIRECTION: (f32, f32, f32) = (0.3, -1.9, 0.65);
-    /// The chat channel the per-leg flavour string is pushed to,
-    /// Display the message on channel `0x1A`.
-    pub const MESSAGE_CHANNEL: u32 = 0x1A;
 }
 
 /// Where a trip through portal space came from, which colours its tunnel.

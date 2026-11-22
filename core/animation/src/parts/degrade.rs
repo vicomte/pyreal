@@ -83,8 +83,7 @@ pub fn get_max_degrade_distance(d: &DegradeInfo) -> f32 {
 /// not `(|distance| >= degrade_distance) ? distance : 0.0`: the client writes the difference back
 /// over its distance argument before the floor, and both level loops read that stored value, never
 /// the raw distance. The shipped data agrees (3,301 of 8,973 real levels unreachable under the
-/// threshold reading against 13 under this one); `pyreal_world_render::objects::degrade` is the
-/// same lookup.
+/// threshold reading against 13 under this one).
 #[must_use]
 pub fn get_degrade(d: &DegradeInfo, dist: f32, s: DegradeSettings) -> (u32, i32) {
     if d.degrades.is_empty() {

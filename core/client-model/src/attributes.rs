@@ -9,7 +9,6 @@
 
 use crate::qualities::Qualities;
 use pyreal_assets::tables::{Attribute2ndTable, QualityFilter};
-use pyreal_rules::enchant::EnchantmentRegistry;
 
 use pyreal_rules::attributes::*;
 
@@ -62,59 +61,6 @@ pub fn bounds_check_record(
         v.current_level = v.current_level.min(max);
     }
     Some(v)
-}
-
-/// The enchanted-attribute clamps, hoisted so a caller can reason about them without a registry.
-///
-/// The attribute enchant: floor 1 when the raw value is below 10, else floor 10.
-/// The secondary-attribute enchant: floor 1 below 5, else floor 5, **after vitae**.
-#[must_use]
-pub fn enchant_attribute(reg: &EnchantmentRegistry, id: u32, raw: i32) -> i32 {
-    reg.enchant_attribute(id, raw)
-}
-
-// ---------------------------------------------------------------------------------------------
-// The body-part table.
-// ---------------------------------------------------------------------------------------------
-
-/// `ArmorCache` (0x28) — nine `int32`s in wire order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ArmorCache {
-    pub base_armor: i32,
-    pub armor_vs_slash: i32,
-    pub armor_vs_pierce: i32,
-    pub armor_vs_bludgeon: i32,
-    pub armor_vs_cold: i32,
-    pub armor_vs_fire: i32,
-    pub armor_vs_acid: i32,
-    pub armor_vs_electric: i32,
-    pub armor_vs_nether: i32,
-}
-
-/// The body-part selection data (0x34) — twelve floats, the probability of hitting this part from
-/// each of the twelve (height × side × facing) buckets, in wire order.
-pub const BODY_PART_SELECTION_ORDER: [&str; 12] = [
-    "HLF", "MLF", "LLF", "HRF", "MRF", "LRF", "HLB", "MLB", "LLB", "HRB", "MRB", "LRB",
-];
-
-/// `BodyPart` (0x40).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct BodyPart {
-    /// `DAMAGE_TYPE` this part deals.
-    pub dtype: u32,
-    pub dval: i32,
-    pub dvar: f32,
-    pub acache: ArmorCache,
-    /// `BODY_HEIGHT`: `HIGH` = 1, `MEDIUM` = 2, `LOW` = 3.
-    pub bh: u32,
-    pub bpsd: Option<[f32; 12]>,
-}
-
-/// `BODY_HEIGHT`.
-pub mod body_height {
-    pub const HIGH: u32 = 1;
-    pub const MEDIUM: u32 = 2;
-    pub const LOW: u32 = 3;
 }
 
 #[cfg(test)]

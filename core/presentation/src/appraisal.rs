@@ -1973,12 +1973,6 @@ pub use pyreal_rules::combat::elemental_mod_pk_modifier;
 /// *Players* one reads the [`elemental_mod_pk_modifier`] result (`pk` above).
 ///
 /// All three elemental lines take the **same** colour, from the float modifier `0x98`.
-#[must_use]
-#[allow(clippy::cast_sign_loss)]
-pub fn caster_data_lines(p: &AppraisalView) -> Vec<ItemInfo> {
-    caster_data_lines_for(p, crate::DisplayVariant::Modern)
-}
-
 fn caster_data_lines_for(p: &AppraisalView, variant: crate::DisplayVariant) -> Vec<ItemInfo> {
     let mut out = Vec::new();
     if let Some(m) = p.mana_conversion_mod {
@@ -4876,8 +4870,6 @@ mod tests {
         assert_eq!(skill_to_string_in(&p, 43), Some("Any"));
         assert_eq!(skill_to_string_in(&p, 44), Some("Heavy Weapons"));
         assert_eq!(char_misc_rows(&p).last().unwrap().label, "");
-        assert_eq!(crate::spell::school_name_in(5, Some(&p.world_rules)), "Any");
-        assert_eq!(crate::spell::school_name_in(5, None), "Void Magic");
     }
 }
 

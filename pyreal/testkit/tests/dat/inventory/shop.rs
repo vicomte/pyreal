@@ -154,7 +154,10 @@ pub fn setting_a_rows_stack_keeps_its_unit_price_and_lets_the_quantity_dial_mean
         pyreal_primitives::ServerTime(0.0),
     );
 
-    let one_costs = w.shop.profile.vendor_sell_price(&w.shop.stock[0].pwd, 1);
+    let one_costs = w
+        .shop
+        .profile
+        .vendor_sell_price_on(true, &w.shop.stock[0].pwd, 1);
 
     // Before: the stack is one, so the add-to-list button ignores the dial.
     let before = w.add_to_buy_list(target, 7) && w.shop.buy_list == vec![(target, 1)];
@@ -166,7 +169,10 @@ pub fn setting_a_rows_stack_keeps_its_unit_price_and_lets_the_quantity_dial_mean
         pwd.stack_size == Some(100) && pwd.value == Some(50 * 100)
     };
     let one_still_costs_the_same =
-        w.shop.profile.vendor_sell_price(&w.shop.stock[0].pwd, 1) == one_costs;
+        w.shop
+            .profile
+            .vendor_sell_price_on(true, &w.shop.stock[0].pwd, 1)
+            == one_costs;
 
     // After: the same press takes the dialled number.
     let after = w.add_to_buy_list(target, 7) && w.shop.buy_list == vec![(target, 7)];

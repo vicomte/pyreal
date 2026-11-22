@@ -39,8 +39,6 @@ with an `[env]` entry in a `.cargo/config.toml` above the workspace.
 - `PYREAL_TEST_PRETOD_DAT_DIR`: the February 2005 `portal.dat` and `cell.dat`, from before Throne of
   Destiny.
 - `PYREAL_TEST_LAUNCH_DAT_DIR`: the October 1999 launch `portal.dat` and `cell.dat`.
-- `PYREAL_TEST_LAUNCH_FIXTURE`: the hash-pinned manifest of the 1999 dats, for the Classic
-  interface's Launch-world art check (`cargo xtask ci tier1`).
 
 The three sets of data files are the only ones Pyreal reads: files of other dates are not
 supported.

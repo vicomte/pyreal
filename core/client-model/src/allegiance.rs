@@ -246,74 +246,6 @@ impl AllegianceHierarchy {
     pub fn get_monarch_id(&self) -> Option<ObjectId> {
         self.monarch
     }
-
-    /// The version-gated blocks supported by this decoder, exposed for callers and tests.
-    #[must_use]
-    pub fn version_gates(v: u32) -> VersionGates {
-        VersionGates {
-            officers_hash: v >= version::MULTIPLE_ALLEGIANCE_OFFICERS_ADDED,
-            // The pre-6 form carries a single spokesperson dword the client skips, but only when
-            // the version is not zero at all.
-            skip_spokesperson: v < version::MULTIPLE_ALLEGIANCE_OFFICERS_ADDED
-                && v != version::UNDEF,
-            officer_titles: v >= version::OFFICERS_TITLES_ADDED,
-            pools: v >= version::POOLS_ADDED,
-            motd: v >= version::MOTD_ADDED,
-            chat_room_id: v >= version::CHAT_ROOM_ID_ADDED,
-            banned_characters: v >= version::BANNED_CHARACTERS_ADDED,
-            bind_point: v >= version::BINDSTONES,
-            allegiance_name: v >= version::ALLEGIANCE_NAME,
-            locked_state: v >= version::LOCKED_STATE,
-            approved_vassal: v >= version::APPROVED_VASSAL,
-        }
-    }
-}
-
-/// Which optional blocks an `AllegianceHierarchy` payload carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VersionGates {
-    pub officers_hash: bool,
-    pub skip_spokesperson: bool,
-    pub officer_titles: bool,
-    pub pools: bool,
-    pub motd: bool,
-    pub chat_room_id: bool,
-    pub banned_characters: bool,
-    pub bind_point: bool,
-    pub allegiance_name: bool,
-    pub locked_state: bool,
-    pub approved_vassal: bool,
-}
-
-/// The header's split: **the low 16 bits are the node count and the high 16 are the version**.
-#[must_use]
-pub fn split_hierarchy_header(header: u32) -> (u32, u32) {
-    (header & 0xFFFF, header >> 16)
-}
-
-/// The client's chat block, at text type 0.
-#[must_use]
-pub fn allegiance_info_block(
-    subject: &AllegianceData,
-    patron: Option<&AllegianceData>,
-    vassals: &[&AllegianceData],
-) -> String {
-    let star = |d: &AllegianceData| if d.is_logged_in() { " *" } else { "" };
-    let mut s =
-        String::from("Note: An asterisk (*) indicates that the character is currently online.\n");
-    s.push_str(&format!(
-        "Allegiance information for {}{}:\n",
-        subject.full_name(),
-        star(subject)
-    ));
-    if let Some(p) = patron {
-        s.push_str(&format!("   Patron: {}{}\n", p.full_name(), star(p)));
-    }
-    s.push_str("   Vassals:\n");
-    for v in vassals {
-        s.push_str(&format!("      {}{}\n", v.full_name(), star(v)));
-    }
-    s
 }
 
 impl crate::world::World {
@@ -856,41 +788,6 @@ mod tests {
         assert_eq!(get_title(9, heritage::ALUVIAN, 2), Some("Queen"));
     }
 
-    /// Oracle: §1 — the header packs the node count in the low half and the version in the high.
-    #[test]
-    fn the_hierarchy_header_splits_count_and_version() {
-        assert_eq!(split_hierarchy_header(0x000B_0042), (0x42, 11));
-        assert_eq!(split_hierarchy_header(0), (0, 0));
-    }
-
-    /// Oracle: the recovered version-gate table. Versions 5, 10, and 11 remain inferred; the gates
-    /// are asserted so a corpus round trip will expose a wrong one.
-    #[test]
-    fn the_version_gates_open_in_the_documented_order() {
-        let v0 = AllegianceHierarchy::version_gates(0);
-        assert!(!v0.officers_hash);
-        assert!(!v0.skip_spokesperson, "version 0 skips nothing at all");
-
-        let v1 = AllegianceHierarchy::version_gates(1);
-        assert!(
-            v1.skip_spokesperson,
-            "1..5 skip the old single spokesperson dword"
-        );
-        assert!(!v1.pools);
-
-        let v6 = AllegianceHierarchy::version_gates(6);
-        assert!(v6.officers_hash);
-        assert!(!v6.skip_spokesperson);
-        assert!(v6.pools && v6.motd && v6.chat_room_id && v6.banned_characters);
-        assert!(!v6.bind_point && !v6.officer_titles);
-
-        let v11 = AllegianceHierarchy::version_gates(11);
-        assert!(v11.officers_hash);
-        assert!(v11.officer_titles);
-        assert!(v11.bind_point && v11.allegiance_name);
-        assert!(v11.locked_state && v11.approved_vassal);
-    }
-
     /// Oracle: §1's tree operations — `add` inserts at the **head** and `get_next_vassal` returns
     /// the peer of `id`, not of its vassal.
     #[test]
@@ -927,39 +824,6 @@ mod tests {
         h.clear();
         assert_eq!(h.total, 0);
         assert!(h.get_monarch_id().is_none());
-    }
-
-    /// Oracle: §3's `/allegiance info` block, printed verbatim in the document.
-    #[test]
-    fn the_allegiance_info_block_matches_the_documented_layout() {
-        let mut me = AllegianceData {
-            id: ObjectId(1),
-            name: "Lark".into(),
-            rank: 1,
-            hg: heritage::ALUVIAN,
-            gender: 1,
-            bitfield: allegiance_index::LOGGED_IN,
-            ..Default::default()
-        };
-        let patron = AllegianceData {
-            name: "Bob".into(),
-            ..Default::default()
-        };
-        let v = AllegianceData {
-            name: "Cid".into(),
-            ..Default::default()
-        };
-        let s = allegiance_info_block(&me, Some(&patron), &[&v]);
-        assert_eq!(
-            s,
-            "Note: An asterisk (*) indicates that the character is currently online.\n\
-             Allegiance information for Yeoman Lark *:\n\
-             \x20  Patron: Bob\n\
-             \x20  Vassals:\n\
-             \x20     Cid\n"
-        );
-        me.bitfield = 0;
-        assert!(!allegiance_info_block(&me, None, &[]).contains("Lark *"));
     }
 
     use crate::World;

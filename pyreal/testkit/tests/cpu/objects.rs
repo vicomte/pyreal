@@ -8,7 +8,7 @@
 //! endpoint. No data file is opened.
 
 use pyreal_client_model::{
-    Notice, NullSink, RecordingRequests, RecordingSink, Request, Weenie, World,
+    Notice, NoticeSink, NullSink, RecordingRequests, RecordingSink, Request, Weenie, World,
 };
 use pyreal_client_net::client_session::SessionEvent;
 use pyreal_primitives::{ObjectId, ServerTime};
@@ -351,13 +351,6 @@ pub fn the_panels_poll_rather_than_wait() {
         filled && c.view().world().inventory(CONTAINER).is_none()
     };
 
-    // ---- the player's own appearance --------------------------------------------------------
-    let appearance_raised = {
-        let mut w = World::new();
-        let mut out = RecordingSink::default();
-        w.set_player_visual_desc(appearance(0x0100_0042), &mut out);
-        out.0 == vec![Notice::PlayerObjDescChanged] && w.player_objdesc.is_some()
-    };
     let mut dressed = HeadlessClient::model();
     dressed.when(Inbound::event(SessionEvent::PlayerCreated(PLAYER)));
     dressed.when(Inbound::world_view(&ItemCreateObject({
@@ -395,7 +388,6 @@ pub fn the_panels_poll_rather_than_wait() {
                 && offered_once
                 && inventory_raised
                 && polled_state_is_complete
-                && appearance_raised
                 && whose_body
                 && re_offered
         },
@@ -1052,7 +1044,7 @@ pub fn the_housekeeping_deadlines_are_strict() {
         },
     );
     let mut sink = RecordingSink::default();
-    w.delete_object(ObjectId(8), ServerTime(1000.0), &mut sink);
+    w.delete_object_with_dispatch(ObjectId(8), ServerTime(1000.0), &mut |_, n| sink.emit(n));
     let still_held_goes = w.tables.doomed.get(ObjectId(9)) == Some(&ServerTime(1025.0));
     let moved_child_spared = w.tables.doomed.get(ObjectId(10)).is_none();
     let world_child_spared = w.tables.doomed.get(ObjectId(11)).is_none();

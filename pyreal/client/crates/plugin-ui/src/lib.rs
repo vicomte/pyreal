@@ -3,8 +3,7 @@
 //!
 //! **Depends on** the widget kit (`pyreal-ui-kit`), which draws them ([`window`], [`layer`]); the
 //! declared tree (`pyreal-plugin-api`); the plugin host's question and its answer
-//! (`pyreal-client-contract`); the identifiers (`pyreal-primitives`); the game's font records
-//! (`pyreal-assets`), which the plain skin draws its text in ([`skin`]); and a PNG decoder (`png`)
+//! (`pyreal-client-contract`); the identifiers (`pyreal-primitives`); and a PNG decoder (`png`)
 //! for a plugin's pictures. **Used by** the
 //! client shell, which reads the plugin host's windows each frame and hands the player's input back
 //! to it, and by the Horizon interface, which seats them among its own windows.
@@ -52,7 +51,6 @@ pub mod bar;
 pub mod host;
 pub mod layer;
 pub mod marks;
-pub mod skin;
 pub mod window;
 
 pub use bar::{BarLook, BarPlace};
@@ -423,7 +421,5 @@ mod frame_tests;
 mod host_tests;
 #[cfg(test)]
 mod kit_tests;
-#[cfg(test)]
-mod skin_tests;
 #[cfg(test)]
 mod tests;

@@ -54,8 +54,6 @@ pub mod radar_enum {
     /// 0 — the value an object gets when the server sent no `RADAR_ENUM` field at all. **Not
     /// shown.**
     pub const UNDEF: u8 = 0;
-    /// 1 — explicitly suppressed. Not shown.
-    pub const SHOW_NEVER: u8 = 1;
     /// 2. Shown.
     pub const SHOW_MOVEMENT: u8 = 2;
     /// 3. Shown.

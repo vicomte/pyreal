@@ -661,8 +661,7 @@ mod tests {
         }
     }
 
-    /// The shipped pair, read out of `client_portal.dat` by
-    /// `pyreal/client/tests/gpu/combat/attack_hook.rs`: anim `0x0300000E` part 5, `left (-0.5, 0.8660254)`,
+    /// The shipped pair, read out of `client_portal.dat`: anim `0x0300000E` part 5, `left (-0.5, 0.8660254)`,
     /// `right (0.5, 0.8660254)`, `radius 2`, `height 1`. Here so that the fixture above is anchored
     /// to data rather than to a convention someone chose.
     #[test]

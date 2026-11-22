@@ -315,7 +315,7 @@ pub mod character_option {
 /// `PlayerOption` — the view's enum on one side of the seam, the retail ordinal on the other.
 ///
 /// The Character Options page names its rows with [`pyreal_client_contract::PlayerOption`], a
-/// `dereth-ui-screens` enum in the page's own row order.
+/// contract enum in the page's own row order.
 /// `pyreal_client_model::player::options::PLAYER_OPTIONS` is indexed by the **retail `PlayerOption`
 /// ordinal**, which is a different order entirely and is what
 /// the option accessors switch on. This is the bridge,
@@ -731,8 +731,6 @@ pub struct Hud {
     pub spells: Vec<SpellEntry>,
     /// App's one-frame transit, discarded if the subscriber dies before delivery.
     pub pending_external_container: Vec<ExternalContainerNotice>,
-    /// The same transit for the Salvage panel's three notices.
-    pub pending_salvage: Vec<pyreal_client_contract::panels::salvage::SalvageNotice>,
     /// The visibility this frame's ENV-page delivery last reported, per page, so the host is told
     /// on an **edge** rather than re-told every frame.
     ///

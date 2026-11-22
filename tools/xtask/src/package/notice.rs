@@ -32,10 +32,9 @@ pub fn parse_cargo_tree(output: &str) -> Vec<Crate> {
     crates
 }
 
-/// Whether a crate is one of this repository's own (the `pyreal-*` crates and the launcher's
-/// `auberean-friends`, all MIT).
+/// Whether a crate is one of this repository's own (the `pyreal-*` crates, all MIT).
 pub fn is_own(c: &Crate) -> bool {
-    c.name.starts_with("pyreal-") || c.name == "auberean-friends"
+    c.name.starts_with("pyreal-")
 }
 
 fn indent(text: &str) -> String {

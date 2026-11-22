@@ -3,9 +3,7 @@
 //! `GameView::experience_header` returns [`XpHeader`], so the type is contract: it is what the
 //! host computed (`pyreal_client_model::advancement::experience_header`) and handed the panel, not anything
 //! the panel draws. Its one inherent method is the meter fraction, which is arithmetic on its own
-//! fields, so it comes with the type. The panel's `HeaderContent`, `HeaderInputs`, `xp_to_string`
-//! and element ids stay in `dereth-ui-screens`, which `pub use`s this type so
-//! the retired retail UI's `panels::statmgmt::XpHeader` still resolves.
+//! fields, so it comes with the type.
 
 /// The client's inputs, already joined by the host.
 ///

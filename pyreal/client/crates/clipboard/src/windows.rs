@@ -1,6 +1,6 @@
 //! **The only unsafe code in the client's clipboard path.** This crate opts out of the workspace's
-//! `unsafe_code = "forbid"` for it -- as `pyreal-primitives`' `text` module does for kernel32 NLS and `dereth-render` for
-//! D3D12 -- and confines it to this one file.
+//! `unsafe_code = "forbid"` for it -- as `pyreal-primitives`' `text` module does for kernel32 NLS -- and
+//! confines it to this one file.
 //!
 //! Scope: six kernel32 memory functions and seven user32 clipboard functions, called from two
 //! non-generic functions in this file. No registry, file, network, console, locale setter, loader,

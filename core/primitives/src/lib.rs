@@ -13,9 +13,8 @@
 //! what the value *means* to a subsystem stays in that subsystem.
 //!
 //! The interfaces are traits over plain data, so either side of one can be a mock in tests:
-//! [`asset`] ([`AssetSource`]), [`render`] ([`RenderBackend`] and [`DrawBatch`]), [`transport`]
-//! ([`Transport`]), [`motion`] ([`MotionSource`], between physics and animation) and [`host`]
-//! ([`HostEncoding`], [`TextSink`]). [`shape`], [`records`] and [`text`] hold the plain data the
+//! [`asset`] ([`AssetSource`]), [`transport`] ([`Transport`]), [`motion`] ([`MotionSource`],
+//! between physics and animation) and [`host`] ([`HostEncoding`], [`TextSink`]). [`shape`], [`records`] and [`text`] hold the plain data the
 //! decoders, animation, physics, rendering and the protocol share, [`frame`] the frame arithmetic
 //! physics, animation and the landscape all move frames with, and [`num`] the arithmetic policy: float-to-int conversion, the pseudo-random streams, the hashes and the portable
 //! transcendental functions, each reproducing a behaviour observable in play.
@@ -32,7 +31,6 @@ pub mod pixel;
 pub mod position;
 pub mod property;
 pub mod records;
-pub mod render;
 pub mod shape;
 pub mod space;
 pub mod text;
@@ -41,17 +39,13 @@ pub mod transport;
 pub mod viewport;
 pub mod world_rules;
 
-pub use asset::{
-    AssetError, AssetSource, ContainerEra, MeshData, MeshHandle, TextureData, TextureFormat,
-    TextureHandle,
-};
+pub use asset::{AssetError, AssetSource, ContainerEra, TextureData, TextureFormat};
 pub use era::{
     EraFeatureBits, EraFeatureOverrides, EraFeatures, EraId, ExpectedDats, VitaeRecovery,
 };
 pub use host::{HostEncoding, TextSink};
 pub use ids::{CellId, DataId, DataType, LandblockId, ObjectId, PropertyId};
 pub use motion::{MotionPhysicsState, MotionSource};
-pub use render::{DrawBatch, RenderBackend};
 pub use space::{Frame, Position, Quat, Vec3};
 pub use time::{LocalTime, ServerTime};
 pub use transport::{IncomingMessage, NetBlobId, NetQueue, RecipientId, Transport};
@@ -67,7 +61,6 @@ mod tests {
     #[test]
     fn interface_traits_are_object_safe() {
         fn _assert_assets(_: &dyn AssetSource) {}
-        fn _assert_render(_: &mut dyn RenderBackend) {}
         fn _assert_transport(_: &mut dyn Transport) {}
         fn _assert_motion(_: &mut dyn MotionSource) {}
         fn _assert_host_encoding(_: &dyn HostEncoding) {}

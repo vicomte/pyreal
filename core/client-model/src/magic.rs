@@ -832,9 +832,6 @@ impl ComponentTracker {
     }
 }
 
-/// The spell book — one packed table from spell id to `SpellBookPage`.
-pub type SpellBook = BTreeMap<u32, pyreal_protocol::types::qualities::SpellBookPage>;
-
 /// The refusal strings produced by client-side spell casting.
 pub mod messages {
     pub const MISSING_COMPONENTS: &str = "You do not have all of this spell's components";

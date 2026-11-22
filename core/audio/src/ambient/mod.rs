@@ -394,18 +394,6 @@ impl Ambient {
         }
         out
     }
-
-    /// Release unused tables: the descriptors whose `play_count` is still 0
-    /// contributed nothing this pass, and their sound tables are released.
-    #[must_use]
-    pub fn unused_descs(&self) -> Vec<usize> {
-        self.play_count
-            .iter()
-            .enumerate()
-            .filter(|(_, &c)| c == 0)
-            .map(|(i, _)| i)
-            .collect()
-    }
 }
 
 /// Accumulate one cell into a sound, for both the intermittent and the constant kind.

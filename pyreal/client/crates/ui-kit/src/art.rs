@@ -210,85 +210,6 @@ pub struct GivenFont {
     pub pages: Vec<Arc<Image>>,
 }
 
-/// Pieces handed over whole at run time rather than read from the skin's files: each a picture
-/// drawn a pixel to a layout unit, by its name, and the values the kit lays them out by (as a
-/// manifest's, [`crate::pieces`]). The art packs them into one picture of its own.
-#[derive(Debug, Clone, Default)]
-pub struct GivenPieces {
-    pub pieces: std::collections::BTreeMap<String, Arc<Image>>,
-    pub values: std::collections::BTreeMap<String, Vec<f32>>,
-}
-
-impl GivenPieces {
-    /// Whether piece `name` is here.
-    #[must_use]
-    pub fn has(&self, name: &str) -> bool {
-        self.pieces.contains_key(name)
-    }
-}
-
-/// Given pieces packed into one picture: each piece's rectangle in it.
-type Packed = HashMap<String, Rect>;
-
-/// How far apart packed pieces stand: each is ringed by a copy of its own edge pixels, so a piece
-/// drawn larger than itself takes nothing of its neighbours into its edges.
-const PACK_GAP: u32 = 1;
-
-/// The widest a picture of packed pieces is made.
-const PACK_WIDTH: u32 = 1024;
-
-/// Pack `pieces` into one picture, tallest first along shelves.
-fn pack(pieces: &GivenPieces) -> (Image, Packed) {
-    let mut order: Vec<(&String, &Arc<Image>)> = pieces
-        .pieces
-        .iter()
-        .filter(|(_, im)| im.width > 0 && im.height > 0)
-        .collect();
-    order.sort_by(|a, b| b.1.height.cmp(&a.1.height).then(a.0.cmp(b.0)));
-    let width = order
-        .iter()
-        .map(|(_, im)| im.width + 2 * PACK_GAP)
-        .max()
-        .unwrap_or(1)
-        .max(PACK_WIDTH);
-    let mut places = Vec::with_capacity(order.len());
-    let (mut x, mut y, mut shelf) = (0, 0, 0);
-    for (name, im) in &order {
-        let (w, h) = (im.width + 2 * PACK_GAP, im.height + 2 * PACK_GAP);
-        if x + w > width {
-            x = 0;
-            y += shelf;
-            shelf = 0;
-        }
-        places.push((*name, *im, x + PACK_GAP, y + PACK_GAP));
-        x += w;
-        shelf = shelf.max(h);
-    }
-    let height = (y + shelf).max(1);
-    let mut atlas = Image::solid(width, height, [0; 4]);
-    let mut at = HashMap::with_capacity(places.len());
-    for (name, im, px, py) in places {
-        // The piece, and its edge pixels once more all round it.
-        for dy in -1..=i64::from(im.height) {
-            for dx in -1..=i64::from(im.width) {
-                let sx = u32::try_from(dx.clamp(0, i64::from(im.width) - 1)).unwrap_or(0);
-                let sy = u32::try_from(dy.clamp(0, i64::from(im.height) - 1)).unwrap_or(0);
-                let tx = u32::try_from(i64::from(px) + dx).unwrap_or(0);
-                let ty = u32::try_from(i64::from(py) + dy).unwrap_or(0);
-                let from = ((sy * im.width + sx) * 4) as usize;
-                let to = ((ty * width + tx) * 4) as usize;
-                atlas.bgra[to..to + 4].copy_from_slice(&im.bgra[from..from + 4]);
-            }
-        }
-        #[allow(clippy::cast_precision_loss)]
-        at.insert(
-            name.clone(),
-            Rect::new(px as f32, py as f32, im.width as f32, im.height as f32),
-        );
-    }
-    (atlas, at)
-}
-
 #[derive(Debug, Default)]
 struct Inner {
     by_path: HashMap<String, Option<TexRef>>,
@@ -311,10 +232,6 @@ pub struct Art {
     own_fonts: std::sync::OnceLock<Option<Arc<crate::pieces::FontTable>>>,
     /// A font handed over whole, drawn for every family where the pieces have no font table.
     given_font: Option<Arc<GivenFont>>,
-    /// Pieces handed over whole, where the skin has no files of its own.
-    given_pieces: Option<Arc<GivenPieces>>,
-    /// The given pieces packed, the first time one is drawn.
-    packed: std::sync::OnceLock<Option<(TexId, Arc<Packed>)>>,
     /// How the widgets draw where the skin has no piece.
     palette: crate::palette::Palette,
 }
@@ -348,21 +265,6 @@ impl Art {
         }
     }
 
-    /// This art with `pieces` handed over whole: drawn where it has no files of its own, each
-    /// widget drawn plainly from the palette where its pieces are not among them.
-    #[must_use]
-    pub fn with_pieces(mut self, pieces: GivenPieces) -> Self {
-        self.given_pieces = Some(Arc::new(pieces));
-        self.packed = std::sync::OnceLock::new();
-        self
-    }
-
-    /// The pieces handed over whole, if any.
-    #[must_use]
-    pub fn given_pieces(&self) -> Option<&GivenPieces> {
-        self.given_pieces.as_deref()
-    }
-
     /// How the widgets draw where this skin has no piece.
     #[must_use]
     pub fn palette(&self) -> &crate::palette::Palette {
@@ -376,7 +278,6 @@ impl Art {
         let art = Self {
             own: self.own.clone(),
             given_font: self.given_font.clone(),
-            given_pieces: self.given_pieces.clone(),
             palette: self.palette,
             ..Self::empty()
         };
@@ -396,22 +297,8 @@ impl Art {
             pieces: std::sync::OnceLock::new(),
             own_fonts: std::sync::OnceLock::new(),
             given_font: None,
-            given_pieces: None,
-            packed: std::sync::OnceLock::new(),
             palette: crate::palette::Palette::default(),
         }
-    }
-
-    /// The given pieces packed into one picture, made the first time it is asked for.
-    fn packed(&self) -> Option<(TexId, Arc<Packed>)> {
-        self.packed
-            .get_or_init(|| {
-                let given = self.given_pieces.as_ref()?;
-                let (atlas, at) = pack(given);
-                let id = self.add_image(atlas);
-                Some((id, Arc::new(at)))
-            })
-            .clone()
     }
 
     fn read(&self, name: &str) -> Option<&[u8]> {
@@ -551,25 +438,13 @@ impl Art {
     #[must_use]
     pub fn has_piece(&self, name: &str) -> bool {
         self.manifest().is_some_and(|m| m.pieces.contains_key(name))
-            || self.given_pieces.as_ref().is_some_and(|g| g.has(name))
     }
 
     /// The skin's own piece `name`, from the atlas sharp enough for `px_per_unit` screen pixels
-    /// a layout unit. Its size is in layout units. A piece handed over whole is drawn a pixel to
-    /// a layout unit, whatever the scale.
+    /// a layout unit. Its size is in layout units.
     #[must_use]
     pub fn piece(&self, name: &str, px_per_unit: f32) -> Option<Sprite> {
-        let Some(manifest) = self.manifest() else {
-            let (tex, at) = self.packed()?;
-            let src = *at.get(name)?;
-            return Some(Sprite {
-                tex,
-                src,
-                w: src.w,
-                h: src.h,
-                scale: 1.0,
-            });
-        };
+        let manifest = self.manifest()?;
         let (scale, atlas, rect, ratio) = manifest.place(name, px_per_unit)?;
         let size = manifest.pieces.get(name)?.size;
         let tex = self.atlas(scale, atlas)?;
@@ -618,8 +493,7 @@ impl Art {
         })
     }
 
-    /// The size of the skin's own piece `name`, in layout units, as its manifest gives it; `None`
-    /// for a piece handed over whole, which has no size but its pixels.
+    /// The size of the skin's own piece `name`, in layout units, as its manifest gives it.
     #[must_use]
     pub fn piece_size(&self, name: &str) -> Option<(f32, f32)> {
         let size = self.manifest()?.pieces.get(name)?.size;
@@ -629,10 +503,7 @@ impl Art {
     /// The value `name` the skin lays its own pieces out by (in layout units).
     #[must_use]
     pub fn piece_value(&self, name: &str) -> Option<Vec<f32>> {
-        match self.manifest() {
-            Some(m) => m.values.get(name).cloned(),
-            None => self.given_pieces.as_ref()?.values.get(name).cloned(),
-        }
+        self.manifest()?.values.get(name).cloned()
     }
 
     /// Atlas `index` at `scale`, decoded once.
@@ -804,46 +675,6 @@ mod tests {
         assert_eq!(art.image(tex).as_deref(), Some(&*page));
         assert_eq!(art.font_page(&face, 1), None, "a page it has not");
         assert!(Art::empty().font(Family::Body, 13.0).is_none());
-    }
-
-    /// Pieces handed over whole are drawn from one picture they are packed into, each found by
-    /// its name at its own size, its pixels where its rectangle says, apart from its neighbours
-    /// and ringed by its own edge; their values are read as a manifest's; a name not handed over
-    /// is no piece.
-    #[test]
-    fn pieces_handed_over_are_packed_into_one_picture_each_where_its_rectangle_says() {
-        let mut given = GivenPieces::default();
-        let red = Image::solid(5, 3, [0, 0, 255, 255]);
-        let mut two = Image::solid(4, 6, [255, 0, 0, 255]);
-        two.bgra[0..4].copy_from_slice(&[0, 255, 0, 255]);
-        given.pieces.insert("a.red".to_owned(), Arc::new(red));
-        given.pieces.insert("b.two".to_owned(), Arc::new(two));
-        given.values.insert("a.inset".to_owned(), vec![1.0, 2.0]);
-        let art = Art::plain(None, crate::palette::Palette::retail_plain()).with_pieces(given);
-        assert!(art.has_piece("a.red") && art.has_piece("b.two"));
-        assert!(!art.has_piece("c.none") && art.piece("c.none", 1.0).is_none());
-        assert_eq!(art.piece_value("a.inset"), Some(vec![1.0, 2.0]));
-        let a = art.piece("a.red", 3.0).expect("a.red");
-        let b = art.piece("b.two", 1.0).expect("b.two");
-        assert_eq!(a.tex, b.tex, "one picture");
-        assert_eq!((a.w, a.h, a.scale), (5.0, 3.0, 1.0), "its own size");
-        assert_eq!((b.w, b.h), (4.0, 6.0));
-        let overlap = a.src.x < b.src.right() + 1.0
-            && b.src.x < a.src.right() + 1.0
-            && a.src.y < b.src.bottom() + 1.0
-            && b.src.y < a.src.bottom() + 1.0;
-        assert!(!overlap, "apart, a pixel between: {:?} {:?}", a.src, b.src);
-        let atlas = art.image(a.tex).expect("the packed picture");
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let at = |s: &Sprite, dx: i32, dy: i32| {
-            atlas.pixel((s.src.x as i32 + dx) as u32, (s.src.y as i32 + dy) as u32)
-        };
-        assert_eq!(at(&a, 0, 0), [0, 0, 255, 255]);
-        assert_eq!(at(&a, 4, 2), [0, 0, 255, 255]);
-        assert_eq!(at(&b, 0, 0), [0, 255, 0, 255], "its first pixel");
-        assert_eq!(at(&b, 1, 0), [255, 0, 0, 255]);
-        assert_eq!(at(&b, -1, -1), [0, 255, 0, 255], "ringed by its own corner");
-        assert_eq!(at(&a, 5, 1), [0, 0, 255, 255], "and by its own edge");
     }
 
     /// A picture let go is drawn no more, and the overlay is told once.

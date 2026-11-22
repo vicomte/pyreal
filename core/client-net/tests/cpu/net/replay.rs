@@ -65,14 +65,6 @@ fn replay_every_recorded_capture() {
     );
 }
 
-#[test]
-#[ignore = "requires a capture with induced loss reaching a rejected retransmission"]
-fn replay_lossy() {
-    let root = captures_dir();
-    let capture = Capture::load(&root, "lossy").expect("the lossy capture must exist to run this");
-    run_replay(&capture);
-}
-
 #[derive(Default)]
 struct KeyLedger {
     drawn: BTreeMap<u32, u32>,

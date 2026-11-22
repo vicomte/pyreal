@@ -318,7 +318,8 @@ impl HorizonFrontEnd {
     }
 
     /// The session ended in process: the interface as it came up, before any world, with the
-    /// player's settings, their remembered looks and the screens before the world kept.
+    /// player's settings, their remembered looks, the screens before the world and the map's world
+    /// kept.
     pub fn session_ended<S: Shell>(&mut self, cx: &mut Cx<'_, S>) {
         let art = Arc::clone(&self.ui.art);
         let options = self.ui.options.clone();
@@ -326,7 +327,9 @@ impl HorizonFrontEnd {
         let keys = self.keys.take();
         let pad_mode = std::mem::take(&mut self.pad_mode);
         let chargen = self.chargen.take();
+        let map_world = std::mem::take(&mut self.ui.windows.map_view.world);
         *self = Self::new(art, options, self.settings_path.take());
+        self.ui.windows.map_view.world = map_world;
         self.ui.front_door = front_door;
         self.keys = keys;
         self.pad_mode = pad_mode;
@@ -768,6 +771,12 @@ impl HorizonFrontEnd {
         let screen = cx.present().size();
         self.ring_time = now.0;
         cx.deliver_selection_notices(now);
+        // The selected object's blink steps once a frame in the game, and the lighting it and
+        // this frame's clicks asked for goes onto the world's bodies before the world draws.
+        if self.in_gameplay() {
+            cx.selection_blink(now);
+        }
+        cx.apply_selection_lighting();
         // The game's view reads time (a cooldown's seconds left, an enchantment's) against the
         // clock the interface stamps each frame, as the other interfaces do; unstamped it moves
         // only when a message arrives, and what counts down stalls and jumps.
@@ -785,6 +794,7 @@ impl HorizonFrontEnd {
         }
         state.full_screen = cx.full_screen_offered().then(|| cx.full_screen());
         state.hifi = cx.hifi_availability();
+        state.graphics_adapter = cx.graphics_adapter();
         state.camera_heading = cx.camera_heading().unwrap_or(state.heading);
         self.patch.follow(&cx.pregame().ddd);
         state.patch_progress = self
@@ -1791,7 +1801,6 @@ impl HorizonFrontEnd {
         let present = cx.present_mut();
         if present.preview_ensure(id, &assets) {
             self.doll_built = None;
-            present.preview_use_sharp_mode(id);
             present.preview_set_light(
                 id,
                 PreviewLight::Directional,
@@ -1885,12 +1894,6 @@ impl HorizonFrontEnd {
         self.overlay.draw(present)
     }
 
-    /// What the overlay has drawn so far.
-    #[must_use]
-    pub fn overlay_stats(&self) -> crate::draw::OverlayStats {
-        self.overlay.stats
-    }
-
     /// This frame's overlay.
     #[must_use]
     pub fn overlay_items(&self) -> &[pyreal_client_contract::overlay::OverlayItem] {
@@ -1942,39 +1945,6 @@ impl HorizonFrontEnd {
             .plugins
             .ui
             .size_hint(plugin, window, width, height);
-    }
-
-    /// The interface is put away for another: every press it holds is let go, and its boxes come
-    /// down unanswered.
-    pub fn suspend(&mut self) {
-        self.ui.windows.plugins.ui.let_go();
-        self.frame_input = InputFrame::default();
-        self.world_press = [false; 2];
-        self.ui.drag = None;
-        self.dialogs.generation += 1;
-    }
-
-    /// The interface is shown again: it comes up on the screen the game is at.
-    pub fn shown_again(&mut self) {
-        self.last_time = None;
-        self.was_gameplay = None;
-        // Another interface may have dressed the shared preview spaces with its own models.
-        self.creation_built = None;
-        self.doll_built = None;
-    }
-
-    /// Chat lines the interface missed while another was shown, or the history a switch hands
-    /// over.
-    pub fn chat_history(
-        &mut self,
-        lines: Vec<pyreal_client_contract::chat::interface::ChatMessage>,
-    ) {
-        self.ui.hud.replace_log(
-            lines
-                .into_iter()
-                .map(crate::ui::game::ChatLine::from_message)
-                .collect(),
-        );
     }
 }
 

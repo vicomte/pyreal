@@ -693,17 +693,6 @@ pub fn handshake_port(server_port: u16) -> u16 {
     server_port.wrapping_add(1)
 }
 
-/// The command code of a standalone keep-alive/echo command packet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum IcmdCommand {
-    Nop = 1,
-    /// `"ERpl"`.
-    EchoReply = 0x6C70_5245,
-    /// `"ERqe"`.
-    EchoRequest = 0x7165_5245,
-}
-
 /// The login state machine's own progress.
 #[derive(Debug)]
 pub struct LoginState {

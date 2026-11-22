@@ -24,8 +24,6 @@ the plugin bar.
 |---|---|---|
 | the launcher, for the desktop client | installed one by one from plugin sources: Dereth's own, and the ones you add; and the plugins in the folders on this computer you add, as they are on disk | from each plugin's own source: when you press **Update**, or on their own as the update setting says; a folder on this computer is never updated: edit it, and `/plugin reload <id>` |
 | the desktop client | its settings folder's `plugins` folder, what the launcher offers (its installs and the folders on this computer), and the plugins beside the program; each `--plugins` folder loads at once | replace the folder or zip; `/plugin reload <id>`, or `--plugin-dev` |
-| the retail client, through Decal | the desktop client's `plugins` folder, what the launcher offers (its installs and the folders on this computer), and the plugins beside Dereth Plugins; the launcher's are enabled the first time it finds them, and the others disabled until enabled in its plugin panel | as the desktop client |
-| the headless client | each `--plugins` folder or zip, and `plugin load` in a script, loaded as named | the next run reads the files afresh |
 
 ## Dereth's plugins
 
@@ -137,17 +135,6 @@ To update it, replace the files and `/plugin reload <id>`. With no plugin at all
 Stores are kept beside the plugins folder in `plugin-store`, one folder per plugin id and one JSON
 file per store scope; which plugins are enabled and which you disabled, and where their windows
 stand, are kept there too, under `dereth.plugins`.
-
-## The headless client
-
-`--plugins <folder or zip>` loads a package, or every package one level inside a folder;
-repeatable. `plugin load <folder or zip>` in a script loads one more.
-
-| switch | does |
-|---|---|
-| `--plugin-store <folder>` | keeps stores in the folder; in memory when absent |
-| `--plugin-policy <file>` | the world's plugin policy document |
-| `--peers <folder>` | the plugins' bus between clients reaches the other headless clients naming the same folder (loopback datagrams; nothing leaves the machine) |
 
 ## Publishing a plugin
 

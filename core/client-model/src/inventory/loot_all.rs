@@ -235,7 +235,9 @@ mod tests {
 
     /// The server's yes: the lock lets go and the item leaves the corpse.
     fn taken(w: &mut World, item: ObjectId) {
-        w.inventory_mut(CORPSE)
+        w.tables
+            .inventories
+            .get_mut(CORPSE)
             .unwrap()
             .items
             .retain(|i| *i != item);

@@ -6,7 +6,7 @@
 //! are in units of one 24 m cell and run `0 .. 0x7F8` (2040 = 255 blocks of 8).
 
 use pyreal_primitives::num::{floor_to_i32, to_i32_f64};
-use pyreal_primitives::{CellId, DataId, Vec3};
+use pyreal_primitives::{CellId, Vec3};
 
 use crate::globals::{
     BLOCK_LENGTH, CELL_SIZE, LAND_HEIGHT_MAX, LAND_HEIGHT_TABLE_LEN, LCOORD_LIMIT,
@@ -38,30 +38,6 @@ pub const fn is_outdoors(id: CellId) -> bool {
 #[must_use]
 pub const fn in_bounds(x: i32, y: i32) -> bool {
     x >= 0 && y >= 0 && x < LCOORD_LIMIT && y < LCOORD_LIMIT
-}
-
-/// The landblock's `0xXXYYFFFF` data id.
-#[must_use]
-pub const fn get_block_did(id: CellId) -> DataId {
-    DataId((id.0 & 0xFFFF_0000) | 0xFFFF)
-}
-
-/// The global cell coordinates of a landblock's
-/// south-west corner. Returns `None` for id `0` or an out-of-range block.
-#[must_use]
-pub fn blockid_to_lcoord(id: CellId) -> Option<(i32, i32)> {
-    if id.0 == 0 {
-        return None;
-    }
-    #[allow(clippy::cast_possible_wrap)]
-    let x = ((id.0 >> 21) & 0x7F8) as i32;
-    #[allow(clippy::cast_possible_wrap)]
-    let y = (((id.0 >> 16) & 0xFF) * 8) as i32;
-    if (0..LCOORD_LIMIT).contains(&x) && y < LCOORD_LIMIT {
-        Some((x, y))
-    } else {
-        None
-    }
 }
 
 /// The global cell coordinates of an **outdoor** cell id.
@@ -207,16 +183,6 @@ pub fn validate_height_table(table: &[f32]) -> Option<[f32; LAND_HEIGHT_TABLE_LE
         *o = v;
     }
     Some(out)
-}
-
-/// The location formatter's numeric half: the familiar `N/S, E/W` pair
-/// in tenths of a cell, derived by subtracting `(0x400, 0x100)` from the global cell coordinates
-/// and scaling by `0.1`.
-#[must_use]
-pub fn cellid_to_coordinates(id: CellId) -> Option<(f32, f32)> {
-    let (x, y) = gid_to_lcoord(id)?;
-    #[allow(clippy::cast_precision_loss)]
-    Some(((y - 0x100) as f32 * 0.1, (x - 0x400) as f32 * 0.1))
 }
 
 /// The `floor(v / CELL_SIZE)` used by land-cell lookup and by the outdoor cell-list builder,

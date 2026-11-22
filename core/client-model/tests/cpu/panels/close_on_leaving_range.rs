@@ -416,7 +416,7 @@ fn a_secure_trade_closes_at_five_metres_and_not_at_the_partners_use_radius() {
         vec![TARGET]
     );
     assert!(
-        w.trade.trade.both_accepted(),
+        w.trade.trade.accepted && w.trade.trade.partner_accepted,
         "the UI Reset is not the authoritative 0x01FF"
     );
     assert!(w.trade.acceptance_darkened);

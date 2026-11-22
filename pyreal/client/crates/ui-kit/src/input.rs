@@ -238,17 +238,6 @@ impl InputFrame {
         }
     }
 
-    /// A middle press this frame inside `r`, taken.
-    pub fn middle_clicked(&mut self, r: &crate::draw::Rect) -> bool {
-        if self.pressed[2] && self.hover(r) {
-            self.pressed[2] = false;
-            self.captured = true;
-            true
-        } else {
-            false
-        }
-    }
-
     /// Whether the pointer is in `r`, and not over a window drawn over it.
     #[must_use]
     pub fn hover(&self, r: &crate::draw::Rect) -> bool {

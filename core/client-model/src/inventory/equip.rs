@@ -647,49 +647,8 @@ impl World {
         finish_blocked(self, walk.last_blocked, walk.messages)
     }
 
-    /// Plan automatic sorting as a decision over `(id, allow_wield, quiet)`.
-    ///
-    /// The order is exactly the client's: wear if wearable; then wield if allowed and wieldable;
-    /// then, only if the item is **not** already owned by the player, place it in a backpack.
-    ///
-    /// **Its only callers are tests**, and [`Self::auto_sort`] is the real transcription, so this
-    /// is a **second, unwired model of the same function**. Kept, because the tests ask the
-    /// decision question and answering it without sending is what they need — but the two can
-    /// drift, and a change to one belongs in both.
-    #[must_use]
-    pub fn plan_auto_sort(&self, id: ObjectId, allow_wield: bool) -> AutoSortPlan {
-        if self.ready_for_inventory_request().is_err() {
-            return AutoSortPlan::Refused;
-        }
-        let Some(w) = self.weenie(id) else {
-            return AutoSortPlan::Refused;
-        };
-        let valid = w.pwd.valid_locations.unwrap_or(0);
-        if valid & loc::WEARABLE != 0 {
-            match self.auto_wear_is_legal(id) {
-                Ok(()) => return AutoSortPlan::Wear(valid),
-                // `if (worn) return false;` — an item already worn stops the walk entirely.
-                Err((_, true)) => return AutoSortPlan::Refused,
-                Err((_, false)) => {}
-            }
-        }
-        if allow_wield && valid & loc::WIELDABLE != 0 {
-            // The fallback wields with `(id, SlotSide::Right, quiet = 1, unblock = 0,
-            // allow_sort = 0, other_side = 1)`, so it may take the other wrist or ring.
-            if let WieldPlan::Wield(bit) = self.plan_auto_wield(id, SlotSide::Right, true) {
-                return AutoSortPlan::Wield(bit);
-            }
-        }
-        if !self.is_owned_by_player(id) {
-            return AutoSortPlan::PlaceInBackpack;
-        }
-        AutoSortPlan::Refused
-    }
-
-    /// Execute automatic sorting for `id` — **the operation, not merely the plan.**
-    ///
-    /// [`Self::plan_auto_sort`] above is the decision alone; this is the function, and
-    /// `using_item`'s case 4 calls it whole rather than open-coding some of its five steps.
+    /// Execute automatic sorting for `id`. `using_item`'s case 4 calls it whole rather than
+    /// open-coding some of its five steps.
     ///
     /// 1. The inventory-readiness check runs with quiet 0; a refusal answers `false`, as does an
     ///    id with no weenie.
@@ -1229,15 +1188,6 @@ fn finish_blocked(w: &World, last_blocked: Option<u32>, messages: Vec<&'static s
     }
 }
 
-/// What `auto_sort` decided.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoSortPlan {
-    Wear(u32),
-    Wield(u32),
-    PlaceInBackpack,
-    Refused,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1325,7 +1275,9 @@ mod tests {
 
         // Something already occupies priority 0x4.
         w.clothing_priority_mask = 0x4;
-        w.inventory_mut(ObjectId(1))
+        w.tables
+            .inventories
+            .get_mut(ObjectId(1))
             .unwrap()
             .set_placement(ObjectId(11), loc::HEAD_WEAR, 0x4);
         w.inventory_mask = loc::HEAD_WEAR;
@@ -1334,7 +1286,9 @@ mod tests {
         assert!(!worn);
 
         // The blocker is *this* item, already worn: with the item's own name.
-        w.inventory_mut(ObjectId(1))
+        w.tables
+            .inventories
+            .get_mut(ObjectId(1))
             .unwrap()
             .set_placement(ObjectId(10), loc::HEAD_WEAR, 0x4);
         let (msg, worn) = w.auto_wear_is_legal(ObjectId(10)).unwrap_err();
@@ -1342,13 +1296,19 @@ mod tests {
         assert!(worn);
 
         // a blocker the client has no object for is a silent false.
-        w.inventory_mut(ObjectId(1))
+        w.tables
+            .inventories
+            .get_mut(ObjectId(1))
             .unwrap()
             .set_placement(ObjectId(10), 0, 0x4);
-        w.inventory_mut(ObjectId(1))
+        w.tables
+            .inventories
+            .get_mut(ObjectId(1))
             .unwrap()
             .set_placement(ObjectId(11), 0, 0x4);
-        w.inventory_mut(ObjectId(1))
+        w.tables
+            .inventories
+            .get_mut(ObjectId(1))
             .unwrap()
             .set_placement(ObjectId(99), loc::HEAD_WEAR, 0x4);
         assert_eq!(
@@ -1673,47 +1633,5 @@ mod tests {
             },
             "other_side = 0 stops at the slot the player aimed at"
         );
-    }
-
-    /// Oracle: §9's — the four-step order, including the `if (worn) return
-    /// false` early exit.
-    #[test]
-    fn auto_sort_follows_wear_then_wield_then_backpack() {
-        let mut w = world_with(&[
-            (10, wearable(loc::HEAD_WEAR, 0x4)),
-            (
-                20,
-                PublicWeenieDesc {
-                    valid_locations: Some(loc::MELEE_WEAPON),
-                    ..PublicWeenieDesc::default()
-                },
-            ),
-            (30, PublicWeenieDesc::default()),
-        ]);
-        assert_eq!(
-            w.plan_auto_sort(ObjectId(10), true),
-            AutoSortPlan::Wear(loc::HEAD_WEAR)
-        );
-        assert_eq!(
-            w.plan_auto_sort(ObjectId(20), true),
-            AutoSortPlan::Wield(loc::MELEE_WEAPON)
-        );
-        assert_eq!(
-            w.plan_auto_sort(ObjectId(20), false),
-            AutoSortPlan::PlaceInBackpack,
-            "with wielding disallowed an unowned item falls through to the backpack"
-        );
-        assert_eq!(
-            w.plan_auto_sort(ObjectId(30), true),
-            AutoSortPlan::PlaceInBackpack
-        );
-
-        // Already worn: the walk stops rather than falling through to wield.
-        w.clothing_priority_mask = 0x4;
-        w.inventory_mask = loc::HEAD_WEAR;
-        w.inventory_mut(ObjectId(1))
-            .unwrap()
-            .set_placement(ObjectId(10), loc::HEAD_WEAR, 0x4);
-        assert_eq!(w.plan_auto_sort(ObjectId(10), true), AutoSortPlan::Refused);
     }
 }

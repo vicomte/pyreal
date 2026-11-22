@@ -34,7 +34,7 @@ pub struct CelestialPosition {
     ///
     /// This field is not zero for every shipped sky object. Over the region's 20 day groups it
     /// takes 0 (×120), 2 (×20),
-    /// 4 (×8), 5 (×8) and 13 (×76), so [`draws_in_pass_0`] and [`SkyPass::After`] are live code.
+    /// 4 (×8), 5 (×8) and 13 (×76).
     /// The bit names describe the roles used by the sky renderer.
     ///
     /// Only the eight **"Rainy"** groups carry a weather layer. The three "Cloudy" ones use `{0, 2}`
@@ -217,29 +217,6 @@ pub fn get_world_fog(group: &SkyDayPreset, t: f32) -> Option<WorldFog> {
     })
 }
 
-/// The fixed-function fog factor retail's device is configured for: **`D3DFOG_LINEAR` vertex fog
-/// over the radial eye distance**, 1 = unfogged, 0 = fully the fog colour.
-///
-/// Retail's fog render states:
-///
-/// | state | | value |
-/// |---|---|---|
-/// | `D3DRS_FOGCOLOR` | 34 (`0x22`) | `0x00AAAAAA` |
-/// | `D3DRS_FOGTABLEMODE` | 35 (`0x23`) | 0 = `D3DFOG_NONE` — **no per-pixel fog** |
-/// | `D3DRS_FOGSTART` | 36 (`0x24`) | `0x43C80000` = 400.0 |
-/// | `D3DRS_FOGEND` | 37 (`0x25`) | `0x44FA0000` = 2000.0 |
-/// | `D3DRS_FOGDENSITY` | 38 (`0x26`) | `0x3E4CCCCD` = 0.2, dead with table mode NONE |
-/// | `D3DRS_RANGEFOGENABLE` | 48 (`0x30`) | **1** |
-/// | `D3DRS_FOGVERTEXMODE` | 140 (`0x8C`) | **3 = `D3DFOG_LINEAR`** |
-///
-/// `RANGEFOGENABLE` is the one that is easy to miss and visible on a wide view: the fog coordinate
-/// is `|P - eye|`, not the view-space `z`, so the corners of the screen fog as much as the centre
-/// rather than less.
-#[must_use]
-pub fn linear_fog_factor(distance: f32, start: f32, end: f32) -> f32 {
-    ((end - distance) / (end - start).max(1.0e-6)).clamp(0.0, 1.0)
-}
-
 /// Produce one [`CelestialPosition`] per sky object for time `t` in the
 /// present day group.
 ///
@@ -359,61 +336,6 @@ pub fn grotate(f: &mut Frame, v: Vec3) {
         ry * q.w + rz * q.x + (rw * q.y - rx * q.z),
         rz * q.w + ((rw * q.z + rx * q.y) - ry * q.x),
     );
-}
-
-/// The two sky passes and their submission order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkyPass {
-    /// Before the landscape: every object with `properties & 1` **clear**.
-    Before = 0,
-    /// After the landscape: the weather layer, the whole `after_sky_cell`.
-    After = 1,
-}
-
-/// Device state installed for the duration of both passes.
-///
-/// Depth test **ALWAYS** with depth writes **off** — the sky never occludes anything and is never
-/// occluded — and `zfar` multiplied by **4** so sky geometry can sit four times farther out than
-/// the world. Fog is disabled unless a fog *override* is active.
-pub const SKY_ZFAR_MULTIPLIER: f32 = 4.0;
-
-/// Per-object skip rules for sky pass 0.
-///
-/// ```text
-/// skip if (properties & 1) != 0                            // that one belongs to pass 1
-/// skip if !weather_enabled and (properties & 4) != 0
-/// skip if override_enabled and fog_enabled and (properties & 2) != 0
-/// ```
-#[must_use]
-pub fn draws_in_pass_0(
-    properties: u32,
-    weather_enabled: bool,
-    override_enabled: bool,
-    fog_enabled: bool,
-) -> bool {
-    if properties & 1 != 0 {
-        return false;
-    }
-    if !weather_enabled && properties & 4 != 0 {
-        return false;
-    }
-    if override_enabled && fog_enabled && properties & 2 != 0 {
-        return false;
-    }
-    true
-}
-
-/// The present day group of a region, at a given in-game date.
-#[must_use]
-pub fn present_day_group(region: &Region, year: u32, day: u32) -> Option<&SkyDayPreset> {
-    let sky = region.sky_info.as_ref()?;
-    let k = calc_present_day_group(
-        year,
-        region.game_time.days_per_year,
-        day,
-        sky.day_groups.len(),
-    );
-    sky.day_groups.get(k)
 }
 
 /// The day group the sky is drawn with: the present day's, or with a kind of day asked for, the
@@ -794,29 +716,5 @@ mod tests {
         calc_frame(&mut f, 0.0, 90.0);
         let m = pyreal_terrain::math::l2g(f.rotation).0;
         assert!(m[2].abs() > 0.99, "the local x axis is now vertical: {m:?}");
-    }
-
-    /// Oracle: the three skip rules for sky pass 0.
-    #[test]
-    fn pass_zero_skips_the_documented_objects() {
-        assert!(draws_in_pass_0(0, true, false, false));
-        assert!(
-            !draws_in_pass_0(1, true, false, false),
-            "bit 0 belongs to pass 1"
-        );
-        assert!(
-            !draws_in_pass_0(4, false, false, false),
-            "bit 2 needs weather enabled"
-        );
-        assert!(draws_in_pass_0(4, true, false, false));
-        assert!(
-            !draws_in_pass_0(2, true, true, true),
-            "bit 1 hides under a fog override"
-        );
-        assert!(
-            draws_in_pass_0(2, true, true, false),
-            "but only when fog is actually on"
-        );
-        assert_eq!(SKY_ZFAR_MULTIPLIER, 4.0);
     }
 }

@@ -109,8 +109,8 @@ pub struct RadarEntry {
 /// The function walks the **skill table** selected by group 4, type 2, and enum `0x10000004`, not the
 /// player's own skill hash, and asks about each key; a skill the player
 /// has no entry for still gets a row, in the `UNDEF` group. So one entry here is
-/// `(SkillTable key, SkillBase, skill-lookup answer)` already joined, which is the only shape that
-/// keeps `dereth-ui-screens` free of `pyreal-client-model` and `pyreal-assets`' table types.
+/// `(SkillTable key, SkillBase, skill-lookup answer)` already joined, which is the shape that
+/// kept the retired retail UI free of `pyreal-client-model` and `pyreal-assets`' table types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEntry {
     /// The skill-table key shown by the skill-info region.
@@ -326,8 +326,8 @@ pub struct BookView {
 /// The sixteen values delivered by `0x0075 Character_StartBarber`, plus the two
 /// player qualities read while the barber panel initializes.
 ///
-/// This copy is the read-only UI seam rather than a protocol type: `dereth-ui-screens` deliberately
-/// has no dependency on `pyreal-protocol`, and the host performs the field-for-field projection.
+/// This copy is the read-only UI seam rather than a protocol type: the retired retail UI deliberately
+/// had no dependency on `pyreal-protocol`, and the host performs the field-for-field projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BarberView {
     /// The notice edge. A repeated `0x0075` is a new modal even when all sixteen values agree.
@@ -437,7 +437,7 @@ pub struct SpellExamineComponent {
 /// The join follows the client's sequence: the spell record supplies the base fields, the
 /// appropriate-formula lookup supplies the formula, and the component table supplies each slot.
 /// It is done host-side
-/// because `dereth-ui-screens` may not depend on `pyreal-client-model` or on the two dat tables,
+/// because the retired retail UI could not depend on `pyreal-client-model` or on the two dat tables,
 /// exactly as [`EffectEntry`] and [`SpellEntry`] are.
 ///
 /// **Nothing here is a server round trip.** The examine entry point cancels any
@@ -479,7 +479,7 @@ pub struct SpellExamineView {
 ///
 /// The list rebuild walks the enchantment registry, retains entries accepted by
 /// the UI-type filter, and builds one row per survivor. The host joins the spell's
-/// name, icon, beneficial flag and remaining time, because `dereth-ui-screens` may
+/// name, icon, beneficial flag and remaining time, because the retired retail UI could
 /// not depend on `pyreal-client-model` or the `SpellTable`. The original
 /// client performs this join in the subsystem that builds the rows as well.
 #[derive(Debug, Clone, PartialEq)]
@@ -623,13 +623,6 @@ impl Default for EquipmentHover {
     }
 }
 
-impl EquipmentHover {
-    #[must_use]
-    pub fn at_location(self, mask: u32) -> Option<bool> {
-        self.slot_mask.map(|accepted| accepted & mask != 0)
-    }
-}
-
 /// Where a dragged item was dropped: the item-list drag handler's destinations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropTarget {
@@ -746,7 +739,7 @@ impl Default for CombatBar {
 ///
 /// Eighteen bound keys map to these actions. Only the spellcasting panel consumes
 /// them. The type belongs here, like [`PlayerOption`], because it is a UI message
-/// and `dereth-ui-screens` deliberately does not depend on `pyreal-client-model`. The producer
+/// and the retired retail UI deliberately did not depend on `pyreal-client-model`. The producer
 /// lives in `pyreal-client`, above both crates.
 ///
 /// The actions cast the selected spell, move to the previous/next/first/last spell

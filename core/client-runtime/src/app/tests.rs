@@ -438,6 +438,7 @@ fn a_scripted_entry_with_no_interface_waits_for_the_data_files_to_be_updated() {
     );
 }
 
+mod bulk_patch;
 mod explore;
 mod world_refusal;
 
@@ -603,7 +604,6 @@ fn a_live_fidelity_or_landscape_change_is_kept_for_the_next_world() {
         fidelity::SHADOWS,
         &pyreal_client_contract::PrefValue::Bool(true)
     ));
-    assert!(next.render.fidelity.any_effective());
     assert!(!with_stored_options(next)
         .render
         .fidelity
@@ -1031,6 +1031,71 @@ fn app_over_profile(profile: &std::path::Path) -> App<NullShell> {
     pyreal_client_contract::options::store::init();
     app.start_preferences();
     app
+}
+
+/// A profile that names no preset option gets the preset suggested for the graphics card, and
+/// one that does keeps its own.
+#[test]
+#[cfg_attr(
+    not(feature = "retail-dats"),
+    ignore = "reads the retail dats: --features retail-dats"
+)]
+fn a_new_profile_gets_the_preset_suggested_for_the_graphics_card() {
+    use pyreal_client_contract::options::{auto_quality, names, store};
+    use pyreal_client_contract::PrefValue;
+    let data = std::sync::Arc::new(pyreal_dat::testing::open_store().expect("retail data"));
+    let folder = std::env::temp_dir().join(format!("auto-quality-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let profile = folder.join("UserPreferences.ini");
+    for (file, chosen, terrain) in [
+        (None, 3, 48),
+        (Some("[Render]\r\nLandscapeDrawDistance=11\r\n"), 0, 11),
+    ] {
+        let _ = std::fs::remove_file(&profile);
+        if let Some(text) = file {
+            std::fs::write(&profile, text).unwrap();
+        }
+        let cfg = Config {
+            headless: true,
+            frames: None,
+            connect: false,
+            sound: false,
+            dat_dir: pyreal_dat::testing::dat_dir(),
+            preferences_file: profile.clone(),
+            ..Config::default()
+        };
+        let mut app = App::<NullShell>::bring_up_with_store(
+            cfg,
+            Some(std::sync::Arc::clone(&data)),
+            |_| Ok(Platform::headless(64, 64)),
+            |_, _, _, _| {
+                let mut device = crate::present::NullPresentation::new(64, 64);
+                device.graphics_adapter = Some(auto_quality::Adapter {
+                    name: "Apple M5 Pro".into(),
+                    vendor: 0,
+                    kind: auto_quality::Kind::Integrated,
+                });
+                Ok(Box::new(device))
+            },
+        )
+        .expect("bring-up");
+        store::init();
+        app.start_preferences();
+        assert_eq!(
+            store::inq_value(auto_quality::CHOSEN_PRESET),
+            Some(PrefValue::Int(chosen))
+        );
+        assert_eq!(
+            store::inq_value(names::LANDSCAPE_DRAW_DISTANCE) == Some(PrefValue::Int(48)),
+            terrain == 48
+        );
+        assert_eq!(
+            app.interaction.take_render_preferences().is_empty(),
+            chosen == 0
+        );
+        store::clear();
+    }
+    let _ = std::fs::remove_dir_all(&folder);
 }
 
 /// Retail writes `UserPreferences.ini` in Windows-1252. Such a file is read, and the exit save

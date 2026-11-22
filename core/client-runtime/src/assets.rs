@@ -340,9 +340,8 @@ fn set_name(set: pyreal_dat::ContainerEra) -> &'static str {
 /// Returns `None` when either hop is missing, which the caller must treat as a failure rather than
 /// as an empty result: the client's own `require` on the returned pointer is fatal.
 ///
-/// **The body lives in `pyreal_assets::did_by_enum`** and this is a forward: the
-/// icon backgrounds an item slot paints need the same two hops from `dereth-ui-screens`, which
-/// sits below this crate. Nothing about the lookup changed; the call sites here are unchanged.
+/// **The body lives in `pyreal_assets::did_by_enum`** and this is a forward. Nothing about the
+/// lookup changed; the call sites here are unchanged.
 #[must_use]
 pub fn enum_did(
     assets: &dyn pyreal_primitives::AssetSource,

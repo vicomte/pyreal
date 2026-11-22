@@ -30,7 +30,6 @@ pub struct StubAssets {
     // ORDER-OK: keyed by DataID and only ever looked up, never iterated.
     waves: BTreeMap<DataId, StubWave>,
     tables: BTreeMap<DataId, SoundTable>,
-    descs: Vec<SoundDesc>,
 }
 
 impl StubAssets {
@@ -144,11 +143,6 @@ impl StubAssets {
         }
         self.tables.insert(id, SoundTable { id, nodes });
     }
-
-    /// Register the ambient descriptors this stub reports.
-    pub fn set_descs(&mut self, descs: Vec<SoundDesc>) {
-        self.descs = descs;
-    }
 }
 
 impl AudioAssets for StubAssets {
@@ -160,8 +154,8 @@ impl AudioAssets for StubAssets {
         self.tables.get(&id)
     }
 
-    fn ambient_desc(&self, index: usize) -> Option<&AmbientSoundDescriptor> {
-        self.descs.get(index)
+    fn ambient_desc(&self, _index: usize) -> Option<&AmbientSoundDescriptor> {
+        None
     }
 }
 

@@ -5,8 +5,7 @@ This guide explains it and walks through Dereth's own plugins; the
 [specification](../README.md) is the rule, and where the two differ the specification wins.
 
 A **plugin** is a package (a folder, or a zip of one) holding a manifest, `plugin.toml`, and
-either Lua scripts or one compiled WebAssembly component. A host (Dereth's desktop client or its
-headless client) loads it and runs it once per frame
+either Lua scripts or one compiled WebAssembly component. A host (Dereth's desktop client) loads it and runs it once per frame
 against the game as the client sees it. A plugin can read the game, hear events, print to the chat
 window, claim `/commands`, show windows, HUDs and markers, keep settings, and, with the world's
 leave, act: loot, cast, move the character, log in.

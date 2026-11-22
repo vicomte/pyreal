@@ -6,7 +6,7 @@
 //!
 //! Hook records are described in `docs/formats/12-animation.md`.
 
-use pyreal_dat::{Cursor, DatError};
+use pyreal_dat::Cursor;
 use pyreal_primitives::{DataId, Vec3};
 
 use crate::error::AssetError;
@@ -193,18 +193,6 @@ pub fn read_hooks(c: &mut Cursor<'_>) -> Result<Vec<AnimHook>, AssetError> {
     }
     Ok(v)
 }
-
-/// The count-less form, for callers that already read the count.
-pub fn read_n_hooks(c: &mut Cursor<'_>, n: usize) -> Result<Vec<AnimHook>, AssetError> {
-    let mut v = Vec::new();
-    for _ in 0..n {
-        v.push(AnimHook::decode(c)?);
-    }
-    Ok(v)
-}
-
-/// Re-exported so callers do not have to name two error types.
-pub type HookResult<T> = Result<T, DatError>;
 
 #[cfg(test)]
 mod tests {

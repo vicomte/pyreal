@@ -1,6 +1,6 @@
 //! The chat seam.
 //!
-//! `dereth-ui-screens` draws the chat windows; `pyreal-client` owns what goes in them — the final-string
+//! The interface draws the chat windows; `pyreal-client` owns what goes in them — the final-string
 //! notice that carries a chat line into the UI is one of the three process globals the client owns, and the failure table turns
 //! an inbound `WeenieError` into a line. Everything both sides have to agree about is here, at the
 //! same module path as in the retired retail UI's `chat`, which re-exports each item.

@@ -21,8 +21,8 @@ pub use update::{Outcome as UpdateOutcome, QualityUpdate};
 
 use pyreal_primitives::{DataId, ObjectId};
 use pyreal_protocol::types::qualities::{
-    AcQualities, Attribute, AttributeCache, CreationProfile, Enchantment as ProtocolEnchantment,
-    PropertyTables, SecondaryAttribute, Skill, SpellBookPage,
+    AcQualities, Attribute, AttributeCache, CreationProfile, PropertyTables, SecondaryAttribute,
+    Skill, SpellBookPage,
 };
 use pyreal_protocol::types::space::PositionWire;
 use std::collections::BTreeMap;
@@ -580,28 +580,6 @@ impl Qualities {
         };
         v.current_level = level;
         self.set_attribute_2nd(id, v)
-    }
-
-    /// Behavior: the wire path for
-    /// `Magic_UpdateEnchantment` (0x02C2).
-    pub fn update_enchantment(
-        &mut self,
-        e: &ProtocolEnchantment,
-        now: pyreal_primitives::LocalTime,
-    ) -> bool {
-        self.enchantments
-            .update_enchantment(pyreal_rules::enchant::Enchantment::from_wire(e, now))
-    }
-
-    /// Behavior: the wire path for
-    /// `0x02C7 Magic_DispelEnchantment` and `0x02C3 Magic_RemoveEnchantment`.
-    ///
-    /// The two messages are byte-identical and reach the same removal; the only difference is that
-    /// `0x02C7` passes `notify = false`, so a dispel prints no "spell expired" line
-    /// (`pyreal_protocol::qualities::MagicDispelEnchantment`'s own note). `notify` is the caller's,
-    /// because the chat table lives above this crate.
-    pub fn remove_enchantment(&mut self, layered_spell_id: u32) -> bool {
-        self.enchantments.remove_enchantment(layered_spell_id)
     }
 }
 

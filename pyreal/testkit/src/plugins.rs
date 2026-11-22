@@ -1120,13 +1120,13 @@ impl Default for PluginRun {
 }
 
 impl PluginRun {
-    /// A host offering what the headless client offers.
+    /// A host offering what the conformance driver offers.
     #[must_use]
     pub fn new() -> Self {
         Self::with_config(|_| {})
     }
 
-    /// A host offering what the headless client offers, its entries given
+    /// A host offering what the conformance driver offers, its entries given
     /// [`UNHURRIED_BUDGET_MS`], configured by `f`.
     #[must_use]
     pub fn with_config(f: impl FnOnce(&mut HostConfig)) -> Self {

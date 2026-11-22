@@ -95,8 +95,7 @@
 //! So the receivers are here for **parity with retail**, which has all sixteen, and the rejecting
 //! test synthesises the bodies.
 
-use crate::qualities::{PropertySequenceGate, StatKey, StatType};
-use crate::Qualities;
+use crate::qualities::{StatKey, StatType};
 use pyreal_primitives::ObjectId;
 use pyreal_protocol::archive::Reader;
 use pyreal_protocol::{qualities as wire, Message, Opcode};
@@ -133,7 +132,7 @@ pub struct QualityRemove {
     pub key: StatKey,
 }
 
-/// What [`apply`] did.
+/// What a remove did.
 ///
 /// Retail cannot tell [`Removed`](Outcome::Removed) from [`Absent`](Outcome::Absent): the remove
 /// **ignores** the table removal's return value and calls the removed-quality handler either way
@@ -243,27 +242,11 @@ pub fn decode(opcode: Opcode, body: &[u8]) -> Option<QualityRemove> {
     }
 }
 
-/// The client's remove, gate then delete, against one quality set and its `PropertySequenceGate`.
-///
-/// The order is the client's and it is the same order [`crate::qualities::update::apply`] uses:
-/// the stamp is taken first and is consumed whether or not a key was there to delete, so a remove
-/// for a property this object never carried still burns the sequence exactly as retail does.
-/// Reversing the two would let a later, real update be rejected as stale.
-pub fn apply(q: &mut Qualities, stamper: &mut PropertySequenceGate, r: &QualityRemove) -> Outcome {
-    if !stamper.update(r.key.0, r.sequence) {
-        return Outcome::Stale;
-    }
-    if q.remove(r.key) {
-        Outcome::Removed
-    } else {
-        Outcome::Absent
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::qualities::{PropertySequenceGate, StatValue};
+    use crate::Qualities;
     use pyreal_protocol::types::qualities::Skill;
 
     /// The body a dispatcher hands over: `blob[4..]`, i.e. everything after the type dword.
@@ -276,6 +259,26 @@ mod tests {
             sequence: seq,
             property_id: prop,
         }))
+    }
+
+    const ME: ObjectId = ObjectId(0x5000_0001);
+
+    /// A world whose player carries `q`, so a test drives the live player path.
+    fn player_world(q: Qualities) -> crate::World {
+        let mut w = crate::World::new();
+        w.player = Some(ME);
+        let mut o = crate::Weenie::new(ME);
+        o.qualities = Some(q);
+        w.tables.weenies.insert(ME, o);
+        w
+    }
+
+    fn quals(w: &crate::World) -> &Qualities {
+        w.weenie(ME).unwrap().qualities.as_ref().unwrap()
+    }
+
+    fn stamper(w: &crate::World) -> &PropertySequenceGate {
+        w.weenie(ME).unwrap().stamper.as_ref().unwrap()
     }
 
     /// Oracle: the eight tags, one per remove handler — Int
@@ -420,17 +423,18 @@ mod tests {
     #[test]
     fn a_remove_deletes_the_key_rather_than_zeroing_it() {
         let mut q = Qualities::new();
-        let mut s = PropertySequenceGate::new();
         let k = StatKey::new(StatType::Int, 0x86); // PropertyInt::PlayerKillerStatus
         q.set(k, StatValue::Int(4));
         assert_eq!(q.get(k), Some(StatValue::Int(4)));
+        let mut w = player_world(q);
 
         let d = decode(
             Opcode::QUALITIES_PRIVATE_REMOVE_INT_EVENT,
             &priv_int(1, 0x86),
         )
         .expect("decodes");
-        assert_eq!(apply(&mut q, &mut s, &d), Outcome::Removed);
+        assert_eq!(w.apply_player_quality_remove(&d), Some(Outcome::Removed));
+        let q = quals(&w);
         assert_eq!(q.get(k), None, "the key is gone, not set to 0");
 
         // And the difference is observable: a *zeroing* implementation would be indistinguishable
@@ -454,9 +458,9 @@ mod tests {
     #[test]
     fn the_stamp_gate_is_the_updates_own_counter_and_runs_before_the_delete() {
         let mut q = Qualities::new();
-        let mut s = PropertySequenceGate::new();
         let k = StatKey::new(StatType::Int, 0x14); // CoinValue
         q.set(k, StatValue::Int(9995));
+        let mut w = player_world(q);
 
         // An *update* at stamp 5 moves the shared counter...
         let u = crate::qualities::update::QualityUpdate {
@@ -466,8 +470,8 @@ mod tests {
             value: StatValue::Int(9930),
         };
         assert_eq!(
-            crate::qualities::update::apply(&mut q, &mut s, &u),
-            crate::qualities::update::Outcome::Applied
+            w.apply_player_quality_update(&u),
+            Some(crate::qualities::update::Outcome::Applied)
         );
 
         // ...so a remove at stamp 3 is stale, and the value survives untouched.
@@ -476,17 +480,17 @@ mod tests {
             &priv_int(3, 0x14),
         )
         .expect("decodes");
-        assert_eq!(apply(&mut q, &mut s, &stale), Outcome::Stale);
+        assert_eq!(w.apply_player_quality_remove(&stale), Some(Outcome::Stale));
         assert!(
             !Outcome::Stale.fired(),
             "no removed-quality handler on the stale path"
         );
         assert_eq!(
-            q.get(k),
+            quals(&w).get(k),
             Some(StatValue::Int(9930)),
             "a stale remove deletes nothing"
         );
-        assert_eq!(s.rejected(), 1);
+        assert_eq!(stamper(&w).rejected(), 1);
 
         // A remove at stamp 6 lands, and consumes the counter for the update path too.
         let fresh = decode(
@@ -494,13 +498,16 @@ mod tests {
             &priv_int(6, 0x14),
         )
         .expect("decodes");
-        assert_eq!(apply(&mut q, &mut s, &fresh), Outcome::Removed);
-        assert_eq!(q.get(k), None);
-        assert_eq!(s.stamp(k.0), Some(6));
+        assert_eq!(
+            w.apply_player_quality_remove(&fresh),
+            Some(Outcome::Removed)
+        );
+        assert_eq!(quals(&w).get(k), None);
+        assert_eq!(stamper(&w).stamp(k.0), Some(6));
         let replay = crate::qualities::update::QualityUpdate { sequence: 5, ..u };
         assert_eq!(
-            crate::qualities::update::apply(&mut q, &mut s, &replay),
-            crate::qualities::update::Outcome::Stale,
+            w.apply_player_quality_update(&replay),
+            Some(crate::qualities::update::Outcome::Stale),
             "one counter, shared: the remove moved it past the update's old stamp"
         );
     }
@@ -510,16 +517,15 @@ mod tests {
     /// the stamp is spent either way.
     #[test]
     fn removing_a_property_that_was_never_there_still_spends_the_stamp_and_fires_the_handler() {
-        let mut q = Qualities::new();
-        let mut s = PropertySequenceGate::new();
+        let mut w = player_world(Qualities::new());
         let d = decode(
             Opcode::QUALITIES_PRIVATE_REMOVE_INT_EVENT,
             &priv_int(4, 0x99),
         )
         .expect("decodes");
         assert_eq!(
-            apply(&mut q, &mut s, &d),
-            Outcome::Absent,
+            w.apply_player_quality_remove(&d),
+            Some(Outcome::Absent),
             "NULL table: the integer removal returns 0"
         );
         assert!(
@@ -527,7 +533,7 @@ mod tests {
             "and the removed-quality handler runs anyway"
         );
         assert_eq!(
-            s.stamp(StatKey::new(StatType::Int, 0x99).0),
+            stamper(&w).stamp(StatKey::new(StatType::Int, 0x99).0),
             Some(4),
             "the stamp is spent"
         );
@@ -538,7 +544,10 @@ mod tests {
             &priv_int(2, 0x99),
         )
         .expect("decodes");
-        assert_eq!(apply(&mut q, &mut s, &earlier), Outcome::Stale);
+        assert_eq!(
+            w.apply_player_quality_remove(&earlier),
+            Some(Outcome::Stale)
+        );
     }
 
     /// **There are eight quality-removal forms and no ninth.** The client has the

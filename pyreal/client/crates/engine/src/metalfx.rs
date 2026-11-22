@@ -1,4 +1,4 @@
-//! MetalFX's temporal upscaling (`dereth-render`'s hook, ported): each frame the scaler takes the
+//! MetalFX's temporal upscaling: each frame the scaler takes the
 //! picture drawn at fewer pixels, its depth and how far each pixel moved, and rebuilds it at the
 //! output's size from those and the frames before it. Only Metal has it: anywhere else no scaler
 //! is made ([`TemporalScaler::new`]) and the engine's own temporal resolve takes its place.

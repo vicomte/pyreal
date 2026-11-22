@@ -53,7 +53,6 @@ pub struct WorldServices {
     /// The player's own house, and the purchase wait.
     pub house: Option<HouseDataView>,
     pub house_purchase: HousePurchaseView,
-    pub house_notices: u64,
     /// The chess game.
     pub minigame: Option<MiniGameView>,
     /// The barber's start notice, while one is up.
@@ -87,7 +86,6 @@ pub fn read(view: &dyn GameView) -> WorldServices {
         payment_items,
         house: view.house_data(),
         house_purchase: view.house_purchase(),
-        house_notices: view.house_data_notices() + view.house_status_notices(),
         minigame: view.minigame(),
         barber: view.barber(),
         research_success: view.research_success(),

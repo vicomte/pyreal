@@ -1,6 +1,5 @@
-//! Containment, slots, burden, the request senders, wield/wear legality and salvage.
+//! Containment, slots, the request senders, wield/wear legality and salvage.
 
-pub mod burden;
 pub mod equip;
 /// Loot All over the open ground container.
 pub mod loot_all;

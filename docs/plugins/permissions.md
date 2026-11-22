@@ -48,8 +48,7 @@ its next waits 30 seconds, doubling with each refusal in the session; and after 
 is asked for no more files until it is reloaded. What a plugin wrote that the dialog shows (its
 name, the request's prompt) is put on one line, rid of control characters and cut to its length (a
 name 48 characters, a prompt 200), and a dialog taller than the screen keeps its buttons on it, its
-words scrolling. The headless client has no player to pick one: a request for a file waits there,
-unanswered.
+words scrolling.
 
 The host's own window, the plugin panel (`/plugin`), is drawn as a window of the interface it
 stands in, above every plugin window, so that no plugin can cover or imitate it. What a plugin

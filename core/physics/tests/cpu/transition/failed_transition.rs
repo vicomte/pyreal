@@ -100,7 +100,7 @@ impl Clock {
 ///
 /// The judge is penetration, not displacement: a body that walks *past* an obstacle and one an
 /// obstacle stopped both end outside its sphere, so the question is how many frames of the walk
-/// were spent inside it (`pyreal/client/tests/collision_probe`'s rule, applied to a sphere rather
+/// were spent inside it (`pyreal/client/tests/dat/common/collision_probe`'s rule, applied to a sphere rather
 /// than to a BSP).
 ///
 /// The approach is *exactly* along +y at an obstacle whose centre is on the same line, which is

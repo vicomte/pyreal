@@ -1842,11 +1842,9 @@ pub const MASTER_DID_MAPPER: DataId = DataId(0x2500_0000);
 /// caller must treat as a failure rather than as an empty result: the client's own `require` on
 /// the returned pointer is fatal.
 ///
-/// This lives here rather than in the client because two crates need it — `pyreal_client_runtime::assets`
-/// (the action map, the key maps, the UI sound table, the preview animations) and
-/// the retired retail UI's `env` (the icon backgrounds an item slot paints) — and
-/// `dereth-ui-screens` sits *below* `pyreal-client`. `pyreal_client_runtime::assets::enum_did` is a
-/// one-line forward to it.
+/// This lives here rather than in the client because `pyreal_client_runtime::assets` (the action
+/// map, the key maps, the UI sound table, the preview animations) needs it, and the runtime sits
+/// *below* `pyreal-client`. `pyreal_client_runtime::assets::enum_did` is a one-line forward to it.
 #[must_use]
 pub fn did_by_enum(
     assets: &dyn pyreal_primitives::AssetSource,

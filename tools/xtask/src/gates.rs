@@ -155,8 +155,8 @@ pub const GATES: &[Gate] = &[
         // pyreal-client`. The three-run comparison is `pyreal/client/tests/gpu/presentation/headless_capture_determinism.rs`, which spawns the
         // real binary three times and diffs the bytes, so the crate's own test command *is* the
         // whole gate and no separate harness is needed. It reads the retail dats -- the frame it
-        // captures is a texture out of `client_portal.dat` -- and skips with a printed line when
-        // they, or a D3D12 device, are absent. `pyreal-client-runtime` and `pyreal-world-data` have no
+        // captures is a texture out of `client_portal.dat` -- and fails when they, or a graphics
+        // device, are absent. `pyreal-client-runtime` and `pyreal-world-data` have no
         // gate of their own; their dat-reading lib tests run here, under `retail-dats`. Nor have
         // the application's two halves, `pyreal-scene` and `pyreal-client-shell`: their modules'
         // unit tests moved out of `pyreal-client` with them and run here, on the same device.
@@ -242,11 +242,12 @@ pub fn gpu_invocations(profile: Profile, threads: Threads) -> Vec<(&'static str,
 /// lib tests, prints a green summary, and the retail-dat and device tiers are simply absent. That
 /// can silently omit a whole suite through `required-features`, and the
 /// executed-test count does not fall to zero, so the NOT-STARTED arm below does not catch it
-/// either (measured on the retired dereth-ui: 326 tests without the features, 259 with a bare run).
+/// either (measured on the retired retail UI crate: 326 tests without the features, 259 with a bare
+/// run).
 ///
-/// So every crate names its tiers here. `retail-dats` is the tier switch itself; `wgpu` and
-/// `trace` are the features the `gpu` (and, for pyreal-physics, the trace-recording) binaries are
-/// additionally gated on. A crate whose tests have not been tiered yet gets `&[]` and runs exactly
+/// So every crate names its tiers here. `retail-dats` is the tier switch itself; `wgpu` is the
+/// feature the `gpu` binaries are additionally gated on, and `trace` turns on pyreal-physics's
+/// trace recorder for the `cpu` binary's trace comparison. A crate whose tests have not been tiered yet gets `&[]` and runs exactly
 /// as it did before.
 fn tier_features(krate: &str) -> &'static [&'static str] {
     match krate {
@@ -257,7 +258,7 @@ fn tier_features(krate: &str) -> &'static [&'static str] {
         // The application's halves: their unit tests hold a device, on the backend they held it
         // on inside `pyreal-client`.
         "pyreal-scene" | "pyreal-client-shell" => &["retail-dats", "wgpu"],
-        // pyreal-physics's `dat` binary includes the recorded-trace comparison.
+        // pyreal-physics's `cpu` binary includes the trace comparison.
         "pyreal-physics" => &["retail-dats", "trace"],
         "pyreal-animation"
         | "pyreal-art"

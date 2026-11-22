@@ -71,7 +71,7 @@ pub use spec::{activation, ControlChord, ControlCode, DeviceType, SubControlInde
 use dispatch::{InputMapStack, TextMode};
 use fire::{ButtonHistory, ButtonHistoryEntry, ClickTiming, ControlType, RecentControlState};
 use mouse::MouseState;
-use state::{ActionState, ActionStateChange, ActionStates, RepeatTiming};
+use state::{ActionState, ActionStateChange, ActionStates};
 
 /// A numeric action id: the shared vocabulary's, so what this pipeline resolves a control to is
 /// what the runtime's handlers match on.
@@ -183,12 +183,6 @@ pub fn command_modifiers(keymap: &MasterInputMap, meta_mode: u32) -> u32 {
     meta_mode & mask
 }
 
-/// Action callbacks and input handlers share this shape.
-/// `true` means consumed.
-pub trait ActionHandler: std::fmt::Debug {
-    fn on_action(&mut self, e: &InputEvent) -> bool;
-}
-
 /// Input-manager state: maps, handler stack, action states, button history, and mouse.
 #[derive(Debug)]
 pub struct InputManager {
@@ -244,7 +238,7 @@ pub struct InputManager {
     /// buffering them is the same seam that makes [`InputManager::pending`] a queue.
     pub(crate) characters: Vec<char>,
     /// The key-hit handler — the **single, exclusive** input-handler slot
-    /// the input manager fills for [`dispatch::handler_flags::KEY_HIT`].
+    /// the input manager fills for the key-hit flag (0x20).
     ///
     /// In the client this is a pointer to the options row that is capturing a binding; here it is
     /// a bool plus [`InputManager::key_hits`], because the handler lives on the other side of a
@@ -385,31 +379,6 @@ impl InputManager {
         Ok(())
     }
 
-    /// The keyboard page clears the map and adds the two shipped maps before invoking the shared
-    /// restore-default behavior:
-    ///
-    /// ```text
-    ///   clear the keymap
-    ///   add keymap 0x10000001                -> game default map
-    ///   add keymap 1                         -> DefaultMap
-    ///   shared restore-default behavior
-    /// ```
-    ///
-    /// **The user's `.keymap` is deliberately not re-merged** — that is the whole point of the
-    /// button. Answers `false` when [`Self::shipped_maps`] is absent (a manager built by
-    /// [`Self::on_startup`] alone never saw them), so a caller can tell "restored" from "could
-    /// not".
-    pub fn reload_defaults(&mut self) -> bool {
-        let Some(maps) = self.shipped_maps.take() else {
-            return false;
-        };
-        self.keymap.clear();
-        self.keymap.merge(&maps.0, true);
-        self.keymap.merge(&maps.1, true);
-        self.shipped_maps = Some(maps);
-        true
-    }
-
     /// The list the keyboard options page hands the action-keymap row as its defaults list.
     ///
     /// It fetches the game default map and `DefaultMap` and merges `DefaultMap` into the
@@ -506,14 +475,6 @@ impl InputManager {
             .and_then(|i| u8::try_from(i).ok())
     }
 
-    pub fn capture_mouse(&mut self) {
-        self.mouse.add_capture();
-    }
-
-    pub fn release_mouse(&mut self) {
-        self.mouse.release_capture();
-    }
-
     /// **Authoritative**, and not `GetCursorPos()`: in mouse-look the OS cursor is warped to the
     /// screen centre every frame.
     #[must_use]
@@ -550,7 +511,7 @@ impl InputManager {
     }
 
     /// Register the key-hit handler with
-    /// [`dispatch::handler_flags::KEY_HIT`] (0x20), and unregister it for `false`.
+    /// the key-hit flag (0x20), and unregister it for `false`.
     ///
     /// The slot is **exclusive** — one key-hit handler, not a list — so this is a bool and not
     /// a stack. The client sets it when the map-warn
@@ -564,12 +525,6 @@ impl InputManager {
             self.key_hits.clear();
         }
         self.key_hit_handler = on;
-    }
-
-    /// Whether the key-hit handler slot is filled.
-    #[must_use]
-    pub fn key_hit_handler_registered(&self) -> bool {
-        self.key_hit_handler
     }
 
     /// Drain the controls diverted to the key-hit handler, oldest first.
@@ -1025,11 +980,6 @@ impl InputManager {
             });
         }
         action
-    }
-
-    /// The repeat constants, sampled at construction and never refreshed.
-    pub fn set_repeat_timing(&mut self, t: RepeatTiming) {
-        self.actions.repeat = t;
     }
 
     /// Drain the events produced since the last drain.

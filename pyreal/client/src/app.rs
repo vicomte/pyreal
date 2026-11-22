@@ -25,5 +25,5 @@ pub fn open_platform(
     cfg: &Config,
     events: pyreal_client_shell::platform::window::WindowEvents,
 ) -> Result<Platform, StartupError> {
-    pyreal_desktop::launch::open_platform::<crate::Dereth>(cfg, events)
+    pyreal_desktop::launch::open_platform::<crate::Pyreal>(cfg, events)
 }

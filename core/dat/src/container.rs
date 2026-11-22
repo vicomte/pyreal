@@ -540,22 +540,6 @@ impl DatFile {
         )?)
     }
 
-    /// [`DatFile::read_iterations`] for a container in `layout`.
-    ///
-    /// # Errors
-    /// As [`DatFile::read_iterations`], and [`DatError::BadLayout`] for a layout that does not
-    /// [fit](ContainerLayout::fits).
-    pub fn read_iterations_as(
-        path: &Path,
-        layout: &ContainerLayout,
-    ) -> Result<FileIterations, DatError> {
-        Self::iterations_of(Self::header_only(
-            path.to_path_buf(),
-            Box::new(File::open(path)?),
-            Some(layout),
-        )?)
-    }
-
     /// [`DatFile::read_iterations`] over bytes kept in `storage`.
     ///
     /// # Errors
@@ -565,18 +549,6 @@ impl DatFile {
         storage: Box<dyn DatStorage>,
     ) -> Result<FileIterations, DatError> {
         Self::iterations_of(Self::header_only(path, storage, None)?)
-    }
-
-    /// [`DatFile::read_iterations_as`] over bytes kept in `storage`.
-    ///
-    /// # Errors
-    /// As [`DatFile::read_iterations_as`].
-    pub fn read_iterations_from_as(
-        path: PathBuf,
-        storage: Box<dyn DatStorage>,
-        layout: &ContainerLayout,
-    ) -> Result<FileIterations, DatError> {
-        Self::iterations_of(Self::header_only(path, storage, Some(layout))?)
     }
 
     fn iterations_of(me: Self) -> Result<FileIterations, DatError> {

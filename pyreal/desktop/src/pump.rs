@@ -74,20 +74,6 @@ impl Pump {
         Self::default()
     }
 
-    /// [`pyreal_client_shell::pump::Pump::button_message`] over `winit`'s own button.
-    pub fn mouse_button_message(
-        &mut self,
-        button: winit::event::MouseButton,
-        pressed: bool,
-        time_ms: u32,
-    ) -> Option<Win32Message> {
-        self.0.button_message(
-            crate::platform::window::mouse_button(button),
-            pressed,
-            time_ms,
-        )
-    }
-
     /// The whole keyboard mapping for one physical key transition: virtual key, scan code, and the
     /// `WM_KEY*` / `WM_SYSKEY*` choice.
     ///

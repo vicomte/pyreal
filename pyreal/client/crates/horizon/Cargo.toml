@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-horizon"
-description = "The Horizon interface: the client's third interface, beside the modern and the classic one, drawn from its own art."
+description = "The Horizon interface: the client's interface, drawn from its own art."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -48,7 +48,6 @@ pyreal-ui-logic.workspace = true
 tracing.workspace = true
 # The interface's own pieces: their manifest and their atlases.
 png.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

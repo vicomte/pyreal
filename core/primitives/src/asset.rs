@@ -4,10 +4,9 @@
 //! that only needs bytes by id (a decoder cache, a fixture loader, a tool) takes a `&dyn
 //! AssetSource` and can be driven by an in-memory mock in tests.
 //!
-//! The rest of the module is the plain data an asset hands to a renderer once it has been decoded:
-//! [`TextureData`] and [`MeshData`], and the opaque [`TextureHandle`] and [`MeshHandle`] a
-//! renderer gives back for them. Palette resolution and format conversion happen before this
-//! point, so the data here is already in a form a device accepts.
+//! The rest of the module is the plain data a texture hands to a renderer once it has been decoded:
+//! [`TextureData`]. Palette resolution and format conversion happen before this point, so the
+//! data here is already in a form a device accepts.
 
 use crate::ids::{DataId, DataType};
 
@@ -104,14 +103,6 @@ pub enum ContainerEra {
     Modern,
 }
 
-/// An opaque handle to an uploaded mesh.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MeshHandle(pub u32);
-
-/// An opaque handle to an uploaded texture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextureHandle(pub u32);
-
 /// Decoded pixels ready for upload. Format conversion happens when the asset is decoded, not in
 /// the renderer.
 #[derive(Debug, Clone)]
@@ -142,15 +133,6 @@ pub enum TextureFormat {
     /// DXT4 source provenance. Same BC3 device layout, but system filtering uses
     /// the premultiplied codec. Generic uploads preserve only supplied levels.
     Bc3Premultiplied,
-}
-
-/// Geometry ready for upload, in the renderer's vertex layout.
-#[derive(Debug, Clone, Default)]
-pub struct MeshData {
-    /// Interleaved vertices; the layout is the renderer's contract and is documented with it.
-    pub vertices: Vec<u8>,
-    pub indices: Vec<u32>,
-    pub stride: u32,
 }
 
 #[cfg(test)]

@@ -160,13 +160,6 @@ pub struct InputShell {
     /// carried to the next frame, an injection made *between* frames would be swept away before
     /// it is ever offered. This is the injection seam, and it is separate on purpose.
     injected: Vec<InputEvent>,
-    /// What the input poll's step 3 decided about the pointer this frame, kept for the one
-    /// input-handler slot the UI occupies. Input simulation returns it, and the UI shell takes it
-    /// from here.
-    mouse_frame: pyreal_input::mouse::MouseFrameAction,
-    /// A `WM_MOUSELEAVE` arrived: its message row calls the leave handler directly, and the
-    /// input manager cannot reach the UI, so the message is recorded here and `pyreal_client_shell::ui::UiShell` makes the call.
-    mouse_left_window: bool,
     /// The keymap filename, resolved to a full path.
     ///
     /// Keymap initialization computes the path once; cleanup writes the merged map back to it.
@@ -337,8 +330,6 @@ impl InputShell {
             events: Vec::new(),
             runtime_pending: Vec::new(),
             injected: Vec::new(),
-            mouse_frame: pyreal_input::mouse::MouseFrameAction::None,
-            mouse_left_window: false,
             keymap_path: user_keymap.cloned(),
             keymap_unreadable,
             modern,
@@ -401,8 +392,7 @@ impl InputShell {
         self.manager.find_keys_for_action(action, map)
     }
 
-    /// Register an input handler with
-    /// [`pyreal_input::dispatch::handler_flags::KEY_HIT`], and unregister it for `false`.
+    /// Register an input handler with the key-hit flag (0x20), and unregister it for `false`.
     ///
     /// The client's handler is the option row currently capturing a binding, registered when the
     /// map-warning dialog appears. This is the producer for the page's `key_bindings_key_hit`
@@ -443,11 +433,6 @@ impl InputShell {
         // `IsDBCSLeadByte` is a function of the process code page. This build runs the English
         // client, whose ANSI code page is single-byte throughout, so nothing is ever a lead byte;
         // the hook is injected rather than assumed because a Japanese or Korean install differs.
-        // The message handler forwards `WM_MOUSELEAVE` to the UI element manager's mouse-leave event.
-        // The input manager returns "handled" and has no UI to call, so the fact is recorded for the shell.
-        if m.message == pyreal_input::win32::msg::WM_MOUSELEAVE {
-            self.mouse_left_window = true;
-        }
         let handled = self.manager.on_window_event(&m, &|_| false);
         if handled {
             self.stats.messages_handled += 1;
@@ -474,10 +459,8 @@ impl InputShell {
     /// Input-manager simulation — step 6 of the UI-element update: the gamepad
     /// poll, the mouse-look delta and the repeat sweep, then drain what stage 3 produced.
     pub fn use_time(&mut self, now: LocalTime) {
-        // Step 3 of the input poll: the pointer moved, or it did not. The answer is kept,
-        // because the UI element manager is registered in the mouse-move list and this is the only place
-        // the call would come from.
-        self.mouse_frame = self.manager.use_time(now);
+        // Step 3 of the input poll: the pointer moved, or it did not. Nothing here asks which.
+        self.manager.use_time(now);
         // An input event is dispatched for exactly one frame, then it is gone: the UI takes first
         // refusal and [`Self::hand_on`] gives the rest to the runtime's action queue in the same
         // frame, which drops whatever no stage claimed. Nothing is carried here from one frame to
@@ -520,14 +503,6 @@ impl InputShell {
         std::mem::take(&mut self.events)
     }
 
-    /// What the input poll's step 3 decided about the pointer, taken once.
-    pub fn take_mouse_frame(&mut self) -> pyreal_input::mouse::MouseFrameAction {
-        std::mem::replace(
-            &mut self.mouse_frame,
-            pyreal_input::mouse::MouseFrameAction::None,
-        )
-    }
-
     /// The actions declined, put back for whoever else is listening.
     ///
     /// Sending an action to listeners:
@@ -555,11 +530,6 @@ impl InputShell {
         // must stay newer.
         events.append(&mut self.events);
         self.events = events;
-    }
-
-    /// A `WM_MOUSELEAVE` has arrived since the last call.
-    pub fn take_mouse_left_window(&mut self) -> bool {
-        std::mem::take(&mut self.mouse_left_window)
     }
 
     /// The input manager's mouse X/Y — its stored mouse position, which is **authoritative**:

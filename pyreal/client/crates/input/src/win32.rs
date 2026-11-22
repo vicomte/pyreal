@@ -151,34 +151,6 @@ pub const fn syskey_is_consumed(wparam: usize) -> bool {
     }
 }
 
-/// One decoded control event, the output of stage 2.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ControlEvent {
-    /// A button press or release for `fire_input_event(cs, ControlType::Button, data, time)`.
-    Button {
-        offset: u16,
-        mouse: bool,
-        down: bool,
-        time_ms: u32,
-    },
-    /// The wheel: a *pair* of events, one press and one immediate release, on a virtual button
-    /// (`DIMOFS_Z` with a positive or negative sub-control). One `WM_MOUSEWHEEL` is exactly one
-    /// click regardless of the delta's magnitude.
-    Wheel { positive: bool, time_ms: u32 },
-    /// The mouse position from the signed low and high words of `lParam` — stored, **not** dispatched.
-    MousePos { x: i32, y: i32 },
-    /// A character for. Only delivered while in text mode.
-    Character(char),
-    /// `WM_SETFOCUS` / `WM_KILLFOCUS`.
-    Focus(bool),
-    /// `WM_CANCELMODE`.
-    CancelMode,
-    /// `WM_DEVICECHANGE` with `DBT_DEVNODES_CHANGED` — re-enumerate joysticks.
-    DeviceChange,
-    /// `WM_MOUSELEAVE`.
-    MouseLeave,
-}
-
 /// The keyboard event generator's scan-code normalisation.
 ///
 /// Returns `None` when the message is a **Windows auto-repeat down**, which the client discards:

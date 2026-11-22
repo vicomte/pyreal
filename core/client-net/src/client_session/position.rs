@@ -32,7 +32,7 @@
 //!
 //! # The third writer
 //!
-//! [`PositionReporter::send_jump`] is the `0xF61B Movement_Jump` half. It is in
+//! [`PositionReporter::send_jump_pack`] is the `0xF61B Movement_Jump` half. It is in
 //! this module rather than beside it because `JumpPack` carries the *same* four sequences off the
 //! *same* [`PlayerMotion`], and splitting them would let a slot drift; but it is **not** part of
 //! the position-reporting state machine. Jump messages are sent by the combat jump path,
@@ -397,7 +397,8 @@ impl PositionReporter {
         }
     }
 
-    /// The jump path's **autonomous success arm** — the `0xF61B` sender.
+    /// Send an already produced post-impulse JumpPack: the jump path's **autonomous success arm**,
+    /// the `0xF61B` sender.
     ///
     /// The whole of the arm:
     ///
@@ -414,34 +415,15 @@ impl PositionReporter {
     /// ```
     ///
     /// So the message goes out **only** when the jump operation returned 0, and the velocity in
-    /// it is the one the impulse just produced — `jump()` is called before the read. The caller
-    /// owns both facts, because both live behind `pyreal-animation` and `pyreal-physics`, which this crate
-    /// deliberately does not depend on; `accepted` is that answer.
+    /// it is the one the impulse just produced. The caller owns both facts, because both live
+    /// behind `pyreal-animation` and `pyreal-physics`, which this crate deliberately does not
+    /// depend on.
     ///
     /// **It does not touch any of the five periodic-position fields.** The jump request is
     /// owned by combat input, a separate subsystem: a jump neither postpones the next `0xF753` nor
-    /// refreshes `last_sent_position`. That asymmetry is asserted rather than described, because a
-    /// build that folded the jump into the reporter would look identical until the schedule ran.
+    /// refreshes `last_sent_position`.
     ///
-    /// Returns the `OrderedActionHeader` stamp the blob carried, or `None` if the jump was refused or would
-    /// not encode.
-    pub fn send_jump<T: Transport>(
-        &mut self,
-        accepted: bool,
-        extent: f32,
-        velocity: Vec3,
-        m: &PlayerMotion,
-        session: &mut Session<T>,
-    ) -> Option<u32> {
-        if !accepted {
-            return None;
-        }
-        let pack = Self::jump_pack(extent, velocity, m);
-        self.send_jump_pack(pack, session)
-    }
-
-    /// Send an already produced post-impulse/pre-physics JumpPack. The App and isolated adapter
-    /// share this encoder/statistics owner; no caller needs to reconstruct the body later.
+    /// Returns the `OrderedActionHeader` stamp the blob carried, or `None` if it would not encode.
     pub fn send_jump_pack<T: Transport>(
         &mut self,
         pack: JumpPack,

@@ -577,8 +577,9 @@ fn answer_on(
 }
 
 /// Apply captured descriptions and private quality updates to a separate qualities/gate pair.
-/// This bypasses HUD and panel state, but uses the same qupdate::apply and sequence logic that
-/// production ultimately uses. It is not an independent implementation of gate arithmetic.
+/// This bypasses HUD and panel state, but gates each update through the same sequence logic
+/// production uses (stamp first, then store). It is not an independent implementation of gate
+/// arithmetic.
 fn apply_capture_events(
     q: &mut pyreal_client_model::Qualities,
     stamper: &mut pyreal_client_model::qualities::PropertySequenceGate,
@@ -591,8 +592,8 @@ fn apply_capture_events(
             }
             SessionEvent::UiEvent { opcode, .. } if qupdate::is_update_opcode(*opcode) => {
                 if let Some(u) = qupdate::decode(*opcode, e.ui_body().expect("UI event").1) {
-                    if u.subject.is_none() {
-                        let _ = qupdate::apply(q, stamper, &u);
+                    if u.subject.is_none() && stamper.update(u.key.0, u.sequence) {
+                        q.set(u.key, u.value.clone());
                     }
                 }
             }

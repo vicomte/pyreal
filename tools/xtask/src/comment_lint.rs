@@ -840,7 +840,7 @@ fn stale_source_citations(
 ) -> Vec<(usize, usize)> {
     static PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pattern = PATTERN.get_or_init(|| regex::Regex::new(
-        r"`((?:(?:pyreal/)?(?:core|empyrean|tools|docs)/|(?:pyreal/)?pyreal/|pyreal/(?:client|headless|testkit)/|(?:src|tests)/)[\w./-]+\.(?:rs|md|toml))(?::\d+)?(?:#[\w.-]+)?`"
+        r"`((?:(?:pyreal/)?(?:core|tools|docs)/|(?:pyreal/)?pyreal/|pyreal/(?:client|testkit)/|(?:src|tests)/)[\w./-]+\.(?:rs|md|toml))(?::\d+)?(?:#[\w.-]+)?`"
     ).expect("source citation rule"));
     pattern
         .captures_iter(text)

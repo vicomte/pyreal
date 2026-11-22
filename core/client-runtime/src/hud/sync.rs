@@ -3,7 +3,8 @@
 use super::*;
 
 impl Hud {
-    /// Rebuild the derived per-frame values: the radar list, the coordinates and the heading.
+    /// Rebuild the derived per-frame values: the radar list, the coordinates, the heading and the
+    /// composed display names.
     ///
     /// The radar's regeneration walks every live weenie and adds each one; this is that walk,
     /// in the same table order (`pyreal_client_model::ObjMap` reproduces
@@ -110,6 +111,8 @@ impl Hud {
                     .extend(inv.placements.iter().map(|p| (p.iid, p.loc)));
             }
         }
+        // Before any view is built this frame, because every name the interface draws reads it.
+        self.refresh_display_names(world);
     }
 
     /// The display-name material prefix, for every object that has

@@ -229,10 +229,7 @@ at coordinates and walks there.
 `pyreal/testkit/tests/cpu/plugins/windows.rs :: the_navigator_finds_a_place_as_it_is_typed_and_goes_there`
 types into Where to? (a name, then coordinates), picks the result, goes there by Go and reads
 "Arrived" on the status line, saves a place and lists a map click on their tabs, and stops by
-Stop. The headless client's
-`pyreal/headless/tests/dat/presentation/navigator_go.rs` runs Go in a session a player entered (a
-recorded login, on the retail data): the journey sets out from where the character stands and
-arrives. With the game's data,
+Stop. With the game's data,
 `pyreal/testkit/tests/dat/plugins.rs :: the_navigator_maps_the_dungeon_floor_around_the_character`
 carries the character into a dungeon of 433 rooms and requires the Dungeon tab to draw exactly the
 outline the dungeon's floors give at its level around it, worked out again by the test, with the

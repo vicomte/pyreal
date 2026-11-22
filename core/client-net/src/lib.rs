@@ -2,8 +2,8 @@
 //! the capture and replay harness.
 //!
 //! **Depends on** `pyreal-primitives`, the role-neutral transport (`pyreal-transport`) and the
-//! codecs (`pyreal-protocol`). **Used by** the client runtime, the client and its test
-//! kit, and the corpus tool (`dereth-corpus`).
+//! codecs (`pyreal-protocol`). **Used by** the client runtime and the client and its test
+//! kit.
 //!
 //! **Must never** let [`client_session`] reach the network except through
 //! [`Transport`](pyreal_primitives::Transport): the session names nothing else of this crate (the
@@ -37,7 +37,6 @@ pub mod recording;
 /// The capture/replay harness. Behind a feature so the transport itself needs no JSON parser.
 #[cfg(feature = "replay")]
 pub mod replay;
-pub mod sequence_gate;
 pub mod socket;
 
 pub use net::{Net, NetConfig, RecipientId};

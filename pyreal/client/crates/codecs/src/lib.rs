@@ -2,7 +2,7 @@
 //!
 //! The modules: DXT and the BC formats (`dxt`, `d3dx_bc`, `block_codec`), JPEG (`jpeg`), palettes
 //! (`palette`), mip chains (`mip`), the pixel formats and a surface's decode to the formats a GPU
-//! takes (`pixel_format`, `texture`, `surface`, `sampler`) and the cursor's pictures (`cursor`).
+//! takes (`pixel_format`, `texture`, `surface`) and the cursor's pictures (`cursor`).
 //!
 //! **Depends on** `pyreal-primitives` and the contract (`pyreal-client-contract`). **Used by** the
 //! engine (`pyreal-engine`), the art pack's reader (`pyreal-art-pack`), the scene
@@ -22,14 +22,12 @@ pub mod jpeg;
 pub mod mip;
 pub mod palette;
 pub mod pixel_format;
-pub mod sampler;
 pub mod surface;
 pub mod texture;
 
 pub use palette::ExpandedPalette;
 pub use pixel_format::{PixelFormatDesc, PixelFormatId};
-pub use surface::{Surface, SurfaceHandler};
-pub use texture::{decode_surface, select_surface_format, Caps, SourcePixels};
+pub use texture::{decode_surface, SourcePixels};
 
 #[derive(Debug, thiserror::Error)]
 /// A picture that will not decode.

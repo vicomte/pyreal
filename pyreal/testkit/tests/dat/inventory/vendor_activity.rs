@@ -106,7 +106,7 @@ pub(super) fn the_purse_is_filled_from_the_players_own_coin() {
     let item = probe.shop.stock.first().expect("the shop has stock").iid;
     let price = {
         let pwd = probe.shop.stock[0].pwd.clone();
-        probe.shop.profile.vendor_sell_price(&pwd, 1)
+        probe.shop.profile.vendor_sell_price_on(true, &pwd, 1)
     };
     assert!(price > 0, "the premise: the first row costs something");
 

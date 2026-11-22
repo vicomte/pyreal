@@ -36,7 +36,7 @@ pollster.workspace = true
 thiserror.workspace = true
 
 # MetalFX's temporal upscaling (`src/metalfx.rs`), at the versions `wgpu`'s Metal backend hands its
-# objects over in (as `dereth-render`'s).
+# objects over in.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6" }
 objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLAllocation", "MTLCommandBuffer", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture"] }

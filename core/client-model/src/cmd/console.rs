@@ -24,12 +24,10 @@ pub struct ConsoleCommand {
     pub help: String,
 }
 
-/// Console command registration, tab completion and input history.
+/// Console command registration and tab completion.
 #[derive(Debug, Default)]
 pub struct ConsoleRegistry {
     commands: Vec<ConsoleCommand>,
-    history: Vec<String>,
-    history_pos: Option<usize>,
 }
 
 impl ConsoleRegistry {
@@ -68,33 +66,14 @@ impl ConsoleRegistry {
             .map(|c| c.name.as_str())
             .collect()
     }
-
-    pub fn push_history(&mut self, line: &str) {
-        self.history.push(line.to_owned());
-        self.history_pos = None;
-    }
-
-    /// The console's own input-history browse, the same shape as the chat one.
-    pub fn history_back(&mut self) -> Option<&str> {
-        if self.history.is_empty() {
-            return None;
-        }
-        let next = match self.history_pos {
-            None => self.history.len() - 1,
-            Some(0) => return None,
-            Some(p) => p - 1,
-        };
-        self.history_pos = Some(next);
-        self.history.get(next).map(String::as_str)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Oracle: the recovered command-interpreter behavior §8 — dotted names, prefix completion, and the console's
-    /// own history. The console has no default binding, so this is the only exercise it gets.
+    /// Oracle: the recovered command-interpreter behavior §8 — dotted names and prefix completion.
+    /// The console has no default binding, so this is the only exercise it gets.
     #[test]
     fn a_registered_command_is_found_by_prefix() {
         let mut c = ConsoleRegistry::default();
@@ -111,9 +90,5 @@ mod tests {
         assert_eq!(c.complete("camera.st"), ["Camera.Stiffness"]);
         assert!(c.complete("Nope").is_empty());
         assert!(c.find("display.resolution").is_some());
-
-        c.push_history("Camera.Stiffness 3");
-        assert_eq!(c.history_back(), Some("Camera.Stiffness 3"));
-        assert_eq!(c.history_back(), None);
     }
 }

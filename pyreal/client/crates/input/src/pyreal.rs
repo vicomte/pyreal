@@ -32,9 +32,6 @@ pub mod class {
     pub const CHARACTER_SETTINGS: u32 = 7;
 }
 
-/// The key page's heading over this client's actions on each tab.
-pub const SECTION_NAME: &str = "Dereth";
-
 /// The name the key page shows for one of this client's actions.
 #[must_use]
 pub fn name(action: ActionId) -> Option<&'static str> {

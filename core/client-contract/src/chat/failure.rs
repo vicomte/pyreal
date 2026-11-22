@@ -137,9 +137,7 @@
 //!
 //! Nothing in this module draws: its production surface is `super::interface::ChatMessage` and
 //! nothing else, and `pyreal_client_runtime::{hud, interaction}` call `handle_failure_event` at nine
-//! sites. Its tests live in the retired retail UI's `chat::failure`, because four of them assert
-//! against `chat::colors` and `chat::interface::ChatInterface`, which are presentation; they read
-//! every item here through a `pub use` glob.
+//! sites. Its tests are at the bottom of this file and in `crate::feedback`'s tests.
 
 use super::interface::ChatMessage;
 

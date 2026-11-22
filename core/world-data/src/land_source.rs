@@ -510,13 +510,6 @@ impl DatLandSource {
         self.blocks.lock().map_or(0, |b| b.len())
     }
 
-    /// Land cells that own at least one building's interior cells — `building_cells`, the other
-    /// half of what [`Self::release_visible_cells`] hands back. Instrumentation.
-    #[must_use]
-    pub fn building_cell_count(&self) -> usize {
-        self.building_cells.lock().map_or(0, |b| b.len())
-    }
-
     /// The terrain height under a block-local `(x, y)`, from the collision polygon the point falls
     /// in.
     ///

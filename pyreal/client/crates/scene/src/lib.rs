@@ -5,7 +5,7 @@
 //! **Depends on** the runtime whose world it draws (`pyreal-client-runtime`), the engine that draws
 //! it (`pyreal-engine`, on `wgpu`), and the crates the world is read from: `pyreal-terrain`,
 //! `pyreal-primitives`, `pyreal-dat`, `pyreal-assets`, `pyreal-physics`, `pyreal-animation`,
-//! `pyreal-audio`, `pyreal-protocol`, `pyreal-world-data`, `pyreal-world-render` (the sky's day groups and the preview
+//! `pyreal-audio`, `pyreal-world-data`, `pyreal-world-render` (the sky's day groups and the preview
 //! spaces' model), the picture codecs (`pyreal-codecs`), the contract's camera and overlay types
 //! (`pyreal-client-contract`), character creation's model (`pyreal-chargen`) and the art pack
 //! (`pyreal-art-pack`, re-exported as `art_pack`). **Used by** the client shell

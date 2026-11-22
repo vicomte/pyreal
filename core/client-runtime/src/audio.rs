@@ -345,27 +345,6 @@ impl Audio {
         }
     }
 
-    /// The ambient set the last pass left standing, as
-    /// `(AmbientSTBDesc index, ambient_sound_id)` pairs.
-    ///
-    /// The ambient system's sound list is **never pruned between passes**
-    /// (`pyreal_audio::ambient`'s module note), so this is the accumulated set and not this pass's.
-    /// It is here for the tests: "the ambience changed when the player entered a dungeon" is a
-    /// claim about this list, and nothing outside `pyreal-audio` could see it.
-    #[must_use]
-    pub fn ambient_set(&self) -> Vec<(usize, usize)> {
-        self.system
-            .lock()
-            .map(|s| {
-                s.ambient()
-                    .sounds
-                    .iter()
-                    .map(|a| (a.desc, a.ambient_sound_id))
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// `WM_ACTIVATEAPP` — `Focus::set_active`, which is what the "play only when active"
     /// preference reads.
     pub fn set_focus(&self, active: bool) {
@@ -868,6 +847,27 @@ impl Audio {
             n += self.stats.waves_created - before;
         }
         n
+    }
+
+    /// Drop the links [`Self::create_table_waves`] took on `table`'s waves; a wave no other
+    /// table or hook holds leaves the cache. Answers how many links went.
+    pub fn release_table_waves(&mut self, table: DataId) -> u64 {
+        let Some(t) = self.assets.table(table) else {
+            return 0;
+        };
+        let ids: Vec<DataId> = t
+            .nodes
+            .iter()
+            .flat_map(|n| n.data.iter().map(|r| r.sound_id))
+            .filter(|d| d.0 != 0 && self.assets.wave_loaded(*d))
+            .collect();
+        let Ok(mut s) = self.system.lock() else {
+            return 0;
+        };
+        for &id in &ids {
+            s.destroy_sound(id);
+        }
+        u64::try_from(ids.len()).unwrap_or(u64::MAX)
     }
 
     /// **Entry 1 / 2** — an animation or physics-script sound hook.
@@ -1944,5 +1944,52 @@ mod tests {
         );
         assert!(assets.load_wave(&store, missing).is_err());
         assert!(!assets.wave_loaded(missing));
+    }
+
+    /// Letting a table go drops the links its waves took: a wave only it held leaves the cache,
+    /// and one another table holds stays with that table's link.
+    #[test]
+    fn a_released_table_lets_its_waves_go() {
+        use pyreal_assets::audio::{SoundEntry, SoundTableNode};
+        let (only_a, shared) = (DataId(0x0A00_0001), DataId(0x0A00_0002));
+        let table = |id: u32, waves: &[DataId]| SoundTable {
+            id: DataId(id),
+            nodes: vec![SoundTableNode {
+                key: 0,
+                data: waves
+                    .iter()
+                    .map(|&sound_id| SoundEntry {
+                        sound_id,
+                        priority: 0.0,
+                        probability: 1.0,
+                        volume: 1.0,
+                    })
+                    .collect(),
+                children: Vec::new(),
+            }],
+        };
+        let mut audio = Audio::with_output(Prefs::default(), 1, None);
+        for id in [only_a, shared] {
+            let wave = Wave {
+                id,
+                header_size: 0,
+                data_size: 0,
+                header: Vec::new(),
+                data_offset: 0,
+                format: None,
+            };
+            audio.assets.waves.insert(id, (wave, Vec::new()));
+        }
+        let (a, b) = (DataId(0x2000_0001), DataId(0x2000_0002));
+        audio.assets.tables.insert(a, table(a.0, &[only_a, shared]));
+        audio.assets.tables.insert(b, table(b.0, &[shared]));
+        let store = pyreal_dat::RetailDatStore::empty().expect("an empty store");
+        audio.create_table_waves(&store, a);
+        audio.create_table_waves(&store, b);
+        let links = |audio: &Audio, id| audio.system.lock().unwrap().cache().links(id);
+        assert_eq!(links(&audio, shared), Some(2));
+        assert_eq!(audio.release_table_waves(a), 2);
+        assert_eq!(links(&audio, only_a), None);
+        assert_eq!(links(&audio, shared), Some(1));
     }
 }

@@ -44,8 +44,8 @@ census, and lists the recordings that end without a `Disconnect`;
 [`manifest.json`](manifest.json) says what is *in* each one (what was done, the message census in
 the three opcode spaces, the messages it was first to carry, and the slices tests cite); and
 [`../message-corpus/`](../message-corpus/) holds every recording's reassembled messages. All three
-are generated from the recordings (the manifest's descriptions apart) and checked by
-`cargo test -p dereth-corpus`.
+are generated from the recordings (the manifest's descriptions apart) by the Dereth fork's corpus
+tool.
 
 ## Reading them
 
@@ -55,14 +55,13 @@ are generated from the recordings (the manifest's descriptions apart) and checke
   enter-world cycles.
 - ACE restarts each object property's sequence number on every enter-world.
 - A proxy trace cannot measure the client's own latency. Time that inside the client.
-- Tests read these through the shared readers rather than parsing the files themselves; see the
-  corpus tool's README.
+- Tests read these through the shared readers in `pyreal-client-net`'s `testing` module rather
+  than parsing the files themselves.
 
 ## Adding one
 
-Recording a session, pseudonymising it and regenerating the corpus from it is one tool:
-[`dereth-corpus`](../../tools/corpus/README.md). Slugs are lower-case kebab-case, two to four
-words, naming what distinguishes the recording.
+Recordings are made in the Dereth fork: its `dereth-corpus` records a session, pseudonymises it
+and regenerates the corpus from it, and the new files are copied here. Slugs are lower-case
+kebab-case, two to four words, naming what distinguishes the recording.
 
-For captures of the retail servers themselves, which this folder does not hold, see
-[`dereth-pcap`](../../tools/pcap/README.md).
+This folder does not hold captures of the retail servers themselves.

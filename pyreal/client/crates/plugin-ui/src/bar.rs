@@ -13,8 +13,7 @@ use crate::BarItem;
 /// How the bar is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarLook {
-    /// Flat fills in the skin's palette, each button colored by what its plugin is doing: the
-    /// layer over the modern and the classic interface.
+    /// Flat fills in the skin's palette, each button colored by what its plugin is doing.
     Plain,
     /// The kit's plain ground and its lit buttons, a lamp on each saying what its plugin is
     /// doing: an interface with art of its own.

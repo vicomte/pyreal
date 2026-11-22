@@ -23,7 +23,7 @@
 //! unaffected.
 #![windows_subsystem = "windows"]
 
-use pyreal_client::Dereth;
+use pyreal_client::Pyreal;
 use pyreal_client_runtime::config::Config;
 use pyreal_client_runtime::corestrings;
 use pyreal_desktop::crashlog;
@@ -50,10 +50,10 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     // Before anything else, so that a failure inside argument parsing is recorded too.
-    crashlog::install::<Dereth>();
+    crashlog::install::<Pyreal>();
     match run() {
         Ok(()) => {
-            crashlog::finished::<Dereth>(0, "ran to the end of main");
+            crashlog::finished::<Pyreal>(0, "ran to the end of main");
             std::process::ExitCode::SUCCESS
         }
         Err(message) => {
@@ -62,7 +62,7 @@ fn main() -> std::process::ExitCode {
             // and a non-zero exit. It is the dialog's stand-in rather than a log line, and a parse
             // failure reaches it before the log is installed, so it is written directly.
             eprintln!("{}: {message}", corestrings::CAPTION_ERROR);
-            crashlog::finished::<Dereth>(1, &format!("{}: {message}", corestrings::CAPTION_ERROR));
+            crashlog::finished::<Pyreal>(1, &format!("{}: {message}", corestrings::CAPTION_ERROR));
             std::process::ExitCode::FAILURE
         }
     }
@@ -80,7 +80,7 @@ fn run() -> Result<(), String> {
     let replay = input_replay::Replay::load(&mut argv)?;
     let live = input_live::LiveInput::load(&mut argv)?;
     // The log's writer is held to the end of the run, and drained when it goes.
-    let (cfg, _log) = pyreal_desktop::start::<Dereth>(&argv)?;
+    let (cfg, _log) = pyreal_desktop::start::<Pyreal>(&argv)?;
     run_with(cfg, replay, live, join)
 }
 
@@ -110,7 +110,7 @@ fn run_with(
     let settings = pyreal_client::settings_dir_for(
         &cfg.preferences_file,
         pyreal_desktop::folders::default_settings_dir(
-            <pyreal_client::Dereth as pyreal_desktop::Product>::SETTINGS_DIR_NAME,
+            <pyreal_client::Pyreal as pyreal_desktop::Product>::SETTINGS_DIR_NAME,
         ),
     );
     // The device's pipeline cache, kept between runs in the settings folder; a headless run that
@@ -160,7 +160,7 @@ fn run_with(
     let capture = cfg.capture.clone();
     let headless = cfg.headless;
     let linger = cfg.linger;
-    let mut scene = cfg.scene_config();
+    let scene = cfg.scene_config();
     // `--explore`: the files the run reads, from the place given.
     let explore = cfg
         .explore
@@ -171,7 +171,6 @@ fn run_with(
             place,
         });
     let want_world = cfg.world;
-    let terrain_blending = cfg.terrain_blending;
     let cfg_connect = cfg.will_connect();
     let host = cfg.host.clone();
     let account = cfg.account_name().to_owned();
@@ -222,17 +221,6 @@ fn run_with(
         app.renderer_mut().size().0,
         app.renderer_mut().size().1
     );
-    // On a software rasteriser the compute shader runs on the CPU too, and far more slowly than
-    // the CPU compositor it would replace (a minute against six seconds for one Extreme-distance
-    // load on WARP). The two are bit-identical, so the CPU one is taken instead.
-    if app.renderer_mut().software() && scene.gpu_terrain_merge {
-        scene.gpu_terrain_merge = false;
-        if terrain_blending == pyreal_client_runtime::render_prefs::TerrainBlending::Gpu {
-            tracing::info!(
-                "TerrainBlending=gpu on a software device -- composing on the CPU, which is faster there and identical"
-            );
-        }
-    }
 
     // Initialize the keymap, sound and UI. The keymap and sound come up whatever the switches
     // say, because the pump has somewhere to send a `MSG` and the device is the thing being
@@ -426,5 +414,5 @@ fn run_with(
     _live: Option<input_live::LiveInput>,
     _join: Option<String>,
 ) -> Result<(), String> {
-    Err("pyreal needs a graphics backend: build with --features vulkan, d3d12 or wgpu".into())
+    Err("pyreal needs a graphics backend: build with --features wgpu".into())
 }

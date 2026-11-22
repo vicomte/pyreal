@@ -53,7 +53,7 @@ fn connected_scenes_stream_unless_the_budget_is_explicitly_disabled() {
 }
 
 #[test]
-fn scene_startup_keeps_profile_values_and_each_terrain_mode() {
+fn scene_startup_keeps_profile_values() {
     let mut cfg = Config {
         landblock: 0xA9B4,
         start_cell: Some(0xA9B4_0100),
@@ -63,28 +63,17 @@ fn scene_startup_keeps_profile_values_and_each_terrain_mode() {
         ..Config::default()
     };
     cfg.render.field_of_view = 75.0;
-    for (mode, merge, splat) in [
-        (crate::render_prefs::TerrainBlending::Cpu, false, false),
-        (crate::render_prefs::TerrainBlending::Gpu, true, false),
-        (crate::render_prefs::TerrainBlending::Splat, true, true),
-    ] {
-        cfg.terrain_blending = mode;
-        let scene = cfg.scene_config();
-        assert_eq!(scene.landblock, 0xA9B4);
-        assert_eq!(
-            scene.start_cell,
-            Some(pyreal_primitives::CellId(0xA9B4_0100))
-        );
-        assert_eq!((scene.land_radius, scene.scenery_radius), (3, 2));
-        assert_eq!(scene.time_of_day, Some(0.25));
-        assert_eq!(scene.render, cfg.render);
-        assert_eq!(scene.camera, cfg.camera);
-        assert_eq!(scene.mouse_look, cfg.mouse_look);
-        assert_eq!(
-            (scene.gpu_terrain_merge, scene.terrain_splat),
-            (merge, splat)
-        );
-    }
+    let scene = cfg.scene_config();
+    assert_eq!(scene.landblock, 0xA9B4);
+    assert_eq!(
+        scene.start_cell,
+        Some(pyreal_primitives::CellId(0xA9B4_0100))
+    );
+    assert_eq!((scene.land_radius, scene.scenery_radius), (3, 2));
+    assert_eq!(scene.time_of_day, Some(0.25));
+    assert_eq!(scene.render, cfg.render);
+    assert_eq!(scene.camera, cfg.camera);
+    assert_eq!(scene.mouse_look, cfg.mouse_look);
 }
 
 fn parse(args: &[&str]) -> Result<Config, ConfigError> {
@@ -106,41 +95,30 @@ fn a_draw_distance_past_extreme_keeps_the_runtimes_window_at_extremes() {
     assert_eq!(read("Horizon"), (MOST_LAND_RADIUS, 127));
 }
 
-/// The world's objects draw with the world's own look: an older profile's `[Render] Ground`, `Sky`
-/// and `Objects` are read as nothing, and only `--object-visuals` (a developer's) chooses another
-/// era's; either older style is the one older look.
+/// An older profile still loads: the retired render and fidelity names in it are read as nothing,
+/// and a capture's `Lighting=1` and `Debug=` settings still parse.
 #[test]
-fn the_object_visuals_come_from_the_switch_alone() {
-    use crate::render_prefs::RegionStyle;
-    let objects = |args: &[&str], text: &str| {
-        let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
-        let c = Config::from_args_and_prefs_with(&argv, &Preferences::parse(text)).expect("parses");
-        (c.scene_config().render.objects, c.object_visuals)
-    };
-    assert_eq!(objects(&[], ""), (None, None));
+fn an_old_profile_naming_the_retired_switches_still_loads() {
+    use crate::render_prefs::FidelityPreferences;
+    let old = "[Render]\nTerrainBlending=cpu\nObjects=Legacy\nGround=PaletteShift\nSky=Legacy\n\
+               AutomaticDegrades=False\nTextureFiltering=2\n\
+               [Fidelity]\nLighting=False\nDebug=3\nShadows=False\n";
+    let c = Config::from_args_and_prefs_with(&[], &Preferences::parse(old)).expect("loads");
+    let fresh = Config::from_args_and_prefs_with(&[], &Preferences::parse("")).expect("loads");
+    let mut want = fresh.render;
+    let off = pyreal_client_contract::PrefValue::Bool(false);
+    assert!(want.fidelity.set_named("Fidelity.Shadows", &off));
+    assert_eq!(c.render, want);
     assert_eq!(
-        objects(
-            &[],
-            "[Render]\nObjects=Legacy\nGround=PaletteShift\nSky=Legacy\n"
-        ),
-        (None, None)
+        FidelityPreferences::parse_switch("Lighting=1,Debug=2,Shadows=1").expect("parses"),
+        FidelityPreferences::parse_switch("Shadows=1").expect("parses")
     );
-    assert_eq!(
-        objects(
-            &["--object-visuals", "modern"],
-            "[Render]\nObjects=Legacy\n"
-        ),
-        (Some(RegionStyle::Late), Some(Some(RegionStyle::Late)))
-    );
-    assert_eq!(
-        objects(&["--object-visuals", "legacy"], ""),
-        (
-            Some(RegionStyle::LegacyHardware),
-            Some(Some(RegionStyle::LegacyHardware))
-        )
-    );
-    let argv = vec!["--object-visuals".to_string(), "sideways".to_string()];
-    assert!(Config::from_args_and_prefs_with(&argv, &Preferences::parse("")).is_err());
+    // A save merges, so the retired names stay in the file untouched.
+    let mut saved =
+        pyreal_client_contract::persist::preferences::UserPreferences::parse(old).expect("reads");
+    saved.write_profile_string("Fidelity", "Shadows", "True");
+    let text = saved.to_text();
+    assert!(text.contains("TerrainBlending=cpu") && text.contains("Lighting=False"));
 }
 
 #[test]

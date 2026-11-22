@@ -365,11 +365,6 @@ impl Options {
         self.get(option::DISABLE_HOUSE_RESTRICTION_EFFECTS)
     }
 
-    #[must_use]
-    pub fn allow_give(&self) -> bool {
-        self.get(option::ALLOW_GIVE)
-    }
-
     /// Whether player-killer death broadcasts are shown; the system-line filter reads it.
     #[must_use]
     pub fn hear_pk_deaths(&self) -> bool {

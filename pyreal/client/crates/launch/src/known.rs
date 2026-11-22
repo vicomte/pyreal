@@ -185,8 +185,9 @@ mod tests {
             );
             assert!(!k.logon_version.is_empty() && k.logon_version.is_ascii());
             assert!(matches!(k.world_base, "modern" | "classic"), "{}", k.name);
-            assert!(
-                !k.expected.is_end_of_retail(),
+            assert_ne!(
+                k.expected,
+                Iterations::END_OF_RETAIL,
                 "{} has its own files",
                 k.name
             );
@@ -245,7 +246,6 @@ mod tests {
         assert_eq!(w.world_profile.as_deref(), Some("classicace-customdm"));
         assert_eq!(w.world_base.as_deref(), Some("modern"));
         assert_eq!(w.dats.custom.as_ref().unwrap().iterations, CUSTOMDM_FILES);
-        assert!(w.needs_private_dats());
         let (o, unknown) = EraFeatureOverrides::parse(w.era_features.as_deref().unwrap()).unwrap();
         assert!(unknown.is_empty());
         assert_eq!(o.apply(EraId::Eor.features()), CUSTOMDM_FEATURES);

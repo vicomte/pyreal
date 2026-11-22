@@ -364,12 +364,6 @@ impl Rig {
             .collect()
     }
 
-    /// The joint that names part `part`.
-    #[must_use]
-    pub fn joint_of_part(&self, part: u16) -> Option<&Joint> {
-        self.joints.iter().find(|j| j.part == Some(part))
-    }
-
     /// The parts its joints name, in order.
     #[must_use]
     pub fn parts(&self) -> Vec<u16> {

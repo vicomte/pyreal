@@ -49,7 +49,7 @@ pub mod pump;
 pub use host::Desktop;
 
 /// A product on the desktop host: what makes it itself rather than another client on the same
-/// shell. Everything has the Dereth client's answer except the names and the pictures.
+/// shell.
 pub trait Product: 'static {
     /// The executable's name: its log file (`<binary>.log`) and crash logs (`<binary>-<pid>.log`).
     const BINARY_NAME: &'static str;
@@ -58,7 +58,10 @@ pub trait Product: 'static {
     /// The commit the program was built from, as `@report` names it; `unknown` when the build
     /// did not say.
     const BUILD_COMMIT: &'static str = "unknown";
-    /// The folder, in the platform's Dereth settings folder, this product keeps its files in.
+    /// The build hash the performance panel shows, as `build.py` names the build's folder; empty
+    /// when the build had none.
+    const BUILD_HASH: &'static str = "";
+    /// The folder, in the platform's Pyreal settings folder, this product keeps its files in.
     const SETTINGS_DIR_NAME: &'static str;
     /// The window's title, before the account name the title adds.
     const TITLE: &'static str;
@@ -79,7 +82,7 @@ pub trait Product: 'static {
     /// than ending the run.
     const ASKS_FOR_DATS: bool = false;
 
-    /// Anything to do before the window opens: on Linux, the Dereth client writes its `.desktop`
+    /// Anything to do before the window opens: on Linux, Pyreal writes its `.desktop`
     /// entry here, which is where a Wayland desktop takes the window's icon from.
     fn before_window() {}
 

@@ -196,13 +196,6 @@ impl ActionMap {
         self.value(m, a).map_or(0, |v| v.action_class)
     }
 
-    /// The `(name, description)` `StringInfo` ids.
-    #[must_use]
-    pub fn descrip_values(&self, m: InputMapId, a: ActionId) -> (u32, u32) {
-        self.value(m, a)
-            .map_or((0, 0), |v| (v.action_name, v.description))
-    }
-
     /// Make `a` and `b` conflict, both ways: a key bound in one is taken from the other. A map
     /// that had no list gets one holding itself first.
     pub(crate) fn add_conflict(&mut self, a: InputMapId, b: InputMapId) {

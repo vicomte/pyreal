@@ -1,6 +1,6 @@
-//! The plugins' surfaces for an interface with no windows of its own to seat plugin windows in
-//! (the modern and the classic interface): drawn by the kit in a layer over the interface, each
-//! window into a draw list of its own so the interface can stand each among its own windows.
+//! The plugins' surfaces for an interface with no windows of its own to seat plugin windows in:
+//! drawn by the kit in a layer over the interface, each window into a draw list of its own so the
+//! interface can stand each among its own windows.
 //!
 //! Bottom to top the layer is: the world's labels; the HUDs, the marks on the radar and the map,
 //! the arrow and the plugin bar; each window, back to front, a press bringing one to the front;
@@ -125,13 +125,6 @@ impl Layer {
     #[must_use]
     pub fn hits(&self, x: f32, y: f32) -> bool {
         self.drawn.hits.iter().any(|r| r.contains(x, y))
-    }
-
-    /// Whether `(x, y)` is on a part of the layer drawn over everything, by last frame's
-    /// drawing: an open choice's list, the host's own windows and its question.
-    #[must_use]
-    pub fn over_top(&self, x: f32, y: f32) -> bool {
-        self.drawn.top_hits.iter().any(|r| r.contains(x, y))
     }
 
     /// The player's answer to the host's question since the last call.

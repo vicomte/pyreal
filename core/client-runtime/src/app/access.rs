@@ -3,12 +3,6 @@
 use super::*;
 
 impl<S: Shell> App<S> {
-    /// Where the experimental rendering effects stand on the device the client draws with.
-    #[must_use]
-    pub fn hifi_availability(&self) -> pyreal_client_contract::options::fidelity::Availability {
-        self.present.hifi_availability()
-    }
-
     /// How busy the client is, as any UI's cursor shows it: the world's one shared busy count,
     /// raised by a teleport, a cast, a use, a shop request, a swing, an examine and the allegiance
     /// request until each is answered. Nonzero is the hourglass.

@@ -293,7 +293,7 @@ impl Scroll {
     ///
     /// | step | here |
     /// |---|---|
-    /// | the plug-in announce, when `announce_to_plugins` | **not** — this build hosts no decal plug-in; the flag is carried so a call site's argument stays honest |
+    /// | the plug-in announce, when `announce_to_plugins` | **not**: plugins hear chat through the plugin host instead; the flag is carried so a call site's argument stays honest |
     /// | whitespace trim | yes, both ends |
     /// | the language filter's word replacement | yes — audience 1, mode 1, and the shipped table |
     /// | `if (type != 0x1A)` timestamp prefix and `fprintf(log_file, "%ls%ls\n", …)` | yes |

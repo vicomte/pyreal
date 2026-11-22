@@ -28,14 +28,8 @@ pub const CAPTION_INFORMATION: &str = "Game Information";
 pub const ID_CANT_OPEN_DATA_FILES: u32 = 201;
 /// The dat layer, when a named local dat is missing.
 pub const ID_CANT_FIND_LOCAL_DATA_FILE: u32 = 202;
-/// The portal's out-of-memory handler.
-pub const ID_OUT_OF_MEMORY: u32 = 203;
-/// The client's already-running check uses this name.
-pub const ID_ALREADY_RUNNING: u32 = 204;
 /// **every** command-line error surfaces as this one string.
 pub const ID_LAUNCHER_ONLY: u32 = 205;
-/// The dat layer, when a container is structurally bad.
-pub const ID_DATA_FILE_CORRUPT: u32 = 206;
 /// Device initialization uses this when `RegisterClass` or `CreateWindowEx` fails.
 pub const ID_FATAL_WINDOWS_API: u32 = 127;
 

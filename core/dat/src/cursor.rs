@@ -210,12 +210,6 @@ impl<'a> Cursor<'a> {
         self.pos = (self.pos + pad).min(self.buf.len());
     }
 
-    /// `ALIGN_PTR`'s 2-byte sibling, for readers that round a `u16` list up to 2.
-    #[inline]
-    pub fn align2(&mut self) {
-        self.pos = (self.pos + (self.pos & 1)).min(self.buf.len());
-    }
-
     /// The invariant every decoder ends with: the cursor landed exactly on the payload end.
     pub fn expect_end(&self) -> Result<(), DatError> {
         match self.buf.len().cmp(&self.pos) {

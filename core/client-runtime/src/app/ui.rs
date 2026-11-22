@@ -77,7 +77,6 @@ impl<S: Shell> App<S> {
         // was emitted keeps its `post_init` state, and an undelivered batch must not survive a
         // screen change and open a window for a tool used two screens ago.
         let salvage_notices = self.interaction.take_salvage_notices();
-        self.hud.clear_salvage_notices();
         // Accepted secure-trade item ids, drained on the same terms and for the
         // same reason as the salvage batch
         // above: an undelivered batch must not survive a screen change and put an item on a trade

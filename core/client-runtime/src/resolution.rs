@@ -74,10 +74,6 @@ impl ResolutionTransaction {
         self.completion = Some(ResolutionCompletion { serial, size, save });
         self.change = None;
     }
-    /// The latest completed transaction; reading it does not consume it.
-    pub fn completion(&self) -> Option<ResolutionCompletion> {
-        self.completion
-    }
 
     fn renew_token(&mut self) {
         self.next = self.next.wrapping_add(1);
@@ -116,17 +112,9 @@ impl ResolutionTransaction {
             _ => None,
         }
     }
-    /// The actual size captured before the pending test began.
-    pub fn previous(&self) -> Option<(u32, u32)> {
-        self.change.map(|c| c.previous)
-    }
     /// Whether a size test is still in progress.
     pub fn pending(&self) -> bool {
         self.change.is_some()
-    }
-    /// Whether the initiating page asked to retain the confirmed size in its saved snapshot.
-    pub fn save_intent(&self) -> bool {
-        self.change.is_some_and(|c| c.persist)
     }
     /// Start or answer a transaction. A returned size must be sent through the normal host path.
     pub fn action(

@@ -73,22 +73,6 @@ impl super::PlayerSystem {
         self.set_chat_window_property(window, property, value, now)
     }
 
-    /// The title setter copies its `StringInfo` into property `0x1000008D` before calling the same
-    /// retained player-module setter as numeric placement.
-    pub fn set_chat_window_title(
-        &mut self,
-        window: u32,
-        title: pyreal_protocol::property::StringInfo,
-        now: ServerTime,
-    ) -> bool {
-        self.set_chat_window_property(
-            window,
-            0x1000_008D,
-            BasePropertyValue::StringInfo(title),
-            now,
-        )
-    }
-
     /// Set chat-window option `0x1000007F` with a **`Bitfield64`** value — the
     /// Chat Options page's per-window text-type filter.
     ///

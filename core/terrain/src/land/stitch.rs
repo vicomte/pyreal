@@ -12,7 +12,7 @@
 //! into this rule rather than restate it.
 //!
 //! The pass runs on **exactly** rings 2 and 4, because `q` is a band threshold rather than
-//! `m` (see [`crate::land::order::block_orient`]). Fix (a) runs for any direction whenever
+//! `m` (see [`pyreal_landscape::block_orient`]). Fix (a) runs for any direction whenever
 //! `1 < side_cell_count < 8`; fix (b) exists **only** for `side_cell_count == 4` with a cardinal
 //! direction.
 //!

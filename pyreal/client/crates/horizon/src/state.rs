@@ -520,7 +520,7 @@ pub fn snapshot<S: Shell>(
     g.titles = v.character_titles();
     g.character_info = v.character_info();
     g.packet_loss = v.packet_loss_percent();
-    // How lately the server was heard, as the modern interface's lamp reads it each frame.
+    // How lately the server was heard, read each frame for the link lamp.
     g.link_quiet = pyreal_client_runtime::net::link_status_holder::connection_status(cx.now());
     g.fellowship_view = v.fellowship();
     g.ai_fellows = v.ai_fellows();
@@ -552,20 +552,6 @@ pub fn snapshot<S: Shell>(
         .friends()
         .into_iter()
         .map(|f| (f.name, f.online))
-        .collect();
-    g.duties = v
-        .contracts()
-        .into_iter()
-        .map(|c| {
-            let mut lines = Vec::new();
-            if !c.status.is_empty() {
-                lines.push(c.status);
-            }
-            if !c.timed.is_empty() {
-                lines.push(c.timed);
-            }
-            (c.name, lines)
-        })
         .collect();
     if let Some(sel) = v.selection() {
         g.target = Some(Target {

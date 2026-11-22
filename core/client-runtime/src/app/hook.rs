@@ -20,18 +20,6 @@ impl<S: Shell> App<S> {
         self.frame_hook.replace(hook)
     }
 
-    /// Take the installed frame hook out; the frame runs without one from then on.
-    pub fn remove_frame_hook(&mut self) -> Option<Box<dyn crate::frame_hook::FrameHook>> {
-        self.hook_chat.clear();
-        self.hook_outcomes.clear();
-        self.interaction.set_extension_verbs(Vec::new());
-        self.hook_messages.clear();
-        if let Some(link) = self.link.as_mut() {
-            link.net.session.keep_sent(false);
-        }
-        self.frame_hook.take()
-    }
-
     /// The installed frame hook.
     #[must_use]
     pub fn frame_hook(&self) -> Option<&dyn crate::frame_hook::FrameHook> {

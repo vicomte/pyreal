@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use pyreal_client_contract::view::{InventoryIntent, PlayerOption, Vital};
+use pyreal_client_contract::view::{InventoryIntent, PlayerOption};
 use pyreal_client_contract::UiRequest;
 use pyreal_client_runtime::frame_hook::{HookFrame, Outcome};
 use pyreal_plugin_api::{AutoDomain, CallError, Value};
@@ -1630,17 +1630,6 @@ fn check(s: &mut Sent, frame: &HookFrame<'_>) -> Option<Result<Value, String>> {
             .map_or(0, |x| i64::from(x.value))
             > s.base.level)
             .then_some(Ok(Value::Nil)),
-    }
-}
-
-/// The vital a plugin names, for reads.
-#[must_use]
-pub fn vital_named(name: &str) -> Option<Vital> {
-    match name {
-        "health" => Some(Vital::Health),
-        "stamina" => Some(Vital::Stamina),
-        "mana" => Some(Vital::Mana),
-        _ => None,
     }
 }
 

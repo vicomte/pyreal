@@ -82,9 +82,6 @@ pub mod trace;
 /// `send_request`: the one place a `pyreal_client_model::Request` becomes bytes on a session.
 pub mod requests;
 
-/// The renderer's viewer-block-relative coordinate offset.
-pub mod landblock;
-
 /// `StartsTrue`, the named `bool` whose zero value is `true`.
 pub mod flags;
 
@@ -94,9 +91,7 @@ pub mod between_ticks;
 /// The top of a body as it is drawn this frame, where an interface puts a name over it.
 pub mod body_top;
 pub mod bulk_patch;
-/// The free camera and the character camera. The four functions that take a
-/// `crate::present::Scene` stay in `pyreal_client_runtime::camera`, with the two tests whose oracle is
-/// `dereth_render::camera::view_from_frame`.
+/// The free camera and the character camera.
 pub mod camera;
 /// The embodied character.
 pub mod character;
@@ -137,8 +132,7 @@ pub mod teleport;
 /// The command line and the preferences file. `Config` is what `main` builds and
 /// `App` is constructed from; `Preferences` is the `UserPreferences.ini` it reads.
 pub mod config;
-/// The fourteen `Render.*` preference names and their choice decodes. The three `apply_*`
-/// functions that hold a `Gpu` stay in `pyreal_client_shell::render_prefs`.
+/// The fourteen `Render.*` preference names and their choice decodes.
 pub mod render_prefs;
 
 /// `SoundTrigger` alone. The rest of `pyreal_desktop::audio` holds the `cpal` stream, so it stays

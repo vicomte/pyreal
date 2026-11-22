@@ -304,19 +304,6 @@ pub fn inq_chat_pose_command(t: &ChatPoseTable, name: &str) -> Option<(String, C
 // The command lookup is `pose`'s return value and therefore the thing that decides whether the
 // `*…*` is removed from the line.
 
-/// Which of the two emote messages a line produces.
-///
-/// Both are displayed at chat type `0x0C` (`Emote`, grey) — see [`crate::chat`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmoteKind {
-    /// Send opcode `0x01E1`, received as soul-emote opcode `0x01E2`: the table's complete sentence
-    /// plus the animation.
-    Soul,
-    /// Send opcode `0x01DF`, received as acted-emote opcode `0x01E0`:
-    /// `"<name> <whatever was typed>"`, with no animation.
-    Acted,
-}
-
 /// The client's list, verbatim and in order.
 ///
 /// Printed to the scroll with type 0, announce-to-plugins false, window 1. Note that

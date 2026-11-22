@@ -280,13 +280,6 @@ impl Trade {
         self.num_partner_containers() + self.num_partner_items()
     }
 
-    /// Both sides have accepted; the server may now complete the trade.
-    #[must_use]
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn both_accepted(&self) -> bool {
-        self.accepted && self.partner_accepted
-    }
-
     /// Build the packed `Trade` carried by `0x01FA Trade_AcceptTrade`.
     ///
     /// The only client-to-server message in the game that sends a whole packed object rather than
@@ -448,7 +441,7 @@ pub struct TradeSystem {
     /// Written by the two retail producers: the `side == 1` remove arm and the trade-failure arm.
     /// Cleared per id by a
     /// `0x0200 Trade_AddToTrade` on side 1, and wholesale by
-    /// the reset handler, close handler, and [`Self::end_character_session`].
+    /// the reset and close handlers.
     ///
     /// The server-attempt-failed notice is not a producer; it only clears the pending split id.
     pub self_removed: Vec<ObjectId>,
@@ -482,13 +475,6 @@ pub struct TradeSystem {
 
     /// The trade window's three pending-split values.
     pub pending_split: Option<PendingTradeSplit>,
-}
-
-impl TradeSystem {
-    /// Discard all trade state when the character session ends.
-    pub fn end_character_session(&mut self) {
-        *self = Self::default();
-    }
 }
 
 // ==============================================================================================

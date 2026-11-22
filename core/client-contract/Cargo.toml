@@ -15,16 +15,14 @@ pyreal-primitives.workspace = true
 # `teleport.rs`'s `TeleportAnim` seeds its rotation from `CrtRand`, the double draw off the
 # client's own LCG: the same stream in the same order, or the teleport spins to a different facing
 # than the original's. `CrtRand` is `pyreal_primitives::num::rng`, pure arithmetic, so it is
-# allowed here, and the rule the gate checks -- no interface crate, no `dereth-render`, no
+# allowed here, and the rule the gate checks -- no interface crate, no renderer, no
 # `winit`, no `windows` -- is unchanged.
-# `camera.rs`'s `ViewParams::view` is a `Mat4`. The same glam the rest of the tree uses,
-# so the matrix that crosses this seam is the one `dereth-render` builds.
+# `camera.rs`'s `ViewParams::view` is a `Mat4`, the same glam the rest of the tree uses.
 glam.workspace = true
 # `window.rs`'s `WindowHandles` is the raw display/window handle pair a device is
 # created from. `raw-window-handle` is a crate of type definitions and depends on nothing; the
 # pair is plain data, and `pyreal_client_runtime::platform::window::WindowHost` returns it, which is
-# what `pyreal-client`'s window trait needed to leave that crate. `dereth-render` re-exports the
-# type at `device::WindowHandles` and still owns every use of it.
+# what `pyreal-client`'s window trait needed to leave that crate.
 raw-window-handle.workspace = true
 
 [lints]

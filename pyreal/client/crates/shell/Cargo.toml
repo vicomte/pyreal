@@ -20,9 +20,7 @@ wgpu = ["pyreal-scene/wgpu"]
 retail-dats = []
 
 [dependencies]
-pyreal-rules.workspace = true
 pyreal-world-data.workspace = true
-pyreal-chargen.workspace = true
 pyreal-primitives.workspace = true
 pyreal-client-contract.workspace = true
 # The application state machine, its frame loop and the platform seams the host fills.
@@ -38,12 +36,10 @@ pyreal-client-model.workspace = true
 pyreal-client-net = { workspace = true, default-features = true }
 pyreal-protocol.workspace = true
 pyreal-dat.workspace = true
-pyreal-assets.workspace = true
 pyreal-physics.workspace = true
 # The journal's file format.
 pyreal-presentation.workspace = true
 pyreal-animation.workspace = true
-pyreal-audio.workspace = true
 # The drawn world and the device it is on.
 pyreal-scene.workspace = true
 pyreal-codecs.workspace = true

@@ -165,8 +165,7 @@ the game's; a hotkey asking for anything else is refused. A hotkey is live while
 active, in an open window or a closed one, and shows in its window as its text and its key. The
 desktop client binds the key the hotkey asks for under every interface (the first
 plugin to ask for a key has it), and leaves a key alone while the player types in a text box and
-while the host's dialog for a file is up; the headless client's script
-presses one with `ui hotkey <plugin> <node>`. A hotkey whose command the plugin has not claimed
+while the host's dialog for a file is up. A hotkey whose command the plugin has not claimed
 is told to the player.
 
 `ui.toast(text [, seconds])` shows a line briefly at the top of the screen with the plugin's name:
@@ -369,9 +368,8 @@ A host lays a window out as text the same way: each node's kind and `#id`, then 
 parent (its top left, from the parent's; a group's nodes from the group's own top left) and its
 size, `x,y wxh`; a labelled control's label width (`label=`); a list's column widths and the rows
 it shows (`columns=` and `rows=`); and for a body or a tab's page that scrolls, the height it
-scrolls through (`scrolls=`). The window's own line has its body's size. The headless client
-prints each open window so (`ui layout`), at the reference measures, at the size its plugin keeps
-for it or else its natural size:
+scrolls through (`scrolls=`). The window's own line has its body's size. A window is laid out
+so at the reference measures, at the size its plugin keeps for it or else its natural size:
 
 ```text
 window #main 280x320

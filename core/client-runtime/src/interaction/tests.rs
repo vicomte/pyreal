@@ -1693,3 +1693,37 @@ fn the_world_s_extensions_outlive_a_character_session() {
     interaction.on_end_character_session();
     assert!(interaction.has_extension(pyreal_protocol::extensions::AI_FELLOWS));
 }
+
+/// A world object picked to select is lit bright at once, then dim, bright, dim and restored a
+/// fifth of a second apart, and each frame's drain leaves the queue empty.
+#[test]
+fn a_selected_world_object_blinks_twice_and_its_lighting_queue_drains() {
+    use pyreal_animation::parts::LightingMode::{High, Low, Restore};
+    let mut game = pyreal_client_model::World::new();
+    let target = ObjectId(42);
+    game.tables
+        .weenies
+        .insert(target, pyreal_client_model::weenie::Weenie::new(target));
+    let mut inter = Interaction::new();
+    inter.reason = SearchReason::Select;
+    inter.pick.set_found_object(target, 0);
+    inter.on_world_object_found(target, &mut game, ServerTime(1.0));
+    assert_eq!(inter.take_pending_lighting(), [(target, High)]);
+    let mut seen = Vec::new();
+    for frame in 1..=60 {
+        let now = 1.0 + f64::from(frame) / 30.0;
+        inter.global_loop_lighting(now);
+        seen.extend(inter.take_pending_lighting());
+        assert!(inter.take_pending_lighting().is_empty());
+    }
+    assert_eq!(
+        seen,
+        [
+            (target, Low),
+            (target, High),
+            (target, Low),
+            (target, Restore)
+        ]
+    );
+    assert_eq!(inter.selection_flip_count(), 0);
+}

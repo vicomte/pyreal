@@ -1,8 +1,7 @@
 //! The 3D viewport rectangle.
 //!
-//! Plain data, and here rather than in `dereth-render` because two of `pyreal-client`'s logic modules
+//! Plain data, and here rather than in the renderer because two of `pyreal-client`'s logic modules
 //! (`interaction` and `pick`) need the rectangle and nothing else the renderer owns.
-//! `dereth_render::camera::Viewport` re-exports it, so every existing import keeps working.
 
 /// A viewport rectangle in back-buffer pixels. `IDirect3DDevice9::SetViewport` also carries
 /// `MinZ = 0.0`, `MaxZ = 1.0`, which the client never changes.

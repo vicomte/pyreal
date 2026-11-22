@@ -79,26 +79,6 @@ impl InputMap {
         self.bindings.retain(|(_, a)| *a != action);
     }
 
-    /// Unbind one unmodified control from one action, whatever its activation.
-    pub fn unbind_control_from(&mut self, control: crate::spec::ControlCode, action: ActionId) {
-        self.bindings
-            .retain(|(k, a)| !(k.control == control && k.meta_mode == 0 && *a == action));
-    }
-
-    /// Unbind one unmodified control from whatever it is bound to, whatever its activation.
-    pub fn unbind_control(&mut self, control: crate::spec::ControlCode) {
-        self.bindings
-            .retain(|(k, _)| !(k.control == control && k.meta_mode == 0));
-    }
-
-    /// Find the best match for a control.
-    ///
-    /// Walks the whole list of equal controls and keeps the one the better-match comparison prefers.
-    #[must_use]
-    pub fn find_best_match(&self, event: &ControlChord) -> Option<(ActionId, ControlChord)> {
-        self.find_best_match_for_action(event, None)
-    }
-
     /// Match a scoped action registration against the original, complete binding list.
     pub fn find_best_match_for_action(
         &self,
@@ -287,12 +267,6 @@ impl MasterInputMap {
         self.devices
             .get(cs.device_index() as usize)
             .map(|d| d.device_type)
-    }
-
-    /// Whether a control is a meta key.
-    #[must_use]
-    pub fn is_meta_key(&self, cs: ControlCode) -> bool {
-        self.meta_keys.iter().any(|(k, _)| *k == cs)
     }
 
     /// The meta mode a control selects -- 0 when the control is not a meta key.

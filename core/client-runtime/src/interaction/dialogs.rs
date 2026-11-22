@@ -73,16 +73,6 @@ impl Interaction {
         std::mem::take(&mut self.pending_pop_up_strings)
     }
 
-    /// How many `0x0004`s are waiting for a UI to show them.
-    ///
-    /// The queue is drained only once the shell is up and in `GAME_PLAY`, so a non-zero value here
-    /// is "received but not yet shown" and not "lost" — which is the distinction a test needs and
-    /// a counter on its own cannot make.
-    #[must_use]
-    pub fn pop_up_strings_pending(&self) -> usize {
-        self.pending_pop_up_strings.len()
-    }
-
     /// `@die`'s question, for
     /// `crate::target_confirmation::TargetedDialogs` to put on screen.
     pub fn take_die_confirmations(&mut self) -> Vec<&'static str> {

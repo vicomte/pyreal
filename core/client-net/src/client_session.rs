@@ -717,7 +717,7 @@ impl<T: Transport> Session<T> {
     ///
     /// **Known gap, upstream of this seam:** `create_or_merge` passes `is_update = false` on the
     /// merge path, so `set_weenie_desc`'s step 5 is unreachable, and
-    /// `queue_blob_for_weenie_object` declines to make a placeholder for an object that already
+    /// `get_null_weenie_object` declines to make a placeholder for an object that already
     /// exists where the client makes one unconditionally — which is why replaying `long-solo-play`
     /// through this build asks 0 times where retail asked 35.
     pub fn send_force_objdesc(&mut self, id: ObjectId) {

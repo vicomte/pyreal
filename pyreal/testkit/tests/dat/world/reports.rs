@@ -300,6 +300,7 @@ pub fn every_drawn_frame_reaches_the_position_reporter() {
 
 /// A jump puts the body's own position and speed on the wire.
 pub fn a_jump_reports_the_bodys_own_position_and_speed() {
+    use pyreal_client_net::client_session::PositionReporter;
     use pyreal_client_runtime::app::body_motion;
     use pyreal_protocol::movement::{MoveTimestamps, MovementJump};
     use {
@@ -331,7 +332,8 @@ pub fn a_jump_reports_the_bodys_own_position_and_speed() {
     let impulse = velocity.z > 0.5 && velocity.x.abs() < 0.01 && velocity.y.abs() < 0.01;
 
     let motion = body_motion(&c, stamps);
-    rep.send_jump(accepted, FULL_JUMP_EXTENT, velocity, &motion, &mut session)
+    let pack = PositionReporter::jump_pack(FULL_JUMP_EXTENT, velocity, &motion);
+    rep.send_jump_pack(pack, &mut session)
         .expect("the jump encodes");
     let one_blob = rep.stats.jump_events == 1 && session.transport.sent.len() == 1;
 
@@ -360,6 +362,7 @@ pub fn a_jump_reports_the_bodys_own_position_and_speed() {
 
 /// A second jump while the body is still in the air is refused, and nothing goes out for it.
 pub fn a_second_jump_in_mid_air_sends_nothing() {
+    use pyreal_client_net::client_session::PositionReporter;
     use pyreal_client_runtime::app::body_motion;
     use pyreal_protocol::movement::MoveTimestamps;
     use {
@@ -377,28 +380,20 @@ pub fn a_second_jump_in_mid_air_sends_nothing() {
     };
 
     let (accepted, velocity) = world_support::jump_frame(&mut c, 61.0 / 30.0, jump);
-    rep.send_jump(
-        accepted,
-        FULL_JUMP_EXTENT,
-        velocity,
-        &body_motion(&c, stamps),
-        &mut session,
-    )
-    .expect("the first jump encodes");
+    let pack = PositionReporter::jump_pack(FULL_JUMP_EXTENT, velocity, &body_motion(&c, stamps));
+    rep.send_jump_pack(pack, &mut session)
+        .expect("the first jump encodes");
     let first = accepted && rep.stats.jump_events == 1;
     // The subject is alive enough to fail: it really is off the ground.
     let airborne = !c.on_ground();
 
     let (accepted2, velocity2) = world_support::jump_frame(&mut c, 62.0 / 30.0, jump);
-    let nothing = rep
-        .send_jump(
-            accepted2,
-            FULL_JUMP_EXTENT,
-            velocity2,
-            &body_motion(&c, stamps),
-            &mut session,
-        )
-        .is_none();
+    // Only an accepted jump is sent, as the client's own jump release does.
+    let nothing = !accepted2 || {
+        let pack =
+            PositionReporter::jump_pack(FULL_JUMP_EXTENT, velocity2, &body_motion(&c, stamps));
+        rep.send_jump_pack(pack, &mut session).is_none()
+    };
     let still_one = rep.stats.jump_events == 1 && session.transport.sent.len() == 1;
 
     let mut client = HeadlessClient::model();

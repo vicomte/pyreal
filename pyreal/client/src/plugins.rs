@@ -38,19 +38,15 @@ use pyreal_plugin_host::{HttpRequest, HttpResponse, PeerMessage, PluginNet, Plug
 pub const PLUGINS_DIR_NAME: &str = "plugins";
 
 /// The folder of the plugins that come with the client, for the client's program at `exe`: beside
-/// the program (the Windows release's folder), among a macOS bundle's resources, or in the
-/// AppImage's own folder of the app's files. None when there is none: a build of one's own, run
-/// from a source checkout's `target` folder, finds none of the checkout's plugins by itself.
+/// the program (the Windows release's folder) or among a macOS bundle's resources. None when there
+/// is none: a build of one's own, run from a source checkout's `target` folder, finds none of the
+/// checkout's plugins by itself.
 #[must_use]
 pub fn bundled_dir_for(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     [
         dir.join(PLUGINS_DIR_NAME),
         dir.join("..").join("Resources").join(PLUGINS_DIR_NAME),
-        dir.join("..")
-            .join("lib")
-            .join("Dereth")
-            .join(PLUGINS_DIR_NAME),
     ]
     .into_iter()
     .find(|d| d.is_dir())
@@ -890,9 +886,9 @@ mod tests {
     }
 
     /// The plugins that come with the client are found where each release puts them for its
-    /// program: beside it (the Windows folder), among a macOS bundle's resources, in the
-    /// AppImage's own folder of the app's files; a build with none finds none, and a build of
-    /// one's own in a source checkout finds none of the checkout's plugins by itself.
+    /// program: beside it (the Windows folder) or among a macOS bundle's resources; a build with
+    /// none finds none, and a build of one's own in a source checkout finds none of the checkout's
+    /// plugins by itself.
     #[test]
     fn the_plugins_that_come_with_the_client_are_found_where_each_release_puts_them() {
         let root = scratch("bundled-dirs");
@@ -902,16 +898,11 @@ mod tests {
             super::bundled_dir_for(&windows.join("pyreal.exe")),
             Some(windows.join("plugins"))
         );
-        let mac = root.join("Dereth.app").join("Contents");
+        let mac = root.join("Pyreal.app").join("Contents");
         std::fs::create_dir_all(mac.join("MacOS")).expect("dirs");
         std::fs::create_dir_all(mac.join("Resources").join("plugins")).expect("dirs");
         let found = super::bundled_dir_for(&mac.join("MacOS").join("pyreal"));
         assert!(found.is_some_and(|d| d.ends_with("Resources/plugins") && d.is_dir()));
-        let appimage = root.join("squashfs-root").join("usr");
-        std::fs::create_dir_all(appimage.join("bin")).expect("dirs");
-        std::fs::create_dir_all(appimage.join("lib").join("Dereth").join("plugins")).expect("dirs");
-        let found = super::bundled_dir_for(&appimage.join("bin").join("pyreal"));
-        assert!(found.is_some_and(|d| d.ends_with("lib/Dereth/plugins") && d.is_dir()));
         let own_build = root.join("target").join("release");
         std::fs::create_dir_all(&own_build).expect("dirs");
         assert_eq!(super::bundled_dir_for(&own_build.join("pyreal.exe")), None);

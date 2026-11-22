@@ -166,7 +166,7 @@ pub struct AppraisalCache {
     ///
     /// The client needs no such counter: it raises notice `0x5100013` synchronously, so the notice
     /// itself is the call. This
-    /// build's identify panel lives in `dereth-ui-screens` and is driven by a per-frame pull off
+    /// build's identify panel is driven by a per-frame pull off
     /// `GameView`, and a pull comparing `Option<ObjectId>` cannot see **the same object examined
     /// twice** — which is the case that matters, because the examine-object notice handler
     /// clears the current appraisal id, and that is what re-opens a panel the player closed on a second

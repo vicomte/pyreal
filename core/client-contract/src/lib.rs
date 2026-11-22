@@ -4,7 +4,7 @@
 //! **Depends on** `pyreal-primitives` (plus `glam` and `raw-window-handle`). **Used by** everything
 //! on either side of the seam between the game and what draws it: the object model and the runtime
 //! (`pyreal-client-model`, `pyreal-client-runtime`), the drawing and UI crates
-//! (`dereth-render`, `pyreal-codecs`, `pyreal-horizon`, `pyreal-ui-logic`), the device input
+//! (`pyreal-codecs`, `pyreal-horizon`, `pyreal-ui-logic`), the device input
 //! (`pyreal-input`), the client and its test kit.
 //!
 //! **Must never** reach another `pyreal-*` crate or a presentation or platform crate: its direct
@@ -27,7 +27,7 @@
 /// actions; a front end's device pipeline makes them.
 pub mod actions;
 pub mod book;
-/// The projection parameters `ViewParams` carries. `pyreal_codecs::camera` re-exports them.
+/// The projection parameters `ViewParams` carries.
 pub mod camera;
 /// The chat seam shared with the retired retail UI's `chat`: the failure table,
 /// `ChatMessage`, the window ids and opacity attributes, the reply targets and the auto-target
@@ -80,8 +80,6 @@ pub mod radar;
 /// with no per-thread state.
 pub mod requests;
 pub mod research;
-/// `STARTUP_FILTERING`, which `pyreal_codecs::sampler` re-exports.
-pub mod sampler;
 pub mod snapshot;
 pub mod social;
 pub mod spellbook;
@@ -93,7 +91,6 @@ pub mod target;
 pub mod teleport;
 pub mod view;
 /// `WindowHandles`, `Rect` and `ScreenMetrics`: the plain data a host window contributes.
-/// `dereth_render::{device, window_proc}` re-export each.
 pub mod window;
 /// The window message table, the frame sleep and the placement arithmetic.
 pub mod window_proc;

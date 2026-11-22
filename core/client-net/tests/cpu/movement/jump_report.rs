@@ -73,7 +73,8 @@ fn every_recorded_jump_body_re_encodes_byte_for_byte() {
         let m = decode(&r.payload);
         let motion = motion_from_jump(&m);
         let (mut rep, mut session) = reporter();
-        rep.send_jump(true, m.0.extent, m.0.velocity, &motion, &mut session)
+        let pack = PositionReporter::jump_pack(m.0.extent, m.0.velocity, &motion);
+        rep.send_jump_pack(pack, &mut session)
             .expect("the producer must encode every recorded jump");
         let produced = &session.transport.sent;
         assert_eq!(produced.len(), 1, "one blob per jump, in {}", r.scenario);
@@ -221,16 +222,14 @@ fn a_jump_does_not_disturb_the_position_schedule() {
 
     let mut jumping = m.clone();
     jumping.position.frame.origin.x = 12.5;
+    let velocity = Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 3.5,
+    };
     let stamp = rep
-        .send_jump(
-            true,
-            1.0,
-            Vec3 {
-                x: 0.0,
-                y: 0.0,
-                z: 3.5,
-            },
-            &jumping,
+        .send_jump_pack(
+            PositionReporter::jump_pack(1.0, velocity, &jumping),
             &mut session,
         )
         .expect("the jump encodes");
@@ -259,23 +258,6 @@ fn a_jump_does_not_disturb_the_position_schedule() {
     assert_eq!(
         rep.stats.position_events, 2,
         "the 1.0 s schedule still runs from the last position report, not from the jump"
-    );
-}
-
-#[test]
-fn a_refused_jump_sends_nothing() {
-    let (mut rep, mut session) = reporter();
-    let m = PlayerMotion {
-        position_valid: true,
-        ..PlayerMotion::default()
-    };
-    assert!(rep
-        .send_jump(false, 1.0, Vec3::default(), &m, &mut session)
-        .is_none());
-    assert_eq!(rep.stats.jump_events, 0);
-    assert!(
-        session.transport.sent.is_empty(),
-        "a refused jump puts nothing on the wire"
     );
 }
 

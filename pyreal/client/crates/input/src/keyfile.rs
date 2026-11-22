@@ -37,7 +37,7 @@ use crate::names::{enum_name_for_action, enum_name_for_input_map, input_map_for_
 use crate::spec::{
     activation, ControlChord, ControlCode, ControlNames, DeviceType, SubControlIndex,
 };
-use crate::{ActionId, InputMapId};
+use crate::InputMapId;
 
 /// The polymorphic node key, in the four shapes a `.keymap` file uses.
 ///
@@ -742,12 +742,6 @@ impl MasterInputMap {
     pub fn to_keymap_text(&self) -> String {
         write_file_nodes(&self.to_file_node())
     }
-}
-
-/// `ActionId`/`InputMapId` names, exported for tests and tools that print them.
-#[must_use]
-pub fn action_enum_name(a: ActionId) -> String {
-    enum_name_for_action(a)
 }
 
 #[cfg(test)]

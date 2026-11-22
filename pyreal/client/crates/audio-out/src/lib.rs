@@ -2,8 +2,7 @@
 //! sound engine's output seam.
 //!
 //! **Depends on** the sound engine's output seam (`pyreal-audio`) and `cpal`. **Used by** the
-//! desktop host (`pyreal-desktop`) and the second game's desktop client (`auberean-client`), each
-//! of which hands it to its mixer.
+//! desktop host (`pyreal-desktop`), which hands it to its mixer.
 //!
 //! **Must never** reach a client runtime or an application half: it is a device and nothing else,
 //! so any executable can open sound with it (`cargo xtask seams`).

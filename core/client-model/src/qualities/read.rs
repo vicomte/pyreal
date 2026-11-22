@@ -40,3 +40,17 @@ impl QualityRead for Qualities {
         Qualities::inq_int(self, id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::qualities::{Qualities, StatKey, StatType, StatValue};
+
+    /// Oracle: §4's load enquiry. Strength defaults to 10 when the attribute cache is absent.
+    #[test]
+    fn inq_load_defaults_strength_to_ten() {
+        let mut q = Qualities::new();
+        q.set(StatKey::new(StatType::Int, 5), StatValue::Int(750));
+        // capacity = 10 * 150 = 1500; 750 / 1500 = 0.5
+        assert_eq!(pyreal_rules::burden::inq_load(&q), 0.5);
+    }
+}

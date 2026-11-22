@@ -2,9 +2,9 @@
 //! location and a countdown timer, kept in a text file beside the client's settings and never sent
 //! to a server.
 //!
-//! Here are the facts both interfaces show it with: the page, the file's text in both directions,
-//! the timer, location and page-number captions, how a timer box is read and when a started timer
-//! runs out. Reading and writing the file is the interface's, as is when it does so.
+//! Here are the facts the interface shows it with: the page, the file's text in both directions,
+//! the location caption, how a timer box is read and when a started timer runs out. Reading and
+//! writing the file is the interface's, as is when it does so.
 //!
 //! The file is one record per line, `<NEWP>` opening each page and a blank line ending it:
 //! `<LABE>`, `<TITL>` and `<NOTE>` take the rest of the line (a note's newlines are stored as
@@ -24,12 +24,6 @@ pub use pyreal_client_contract::journal::{
 /// The client's "no timer" answer, and the location display's "no location" one.
 /// Stored as a wide string.
 pub const NONE: &str = "None";
-/// The timer text's expired answer.
-pub const READY: &str = "Ready";
-/// The editable timer's button caption.
-pub const START: &str = "Start";
-/// The running timer's button caption.
-pub const RESET: &str = "Reset";
 
 /// The load-error report's line, at channel [`LOAD_COMPLAINT_CHANNEL`].
 pub const LOAD_COMPLAINT: &str =
@@ -228,24 +222,6 @@ pub fn parse_pages(text: &str) -> Result<Vec<JournalPage>, ()> {
 // Defined in [`pyreal_client_contract::journal`] with
 // [`delta_time_to_string`], their only reader.
 
-/// How often the running timer redraws — the client schedules the next update half a second
-/// after the current time.
-pub const TICK_PERIOD: f64 = 0.5;
-
-/// See the module header for the strings and the three arms.
-#[must_use]
-pub fn timer_text(running: bool, stamp: f64, now: f64) -> String {
-    if !running || stamp <= 0.0 {
-        return NONE.to_owned();
-    }
-    let remaining = i64::from(pyreal_primitives::num::to_i32_f64(stamp - now));
-    if remaining > 0 {
-        delta_time_to_string(remaining)
-    } else {
-        READY.to_owned()
-    }
-}
-
 /// The journal panel's location update's string.
 ///
 /// `ns` is the stored y and `ew` the stored x; see the module header for why the names are that
@@ -283,14 +259,6 @@ pub fn location_text(location_set: bool, ns: f64, ew: f64) -> String {
         crate::numfmt::printf_fixed(ew.abs(), 1),
         letter(ew, "E", "W")
     )
-}
-
-/// The journal panel's page number update — `"~ %d ~"` over the current page, or 1 when the
-/// current page is zero or negative.
-#[must_use]
-pub fn page_number_text(current_page: u32) -> String {
-    let n = if current_page == 0 { 1 } else { current_page };
-    format!("~ {n} ~")
 }
 
 pub use pyreal_client_contract::journal::JournalPage;
@@ -337,13 +305,6 @@ pub fn parse_count(s: &str) -> u32 {
 #[must_use]
 pub fn timer_stamp(now: f64, days: u32, hours: u32, minutes: u32) -> f64 {
     now + f64::from(days) * 86_400.0 + f64::from(hours) * 3_600.0 + f64::from(minutes) * 60.0
-}
-
-/// Number the pages from 1 in their order, as a deletion leaves them.
-pub fn renumber(pages: &mut [JournalPage]) {
-    for (i, p) in pages.iter_mut().enumerate() {
-        p.page_number = u32::try_from(i).unwrap_or(0) + 1;
-    }
 }
 
 /// The page-list sort criterion. The values follow the sort's callers: page number 0, title 1, label 2, timer 3.
@@ -435,25 +396,6 @@ mod tests {
         assert_eq!(
             timer_stamp(100.0, 1, 2, 3),
             100.0 + 86_400.0 + 7_200.0 + 180.0
-        );
-    }
-
-    #[test]
-    fn deleting_a_page_numbers_the_rest_from_one() {
-        let mut pages = vec![
-            JournalPage {
-                page_number: 2,
-                ..JournalPage::default()
-            },
-            JournalPage {
-                page_number: 5,
-                ..JournalPage::default()
-            },
-        ];
-        renumber(&mut pages);
-        assert_eq!(
-            pages.iter().map(|p| p.page_number).collect::<Vec<_>>(),
-            [1, 2]
         );
     }
 

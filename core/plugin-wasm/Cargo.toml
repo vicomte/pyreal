@@ -17,15 +17,14 @@ wasmparser = "0.245"
 wasm-encoder = { version = "0.245", default-features = false, features = ["wasmparser"] }
 # The host lent to the module's imports for one entry, with no `unsafe` of this crate's own.
 scoped-tls-hkt = "0.1"
-# The runtime on the desktop and headless: an interpreter in Rust. Its dispatch loop rather than
+# The runtime on the desktop: an interpreter in Rust. Its dispatch loop rather than
 # its tail-call dispatch, whose stack use grows with every instruction where the compiler does not
 # turn those calls into jumps.
 wasmi = { version = "2", optional = true, default-features = false, features = ["std", "stable", "validate", "portable-dispatch"] }
 
 [features]
 default = ["interpreter"]
-# `interp::Interpreter`, over `wasmi`. The browser client runs modules in the browser's own
-# WebAssembly instead and leaves this off.
+# `interp::Interpreter`, over `wasmi`.
 interpreter = ["dep:wasmi"]
 
 [lints]

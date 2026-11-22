@@ -90,8 +90,7 @@ Its sources are not part of the package (a package holds no source files but Lua
    time answering the module's calls is the entry's too: it is taken from the fuel where the
    runtime allows, and the entry is stopped once that time alone is past the budget. A 64-bit
    memory or table is refused.
-5. **Runs it** in the host's WebAssembly runtime: on the desktop and headless an interpreter
-   (`wasmi`).
+5. **Runs it** in the host's WebAssembly runtime: on the desktop an interpreter (`wasmi`).
 
 A trap (a panic in the plugin, a runaway loop, memory exhausted) fails the entry as a Lua error
 would: the chat says so, and repeated faults suspend the plugin.

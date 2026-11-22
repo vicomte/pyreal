@@ -1,7 +1,7 @@
 //! `CreatureMode` -- the preview space.
 //!
 //! Oracles: the creature-preview mode's own construction, scene initialisation, camera
-//! position, field-of-view and sharp-mode switches, render, camera direction (radians and
+//! position and field-of-view switches, render, camera direction (radians and
 //! degrees), light add, light direction, light clear, object add, object remove and object
 //! clear, plus the UI viewport element's camera, light and render entry points.
 //!
@@ -19,7 +19,7 @@
 //! 1. **It enables creature mode and forces `degrades_disabled = 1`**, saving
 //!    the game's own value in `game_degrades_disabled`. Both are global: object picking already
 //!    reads the first (the client's current-object check) and the degrade loop
-//!    reads the second. See [`DegradeSave`].
+//!    reads the second.
 //! 2. **The projection is chosen, not inherited.** Without world-FOV following it is the space's
 //!    own field of view (45 degrees); with it set the space follows the world controller -- including
 //!    its view-distance mode, which makes the view-distance projection collapse apply to the tunnel
@@ -32,14 +32,23 @@
 //!
 //! `Render` also flips the sound listener to the camera for the duration of the object update and
 //! puts it back around the `update_position` loop, zeroes
-//! both light counts on the way in *and* on the way out with [`crate::lighting::use_sunlight_set`] on / off around
+//! both light counts on the way in *and* on the way out with the sunlight set on / off around
 //! each pair, and ends by flushing the alpha list at depth 0.0 so the space's own translucent
 //! subsets are flushed inside the viewport rather than with the world's.
 
 use pyreal_primitives::{Frame, Quat, Vec3};
 
-use crate::lighting::LightType;
 use {pyreal_terrain::math::euler_set_rotate, pyreal_terrain::math::rotate};
+
+/// Light type. Every one of the 608 shipped lights is type 0, so only the
+/// point branch is ever exercised.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LightType {
+    #[default]
+    Point = 0,
+    Directional = 1,
+    Spot = 2,
+}
 
 /// The default ambient colour: 0.3 in each channel.
 pub const DEFAULT_AMBIENT: [f32; 3] = [0.3, 0.3, 0.3];
@@ -55,13 +64,6 @@ pub const DEFAULT_FOV_RADIANS: f32 = 0.785_398_2;
 /// The degrees-to-radians constant is
 /// the same truncated `0.017453292` the rest of the client uses and **not** a full-precision one.
 pub const DEG_TO_RAD: f32 = 0.017_453_292;
-
-/// Sharp-mode LOD bias, applied to every sampler when sharp mode is enabled and
-/// the texture-filtering preference is below 2.
-pub const SHARP_MODE_LOD_BIAS: f32 = -1.4;
-
-/// The `TextureFiltering` preference at or above which sharp mode does nothing.
-pub const SHARP_MODE_FILTERING_LIMIT: u32 = 2;
 
 /// One light in the creature-preview pass.
 ///
@@ -109,48 +111,6 @@ pub enum PreviewProjection {
     FovRadians(f32),
 }
 
-/// The two degradation flags the preview pass takes over on its first pass of a frame,
-/// preserving their previous values.
-///
-/// ```text
-/// if creature_mode == 0 {
-///     saved_game_degrades_disabled = degrades_disabled;
-///     degrades_disabled = 1;
-///     creature_mode = 1;
-/// }
-/// ```
-///
-/// The preview pass does not put them back. The world pass restores them, so a frame with a
-/// preview space and no world leaves
-/// `creature_mode` set -- which is exactly the state a char-gen frame is in, and is why
-/// every part of the preview is reported as pickable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DegradeSave {
-    /// Whether creature-preview mode was active.
-    pub creature_mode: bool,
-    /// The game's own `degrades_disabled` value, parked.
-    pub game_degrades_disabled: bool,
-}
-
-impl DegradeSave {
-    /// Enter the preview pass with the renderer's current `degrades_disabled` value.
-    /// Returns what `degrades_disabled` must become.
-    pub fn enter(&mut self, degrades_disabled: bool) -> bool {
-        if !self.creature_mode {
-            self.game_degrades_disabled = degrades_disabled;
-            self.creature_mode = true;
-        }
-        true
-    }
-
-    /// Leave preview mode: the world pass gets the game's parked value back.
-    pub fn leave(&mut self) -> bool {
-        let restored = self.game_degrades_disabled;
-        self.creature_mode = false;
-        restored
-    }
-}
-
 /// `CreatureMode` -- one preview space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreatureMode {
@@ -161,8 +121,6 @@ pub struct CreatureMode {
     pub ambient: [f32; 3],
     /// Whether the preview follows the world controller's field of view.
     pub use_world_fov: bool,
-    /// Whether the preview uses sharp rendering.
-    pub use_sharp_mode: bool,
     /// The preview's field of view in radians.
     pub fov_radians: f32,
     /// The preview space's lights.
@@ -187,7 +145,6 @@ impl CreatureMode {
             view_frame: Frame::new(Vec3::ZERO, Quat::IDENTITY),
             ambient: DEFAULT_AMBIENT,
             use_world_fov: false,
-            use_sharp_mode: false,
             fov_radians: DEFAULT_FOV_RADIANS,
             lights: Vec::new(),
             scene_initialised: false,
@@ -236,19 +193,14 @@ impl CreatureMode {
         self.fov_radians = radians;
     }
 
-    /// Switch to sharp mode. Also one-way.
-    pub fn use_sharp_mode(&mut self) {
-        self.use_sharp_mode = true;
-    }
-
     /// Add a light.
-    pub fn add_light(&mut self, light_type: LightType, intensity: f32) {
+    fn add_light(&mut self, light_type: LightType, intensity: f32) {
         self.lights.push(PreviewLight::new(light_type, intensity));
     }
 
     /// Set one light direction; false when the index is past the end, which
     /// is the client's own bounds test and not an assertion.
-    pub fn set_light_direction(&mut self, i: usize, v: Vec3) -> bool {
+    fn set_light_direction(&mut self, i: usize, v: Vec3) -> bool {
         match self.lights.get_mut(i) {
             Some(l) => {
                 l.direction = v;
@@ -259,7 +211,7 @@ impl CreatureMode {
     }
 
     /// Remove every light.
-    pub fn remove_all_lights(&mut self) {
+    fn remove_all_lights(&mut self) {
         self.lights.clear();
     }
 
@@ -279,7 +231,7 @@ impl CreatureMode {
     /// `world_view_distance` is the override when view-distance mode is set and `None`
     /// otherwise; `world_fov` is the game FOV and `viewport_aspect` is the device aspect
     /// ratio. The `- 0.1` is preserved and is the same bias
-    /// `dereth_render::camera::fov_y_from_preference` applies to the world.
+    /// `pyreal_client_contract::camera::fov_y_from_preference` applies to the world.
     #[must_use]
     pub fn projection(
         &self,
@@ -294,15 +246,6 @@ impl CreatureMode {
             Some(d) => PreviewProjection::ViewDistance(d),
             None => PreviewProjection::FovRadians(world_fov / (viewport_aspect - 0.1)),
         }
-    }
-
-    /// The mipmap LOD bias this pass installs, if any --
-    /// Apply [`SHARP_MODE_LOD_BIAS`] when sharp
-    /// mode is on and the filtering preference is under [`SHARP_MODE_FILTERING_LIMIT`].
-    #[must_use]
-    pub fn lod_bias(&self, texture_filtering: u32) -> Option<f32> {
-        (self.use_sharp_mode && texture_filtering < SHARP_MODE_FILTERING_LIMIT)
-            .then_some(SHARP_MODE_LOD_BIAS)
     }
 }
 
@@ -322,7 +265,6 @@ mod tests {
             !c.use_world_fov,
             "following the world view's field of view is opt-in"
         );
-        assert!(!c.use_sharp_mode);
         assert!(c.lights.is_empty());
         assert_eq!(c.view_frame.origin, Vec3::ZERO);
         assert!(
@@ -415,43 +357,6 @@ mod tests {
             panic!("no override means a plain FOV");
         };
         assert!((f - 1.5 / (1.333 - 0.1)).abs() < 1e-6, "{f}");
-    }
-
-    // Oracle: preview entry and the world pass's corresponding restore.
-    #[test]
-    fn the_degrade_flag_is_saved_once_and_handed_back_by_the_world_pass() {
-        let mut s = DegradeSave::default();
-        // The game had degrades on (disabled == false). The first preview pass of the frame parks
-        // that and forces the flag.
-        assert!(
-            s.enter(false),
-            "the pass always forces degrades_disabled = 1"
-        );
-        assert!(s.creature_mode);
-        assert!(!s.game_degrades_disabled);
-        // A second space in the same frame must not overwrite the parked value with the forced one.
-        assert!(s.enter(true));
-        assert!(
-            !s.game_degrades_disabled,
-            "the save happens once, on the creature_mode edge"
-        );
-        assert!(!s.leave(), "the world pass gets the game's own value back");
-        assert!(!s.creature_mode);
-    }
-
-    // Oracle: the render path's sharp-mode branch.
-    #[test]
-    fn sharp_mode_biases_the_lod_only_below_the_filtering_preference() {
-        let mut c = CreatureMode::new();
-        assert_eq!(c.lod_bias(0), None, "off by default");
-        c.use_sharp_mode();
-        assert_eq!(c.lod_bias(0), Some(-1.4));
-        assert_eq!(c.lod_bias(1), Some(-1.4));
-        assert_eq!(
-            c.lod_bias(2),
-            None,
-            "TextureFiltering >= 2 leaves the samplers alone"
-        );
     }
 
     // Oracle: setting a light removes all existing lights, adds one, and points it.

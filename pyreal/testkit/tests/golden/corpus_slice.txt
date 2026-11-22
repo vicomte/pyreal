@@ -11,7 +11,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -31,7 +31,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -51,7 +51,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -72,7 +72,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -92,7 +92,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -112,7 +112,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -132,7 +132,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -152,7 +152,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld
@@ -172,7 +172,7 @@ step WorldViewStep
 player-teleport-use-time
 control-transfer
 position-use-time
-render-preferences-polled flushed=false mid-radius=false detail-texturing=false queued=0 rebuilt=0 surfaces=0
+render-preferences-polled
 step PrepareDevice
 step BeginFrame
 step DrawWorld

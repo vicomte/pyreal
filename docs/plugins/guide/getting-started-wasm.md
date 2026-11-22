@@ -188,4 +188,4 @@ Its memory is capped at the host's limit, and its work is counted in fuel: 100,0
 entries and loop iterations) per millisecond of the call budget, the same count on every host. A
 trap (a panic, a runaway loop, memory exhausted) fails the entry as a Lua error would.
 
-The desktop and headless clients run the module in an interpreter.
+The desktop client runs the module in an interpreter.

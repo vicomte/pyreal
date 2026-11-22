@@ -61,18 +61,6 @@ pub mod priority {
     pub const DEBUG_CONSOLE_BARRIER: i32 = 3999;
 }
 
-/// The input-handler flag mask registration takes.
-pub mod handler_flags {
-    pub const ACTION: u32 = 0x01;
-    pub const CHARACTER: u32 = 0x02;
-    pub const MOUSE_LOOK: u32 = 0x04;
-    pub const FOCUS_SWITCH: u32 = 0x08;
-    pub const MOUSE_MOVE: u32 = 0x10;
-    /// Exclusive: a single key-hit handler. The key-binding options page takes it while a
-    /// binding is being captured, and it runs **before any input map is consulted**.
-    pub const KEY_HIT: u32 = 0x20;
-}
-
 /// The priority-ordered stack `fire_input_event` walks.
 #[derive(Debug, Default)]
 pub struct InputMapStack {

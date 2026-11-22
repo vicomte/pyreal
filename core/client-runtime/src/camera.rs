@@ -5,11 +5,9 @@
 //! reproduce it: it is a debug flycam whose only job is to put a viewpoint somewhere over
 //! Dereth so the static scene can be looked at.
 //!
-//! What is **not** invented here is the frame it produces. `dereth_render::camera::view_from_frame`
-//! consumes a `Frame` whose rotation matrix has the camera's local axes as its *rows* — row 0
-//! right, row 1 forward, row 2 up — because that is the client's
-//! convention. `FreeCamera::frame` builds exactly that, and the test at the bottom checks it by
-//! pushing points through the renderer's own view matrix rather than by restating the algebra.
+//! What is **not** invented here is the frame it produces: a `Frame` whose rotation matrix has the
+//! camera's local axes as its *rows* (row 0 right, row 1 forward, row 2 up), because that is the
+//! client's convention. `FreeCamera::frame` builds exactly that.
 //!
 //! Coordinates are the client's: **+x east, +y north, +z up**, in the viewer-block-relative space
 //! used to render the landscape, so the origin is the south-west corner
@@ -127,7 +125,7 @@ impl FreeCamera {
         self.pitch = (self.pitch - dy * MOUSE_SENSITIVITY).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
-    /// The `Frame` `dereth_render::camera::view_from_frame` wants.
+    /// The camera's `Frame`, in the client's convention.
     ///
     /// The quaternion is `q_z(yaw) · q_x(pitch)`, whose rotation matrix — in the row-per-local-axis
     /// form the renderer reads — has row 0 = right, row 1 = forward, row 2 = up.
@@ -1979,12 +1977,7 @@ impl CameraControl {
         }
     }
 
-    /// Supply the player's heading for a caller that has the body and the camera does not.
-    pub fn set_player_heading(&mut self, heading: Option<f32>) {
-        self.player_heading = heading;
-    }
-
-    /// What [`Self::set_player_heading`] last stored.
+    /// The player's heading the camera last stored.
     #[must_use]
     pub const fn player_heading(&self) -> Option<f32> {
         self.player_heading
@@ -2664,7 +2657,7 @@ impl FreeCamera {
 /// slider options stores the field and runs the
 /// registration's change callback (the stiffness callback for `Camera.Stiffness`, none for the
 /// other two). Requests with other names, or the wrong value kind, are handed back in order,
-/// which is the shape `render_prefs::apply_preference_requests` set.
+/// the shape [`crate::audio::apply_preference_requests`] has too.
 ///
 /// Without a body there is no `CameraManager` to write, exactly as retail's callback returns
 /// when the current camera manager is absent; the request is still consumed, because

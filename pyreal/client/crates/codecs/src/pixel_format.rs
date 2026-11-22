@@ -297,21 +297,6 @@ impl PixelFormatDesc {
     }
 }
 
-/// The client's "is this a D3D format" test.
-///
-/// Returns **false** for exactly four formats — 8-bit palettised, `INDEX16`, `CUSTOM_LSCAPE_R8G8B8`,
-/// `CUSTOM_LSCAPE_ALPHA` — and true for everything else. The four false cases need CPU decoding.
-#[must_use]
-pub const fn is_d3d_format(format: PixelFormatId) -> bool {
-    !matches!(
-        format,
-        PixelFormatId::P8
-            | PixelFormatId::Index16
-            | PixelFormatId::CustomLscapeR8G8B8
-            | PixelFormatId::CustomLscapeAlpha
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,60 +313,6 @@ mod tests {
             (a.red_mask, a.green_mask, a.blue_mask)
         );
         assert_eq!(d.alpha_mask, 0);
-    }
-
-    // The verified format test returns false for exactly four formats: `PixelFormatId::P8`,
-    // INDEX16, CUSTOM_LSCAPE_R8G8B8, CUSTOM_LSCAPE_ALPHA -- and true for everything else.
-    #[test]
-    fn is_d3d_format_is_false_for_exactly_four_formats() {
-        let false_set = [
-            PixelFormatId::P8,
-            PixelFormatId::Index16,
-            PixelFormatId::CustomLscapeR8G8B8,
-            PixelFormatId::CustomLscapeAlpha,
-        ];
-        for f in false_set {
-            assert!(!is_d3d_format(f), "{f:?} must not be a D3D format");
-        }
-        // Every other named value in the enum must be true. Walk the whole enum rather than a
-        // hand-picked sample.
-        let everything_else = [
-            PixelFormatId::Unknown,
-            PixelFormatId::R8G8B8,
-            PixelFormatId::A8R8G8B8,
-            PixelFormatId::X8R8G8B8,
-            PixelFormatId::R5G6B5,
-            PixelFormatId::X1R5G5B5,
-            PixelFormatId::A1R5G5B5,
-            PixelFormatId::A4R4G4B4,
-            PixelFormatId::A8,
-            PixelFormatId::X4R4G4B4,
-            PixelFormatId::A2B10G10R10,
-            PixelFormatId::A8B8G8R8,
-            PixelFormatId::X8B8G8R8,
-            PixelFormatId::A2R10G10B10,
-            PixelFormatId::V8U8,
-            PixelFormatId::D16Lockable,
-            PixelFormatId::D32,
-            PixelFormatId::D15S1,
-            PixelFormatId::D24S8,
-            PixelFormatId::D24X8,
-            PixelFormatId::D24X4S4,
-            PixelFormatId::D16,
-            PixelFormatId::CustomR8G8B8A8,
-            PixelFormatId::CustomA8B8G8R8,
-            PixelFormatId::CustomB8G8R8,
-            PixelFormatId::CustomRawJpeg,
-            PixelFormatId::Dxt1,
-            PixelFormatId::Dxt2,
-            PixelFormatId::Dxt3,
-            PixelFormatId::Dxt4,
-            PixelFormatId::Dxt5,
-            PixelFormatId::Other(1234),
-        ];
-        for f in everything_else {
-            assert!(is_d3d_format(f), "{f:?} must be a D3D format");
-        }
     }
 
     // Oracle: the raw enum values.

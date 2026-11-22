@@ -1,9 +1,8 @@
 # Running the game with the samples
 
-**Provenance: design.** How to load Dereth's own plugins and what each shows; the
-transcript below is the headless client's own output over a recorded session.
+**Provenance: design.** How to load Dereth's own plugins and what each shows.
 
-The eleven samples are in `pyreal/plugins/` of the repository, one folder per plugin. Every host
+The eleven samples are in `pyreal/plugins/` of the repository, one folder per plugin. The client
 can load the whole folder at once: a folder of packages loads each package in it.
 
 ## In the desktop client
@@ -32,81 +31,6 @@ plugin bar. What a sample does without a click of yours is bounded by the world'
 Type `/plugin` for the plugin panel: every plugin and its state, with **Enable**, **Disable**,
 **Reload** and **Reload All**. What a sample prints, and any error it meets, is in the chat. The
 desktop client offers every capability the samples use, so all nine load.
-
-## In the headless client
-
-The headless client plays a recorded session (or a server, with `--connect`) with no window. It
-draws nothing but keeps every plugin window's tree, which a script prints with `ui dump`, and it
-reads the game's data files from `--dat-dir`.
-
-```text
-# samples.script
-login long-solo-play +Aldric
-replay 120
-plugin list
-say /xp
-say /track
-say /chatlog 2
-say /nav Holtburg
-tick 1
-chat
-ui dump
-```
-
-```text
-cargo run -p dereth-headless -- --script samples.script --plugins pyreal/plugins --dat-dir <the game's data folder> --captures fixtures/packet-captures
-```
-
-`login` replays the recording's login and enters the world as `+Aldric`; `replay 120` carries on
-with the recording at its own pace for 120 seconds (the character fights a sparring golem);
-`say` types a line in the chat bar; `tick 1` runs one more frame, so the last command's answer is
-printed; `chat` prints the chat lines since the last `chat`, each after its chat type number.
-An excerpt of what it prints:
-
-```text
-plugin network.dereth.autologin 0.2.0 running
-plugin network.dereth.chatfilter 0.2.0 running
-plugin network.dereth.idnotices 0.2.0 running
-plugin network.dereth.looter 0.2.0 running
-plugin network.dereth.navigator 0.4.0 running
-plugin network.dereth.trackers 0.3.0 running
-plugin network.dereth.xpmeter 0.1.0 running
-…
-chat 5 [ID] Portal: Central Courtyard
-chat 5 XP this session: 11 in 1 gains, 1,173 per hour. Watched in all: 11.
-chat 0 Dealt 36, taken 3, 1 kills.
-chat 5 [combat_enemy] Critical hit! Sparring Golem grazes your foot for 3 points of bludgeoning damage!
-chat 5 [combat_self] You stab Sparring Golem for 5 points of piercing damage!
-chat 0 [Nav] Pointing at Holtburg (42.2N 33.8E).
-…
-window network.dereth.trackers hud open=false
-  hud #hud anchor="top_right"
-    label #line text="36 dealt / 3 taken / 1 kills"
-…
-window network.dereth.xpmeter main open=false
-  window #main title="XP Meter" width=24
-    row
-      label text="This session:"
-      label #earned text="11"
-    row
-      label text="Rate:"
-      label #rate text="1,205 / hour"
-    row
-      label text="Unassigned:"
-      label #unassigned text="11"
-    label #level text="989 to next level"
-    button #reset text="Reset"
-```
-
-Seven of the nine load. **Follow** and **Tank** require the `nav.moveto` capability, which the
-headless client offers only with `--world` (a device-free world in which a body stands and moves);
-without it they are refused with the reason, and with it all nine load.
-
-Every window starts closed, as in the desktop client; `ui bar <plugin>` opens a plugin's main
-window as a click on its plugin bar button does (`ui bar network.dereth.xpmeter`). To click a
-window, `ui click <plugin> <window> <node>` (`ui click network.dereth.xpmeter main reset`);
-to change a toggle, `ui set <plugin> <window> <node> <json>` (`ui set network.dereth.looter main auto
-true`). `plugin console <id>` prints what a plugin printed, and the errors it met.
 
 ## What to look for
 

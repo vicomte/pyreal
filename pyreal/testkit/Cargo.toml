@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 # One test target per tier, and `autotests = false` so a stray `tests/*.rs` cannot become a second
-# link step silently -- the same arrangement `pyreal-client`, `pyreal-client-net` and `dereth-headless` use.
+# link step silently -- the same arrangement `pyreal-client` and `pyreal-client-net` use.
 autotests = false
 
 # **The harness crate.** It is test support: nothing in `tools/`,
@@ -76,10 +76,7 @@ pyreal-horizon.workspace = true
 # The pure helpers and presentation the interface draws with, for the scenarios that check them.
 pyreal-ui-logic.workspace = true
 pyreal-presentation.workspace = true
-pyreal-terrain.workspace = true
-pyreal-scene.workspace = true
 pyreal-world-data.workspace = true
-pyreal-chargen.workspace = true
 # `pyreal_primitives::num::math`: the scenarios build headings with the same portable trigonometry as the client.
 pyreal-primitives.workspace = true
 # The scenario modules whose drives build animation and asset records. Path-only and dev-only.

@@ -5,12 +5,9 @@
 //! These live here because `pyreal_client_runtime::present::Scene` --
 //! `fn view_params(&self, w: u32, h: u32) -> ViewParams` -- has to be nameable by a crate that may
 //! not depend on a renderer, as with `Viewport` and `GameView`: the type both sides agree on
-//! belongs under both. `pyreal_codecs::camera` re-exports every item here, so
-//! `dereth_render::camera::ViewParams` still resolves.
+//! belongs under both.
 //!
-//! The arithmetic is not here. `projection`, `perspective_fov_lh`, `view_from_frame`,
-//! `swap_forward_and_up`, `clamp_viewport` and `compute_game_viewport` belong to the renderer, in
-//! `pyreal-codecs`.
+//! The arithmetic is not here: the engine builds its own projection (`pyreal-engine`'s `camera`).
 
 use glam::Mat4;
 use pyreal_primitives::num::math;
@@ -21,8 +18,6 @@ pub use pyreal_primitives::Viewport;
 pub const ZNEAR: f32 = 0.1;
 /// The far plane the renderer is set up with.
 pub const ZFAR: f32 = 4000.0;
-/// The sky pass temporarily multiplies `zfar` by four, yielding 16000 at the default distance.
-pub const ZFAR_SKY: f32 = ZFAR * 4.0;
 /// The field-of-view preference's default, in degrees.
 pub const DEFAULT_FOV_DEGREES: f32 = 90.0;
 /// The default-field-of-view setter converts the preference with this constant, not with a

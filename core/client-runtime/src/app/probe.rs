@@ -74,30 +74,6 @@ impl<'a, S: Shell> AppProbe<'a, S> {
         &self.app.movement
     }
 
-    /// The body's real camera controller, for the tests.
-    ///
-    /// The eight commands of [`App::apply_world_camera_action`] are arithmetic and ordering —
-    /// a viewer offset, a stiffness, two mode flags — so they are asserted against the client's
-    /// own arms rather than by eye.
-    #[must_use]
-    pub fn camera_control(self) -> Option<&'a crate::camera::CameraControl> {
-        self.app
-            .world
-            .as_ref()
-            .and_then(|w| w.character.as_ref())
-            .map(|c| &c.camera)
-    }
-
-    /// Return whether anything has asked the main loop to stop.
-    ///
-    /// A test reads it to assert that a plain `Escape` does not end the process. Ending the loop
-    /// on `Escape` straight from the raw event drain would let one `Escape` with the chat entry
-    /// focused terminate a live client.
-    #[must_use]
-    pub const fn device_done(self) -> bool {
-        self.app.pump.state.is_done
-    }
-
     /// What the three host-side action arms did:
     /// `(visibility-toggle dispatches, of those that answered TRUE, stop-completely calls,
     /// screenshots saved, screenshots failed)`.
@@ -250,64 +226,10 @@ impl<'a, S: Shell> AppProbe<'a, S> {
             .amount(FrameEventKind::PlayerTeleportBeforeABody)
     }
 
-    /// How many times [`App::stream_world`] failed, for the tests. A green run has zero: the
-    /// counter exists so that a tolerated failure cannot hide behind a passing suite.
-    #[must_use]
-    pub const fn stream_failures(self) -> u64 {
-        self.app.events.total(FrameEventKind::StreamFailed)
-    }
-
-    /// How many frames applied a changed scene-owned render preference, and what the last of
-    /// them did. The preference update is a poll, so both stay at zero on every frame on which
-    /// nothing moved.
-    #[must_use]
-    pub const fn render_pref_applies(self) -> u64 {
-        self.app
-            .events
-            .total(FrameEventKind::RenderPreferencesApplied)
-    }
-
-    /// [`Self::render_pref_applies`]'s detail: the last poll's own flags.
-    #[must_use]
-    pub const fn last_render_pref_work(self) -> crate::frame_events::RenderPrefWork {
-        match self
-            .app
-            .events
-            .last(FrameEventKind::RenderPreferencesPolled)
-        {
-            Some(FrameEvent::RenderPreferencesPolled(w)) => w,
-            // No poll yet, which is `RenderPrefWork::default()` written out: `Default::default`
-            // is not a `const fn` and this accessor has always been one.
-            _ => crate::frame_events::RenderPrefWork {
-                flushed: false,
-                mid_radius_changed: false,
-                detail_texturing_changed: false,
-                blocks_queued: 0,
-                blocks_rebuilt: 0,
-                detail_surfaces: 0,
-                ground_changed: false,
-                sky_changed: false,
-                ground_refused: None,
-                sky_refused: None,
-                objects_changed: false,
-                objects_refused: None,
-                objects_waiting: false,
-                fidelity_changed: false,
-                fidelity_refused: false,
-            },
-        }
-    }
-
     /// How many times [`App::reset_world_view`] has run.
     #[must_use]
     pub const fn world_resets(self) -> u64 {
         self.app.events.total(FrameEventKind::WorldReset)
-    }
-
-    /// Texture slots the teardowns have handed back, cumulatively.
-    #[must_use]
-    pub const fn world_textures_released(self) -> u64 {
-        self.app.events.amount(FrameEventKind::WorldReset)
     }
 
     /// The switches the landscape is (re)built from, for the tests.
@@ -327,15 +249,6 @@ impl<'a, S: Shell> AppProbeMut<'a, S> {
     /// The HUD state, mutably, so a test can feed it a recorded session's events.
     pub fn hud_mut(self) -> &'a mut S::Hud {
         &mut self.app.hud
-    }
-
-    /// The same, mutably, for a test that has no server to hear it from.
-    ///
-    /// [`App::build_host_state`] rewrites the five fields it reads off the link every frame and
-    /// leaves the rest alone, so the character set, the world name and the char-gen response
-    /// survive being written here -- which is what lets the character screens be driven offline.
-    pub fn host_state_mut(self) -> &'a mut HostState {
-        &mut self.app.host_state
     }
 
     /// The same tables, mutable. A test seeds a player and an inventory the
@@ -433,14 +346,5 @@ impl<'a, S: Shell> AppProbeMut<'a, S> {
         cfg: crate::scene::SceneConfig,
     ) -> Result<(), pyreal_world_data::landblock::WorldError> {
         self.app.present.load_world(store, cfg, &mut self.app.world)
-    }
-
-    /// The presentation's world draw on its own, from this `App`'s world state:
-    /// what the device tests did through the renderer.
-    ///
-    /// # Errors
-    /// As [`crate::present::Presentation::draw_scene`].
-    pub fn draw_world_scene(self) -> Result<(), crate::present::PresentError> {
-        self.app.present.draw_scene(self.app.world.as_ref())
     }
 }

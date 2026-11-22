@@ -7,8 +7,8 @@
 //! The reading is the data-file crate's ([`pyreal_dat::DatFile::read_iterations`]): the header,
 //! then for a file from Throne of Destiny on one path down the directory to the iteration list
 //! (`0xFFFF0001`), and for an older file (`portal.dat`, `cell.dat`) the iteration its header
-//! keeps. A handful of small reads however large the file, so the pre-launch check can afford it
-//! on every PLAY. Every length and offset is bounded before it is used: a truncated download or a
+//! keeps. A handful of small reads however large the file, so a folder's check can afford it
+//! every time. Every length and offset is bounded before it is used: a truncated download or a
 //! folder of something else comes back as an error, never as a panic or an unbounded allocation.
 
 use std::path::Path;

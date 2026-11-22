@@ -310,11 +310,6 @@ pub struct WorldState {
     pub far_animated: std::collections::BTreeMap<ObjectId, f64>,
 }
 
-/// One object's **pose**, as [`WorldState::server_object_pose`] reports it: the animation ids
-/// the sequence is holding, the node it is playing, the node it wraps back to, and the frame it
-/// is on.
-pub type ObjectPose = (Vec<DataId>, Option<usize>, Option<usize>, i32);
-
 impl WorldState {
     /// A point inside one resident interior cell that a body can stand at, in that cell's own
     /// block-local space, for `--start-cell` and for the tests.
@@ -326,34 +321,6 @@ impl WorldState {
     #[must_use]
     pub fn standable_point(&self, cell: CellId) -> Option<Vec3> {
         crate::object_step::standable_point(self.character.as_ref()?, cell)
-    }
-
-    /// For the tests: what made of the resident
-    /// cells, and the physics handles one cell's objects hold.
-    #[must_use]
-    pub fn cell_static_stats(&self) -> pyreal_world_data::env_cells::CellStaticStats {
-        self.cell_static_objects.stats
-    }
-
-    /// The bodies one interior cell's baked objects hold, for the tests.
-    #[must_use]
-    pub fn cell_static_handles(&self, cell: CellId) -> &[pyreal_physics::PhysHandle] {
-        self.cell_static_objects.handles(cell)
-    }
-
-    /// How many physics bodies the resident interior cells' baked objects hold **right now**.
-    /// `cell_statics.created - cell_statics.destroyed`, counted from the table
-    /// rather than from the counters so that the two can be compared.
-    #[must_use]
-    pub fn cell_static_bodies(&self) -> usize {
-        self.cell_static_objects.len()
-    }
-
-    /// Which interior cells hold those bodies. A count cannot say which *blocks*
-    /// a residency spans, and that is the question block release has to answer.
-    #[must_use]
-    pub fn cell_static_cells(&self) -> Vec<CellId> {
-        self.cell_static_objects.registered_cells()
     }
 
     pub fn cell_seen_outside(&self, cell: CellId) -> bool {
@@ -381,31 +348,6 @@ impl WorldState {
     #[must_use]
     pub fn viewer_block(&self) -> Option<(i32, i32)> {
         self.streamer.window.viewer_block()
-    }
-
-    /// Landblocks waiting for the object half of their interior release
-    /// (`released_interiors`). Instrumentation.
-    #[must_use]
-    pub fn released_interior_count(&self) -> usize {
-        self.released_interiors.len()
-    }
-
-    /// Objects still owed their enter-world (`entering_world`). Instrumentation.
-    #[must_use]
-    pub fn entering_world_count(&self) -> usize {
-        self.entering_world.len()
-    }
-
-    /// Sound triggers taken off the drivers and not yet collected. Instrumentation.
-    #[must_use]
-    pub fn pending_sound_count(&self) -> usize {
-        self.pending_sound.len()
-    }
-
-    /// House-barrier contacts waiting for the drain in `Self::sync_objects`. Instrumentation.
-    #[must_use]
-    pub fn pending_restriction_count(&self) -> usize {
-        self.pending_restriction_effects.len()
     }
 
     /// The landscape draw radius currently live — what the last preference update set.
@@ -590,20 +532,6 @@ impl WorldState {
         Some(Vec3::new(o.frame.origin.x, o.frame.origin.y, top))
     }
 
-    /// The cell this object is drawn **in**, as
-    /// `Self::object_draw_cell` resolves it for both the object pass and
-    /// `Self::collect_particles`.
-    ///
-    /// `None` is the native "in no cell list at all" state that visibility departure leaves an
-    /// object in, and it is
-    /// the whole of what keeps a teleported-away body — and anything its `ParticleManager`
-    /// is still emitting — off this client's screen. Published because the cell and the frame
-    /// are separately observable.
-    #[must_use]
-    pub fn server_object_draw_cell(&self, id: ObjectId) -> Option<CellId> {
-        self.object_draw_cell(self.objects.get(&id)?)
-    }
-
     /// The cell whose native object-list walk owns this object.
     ///
     /// A placed object carries its own cell. A held object deliberately has no wire position
@@ -649,25 +577,6 @@ impl WorldState {
         None
     }
 
-    /// Where the outermost holder of this object stands, in render space (its own origin when
-    /// nothing holds it): the point a held object is drawn lifted from, so it moves with its holder.
-    #[must_use]
-    pub fn object_stance_origin(&self, object: &WorldObject) -> Option<Vec3> {
-        let mut at = object;
-        for _ in 0..=self.objects.len() {
-            let Some((id, _)) = at.sim.parent else {
-                return Some(at.frame.origin);
-            };
-            if self.player_object == Some(id) {
-                if let Some(c) = self.character.as_ref() {
-                    return Some(c.render_frame().origin);
-                }
-            }
-            at = self.objects.get(&id)?;
-        }
-        None
-    }
-
     /// One object's part frames in render space, for the tests — what part updating last wrote.
     /// The placement tests assert against these
     /// because the placement id changes where the parts sit and nothing else about the object.
@@ -686,90 +595,12 @@ impl WorldState {
         )
     }
 
-    /// One object's part graphics-object ids and each part's maximum degrade distance,
-    /// for the tests.
-    ///
-    /// A successful part replacement writes both halves; a failed replacement
-    /// leaves both alone, so a test that reads only the id cannot tell a
-    /// swap that kept the *limb* from one that kept the limb and silently took the new
-    /// object's LOD table. `max_degrade_distance` is **100.0** for a part with no record, so a
-    /// pair of objects with different records is the only assertion that cannot pass by both
-    /// being absent.
-    #[must_use]
-    pub fn server_object_part_lod(&self, id: ObjectId) -> Option<Vec<(DataId, f32)>> {
-        let o = self.objects.get(&id)?;
-        Some(
-            o.sim
-                .driver
-                .borrow()
-                .part_array
-                .parts
-                .iter()
-                .map(|p| (p.gfxobj_id, p.max_degrade_distance()))
-                .collect(),
-        )
-    }
-
-    /// The local body's, likewise — he has no `SceneObject`.
-    #[must_use]
-    pub fn character_part_lod(&self) -> Option<Vec<(DataId, f32)>> {
-        let c = self.character.as_ref()?;
-        let d = c.driver();
-        Some(
-            d.part_array
-                .parts
-                .iter()
-                .map(|p| (p.gfxobj_id, p.max_degrade_distance()))
-                .collect(),
-        )
-    }
-
-    /// The local body's root frame and its part frames in render space, for the tests — the
-    /// two inputs `crate::models::child_frame` takes when the **player** is the holder.
-    ///
-    /// The player has no `SceneObject`, so `Self::server_object_part_frames` cannot answer
-    /// for him.
-    #[must_use]
-    pub fn character_frames(&self) -> Option<(Frame, Vec<Frame>)> {
-        let c = self.character.as_ref()?;
-        let d = c.driver();
-        Some((
-            c.render_frame(),
-            d.part_array.parts.iter().map(|p| p.pos).collect(),
-        ))
-    }
-
-    /// The **local body's** animation state, for the tests: whether anything is playing, the
-    /// current sequence frame, and the forward command its motion interpolation is in.
-    ///
-    /// `server_object_motion` below cannot answer for the player, who has no `SceneObject`.
-    /// This exists because a rebuilt body has to end up animating *where it already was*: a
-    /// `set_motion_table` on an unchanged table id runs `enter_default_state`, whose
-    /// `initialize_state` restarts the sequence, and two bodies at different frames of the
-    /// same idle differ on screen by **pose** while every part-id assertion still passes.
-    /// A part-id-only assertion therefore misses this visible pose difference.
-    ///
-    /// `has_anims` is the third state: the sequence falls back
-    /// to the **placement frame** when its node list is empty, so a body with no animation at
-    /// all is a body standing in the setup record's reference pose.
-    #[must_use]
-    pub fn character_motion(&self) -> Option<(bool, i32, MotionCommand)> {
-        let c = self.character.as_ref()?;
-        let d = c.driver();
-        Some((
-            d.sequence.has_anims(),
-            d.sequence.curr_frame_number(),
-            d.movement.interp.interpreted_state.forward_command,
-        ))
-    }
-
     /// One object's **stance**: the stored current movement style that the movement decoder
     /// compares its buffer's style word against and then writes.
     ///
-    /// `Self::character_motion` and `Self::server_object_motion` both report the *forward*
-    /// command, which no style word carries; this is the other half, and on a
-    /// `MoveTo`/`TurnTo` buffer it is the only thing in the buffer that can move at all. The
-    /// local body's equivalent is read through `Character::driver` by the player-movement
+    /// `Self::server_object_motion` reports the *forward* command, which no style word
+    /// carries; this is the other half, and on a `MoveTo`/`TurnTo` buffer it is the only thing
+    /// in the buffer that can move at all. The local body's equivalent is read through `Character::driver` by the player-movement
     /// tests, which is why there is no `character_style` beside it.
     #[must_use]
     pub fn server_object_style(&self, id: ObjectId) -> Option<MotionCommand> {
@@ -783,28 +614,6 @@ impl WorldState {
                 .interpreted_state
                 .current_style,
         )
-    }
-
-    /// One object's **pose**: the animations its sequence is actually playing, the node it is
-    /// on, and the frame it is at.
-    ///
-    /// The observable is *"a creature's pose follows the style word"*, and the stance
-    /// word alone cannot say that: performing the motion writes `interpreted_state.current_style`
-    /// **and** asks the motion table for the new stance's cycle, and a build that wrote the
-    /// word without reaching the table would satisfy `Self::server_object_style` and leave
-    /// the creature standing in the animation it had. These are the ids the parts are posed
-    /// from — reads `nodes[floor(frame_number)]` —
-    /// so a change here is a change on screen.
-    #[must_use]
-    pub fn server_object_pose(&self, id: ObjectId) -> Option<ObjectPose> {
-        let driver = self.objects.get(&id)?.sim.driver.borrow();
-        let seq = &driver.sequence;
-        Some((
-            seq.nodes().iter().map(|n| n.anim_id).collect(),
-            seq.curr(),
-            seq.first_cyclic(),
-            seq.curr_frame_number(),
-        ))
     }
 
     /// Read-only snapshot of a remote animation clock/root-motion source, for parity probes.
@@ -860,13 +669,6 @@ impl WorldState {
     #[must_use]
     pub fn always_daylight(&self) -> bool {
         self.always_daylight
-    }
-
-    /// The native process-global transition, exposed with the other landscape diagnostics so
-    /// a scene-replacement test can prove that installing a new scene did not reset it.
-    #[must_use]
-    pub fn environment_override_transition(&self) -> f32 {
-        self.environment_override.snapshot().transition
     }
 
     /// The current in-game time, for the log line, the moons' phases and the tests: `(year, day,
@@ -1261,19 +1063,6 @@ impl WorldState {
         false
     }
 
-    /// Each part's `(luminosity, diffuse)` of one object, as `draw_part` will bind it this
-    /// frame — `None` for an id the scene does not draw. A probe for tests.
-    #[must_use]
-    pub fn object_part_lighting(&self, id: ObjectId) -> Option<Vec<(f32, f32)>> {
-        if let Some(o) = self.objects.get(&id) {
-            return Some(o.sim.driver.borrow().part_array.part_lighting());
-        }
-        self.character
-            .as_ref()
-            .filter(|c| c.object_id() == id)
-            .map(|c| c.driver().part_array.part_lighting())
-    }
-
     /// The cell the viewer is standing in, interior or not — for the log line.
     #[must_use]
     pub fn viewer_cell_id(&self) -> Option<CellId> {
@@ -1310,13 +1099,6 @@ impl WorldState {
             None => self.free_camera_cell?.0,
         };
         (!pyreal_physics::landdefs::is_outdoors(cell)).then_some(cell)
-    }
-
-    /// The render-space point `traversal_cells` measures every portal against -- the
-    /// instrument for "the two arrivals put the viewpoint in different places".
-    #[must_use]
-    pub fn camera_position(&self) -> Vec3 {
-        self.camera.position
     }
 
     /// The smart-box dispatcher's object-movement update on the local body -- the accepted

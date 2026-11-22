@@ -8,8 +8,8 @@
 //!    `has_been_teleported` — which between them produce the single edge that starts both the
 //!    login tunnel and the portal tunnel.
 //! 2. **Where the answers go**: the hide-world flag becomes "do not draw the world this frame", and
-//!    the smart box's override FOV distance becomes
-//!    `dereth_render::camera::view_distance_override`.
+//!    the smart box's override FOV distance becomes the view distance the scene draws with
+//!    (`view_distance`).
 //!
 //! # The flags, and the one place this deviates
 //!
@@ -223,17 +223,6 @@ impl Teleport {
             };
     }
 
-    /// Expose the logoff-request latch so a test can see that the client asked.
-    ///
-    /// True from the logoff request until the smart-box animation update marks the logoff
-    /// started — i.e. for the three seconds between the request and the
-    /// world beginning to fold away, or twenty-three seconds for a player killer. It is the one
-    /// client-side fact that says the departure is under way and the screen has *not* been queued.
-    #[must_use]
-    pub const fn log_off_pending(&self) -> bool {
-        self.log_off_requested
-    }
-
     /// The client's `WorldObjects` constructor state: every flag zero, no player.
     ///
     /// Called at character-session end, which is what `ObjectStream::reset` does with the object
@@ -333,7 +322,7 @@ impl Teleport {
     /// Gameplay smart-box simulation — frame step 7.
     ///
     /// `game_view_distance` is the FOV-derived distance with the override off; see
-    /// `dereth_render::camera::view_distance_from_fov`.
+    /// `pyreal_client_contract::camera::view_distance_from_fov`.
     pub fn anim_use_time(&mut self, now: f64, game_view_distance: f32) {
         let was_tunnel = self.anim.state.is_tunnel();
         let inputs = TeleportInputs {

@@ -3,13 +3,13 @@
 //!
 //! A machine with the game's data passes tests that a machine without it fails, so a test that
 //! reaches for data it did not ask for is only found by public CI, late, and one failure at a time.
-//! This runs tier 0's test commands with every variable that names data emptied or pointed at
-//! nothing, the per-user folders (where programs keep their caches) pointed at a new empty one,
-//! and `--no-fail-fast`, then lists everything that failed.
+//! This runs tier 0's test commands with every variable that names data emptied, the per-user
+//! folders (where programs keep their caches) pointed at a new empty one, and `--no-fail-fast`,
+//! then lists everything that failed.
 //!
 //! A cargo `[env]` entry above the workspace cannot be removed, only outvoted by a value in the
-//! environment, so the variables are set rather than unset: each to what its readers take as not
-//! set, or, where they would then look in the checkout, to a path that holds nothing.
+//! environment, so the variables are set rather than unset, each to what its readers take as not
+//! set.
 //!
 //! The tests are built first, with the per-user folders where they are, so a compiler wrapper such
 //! as sccache keeps finding its own cache; then they run with the folders moved, and no wrapper,
@@ -29,16 +29,11 @@ const EMPTIED: &[&str] = &[
     "DERETH_TEST_DAT_DIR",
     "DERETH_TEST_PRETOD_DAT_DIR",
     "PYREAL_TEST_DAT_DIR",
-    "PYREAL_TEST_DXC_DIR",
     "PYREAL_TEST_LAUNCH_DAT_DIR",
     "PYREAL_TEST_PRETOD_DAT_DIR",
     "PYREAL_TEST_PRETOD_REFERENCE",
     "PYREAL_TEST_PRETOD_REFERENCE_PREVIEW",
 ];
-
-/// The variables naming data whose readers, with no value, look in the checkout or in the main
-/// checkout of a linked one: these name a path that holds nothing.
-const POINTED_AT_NOTHING: &[&str] = &["PYREAL_TEST_LAUNCH_FIXTURE"];
 
 /// The prefixes of the variables only tests read.
 const TEST_ONLY_PREFIXES: &[&str] = &["PYREAL_TEST_", "DERETH_TEST_"];
@@ -106,11 +101,10 @@ enum Setting {
 
 /// What takes the data away, while the tests are built and while they run: each variable of the
 /// process that only tests read is taken away; then the named ones and whatever a parent
-/// configuration sets (`inherited`) are emptied, or pointed at `nothing`.
+/// configuration sets (`inherited`) are emptied.
 fn no_data_settings(
     process_vars: &[String],
     inherited: &BTreeSet<String>,
-    nothing: &str,
 ) -> Vec<(String, Setting)> {
     let mut settings: Vec<(String, Setting)> = Vec::new();
     let mut set = |name: &str, setting: Setting| {
@@ -127,9 +121,6 @@ fn no_data_settings(
     }
     for var in EMPTIED {
         set(var, Setting::Value(String::new()));
-    }
-    for var in POINTED_AT_NOTHING {
-        set(var, Setting::Value(nothing.to_owned()));
     }
     settings
 }
@@ -290,11 +281,7 @@ pub fn no_data(commands: Vec<(String, Vec<&'static str>)>) -> i32 {
     let process_vars: Vec<String> = std::env::vars_os()
         .filter_map(|(name, _)| name.into_string().ok())
         .collect();
-    let building = no_data_settings(
-        &process_vars,
-        &inherited_env_keys(&ws, &cargo_home),
-        &scratch.join("nothing").to_string_lossy(),
-    );
+    let building = no_data_settings(&process_vars, &inherited_env_keys(&ws, &cargo_home));
     let mut running = building.clone();
     running.extend(running_settings(
         &home.to_string_lossy(),
@@ -368,28 +355,18 @@ mod tests {
         Setting::Value(text.to_owned())
     }
 
-    /// **No variable naming data survives**: the named ones go empty or point at nothing, a
-    /// parent configuration's entries go empty whatever they are called, and a test-only variable
-    /// the machine has set is taken away.
+    /// **No variable naming data survives**: the named ones and a parent configuration's entries
+    /// go empty whatever they are called, and a test-only variable the machine has set is taken
+    /// away.
     #[test]
     fn no_variable_that_names_data_reaches_the_tests() {
         let inherited = BTreeSet::from(["A_PARENT_ENTRY".to_owned()]);
         let process = ["PYREAL_TEST_CAPTURES".to_owned(), "PATH".to_owned()];
-        let s = no_data_settings(&process, &inherited, "N");
+        let s = no_data_settings(&process, &inherited);
         assert_eq!(setting(&s, "PYREAL_TEST_DAT_DIR"), Some(&value("")));
         assert_eq!(setting(&s, "A_PARENT_ENTRY"), Some(&value("")));
-        assert_eq!(setting(&s, "PYREAL_TEST_LAUNCH_FIXTURE"), Some(&value("N")));
         assert_eq!(setting(&s, "PYREAL_TEST_CAPTURES"), Some(&Setting::Removed));
         assert_eq!(setting(&s, "PATH"), None, "the rest of the machine stays");
-    }
-
-    /// **A parent's entry for a variable that must point at nothing still points at nothing**:
-    /// empty, its reader would look in the checkout.
-    #[test]
-    fn a_parents_entry_does_not_empty_a_variable_that_must_point_at_nothing() {
-        let inherited = BTreeSet::from(["PYREAL_TEST_LAUNCH_FIXTURE".to_owned()]);
-        let s = no_data_settings(&[], &inherited, "N");
-        assert_eq!(setting(&s, "PYREAL_TEST_LAUNCH_FIXTURE"), Some(&value("N")));
     }
 
     /// **While the tests run the per-user folders move and the tools stay findable**, so the cache

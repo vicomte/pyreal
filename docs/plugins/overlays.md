@@ -38,8 +38,7 @@ the marker says `on_top = true`; a radar marker as a blip on the radar (heading 
 the radar's range), a map marker on the map when the map is open, and the arrow at the top of the
 screen as a ring with its lit point toward the target, with the label and distance under it. The
 dot, the labels and the arrow are drawn under every interface, and the radar and map marks on each
-interface's own radar and map. The headless client draws nothing and offers none of the four; the conformance driver keeps them and
-lists them, one a line:
+interface's own radar and map. The conformance driver keeps them and lists them, one a line:
 
 ```text
 world <plugin> #<id> label="…" color=#RRGGBB object=0x… at=42.20N 33.90E

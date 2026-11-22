@@ -21,15 +21,13 @@ use pyreal_primitives::{CellId, Frame, LocalTime, ObjectId, Position, Quat, Vec3
 
 use crate::arena::{Arena, PhysHandle};
 use crate::cell::{Cell, CellResolver, CellRuntime};
-use crate::geom::plane::Plane;
-use crate::geom::PlaneExt;
 use crate::geom::Sphere;
 use crate::geom::SphereExt;
 use crate::globals;
 use crate::landdefs;
 use crate::longhash::LongHash;
 use crate::math::{self, V3};
-use crate::obj::{PhysicsObj, PhysicsTimeStamp, SetPositionError, TransientState};
+use crate::obj::{PhysicsObj, SetPositionError, TransientState};
 use crate::pmanager::{InterpolateDecision, InterpolationManager};
 use crate::source::{LandSource, SetupGeometry};
 use crate::transition::insert::find_valid_position;
@@ -230,6 +228,9 @@ pub struct PhysicsWorld {
     /// The host's entry-restriction answer, handed to every transition. `None` (the
     /// client's) asks the gate keepers' pushed records.
     entry_host: Option<Arc<dyn crate::transition::EntryRestrictionHost>>,
+    /// The one object whose sub-steps are being traced, and its trace.
+    #[cfg(feature = "trace")]
+    trace: Option<(PhysHandle, crate::trace::TraceRecorder)>,
 }
 
 impl std::fmt::Debug for PhysicsWorld {
@@ -261,6 +262,59 @@ impl PhysicsWorld {
             obj_maint_is_active: true,
             ethereal_deferrals: 0,
             entry_host: None,
+            #[cfg(feature = "trace")]
+            trace: None,
+        }
+    }
+
+    /// Trace `h`: from now on every sub-step of that object pushes one record of its state at the
+    /// sub-step's end. Replaces any trace in progress.
+    #[cfg(feature = "trace")]
+    pub fn trace_object(&mut self, h: PhysHandle) {
+        self.trace = Some((h, crate::trace::TraceRecorder::new()));
+    }
+
+    /// The records traced so far, leaving the trace running with none.
+    #[cfg(feature = "trace")]
+    pub fn take_trace(&mut self) -> Vec<crate::trace::TraceRecord> {
+        self.trace
+            .as_mut()
+            .map(|(_, r)| std::mem::take(&mut r.records))
+            .unwrap_or_default()
+    }
+
+    /// One record of `h`'s state at the end of a sub-step, if `h` is being traced.
+    #[cfg(feature = "trace")]
+    fn trace_sub_step(
+        &mut self,
+        h: PhysHandle,
+        now: LocalTime,
+        outcome: crate::transition::TransitionState,
+    ) {
+        let Some((traced, _)) = self.trace.as_ref() else {
+            return;
+        };
+        if *traced != h {
+            return;
+        }
+        let Some(o) = self.objects.get(h) else {
+            return;
+        };
+        let record = crate::trace::TraceRecord {
+            t: now.0,
+            update_time: self.sim_time,
+            cell: o.position.cell,
+            origin: o.position.frame.origin,
+            quat: o.position.frame.rotation,
+            velocity: o.velocity_vector,
+            cached_velocity: o.cached_velocity,
+            contact_plane: o.transient_state.in_contact().then_some(o.contact_plane),
+            state: o.state.0,
+            transient_state: o.transient_state.0,
+            transition_state: outcome,
+        };
+        if let Some((_, r)) = self.trace.as_mut() {
+            r.push(record);
         }
     }
 
@@ -305,12 +359,6 @@ impl PhysicsWorld {
         self.object_table.len()
     }
 
-    /// Cells this world holds a [`crate::cell::CellRuntime`] for. Instrumentation.
-    #[must_use]
-    pub fn cell_count(&self) -> usize {
-        self.cells.len()
-    }
-
     /// Entries across every cell's `object_list`, the membership that cell entry adds and cell
     /// departure removes. Instrumentation.
     #[must_use]
@@ -327,12 +375,6 @@ impl PhysicsWorld {
             .values()
             .map(|c| c.shadow_object_list.len())
             .sum()
-    }
-
-    /// Notices raised and not yet drained by [`Self::drain_notices`]. Instrumentation.
-    #[must_use]
-    pub fn pending_notice_count(&self) -> usize {
-        self.notices.len()
     }
 
     pub fn create(&mut self, id: ObjectId, geom: Arc<SetupGeometry>, dynamic: bool) -> PhysHandle {
@@ -876,6 +918,10 @@ impl PhysicsWorld {
                 .objects
                 .get(h)
                 .is_some_and(|o| new_pos.frame.origin.eq_eps(o.position.frame.origin));
+            // What the sub-step's sweep answered, for the trace: no sweep at all (nothing with
+            // collision geometry, or nowhere to go), the move refused, or the move made.
+            #[cfg(feature = "trace")]
+            let mut outcome = crate::transition::TransitionState::Invalid;
 
             if !has_geometry {
                 if let Some(o) = self.objects.get_mut(h) {
@@ -905,20 +951,25 @@ impl PhysicsWorld {
                             target.frame = f;
                         }
                     } else if o.state.is_sledding() && !o.velocity_vector.is_zero() {
+                        // The heading of the velocity's horizontal part: a body that only
+                        // falls (one standing on a slope) has none, and faces north.
                         let mut f = target.frame;
-                        let v = o.velocity_vector;
-                        let heading = {
-                            let mut probe = Frame::default();
-                            math::set_vector_heading(&mut probe, v);
-                            math::get_heading(&probe)
-                        };
-                        math::set_heading(&mut f, heading);
+                        math::set_heading(&mut f, math::flat_heading(o.velocity_vector));
                         target.frame = f;
                     }
                 }
                 let from = self.objects.get(h).map(|o| o.position);
                 if let Some(from) = from {
-                    match self.transition(h, &from, &target, false) {
+                    let swept = self.transition(h, &from, &target, false);
+                    #[cfg(feature = "trace")]
+                    {
+                        outcome = if swept.is_some() {
+                            crate::transition::TransitionState::Ok
+                        } else {
+                            crate::transition::TransitionState::Collided
+                        };
+                    }
+                    match swept {
                         None => {
                             if let Some(o) = self.objects.get_mut(h) {
                                 // The **origin is put back**, the rotation is kept,
@@ -932,11 +983,10 @@ impl PhysicsWorld {
                             }
                         }
                         Some(t) => {
-                            let achieved = math::get_offset(&from, &t.sphere_path.curr_pos);
-                            #[allow(clippy::cast_possible_truncation)]
-                            let inv = (1.0 / quantum) as f32;
+                            let achieved =
+                                math::achieved_velocity(&from, &t.sphere_path.curr_pos, quantum);
                             if let Some(o) = self.objects.get_mut(h) {
-                                o.cached_velocity = achieved.mul(inv);
+                                o.cached_velocity = achieved;
                             }
                             self.set_position_internal(h, &t);
                         }
@@ -956,6 +1006,8 @@ impl PhysicsWorld {
             // time and part-array movement handling (which the motion seam's `tick_movement`
             // above represents).
             self.position_use_time(h);
+            #[cfg(feature = "trace")]
+            self.trace_sub_step(h, now, outcome);
         }
     }
 
@@ -1019,23 +1071,24 @@ impl PhysicsWorld {
                 .motion
                 .as_ref()
                 .and_then(|s| s.motion_max_speed(use_adjusted));
+            // The failure detector is suppressed while the body is stuck to an object. The sticky
+            // sub-manager lives on the animation seam here, so the question crosses back through
+            // the motion source. Without it a stuck body that is also being corrected gives up on
+            // the node, snaps onto it, and the stick pulls it back the next sub-step: a melee
+            // attacker seen by another client jumps back and forth by a stick step at a time.
+            let sticky = o.motion.as_ref().is_some_and(|s| s.is_sticky());
             m.adjust_offset(
                 &o.position,
                 o.transient_state.in_contact(),
                 quantum,
                 &mut offset,
-                // The omitted suppression query reads the *sticky* sub-manager of the same
-                // position manager. That one lives on the animation
-                // seam here and no query crosses back, so the failure detector is never
-                // suppressed; a body that is both stuck to something and being corrected is the
-                // only case that differs, and it gives up on the node a window sooner.
-                false,
+                sticky,
             );
         }
         if let Some(m) = o.motion.as_mut() {
             m.adjust_position_offset(&mut offset, quantum);
         }
-        *out = math::combine(&o.position.frame, &offset);
+        *out = math::combine_wide(&o.position.frame, &offset);
         if !hidden {
             o.update_physics_internal(quantum, out);
         }
@@ -1315,46 +1368,6 @@ impl PhysicsWorld {
         // by the create-object handler in this tree, which attaches no motion manager to a server
         // object — [`ObjectPhysics::spawn`] creates a body and a `SetupGeometry` and stops there.
         true
-    }
-
-    /// The placement [`Self::enter_world`] would make for an object that is not in the world yet,
-    /// without making it: the finished transition, whose sphere path's current cell and position
-    /// are where the object would stand, or `None` where entry would be refused or would find no
-    /// cell. Nothing is committed: the object keeps its position, cell and shadows (as any
-    /// transition, the placement still stops a velocity it is told to kill and raises the notice
-    /// of a house barrier it meets). A host uses it to ask how a placement would come out before
-    /// it commits one. It does not ask the game record: for a body [placed as
-    /// sent](crate::obj::WeenieRestrictions::placed_as_sent), which entry does not place, it
-    /// answers the placement an ordinary body would get.
-    pub fn placement_transition(&mut self, h: PhysHandle, pos: &Position) -> Option<Transition> {
-        let target = {
-            let o = self.objects.get_mut(h)?;
-            if o.parent.is_some() {
-                return None;
-            }
-            // The position entry stores, normalised as storing it normalises it.
-            let kept = o.position;
-            o.store_position(pos);
-            let target = o.position;
-            o.position = kept;
-            target
-        };
-        let center = self.objects.get(h).map_or(Vec3::ZERO, |o| {
-            o.geometry
-                .path_spheres()
-                .first()
-                .map_or(Sphere::dummy().center, |s| s.center)
-        });
-        let (adjusted, cell) = self.adjust_position(&target, center)?;
-        let cell = cell?;
-        let t = self.run_transition(
-            h,
-            TransitionSeed::Placement {
-                begin_cell: Some(cell),
-            },
-            &adjusted,
-        )?;
-        t.sphere_path.curr_cell.is_some().then_some(t)
     }
 
     fn run_transition(
@@ -1724,13 +1737,27 @@ impl PhysicsWorld {
                 if o.state.is_inelastic() {
                     o.velocity_vector = Vec3::ZERO;
                 } else {
-                    let d = ci.collision_normal.dot(o.velocity_vector);
+                    let n = ci.collision_normal;
+                    let (nx, ny, nz) = (f64::from(n.x), f64::from(n.y), f64::from(n.z));
+                    let v = o.velocity_vector;
+                    let (vx, vy, vz) = (f64::from(v.x), f64::from(v.y), f64::from(v.z));
+                    let d = (vz * nz + vy * ny) + nx * vx;
                     if d < 0.0 {
                         // v' = v - (1 + e) * (v . n) * n; with the default e = 0.05 this removes
-                        // 105% of the into-surface component, a very slight bounce.
-                        o.velocity_vector = o
-                            .velocity_vector
-                            .add(ci.collision_normal.mul(-(elasticity + 1.0) * d));
+                        // 105% of the into-surface component, a very slight bounce. The client
+                        // works it in double precision and keeps the push as a float only along
+                        // y and z, and the speed it lands with depends on it to the last bit.
+                        let k = -(d * (f64::from(elasticity) + 1.0));
+                        #[allow(clippy::cast_possible_truncation)]
+                        let kept = |x: f64| f64::from(x as f32);
+                        #[allow(clippy::cast_possible_truncation)]
+                        {
+                            o.velocity_vector = Vec3::new(
+                                (k * nx + vx) as f32,
+                                (kept(k * ny) + vy) as f32,
+                                (kept(k * nz) + vz) as f32,
+                            );
+                        }
                     }
                 }
             }
@@ -1780,9 +1807,7 @@ impl PhysicsWorld {
     /// 4. Within `player_distance < 96.0`, interpolate to the position (moving-to flag passed on);
     ///    otherwise stop interpolation and set the position directly.
     ///
-    /// ACE transcribes the same function at `ACE.Server/Physics/PhysicsObj.cs:905`-`:933`, and
-    /// this crate already carried the interpolate arm's predicate alone as
-    /// [`Self::move_or_teleport_should_interpolate`] with no production caller.
+    /// ACE transcribes the same function at `ACE.Server/Physics/PhysicsObj.cs:905`-`:933`.
     ///
     /// **The `POSITION_TS` gate is the caller's here**, not this function's. The object-stream
     /// receiver has already run it (and the `TELEPORT_TS` rollback) in `ObjectStream`'s
@@ -2042,24 +2067,6 @@ impl PhysicsWorld {
                 }
             }
         }
-    }
-
-    /// The position-correction decision: within the 96 m activity radius
-    /// a contact update interpolates, beyond it the object snaps.
-    #[must_use]
-    pub fn move_or_teleport_should_interpolate(
-        &self,
-        h: PhysHandle,
-        stamp: u16,
-        contact: bool,
-    ) -> bool {
-        let Some(o) = self.objects.get(h) else {
-            return false;
-        };
-        if o.newer_event(PhysicsTimeStamp::Teleport, stamp) || o.cell.is_none() {
-            return false;
-        }
-        contact && o.player_distance < globals::ACTIVE_RADIUS
     }
 
     /// Resolve a `Position` to the cell that actually
@@ -2608,27 +2615,6 @@ impl PhysicsWorld {
             mover,
             object_table: Some(&self.object_table),
             entry_host: self.entry_host.as_deref(),
-        }
-    }
-
-    /// A height probe, for tests and for the placement helpers:
-    /// the terrain Z under an outdoor position.
-    #[must_use]
-    pub fn terrain_height_at(&self, pos: &Position) -> Option<f32> {
-        if !landdefs::is_outdoors(pos.cell) {
-            return None;
-        }
-        let block = self.land.landblock(pos.cell.landblock())?;
-        let poly = block.find_terrain_poly(pos.cell.index(), pos.frame.origin)?;
-        let mut p = pos.frame.origin;
-        let plane = Plane {
-            normal: poly.plane.normal,
-            d: poly.plane.d,
-        };
-        if plane.set_height(&mut p) {
-            Some(p.z)
-        } else {
-            None
         }
     }
 }

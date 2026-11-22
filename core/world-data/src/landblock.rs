@@ -1,9 +1,6 @@
 //! The landblock and region identities the whole landscape path is indexed by, and the error the
 //! scene refuses with. They live here because the land source, the interior cells and the
 //! character all read them, on the client and the server alike.
-//!
-//! `pyreal_client_runtime::landblock` re-exports this module, and keeps `block_shift` itself
-//! because that is the renderer's viewer-relative space and reads the renderer's block length.
 
 use pyreal_assets::{decode_any_in, DecodedAsset, Region};
 use pyreal_dat::{DbType, RetailDatStore};

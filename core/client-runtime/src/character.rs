@@ -1129,6 +1129,10 @@ impl MotionSource for SharedMotion {
     fn is_moving_to(&self) -> bool {
         self.driver.borrow().is_moving_to()
     }
+    /// Whether the body is stuck to an object, which keeps interpolation from giving up.
+    fn is_sticky(&self) -> bool {
+        self.driver.borrow().is_sticky()
+    }
 }
 
 use pyreal_world_data::setup::setup_geometry;
@@ -1204,10 +1208,6 @@ pub struct Character {
     pub input: CharacterInput,
     /// Last frame's, so a change can be issued as a motion the way a key press is.
     applied: CharacterInput,
-    /// A run rate held in place of the one the qualities give ([`Self::hold_run_rate`]).
-    held_run_rate: std::cell::Cell<Option<f32>>,
-    /// A Jump skill held in place of the qualities' ([`Self::hold_jump_skill`]).
-    held_jump_skill: std::cell::Cell<Option<i32>>,
     /// The object's scale.
     pub scale: f32,
     /// The setup record this body's part array and collision half are **actually** built from.
@@ -1271,7 +1271,7 @@ pub struct CharacterStats {
     /// Motions it refused, with a `WeenieError`.
     pub motions_refused: u64,
     /// The last `WeenieError` a refusal carried, passed through unchanged because the client's
-    /// callers compare against the numbers (`pyreal_animation::AnimError::Movement`).
+    /// callers compare against the numbers.
     pub last_refusal: u32,
     /// Physics notices drained.
     pub notices: u64,
@@ -1319,7 +1319,8 @@ pub struct CharacterStats {
     /// re-measurable when the corpus grows.
     pub motion_table_changes: u64,
     /// Teleports whose placement committed,
-    /// and teleports whose placement did not.
+    /// and teleports whose placement did not. The server putting the player back (the blip)
+    /// places the body the same way and is counted here too.
     ///
     /// A teleport writes `position` either way, so the two are indistinguishable from the
     /// outside — which is exactly what the client does with the `SetPositionError`
@@ -1455,8 +1456,6 @@ impl Character {
             restriction_effects: Vec::new(),
             input: CharacterInput::default(),
             applied: CharacterInput::default(),
-            held_run_rate: std::cell::Cell::new(None),
-            held_jump_skill: std::cell::Cell::new(None),
             scale: ALUVIAN_MALE_SCALE,
             setup_id: ALUVIAN_MALE_SETUP,
             motion_table_id: ALUVIAN_MALE_MOTION_TABLE,
@@ -1766,6 +1765,14 @@ impl Character {
     /// its origin: the server sends the landblock's cell 1 and the
     /// origin decides which of the 64 it really is.
     pub fn teleport(&mut self, pos: Position) {
+        self.set_position_simple(pos);
+        self.reset_viewer();
+    }
+
+    /// The positioning half of [`Self::teleport`], without the viewer reset: what the server
+    /// putting the player back (the force-position blip) does when the distance is within the
+    /// body's autonomy blip distance.
+    pub fn set_position_simple(&mut self, pos: Position) {
         let mut cell = pos.cell;
         let mut origin = pos.frame.origin;
         // **Only for an outdoor position.** The outside-cell conversion also accepts an
@@ -1833,16 +1840,21 @@ impl Character {
             self.world.calc_cross_cells(self.handle, false);
         }
         self.refresh_env();
+        // The body is drawn where it was put, facing the way it was put, its way between ticks
+        // begun again from there: drawn on from the ticks before, it would be shown turning
+        // across from the way it faced where it was.
+        self.between.begin_again();
+    }
+
+    /// The viewer half of [`Self::teleport`].
+    pub fn reset_viewer(&mut self) {
         // The viewer reset arm: a teleport must not leave the smoother
         // chasing the body across the world, and the sweep must not try to slide a sphere from
         // the old room to the new one.
         if let Some(p) = crate::camera::pivot_state(&self.world, self.handle) {
             self.camera.attach(&p);
         }
-        // The body is drawn where it was put, facing the way it was put, its way between ticks
-        // begun again from there: drawn on from the ticks before, it would be shown turning
-        // across from the way it faced where it was. The orbit camera is set behind it afresh.
-        self.between.begin_again();
+        // The orbit camera is set behind the body afresh.
         self.camera.place_orbit_anew();
     }
 
@@ -2524,41 +2536,13 @@ impl Character {
     /// when the game object's run-rate inquiry fails the rate is `my_run_rate` --
     /// so a failed inquiry falls back to `my_run_rate` — the last rate the *server* sent in a
     /// `MoveTo` blob (`unpack_movement`, cases 6 and 7) — and not to the constant.
-    ///
-    /// A rate held with [`Self::hold_run_rate`] stands in place of `rate`.
     pub fn set_run_rate(&self, rate: Option<f32>) {
-        self.driver.borrow_mut().env.run_rate = self.held_run_rate.get().or(rate);
-    }
-
-    /// Hold the body's Jump skill at `skill`, unburdened and allowed to jump, whatever its
-    /// qualities say, until it is let go (`None`): a body walked with no game behind it (an
-    /// editor's) jumps so.
-    pub fn hold_jump_skill(&self, skill: Option<i32>) {
-        self.held_jump_skill.set(skill);
-        if let Some(s) = skill {
-            self.set_jump_qualities(0.0, true, Some(s));
-        }
-    }
-
-    /// Hold the body's run rate at `rate`, whatever its qualities give, until it is let go
-    /// (`None`): a body walked with no game behind it (an editor's) is given its speed so.
-    pub fn hold_run_rate(&self, rate: Option<f32>) {
-        self.held_run_rate.set(rate);
-        if rate.is_some() {
-            self.driver.borrow_mut().env.run_rate = rate;
-        }
+        self.driver.borrow_mut().env.run_rate = rate;
     }
 
     /// Current weenie inquiry results at the jump callback, kept as facts in the shared driver.
     /// An absent velocity inquiry is distinct from a valid zero Jump skill.
-    ///
-    /// A skill held with [`Self::hold_jump_skill`] stands in place of these: an unburdened body
-    /// that may jump, with that skill.
     pub fn set_jump_qualities(&self, load: f32, can_jump: bool, skill: Option<i32>) {
-        let (load, can_jump, skill) = match self.held_jump_skill.get() {
-            Some(s) => (0.0, true, Some(s)),
-            None => (load, can_jump, skill),
-        };
         let mut d = self.driver.borrow_mut();
         d.env.load = load;
         d.env.jump_permission = Some(can_jump);

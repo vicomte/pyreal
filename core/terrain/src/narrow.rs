@@ -46,18 +46,6 @@ pub fn u16_of_i32(v: i32) -> u16 {
     u16::try_from(v).unwrap_or(0)
 }
 
-/// A `u32` value as `u8`.
-#[inline]
-pub fn u8_of_u32(v: u32) -> u8 {
-    u8::try_from(v).unwrap_or(u8::MAX)
-}
-
-/// An `i64` offset as `usize`. Negative is out of range and saturates to 0.
-#[inline]
-pub fn usize_of_i64(v: i64) -> usize {
-    usize::try_from(v).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,8 +68,5 @@ mod tests {
         assert_eq!(i32_of(7), 7);
         assert_eq!(u16_of_i32(-1), 0);
         assert_eq!(u16_of_i32(300), 300);
-        assert_eq!(u8_of_u32(255), 255);
-        assert_eq!(usize_of_i64(-5), 0);
-        assert_eq!(usize_of_i64(5), 5);
     }
 }

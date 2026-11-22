@@ -18,7 +18,6 @@ retail-dats = []
 pyreal-primitives.workspace = true
 # The movement formulas (run rate, jump height) have one implementation, in pyreal-rules.
 pyreal-rules.workspace = true
-thiserror.workspace = true
 
 # No dependency on the decoders (`pyreal-assets`): the runtime shapes here are built from decoded
 # records by `pyreal_world_data::anim_convert`, and the records the two share are `pyreal_primitives`'.

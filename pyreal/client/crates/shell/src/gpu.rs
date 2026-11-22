@@ -139,11 +139,6 @@ mod imp {
             self.device.capture_png(path).map_err(err)
         }
 
-        /// The Standard look's filtering is gone: the engine filters every picture its own way.
-        fn texture_filtering(&self) -> u32 {
-            0
-        }
-
         fn hifi_availability(&self) -> pyreal_client_contract::options::fidelity::Availability {
             pyreal_client_contract::options::fidelity::Availability {
                 built: true,
@@ -157,6 +152,12 @@ mod imp {
 
         fn render_scale_in_use(&self) -> Option<u32> {
             self.device.render_scale_in_use()
+        }
+
+        fn graphics_adapter(
+            &self,
+        ) -> Option<pyreal_client_contract::options::auto_quality::Adapter> {
+            self.device.graphics_adapter()
         }
 
         fn render_context(
@@ -239,10 +240,7 @@ mod imp {
             &mut self,
             store: &pyreal_dat::RetailDatStore,
             world: Option<&mut WorldState>,
-        ) -> Result<
-            pyreal_client_runtime::frame_events::RenderPrefWork,
-            pyreal_world_data::landblock::WorldError,
-        > {
+        ) -> Result<(), pyreal_world_data::landblock::WorldError> {
             let work = self.device.sim.update_render_preferences(store, world);
             self.device.update_render_preferences();
             work
@@ -350,7 +348,7 @@ mod imp {
             direction: pyreal_primitives::Vec3,
         ) {
             use pyreal_client_contract::overlay::PreviewLight as L;
-            use pyreal_world_render::lighting::LightType;
+            use pyreal_world_render::creature_mode::LightType;
             let light = match light {
                 L::Point => LightType::Point,
                 L::Directional => LightType::Directional,
@@ -358,12 +356,6 @@ mod imp {
             };
             if let Some(s) = self.device.previews.get_mut(id) {
                 s.mode.set_light(light, intensity, direction);
-            }
-        }
-
-        fn preview_use_sharp_mode(&mut self, id: PreviewId) {
-            if let Some(s) = self.device.previews.get_mut(id) {
-                s.mode.use_sharp_mode();
             }
         }
 
@@ -494,30 +486,6 @@ mod imp {
                 .previews
                 .get(id)
                 .map(|s| s.curr_frame_number(index))
-        }
-
-        fn preview_object_bounding_box(
-            &self,
-            id: PreviewId,
-            index: usize,
-            store: &pyreal_dat::RetailDatStore,
-        ) -> Option<pyreal_physics::geom::BBox> {
-            self.device
-                .previews
-                .get(id)
-                .and_then(|s| s.object(index))
-                .map(|o| pyreal_scene::preview::parts_bounding_box(&o.body.part_array, store))
-        }
-
-        fn preview_part_array_mut(
-            &mut self,
-            id: PreviewId,
-            index: usize,
-        ) -> Option<&mut pyreal_animation::parts::PartArray> {
-            self.device
-                .previews
-                .get_mut(id)
-                .and_then(|s| s.part_array_mut(index))
         }
 
         fn scene<'a>(

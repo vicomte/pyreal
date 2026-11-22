@@ -54,10 +54,8 @@ pyreal-plugin-wasm = { workspace = true, default-features = true }
 # The game's data files, read for the plugins that draw maps.
 pyreal-dat.workspace = true
 # Plugins' HTTPS requests to the domains their manifests list, and a world policy published at a
-# URL (`src/plugins.rs`, off the frame's thread). The same client and TLS the server's importer
-# already uses.
+# URL (`src/plugins.rs`, off the frame's thread).
 ureq = { version = "3", default-features = false, features = ["rustls"] }
-serde_json.workspace = true
 tracing.workspace = true
 # What the client knows before it connects: the player's worlds, accounts and data sets, and the
 # launch plan a session starts from (`src/front_door.rs`).
@@ -102,8 +100,7 @@ pyreal-protocol.workspace = true
 pyreal-client-model = { workspace = true, features = ["test-support"] }
 pyreal-audio.workspace = true
 pyreal-client-net = { workspace = true, default-features = true, features = ["test-support"] }
-# Recorded movement comparisons retain the physics trace recorder.
-pyreal-physics = { workspace = true, features = ["trace"] }
+pyreal-physics.workspace = true
 pyreal-dat = { workspace = true, features = ["test-support"] }
 # Synthetic data folders, for the front door's tests.
 pyreal-launch = { workspace = true, features = ["testing"] }
@@ -111,8 +108,6 @@ pyreal-world-data.workspace = true
 # The engine's picture path and an art pack's materials, for the served records' test.
 pyreal-engine.workspace = true
 pyreal-art-pack.workspace = true
-# The widget kit Horizon is drawn with: the context its windows are drawn in, for the pixel tests.
-pyreal-ui-kit.workspace = true
 # The icon composition and its mapper groups, for the icon tests.
 pyreal-ui-logic.workspace = true
 glam.workspace = true

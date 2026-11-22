@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-art-pack"
-description = "Art packs: models for retail objects, drawn by the high-fidelity presentation and the new engine in place of the objects they replace, and the one lookup that says which look draws an object."
+description = "Art packs: models for retail objects, drawn by the high-fidelity presentation and the new engine in place of the objects they replace."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

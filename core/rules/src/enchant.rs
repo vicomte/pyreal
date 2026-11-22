@@ -438,9 +438,8 @@ impl EnchantmentRegistry {
     ///
     /// **The counters are not maintained on this path.** The client's removal updates the spell
     /// totals (`_id & 0xFFFF`, `-1`) on every hit, and doing so needs the spell table; use
-    /// [`Self::remove_enchantment_counted`] where the caller has one. This form is kept because
-    /// `pyreal_client_model::Qualities::remove_enchantment` is on a wire path that does not, and
-    /// halving the counter is worse than leaving it.
+    /// [`Self::remove_enchantment_counted`] where the caller has one. This form is for a caller
+    /// that does not, because halving the counter is worse than leaving it.
     pub fn remove_enchantment(&mut self, layered_id: u32) -> bool {
         self.remove_enchantment_counted(layered_id, &|_| None)
     }
@@ -613,13 +612,9 @@ impl EnchantmentRegistry {
     /// This one-line correction deliberately crosses the original unit boundary: without it the
     /// cooldown wedge reads a field that is never equal to the key it is asked about and would be
     /// dead on arrival.
-    #[must_use]
-    pub fn on_cooldown(&self, cooldown_key: u32, now: LocalTime) -> bool {
-        self.cooldown_remaining(cooldown_key, now).is_some()
-    }
-
-    /// [`Self::on_cooldown`] with the client's **out-parameter** — the seconds left,
-    /// which is the only input the cooldown wedge's index has.
+    ///
+    /// The seconds left are the client's out-parameter, the only input the cooldown wedge's
+    /// index has.
     #[must_use]
     pub fn cooldown_remaining(&self, cooldown_key: u32, now: LocalTime) -> Option<f64> {
         let key = cooldown_key & 0xFFFF;

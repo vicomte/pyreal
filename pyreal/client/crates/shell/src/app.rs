@@ -157,6 +157,7 @@ impl<H: Host> App<H> {
         let mut core = CoreApp::<H>::bring_up_with_store(cfg, store, platform, present)?;
         core.interaction.client_build_id = H::BUILD_ID;
         core.build_commit = H::BUILD_COMMIT;
+        core.build_hash = H::BUILD_HASH;
         let shell = ClientShell::with_window_events(core.window.raw_handle(), window_events);
         Ok(Self { core, shell })
     }
@@ -199,17 +200,6 @@ impl<H: Host> App<H> {
     /// end.
     pub fn frame(&mut self) -> bool {
         self.core.frame(&mut self.shell)
-    }
-
-    /// Compose the host's controls after the game interface. During entry the host may
-    /// cover the game interface with its own loading screen.
-    pub fn set_host_overlay(
-        &mut self,
-        items: Vec<pyreal_client_contract::overlay::OverlayItem>,
-        hide_ui: bool,
-    ) {
-        self.shell.host_overlay = items;
-        self.shell.host_hides_ui = hide_ui;
     }
 
     /// Advance a hosted session while another view may own the display.

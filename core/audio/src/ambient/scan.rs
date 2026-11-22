@@ -11,7 +11,7 @@
 //! `max(|bx - mid|, |by - mid|) < 2`), 8x8 terrain cells each, each cell contributing its SW corner
 //! vertex as the sound position and its terrain word as the type and scene.
 
-use pyreal_assets::region::{Region, SoundDesc};
+use pyreal_assets::region::Region;
 use pyreal_primitives::Vec3;
 
 /// The number of landblocks on a side of the scanned neighbourhood.
@@ -58,7 +58,8 @@ pub struct TerrainNeighbourhood {
     pub cells: Vec<TerrainCell>,
 }
 
-/// Resolve a terrain type and scene index to an ambient sound descriptor.
+/// Resolve a terrain type and scene index to the index of its ambient sound descriptor within
+/// `Region::sound_info`, which is how the ambient runtime keys its long-lived per-descriptor state.
 ///
 /// A terrain type refers to scene types, and each scene type refers to an ambient sound
 /// description. The runtime model resolves those references to objects during unpacking.
@@ -66,33 +67,14 @@ pub struct TerrainNeighbourhood {
 /// **-1 means no object**, so an out-of-range or negative index
 /// contributes nothing. The decoders keep the indices, so resolution happens here.
 ///
-/// The lazy load and its sticky "not found" latch are the
-/// caller's business: this returns the descriptor, and [`crate::AudioAssets::sound_table`] does the
-/// load.
-#[must_use]
-pub fn get_stb_desc(region: &Region, terrain_type: u32, scene_index: u32) -> Option<&SoundDesc> {
-    let tt = region
-        .terrain_types
-        .get(usize::try_from(terrain_type).ok()?)?;
-    // This bound is the one the landblock scan tests.
-    let scene_ref = *tt.scene_types.get(usize::try_from(scene_index).ok()?)?;
-    let scene = region
-        .scene_info
-        .as_ref()?
-        .get(usize::try_from(scene_ref).ok()?)?;
-    region
-        .sound_info
-        .as_ref()?
-        .get(usize::try_from(scene.stb_index).ok()?)
-}
-
-/// The index of that descriptor within `Region::sound_info`, which is how the ambient runtime keys
-/// its long-lived per-descriptor state.
+/// The lazy load and its sticky "not found" latch are the caller's business: this returns the
+/// descriptor's index, and [`crate::AudioAssets::sound_table`] does the load.
 #[must_use]
 pub fn stb_desc_index(region: &Region, terrain_type: u32, scene_index: u32) -> Option<usize> {
     let tt = region
         .terrain_types
         .get(usize::try_from(terrain_type).ok()?)?;
+    // This bound is the one the landblock scan tests.
     let scene_ref = *tt.scene_types.get(usize::try_from(scene_index).ok()?)?;
     let scene = region
         .scene_info

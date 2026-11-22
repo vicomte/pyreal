@@ -51,8 +51,7 @@ use pyreal_client_shell::pointer::PutBack;
 use {pyreal_input::keys::Key, pyreal_input::keys::MouseButton};
 
 /// `GetSystemMetrics(SM_CXSCREEN / SM_CYSCREEN)` plus the monitor's own
-/// origin and usable rectangle, out of `winit` and dereth-render's safe Win32 wrapper — this crate is
-/// `#![forbid(unsafe_code)]`.
+/// origin and usable rectangle, out of `winit`: this crate is `#![forbid(unsafe_code)]`.
 ///
 /// The original client reads the primary work area with `SystemParametersInfoA(SPI_GETWORKAREA)`.
 /// This rebuild deliberately supports non-primary monitor coordinates, so it queries the selected
@@ -466,21 +465,10 @@ impl DesktopWindow {
         self.window.set_cursor(cursor.0.clone());
     }
 
-    /// Make the window system's own arrow the pointer's image over the window again.
-    pub fn set_default_cursor(&self) {
-        self.window.set_cursor(winit::window::CursorIcon::Default);
-    }
-
     /// The window's scale factor: its monitor's pixels to the point, as the desktop is set.
     #[must_use]
     pub fn scale_factor(&self) -> f64 {
         self.window.scale_factor()
-    }
-
-    /// Whether the window holds the pointer for a camera drag.
-    #[must_use]
-    pub fn holds_pointer(&self) -> bool {
-        self.hold.get() != Hold::Free
     }
 
     /// Hide the pointer and hold it still for a camera drag, where it is at `at` in client

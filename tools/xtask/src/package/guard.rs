@@ -1,6 +1,8 @@
 //! The deny scan: nothing but the allowlist goes into a release, and nothing that is or could be
 //! the game's data, a world's state or a capture goes in whatever its name. The one data file let
-//! in is the base art pack ([`BASE_PACK`]), by that name, where a package's allowlist puts it.
+//! in is the base art pack ([`BASE_PACK`]), by that name, where a package's allowlist puts it, and
+//! only when its header says it is a packed art pack. It is as large as it needs to be, so the size
+//! caps leave it out.
 //!
 //! It runs twice, over the staging folder and again over the finished archive's entries, so a
 //! fault in staging or in the archive writer cannot carry a file past it. Any finding fails the
@@ -8,10 +10,15 @@
 
 use std::path::Path;
 
-/// Where the games' data container keeps its header, and the magic it starts with: Asheron's
-/// Call's files at the first offset, Asheron's Call 2's at the second.
+/// Where the game's data container keeps its header, and the magic it starts with: files from
+/// Throne of Destiny on at the first offset, older ones at the second.
 const DAT_HEADER_OFFSETS: [usize; 2] = [0x140, 0x12C];
 const DAT_MAGIC: u32 = 0x5442;
+
+/// A packed art pack's header (the one at `0x140`) carries the data subset `Pack` here
+/// (`pyreal_art_pack::packed::SUBSET`); no retail file of any era does.
+const PACK_SUBSET_AT: usize = 0x150;
+const PACK_SUBSET: [u8; 4] = *b"Pack";
 
 /// How many leading bytes of each file the scan keeps: enough for the container header.
 pub const HEAD_LEN: usize = 0x200;
@@ -22,6 +29,14 @@ pub const BASE_PACK: &str = "base-pack.dat";
 /// Whether `path` is named as the base pack, which may be a `.dat` and carry the container header.
 fn is_base_pack(path: &str) -> bool {
     path.rsplit('/').next() == Some(BASE_PACK)
+}
+
+/// Whether these leading bytes are a packed art pack's: the container header at `0x140` with the
+/// art pack's data subset. A retail file renamed as the base pack fails this at any size.
+pub fn is_packed_art_pack(head: &[u8]) -> bool {
+    head.get(DAT_HEADER_OFFSETS[0]..DAT_HEADER_OFFSETS[0] + 4)
+        .is_some_and(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == DAT_MAGIC)
+        && head.get(PACK_SUBSET_AT..PACK_SUBSET_AT + 4) == Some(&PACK_SUBSET[..])
 }
 
 /// What one scanned entry is.
@@ -145,8 +160,9 @@ pub fn has_dat_magic(head: &[u8]) -> bool {
 
 /// The deny scan of a package: every file must be one of `required` or `optional` (paths below the
 /// top-level folder), each `required` one present, and a folder may only lie on the way to one of
-/// them. No file may have a refused name ([`name_finding`]) or the data-file header (the base pack
-/// aside), or be larger than `file_cap`, and the whole must be under `total_cap`.
+/// them. No file may have a refused name ([`name_finding`]) or the data-file header, and the base
+/// pack must be a packed art pack ([`is_packed_art_pack`]). Every file but the base pack must be
+/// under `file_cap`, and together under `total_cap`; the base pack has no cap.
 pub fn scan_tree(
     entries: &[Entry],
     required: &[String],
@@ -174,11 +190,19 @@ pub fn scan_tree(
             Kind::Dir if e.path.is_empty() || on_the_way(&e.path) => {}
             Kind::Dir => findings.push(format!("{shown}: a folder no allowed file is in")),
             Kind::File => {
-                total = total.saturating_add(e.size);
                 if !allowed(&e.path) {
                     findings.push(format!("{shown}: not on the allowlist"));
                 }
-                if has_dat_magic(&e.head) && !is_base_pack(&e.path) {
+                if is_base_pack(&e.path) {
+                    if !is_packed_art_pack(&e.head) {
+                        findings.push(format!(
+                            "{shown}: named as the base pack but not a packed art pack"
+                        ));
+                    }
+                    continue;
+                }
+                total = total.saturating_add(e.size);
+                if has_dat_magic(&e.head) {
                     findings.push(format!("{shown}: carries the game's data-file header"));
                 }
                 if e.size > file_cap {
@@ -197,7 +221,7 @@ pub fn scan_tree(
     }
     if total > total_cap {
         findings.push(format!(
-            "{total} bytes in all, over the {total_cap} byte cap for one package"
+            "{total} bytes in all besides the base pack, over the {total_cap} byte cap for one package"
         ));
     }
     findings

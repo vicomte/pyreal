@@ -80,12 +80,6 @@ impl MotionState {
         }
     }
 
-    /// Remove the first entry with this motion, if any.
-    pub fn remove_modifier(&mut self, motion: MotionCommand) -> Option<MotionEntry> {
-        let i = self.modifiers.iter().position(|m| m.motion == motion)?;
-        Some(self.modifiers.remove(i))
-    }
-
     pub fn clear_modifiers(&mut self) {
         self.modifiers.clear();
     }

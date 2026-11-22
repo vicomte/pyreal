@@ -254,11 +254,10 @@ which keeps the newest and discards anything older — and these rules:
 - **Deadlock breaker:** if more than **19** stamps are blocked **and** they have been blocked for more
   than **300 seconds**, the missing stamp is force-inserted as a null entry and the queue drains.
 
-> Pinned by `core/client-net/src/sequence_gate.rs ::
-> blocking_delivers_highest_and_highest_plus_one_and_blocks_the_rest`,
-> `:: the_very_first_entry_is_not_special_cased_into_delivery`,
-> `:: the_deadlock_breaker_fires_at_more_than_19_stamps_held_more_than_300_seconds`,
-> `:: polling_a_blocked_queue_resets_the_deadlock_timer`, `:: latest_only_keeps_the_newest`.
+> Pinned by `core/client-net/src/client_session/ordering.rs :: a_gap_blocks_and_then_fills`,
+> `:: the_first_stamp_must_be_zero_or_one`,
+> `:: the_deadlock_breaker_needs_both_nineteen_stamps_and_three_hundred_seconds`,
+> `:: polling_every_frame_defers_the_deadlock_breaker_for_ever`.
 
 ACE keeps **both** a packet reorder buffer and a fragment reorder buffer. The client does neither: it
 delivers packets in arrival order and relies on the blob layer.

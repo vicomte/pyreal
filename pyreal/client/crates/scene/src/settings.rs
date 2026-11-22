@@ -33,9 +33,8 @@
 //! [`MOST_FAR`](crate::settings::MOST_FAR) blocks (the far trees and the haze follow it:
 //! [`pyreal_engine::world::far_tree_rings`],
 //! [`pyreal_engine::atmosphere::fog_end_for`]). The lamps, the physical sky, the water, the slope
-//! materials and the damp are always drawn, as the engine starts. The diagnostic views draw
-//! nothing of their own here. The Standard look's texture detail, filtering and multi-pass alpha
-//! are gone.
+//! materials and the damp are always drawn, as the engine starts. The Standard look's texture
+//! detail, filtering and multi-pass alpha are gone.
 
 use pyreal_client_runtime::render_prefs::{
     FidelityFeature as F, FidelityPreferences, RenderPreferences,
@@ -272,12 +271,7 @@ mod tests {
                 inert.push(f.name());
             }
         }
-        // The better lighting's master box and the diagnostic views draw nothing of their own here.
-        assert_eq!(
-            inert,
-            ["Fidelity.Lighting", "Fidelity.Debug"],
-            "options that reach nothing"
-        );
+        assert!(inert.is_empty(), "options that reach nothing: {inert:?}");
     }
 
     /// High-Res Textures starts on, and its box off draws a picture's original level.

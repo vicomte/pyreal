@@ -1,39 +1,4 @@
-//! Information row formatting and vitae display arithmetic.
-
-/// The string an unknown value renders as, in every kind that has one.
-pub const UNKNOWN: &str = "???";
-
-/// The attribute row: `"%d"`, or `"???"` when unknown.
-#[must_use]
-pub fn format_attribute(v: Option<i32>) -> String {
-    v.map_or_else(|| UNKNOWN.to_owned(), |v| v.to_string())
-}
-
-/// The secondary-attribute row — its four shapes.
-#[must_use]
-pub fn format_attribute_2nd(cur: Option<i32>, max: Option<i32>, percent: Option<i32>) -> String {
-    match (cur, max, percent) {
-        (Some(c), Some(m), Some(p)) => format!("{c}/{m} ({p} %)"),
-        (Some(c), Some(m), None) => format!("{c}/{m}"),
-        (None, None, Some(p)) => format!("{p} %"),
-        _ => UNKNOWN.to_owned(),
-    }
-}
-
-/// The effect row's remaining duration — `"%d:%02d"` under an hour, `"%d:%02d:%02d"` at or
-/// over one.
-///
-/// The argument is **seconds remaining**, already rebased by the client model.
-#[must_use]
-pub fn format_duration(seconds_remaining: i64) -> String {
-    let s = seconds_remaining.max(0);
-    let (h, m, sec) = (s / 3600, (s % 3600) / 60, s % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{sec:02}")
-    } else {
-        format!("{m}:{sec:02}")
-    }
-}
+//! Vitae display arithmetic for the information rows.
 
 /// The vitae multiplier applied to a value, as the skill row computes it.
 ///
@@ -91,36 +56,6 @@ pub fn vitae_modifier(raw: i32, vitae: Option<f32>) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Oracle: the information panel's duration-formatting rules, evaluated for each shape.
-    #[test]
-    fn each_info_region_renders_its_documented_format() {
-        assert_eq!(format_attribute(Some(150)), "150");
-        assert_eq!(format_attribute(None), "???");
-
-        assert_eq!(format_attribute_2nd(Some(50), Some(100), None), "50/100");
-        assert_eq!(format_attribute_2nd(None, None, Some(75)), "75 %");
-        assert_eq!(
-            format_attribute_2nd(Some(50), Some(100), Some(50)),
-            "50/100 (50 %)"
-        );
-        assert_eq!(format_attribute_2nd(None, Some(100), None), "???");
-    }
-
-    /// Pinned behavior: the two duration shapes, at the
-    /// boundary between them.
-    #[test]
-    fn a_duration_gains_its_hour_field_at_exactly_one_hour() {
-        assert_eq!(format_duration(0), "0:00");
-        assert_eq!(format_duration(9), "0:09");
-        assert_eq!(format_duration(75), "1:15");
-        assert_eq!(format_duration(3599), "59:59");
-        assert_eq!(format_duration(3600), "1:00:00");
-        assert_eq!(format_duration(3661), "1:01:01");
-        // A duration already past zero — which rebasing makes reachable — shows 0:00
-        // rather than a negative.
-        assert_eq!(format_duration(-5), "0:00");
-    }
 
     /// Oracle: the client's own vitae-modifier arithmetic, step by step — the compare against
     /// the double `1.0`, the multiplicative enchant, the add of the double `0.5`, and the

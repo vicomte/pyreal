@@ -135,7 +135,6 @@ pub const CORE_FORBIDDEN: &[&str] = &[
 pub const CORE_NAMES_NOT: &[&str] = &[
     "pyreal_horizon",
     "pyreal_ui_logic",
-    "dereth_render",
     "pyreal_codecs",
     "pyreal_world_render",
 ];
@@ -396,7 +395,7 @@ pub fn tree_violations(krate: &str, tree: &[TreeEntry], forbidden: &[&str]) -> V
 
 /// Code lines (comments stripped) in `files` that name any of `paths`, e.g. `pyreal_client_model`.
 ///
-/// A name counts when it is a whole identifier: `dereth_ui` does not match inside `pyreal_ui_logic`.
+/// A name counts when it is a whole identifier: `ui_logic` does not match inside `pyreal_ui_logic`.
 pub fn code_violations(files: &[(PathBuf, String)], paths: &[&str]) -> Vec<String> {
     let mut out = Vec::new();
     for (file, text) in files {

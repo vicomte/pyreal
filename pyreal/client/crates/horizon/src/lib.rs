@@ -1,5 +1,4 @@
-//! The Horizon interface: the client's third interface, beside the modern and the classic one, drawn
-//! from its own art.
+//! The Horizon interface: the client's interface, drawn from its own art.
 //!
 //! The game underneath is the client's: the shared runtime's frame loop, network session, object
 //! model and physics, the shared scene that draws the world, and the shared device input with its

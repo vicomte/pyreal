@@ -1,9 +1,6 @@
 //! The one `panels::linkstatus` constant `GameView` names.
 //!
-//! `GameView::packet_loss_percent`'s default body is this number, so it has to be reachable from
-//! a crate that may not depend on `dereth-ui-screens`. The rest of the panel — the captions, the
-//! ping interval, the formatting — stays where it is.
-//! the retired retail UI's `panels::linkstatus::INITIAL_PACKET_LOSS` is a `pub use` of this constant.
+//! `GameView::packet_loss_percent`'s default body is this number, so it lives beside `GameView`.
 
 /// The packet-loss meter's compiled-in initial value, `1.0f`.
 ///

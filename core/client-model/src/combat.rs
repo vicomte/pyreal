@@ -839,7 +839,7 @@ impl World {
     /// - the selection fixup — here, [`Self::combat_mode_fixup_target`].
     /// - automatic target selection — the geometry-dependent tail is
     ///   [`Self::combat_mode_auto_target`], connected by the application's three mode-change paths.
-    /// - the Decal plugin entry point — this build has no plugin API.
+    /// - the Decal plugin entry point: not reproduced; plugins read the mode through the plugin host.
     ///
     /// # Errors
     /// The refusal text the client would put on the scroll.

@@ -2,9 +2,8 @@
 //!
 //! **This is a gap between the object and rendering modules.** The object draw path decides which
 //! part to draw, in what order, and at what degrade level, while the animation code owns the part
-//! array; neither turns a decoded `GfxObj`'s polygon list into vertices. `RenderBackend`
-//! accepts `MeshData`, but no object path produces it. Scenery still needs those vertices, so this
-//! module builds them minimally.
+//! array; neither turns a decoded `GfxObj`'s polygon list into vertices. Scenery still needs those
+//! vertices, so this module builds them minimally.
 //! The long-term owner is the object draw path; once it performs this
 //! conversion, this file can go away.
 //!

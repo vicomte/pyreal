@@ -1,24 +1,22 @@
 //! The landscape's geometry and static contents: landblock meshes, terrain merge keys, stitching,
-//! vertex lighting, water, roads, scenery placement and the per-cell building registry, as pure
-//! functions of the retail records.
+//! water, roads, scenery placement and the per-cell building registry, as pure functions of the
+//! retail records.
 //!
-//! **Depends on** `pyreal-primitives` (the vocabulary, the arithmetic policy and the
-//! [`RenderBackend`](pyreal_primitives::RenderBackend) seam the merge cache uploads through), the
-//! decoded world records of `pyreal-assets` and the block window of `pyreal-landscape`. **Used by**
+//! **Depends on** `pyreal-primitives` (the vocabulary and the arithmetic policy), the decoded
+//! world records of `pyreal-assets` and the block window of `pyreal-landscape`. **Used by**
 //! the world drawing (`pyreal-world-render`)
 //! and the client runtime's world builder (`pyreal-client-runtime`), which places the same scenery
 //! and statics with no device.
 //!
 //! **Must never** draw, hold a device or decode a record: what leaves here is geometry, placements
-//! and lists, and a texture only ever leaves through the backend trait.
+//! and lists.
 //!
 //! | Module | What it owns |
 //! |---|---|
 //! | [`land::mesh`] | vertices, the diagonal split, planes, UVs, per-cell rotation |
-//! | [`land::merge`] | the terrain merge key, road codes, alpha maps, the integer blend |
+//! | [`land::merge`] | the terrain merge key, road codes, alpha maps, the ground plan |
 //! | [`land::stitch`] | the transition adjustment between detail rings |
-//! | [`land::lighting`], [`land::water`] | per-vertex terrain colours, water classification |
-//! | [`land::order`] | the block and cell draw order |
+//! | [`land::water`] | water classification |
 //! | [`scenery`], [`road`] | deterministic scenery, its hashes and filters |
 //! | [`buildings`] | the building each land cell owns and its static-object lists |
 //! | [`math`], [`consts`] | the frame arithmetic and the landscape's constants |
@@ -34,7 +32,6 @@ pub mod math;
 pub mod narrow;
 pub mod road;
 pub mod scenery;
-pub mod testing;
 
 /// A plane in the client's form: a **unit** normal and the signed distance `d` such that
 /// `N·p + d == 0` on the plane.

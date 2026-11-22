@@ -41,9 +41,9 @@
 //!   refuses a version of 0 or an `iteration` older than the stored one.
 //!
 //! The rules hold in every [`ContainerLayout`]: [`DatWriter::open`] and [`DatWriter::create`]
-//! write the `client_*.dat` layout, and [`DatWriter::open_as`] and [`DatWriter::create_as`] any
-//! other, keeping the header's fields and the entries where that layout puts them. A layout whose
-//! transaction slot holds no journal has its slot left as it is.
+//! write the `client_*.dat` layout, and [`DatWriter::open_as`] and [`DatWriter::create_in_as`]
+//! any other, keeping the header's fields and the entries where that layout puts them. A layout
+//! whose transaction slot holds no journal has its slot left as it is.
 //!
 //! # What this module deliberately does not do
 //!
@@ -416,7 +416,8 @@ impl DatWriter {
         Self::create_in_as(path, storage, &ContainerLayout::MODERN, &info)
     }
 
-    /// Build a new container in `layout`: create the file, then create an empty tree in it.
+    /// Build a new container in `layout` in `storage`, which is empty, then create an empty tree
+    /// in it.
     ///
     /// `info` gives the header: its block size and file size (as [`DatWriter::create`] takes them),
     /// and every other field the layout has, written as given. The free list and the directory's
@@ -424,25 +425,8 @@ impl DatWriter {
     ///
     /// # Errors
     ///
-    /// As [`DatWriter::create`], and [`DatError::BadLayout`] for a layout that does not
-    /// [fit](ContainerLayout::fits).
-    pub fn create_as(
-        path: &Path,
-        layout: &ContainerLayout,
-        info: &DiskFileInfo,
-    ) -> Result<Self, DatError> {
-        crate::folder::refuse_protected(path)?;
-        check_create(info.block_size, info.file_size)?;
-        // As in `open`: this truncates, and a path can be reused.
-        let file = crate::folder::create_disk(path)?;
-        Self::create_in_as(path.to_path_buf(), Box::new(file), layout, info)
-    }
-
-    /// [`DatWriter::create_as`] in `storage`, which is empty.
-    ///
-    /// # Errors
-    ///
-    /// As [`DatWriter::create_as`], with the storage's errors for I/O errors.
+    /// As [`DatWriter::create`], with the storage's errors for I/O errors, and
+    /// [`DatError::BadLayout`] for a layout that does not [fit](ContainerLayout::fits).
     pub fn create_in_as(
         path: PathBuf,
         storage: Box<dyn DatStorageMut>,

@@ -7,7 +7,7 @@ use pyreal_primitives::LocalTime;
 
 use crate::actionmap::ToggleType;
 use crate::spec::ControlCode;
-use crate::{ActionId, CallbackId, InputMapId};
+use crate::{ActionId, CallbackId};
 
 /// The global holding the Autorun action id.
 pub const MOVEMENT_RUN_LOCK: ActionId = ActionId(0x30);
@@ -256,17 +256,6 @@ impl ActionStates {
         }
         out
     }
-}
-
-/// What `fire_action_event` decided to dispatch.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ActionDispatch {
-    pub action: ActionId,
-    pub input_map: InputMapId,
-    pub toggle: ToggleType,
-    pub extent: f32,
-    pub start: bool,
-    pub callback: Option<CallbackId>,
 }
 
 #[cfg(test)]

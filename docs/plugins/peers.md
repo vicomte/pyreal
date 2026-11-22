@@ -20,8 +20,7 @@ the cap are dropped, and a cap of 0 makes `peers.send` an error. A client counts
 character it is on, and stops counting after a minute without a message.
 
 The transport is the host's and never leaves the machine: the desktop client uses loopback
-datagrams, each client listing its port in the settings folder; the headless client a bus inside its process, or with
-`--peers <dir>` loopback datagrams between the headless clients that name the same folder.
+datagrams, each client listing its port in the settings folder.
 
 ## HTTPS: `net`
 
@@ -51,4 +50,4 @@ name resolves to, and makes the connection itself, through no proxy. At most fou
 per plugin, bodies at most 8 MiB, no redirects. The
 answer settles the promise at a later frame; a failure's reason is the transfer's.
 
-The desktop client fetches off the frame's thread; the headless client has no network for plugins.
+The desktop client fetches off the frame's thread.

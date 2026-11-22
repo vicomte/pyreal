@@ -5,7 +5,6 @@
 //! not reach the third and fourth halves at all: they are about what survives the ring being
 //! trimmed, which takes thousands of frames.
 
-use pyreal_client_runtime::frame_events::RenderPrefWork;
 use pyreal_testkit::HeadlessClient;
 use {pyreal_client_runtime::frame::FrameRecorder, pyreal_client_runtime::frame::FrameStep};
 use {
@@ -63,8 +62,7 @@ fn one_of_each() -> Vec<FrameEvent> {
             textures_released: 5,
         },
         FrameEvent::StreamFailed(StreamStage::Landblocks),
-        FrameEvent::RenderPreferencesPolled(RenderPrefWork::default()),
-        FrameEvent::RenderPreferencesApplied,
+        FrameEvent::RenderPreferencesPolled,
         FrameEvent::PositionUseTime,
         FrameEvent::PlayerTeleportUseTime,
         FrameEvent::PlayerTeleportApplied,
@@ -185,24 +183,20 @@ pub fn the_frame_log_is_the_counters() {
     // …and the most recent entry of a kind outlives the ring, because the client reads its
     // payload long after the frame that produced it.
     let mut kept = FrameEvents::with_ring_frames(1);
-    let work = RenderPrefWork {
-        flushed: true,
-        blocks_queued: 2,
-        ..RenderPrefWork::default()
+    let reset = FrameEvent::WorldReset {
+        textures_released: 2,
     };
-    kept.push(FrameEvent::RenderPreferencesPolled(work));
+    kept.push(reset);
     for _ in 0..8 {
         kept.drain_frame();
     }
-    let outlives = kept.count(|e| matches!(e, FrameEvent::RenderPreferencesPolled(_))) == 0
-        && kept.last(FrameEventKind::RenderPreferencesPolled)
-            == Some(FrameEvent::RenderPreferencesPolled(work))
+    let outlives = kept.count(|e| matches!(e, FrameEvent::WorldReset { .. })) == 0
+        && kept.last(FrameEventKind::WorldReset) == Some(reset)
         && kept
-            .last(FrameEventKind::RenderPreferencesPolled)
+            .last(FrameEventKind::WorldReset)
             .map(|e| e.to_string())
             .unwrap_or_default()
-            == "render-preferences-polled flushed=true mid-radius=false detail-texturing=false \
-                queued=2 rebuilt=0 surfaces=0";
+            == "world-reset textures=2";
 
     // The five routes one old counter had collapsed into a single number.
     let mut routes = FrameEvents::new();

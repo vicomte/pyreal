@@ -9,82 +9,15 @@ use crate::config::Preferences;
 /// it as an unsigned 32-bit preference with the choice list
 /// `[VeryLow, Low, Medium, High, VeryHigh, Extreme, Distant, Far, Horizon]` and the value array
 /// `[3, 5, 8, 11, 15, 25, 48, 80, 127]`
-/// in the client; the registered default is **8** (`Medium`).
+/// in the client; the registered default is **15** (`VeryHigh`, the Medium quality preset's).
 pub const LANDSCAPE_DRAW_DISTANCE: &str =
     pyreal_client_contract::options::names::LANDSCAPE_DRAW_DISTANCE;
 
-/// `Render.LandscapeDrawDistance`'s registered default, i.e. on a fresh
-/// install. The landscape's constructor default is 5, but render startup registers 8 and
-/// the preference update applies it before the first landscape is generated, so 8 is what a
-/// player who has never opened the options page runs.
-pub const LANDSCAPE_DRAW_DISTANCE_DEFAULT: u32 = 8;
-
-/// `[Render] TerrainBlending`: how the landscape blends each cell's terrain layers. Not a retail
-/// preference and not on the options page; the preferences file is its only control, and the
-/// save merge keeps it because it keeps every key it does not register.
-pub const TERRAIN_BLENDING: &str = pyreal_client_contract::options::names::TERRAIN_BLENDING;
-
-/// The values of [`TERRAIN_BLENDING`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TerrainBlending {
-    /// `cpu`: retail's per-cell composite textures, built on the CPU as retail builds them.
-    Cpu,
-    /// `gpu`: the same composites, built by the device's compute shader. Bit-identical to `cpu`.
-    Gpu,
-    /// `splat`: no composites; the pixel shader blends each cell's layers as it draws. Not
-    /// bit-identical to the composites, and keeps them out of video memory. The default.
-    #[default]
-    Splat,
-}
-
-impl TerrainBlending {
-    /// A value as the file spells it, in any case. `None` for anything else.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "cpu" => Some(Self::Cpu),
-            "gpu" => Some(Self::Gpu),
-            "splat" => Some(Self::Splat),
-            _ => None,
-        }
-    }
-}
-
-/// [`TERRAIN_BLENDING`] from the profile: the default when it is absent or not one of the three.
-#[must_use]
-pub fn terrain_blending(prefs: &Preferences) -> TerrainBlending {
-    prefs
-        .get(TERRAIN_BLENDING)
-        .and_then(TerrainBlending::parse)
-        .unwrap_or_default()
-}
-
-/// `[Render] Ground`, `[Render] Sky` and `[Render] Objects`: the presentation options from another
-/// era, which choose the era of the ground, of the sky and of the objects' look. See
-/// [`pyreal_client_contract::options::landscape`], which owns the names, the values and their
-/// spellings.
-pub use pyreal_client_contract::options::landscape::{
-    RegionStyle, RequiredFiles, GROUND, OBJECTS, SKY,
-};
-
-/// The objects have one older look: either older style is it.
-#[must_use]
-pub const fn objects_style(style: RegionStyle) -> RegionStyle {
-    match style {
-        RegionStyle::LegacySoftware | RegionStyle::LegacyHardware => RegionStyle::LegacyHardware,
-        RegionStyle::Late => RegionStyle::Late,
-    }
-}
-
-/// One landscape option from the profile: `None` (the world's own) when it is absent or names
-/// nothing this client reads.
-#[must_use]
-pub fn landscape_style(prefs: &Preferences, name: &str) -> Option<RegionStyle> {
-    prefs
-        .get(name)
-        .and_then(pyreal_client_contract::options::landscape::parse)
-        .flatten()
-}
+/// `Render.LandscapeDrawDistance`'s registered default, i.e. on a fresh install: the Medium
+/// quality preset's, applied before the first landscape is generated.
+#[allow(clippy::cast_sign_loss)] // a small positive constant
+pub const LANDSCAPE_DRAW_DISTANCE_DEFAULT: u32 =
+    pyreal_client_contract::options::fidelity::TERRAIN_DEFAULT as u32;
 
 /// Decode this preference's registered choice list with
 /// `pyreal_client_contract::options::store::EnumChoices::resolve` — the same function the
@@ -115,12 +48,6 @@ pub fn landscape_draw_distance(prefs: &Preferences) -> Option<u32> {
 /// rather than on the Apply click, and why this build applies them the same way.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RenderPreferences {
-    /// Used by sampler-filter setup, scene begin and creature rendering.
-    /// Value 2 selects the `-1.4` mipmap LOD bias. Fixed: no option sets it.
-    pub texture_filtering: u32,
-    /// Which level of a two-level surface texture the interface's pictures take (the high-res
-    /// level only at 0, with the high-res dat granted). Fixed: no option sets it.
-    pub environment_texture_detail: u32,
     /// **No consumer in the retail client beyond the quality-level round trip**: the value is
     /// written and read back only by preference handling.
     pub scenery_draw_distance: u32,
@@ -133,18 +60,8 @@ pub struct RenderPreferences {
     pub screen_brightness: f32,
     /// Default-FOV setup computes the game FOV as `pref * 0.017453292`.
     pub field_of_view: f32,
-    /// The automatic degradation multiplier, read by object-degradation selection
-    /// to choose which bias it uses. Fixed: no option sets it.
-    pub automatic_degrades: bool,
-    /// The bias `get_degrade` reads when
-    /// `automatic_degrades` is clear. Fixed: no option sets it.
-    pub graphics_performance: f32,
     /// The offset subtracted from every degrade distance.
     pub degrade_distance: f32,
-    /// The era whose models, surfaces, pictures and palettes the world's objects draw with,
-    /// `--object-visuals` alone (`Some(LegacyHardware)` the older files, `Some(Late)` the later
-    /// ones); `None`, always for a player, is the world's own.
-    pub objects: Option<RegionStyle>,
     /// `[Fidelity]`: the high-fidelity presentation. Not a retail preference; the options page,
     /// the file and `--set-at` set it. The scene applies a change live.
     pub fidelity: FidelityPreferences,
@@ -153,17 +70,12 @@ pub struct RenderPreferences {
 impl Default for RenderPreferences {
     fn default() -> Self {
         Self {
-            texture_filtering: pyreal_client_contract::sampler::STARTUP_FILTERING,
-            environment_texture_detail: 1,
             scenery_draw_distance: 1,
             landscape_draw_distance: LANDSCAPE_DRAW_DISTANCE_DEFAULT,
             aspect_ratio: ASPECT_RATIO_DEFAULT,
             screen_brightness: 0.0,
             field_of_view: pyreal_client_contract::camera::DEFAULT_FOV_DEGREES,
-            automatic_degrades: true,
-            graphics_performance: 0.0,
             degrade_distance: pyreal_animation::parts::S_R_DEGRADE_DISTANCE,
-            objects: None,
             fidelity: FidelityPreferences::default(),
         }
     }
@@ -316,8 +228,6 @@ pub use pyreal_client_contract::options::names::fidelity;
 /// One option of the high-fidelity presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FidelityFeature {
-    /// `Fidelity.Lighting`.
-    Lighting,
     /// `Fidelity.Shadows`.
     Shadows,
     /// `Fidelity.GlobalIllumination`.
@@ -366,14 +276,11 @@ pub enum FidelityFeature {
     DynamicResolution,
     /// `Fidelity.RenderScale`.
     RenderScale,
-    /// `Fidelity.Debug`.
-    Debug,
 }
 
 impl FidelityFeature {
     /// Every option, in the order the names list them.
-    pub const ALL: [Self; 26] = [
-        Self::Lighting,
+    pub const ALL: [Self; 24] = [
         Self::Shadows,
         Self::GlobalIllumination,
         Self::AmbientOcclusion,
@@ -398,14 +305,12 @@ impl FidelityFeature {
         Self::LandscapeSmoothing,
         Self::DynamicResolution,
         Self::RenderScale,
-        Self::Debug,
     ];
 
     /// The option's preference name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Lighting => fidelity::LIGHTING,
             Self::Shadows => fidelity::SHADOWS,
             Self::GlobalIllumination => fidelity::GLOBAL_ILLUMINATION,
             Self::AmbientOcclusion => fidelity::AMBIENT_OCCLUSION,
@@ -430,37 +335,18 @@ impl FidelityFeature {
             Self::LandscapeSmoothing => fidelity::LANDSCAPE_SMOOTHING,
             Self::DynamicResolution => fidelity::DYNAMIC_RESOLUTION,
             Self::RenderScale => fidelity::RENDER_SCALE,
-            Self::Debug => fidelity::DEBUG,
         }
-    }
-
-    /// Whether the option chooses how frames reach the screen, how many of the frame's pixels the
-    /// world is drawn at, or how the presentation draws what it already draws, rather than asking
-    /// for an effect, so that alone it asks nothing of the device.
-    #[must_use]
-    pub const fn is_presentation_choice(self) -> bool {
-        matches!(
-            self,
-            Self::VSync
-                | Self::Hdr
-                | Self::NoFlameFlicker
-                | Self::NoSilkCobwebs
-                | Self::NoHighResTextures
-                | Self::DynamicResolution
-                | Self::RenderScale
-        )
     }
 
     /// The highest value the option takes: 4 for an effect (Ultra), 1 for the switches that
     /// turn something off (the anti-aliasing's, the slope materials', the
     /// damp's, the wind's, the flicker's) and the presentation choices, 3 for depth mapping's,
     /// God Rays' and Cloud Detail's levels, 2 for Water Detail's, the greatest share for the draw
-    /// distances, the last view for the diagnostic views, the highest frame rate for Dynamic Resolution, and under a
-    /// hundred for the render scale.
+    /// distances, the highest frame rate for Dynamic Resolution, and under a hundred for the render
+    /// scale.
     #[must_use]
     pub const fn max(self) -> u32 {
         match self {
-            Self::Debug => 7,
             Self::DepthMapping | Self::GodRays | Self::CloudDetail | Self::LandscapeSmoothing => 3,
             Self::GroundCoverDrawDistance => pyreal_client_contract::options::draw_distance::MOST,
             Self::RenderScale => 99,
@@ -482,14 +368,13 @@ impl FidelityFeature {
         }
     }
 
-    /// What the option holds where the profile names nothing, when it is not 0: the better
-    /// lighting's, a box's default, or the Depth Mapping, God Rays, Cloud Detail, Tree Draw Distance, Light Draw Distance, Shadow Distance, Render Scale and
+    /// What the option holds where the profile names nothing, when it is not 0: a box's default,
+    /// or the Depth Mapping, God Rays, Cloud Detail, Tree Draw Distance, Light Draw Distance, Shadow Distance, Render Scale and
     /// Dynamic Resolution menus'.
     #[must_use]
     pub fn default_value(self) -> Option<u32> {
         use pyreal_client_contract::options as o;
         match self {
-            Self::Lighting => Some(1),
             Self::DepthMapping => u32::try_from(o::depth_mapping::DEFAULT).ok(),
             Self::GodRays => u32::try_from(o::god_rays::DEFAULT).ok(),
             Self::CloudDetail => u32::try_from(o::cloud_detail::DEFAULT).ok(),
@@ -508,8 +393,7 @@ impl FidelityFeature {
         }
     }
 
-    /// `raw` as this option stores it: an effect past Ultra is Ultra; a diagnostic view past the
-    /// last is off; a draw distance outside its menu is the whole distance, 0, but for the ground
+    /// `raw` as this option stores it: an effect past Ultra is Ultra; a draw distance outside its menu is the whole distance, 0, but for the ground
     /// cover's Off; a shadow distance outside its menu's range is 0; a render scale that is
     /// neither Dynamic nor a share under the whole frame is all of its pixels, 0.
     #[must_use]
@@ -549,8 +433,6 @@ impl FidelityFeature {
             }
         } else if raw <= self.max() {
             raw
-        } else if matches!(self, Self::Debug) {
-            0
         } else {
             self.max()
         }
@@ -575,11 +457,6 @@ impl FidelityPreferences {
         let mut f = Self::default();
         for (i, feature) in FidelityFeature::ALL.into_iter().enumerate() {
             let raw = match feature {
-                // Always drawn: a profile from the Standard graphics mode that turned it off is
-                // read as nothing.
-                FidelityFeature::Lighting => None,
-                // The view a diagnostic run asks for, by number.
-                FidelityFeature::Debug => prefs.u32(feature.name()),
                 // The share the page chose, or Dynamic, in its words.
                 FidelityFeature::RenderScale => prefs
                     .get(feature.name())
@@ -730,76 +607,6 @@ impl FidelityPreferences {
         self.value(feature)
     }
 
-    /// Whether any option is on in effect. Without one the presentation is not installed. The
-    /// switches that turn something off (the anti-aliasing's, the slope
-    /// materials', the damp's, the wind's, the flicker's), the presentation choices, depth mapping
-    /// God Rays and Cloud Detail, drawn inside the better lighting, and the draw distances draw nothing of their
-    /// own, so they alone are none.
-    #[must_use]
-    pub fn any_effective(&self) -> bool {
-        FidelityFeature::ALL
-            .into_iter()
-            .filter(|f| {
-                !f.is_presentation_choice()
-                    && !matches!(
-                        f,
-                        FidelityFeature::NoAntiAliasing
-                            | FidelityFeature::NoWind
-                            | FidelityFeature::DepthMapping
-                            | FidelityFeature::GodRays
-                            | FidelityFeature::CloudDetail
-                            | FidelityFeature::GroundCoverDrawDistance
-                            | FidelityFeature::NoFlameFlicker
-                            | FidelityFeature::LightDrawDistance
-                            | FidelityFeature::ShadowDistance
-                            | FidelityFeature::FogDensity
-                            | FidelityFeature::ObjectDetail
-                            | FidelityFeature::GrassHeight
-                            | FidelityFeature::WaterDetail
-                            | FidelityFeature::LandscapeSmoothing
-                    )
-            })
-            .any(|f| self.effective(f) != 0)
-    }
-
-    /// These preferences with the presentation choices taken out, the render scale among them, and
-    /// the draw distances and the light and shadow distances, which each frame reads: a change to one
-    /// alone needs no new start.
-    #[must_use]
-    pub fn without_presentation_choices(mut self) -> Self {
-        for (i, f) in FidelityFeature::ALL.iter().enumerate() {
-            if f.is_presentation_choice()
-                || matches!(
-                    f,
-                    FidelityFeature::GroundCoverDrawDistance
-                        | FidelityFeature::LightDrawDistance
-                        | FidelityFeature::ShadowDistance
-                        | FidelityFeature::ObjectDetail
-                        | FidelityFeature::GrassHeight
-                        | FidelityFeature::WaterDetail
-                        | FidelityFeature::LandscapeSmoothing
-                )
-            {
-                self.values[i] = 0;
-            }
-        }
-        self
-    }
-
-    /// Whether any option is stored on; the presentation choices, Cloud Detail and Water Detail,
-    /// which start at a level and draw nothing alone, are none.
-    #[must_use]
-    pub fn any_stored(&self) -> bool {
-        FidelityFeature::ALL.iter().zip(&self.values).any(|(f, v)| {
-            *v != 0
-                && !f.is_presentation_choice()
-                && !matches!(
-                    f,
-                    FidelityFeature::CloudDetail | FidelityFeature::WaterDetail
-                )
-        })
-    }
-
     /// The settings a capture or a test names: a comma list of `Name=value` (`+` also separates),
     /// each name with or without its `Fidelity.` prefix and each value a number or `off`, `on`,
     /// `low`, `medium`, `high` or `ultra`. `off` alone is every option off.
@@ -890,12 +697,10 @@ mod tests {
             .into_iter()
             .all(|f| FidelityPreferences::default().value(f) == 0));
         let d = FidelityPreferences::from_preferences(&Preferences::parse(""));
-        assert!(d.any_effective());
         for f in FidelityFeature::ALL {
             let on = matches!(
                 f,
-                FidelityFeature::Lighting
-                    | FidelityFeature::Shadows
+                FidelityFeature::Shadows
                     | FidelityFeature::GlobalIllumination
                     | FidelityFeature::AmbientOcclusion
                     | FidelityFeature::Weather
@@ -903,7 +708,7 @@ mod tests {
                     | FidelityFeature::LandscapeSmoothing
             );
             let at = if f == FidelityFeature::DepthMapping {
-                3
+                2
             } else if f == FidelityFeature::GodRays
                 || f == FidelityFeature::CloudDetail
                 || f == FidelityFeature::WaterDetail
@@ -928,13 +733,11 @@ mod tests {
             };
             assert_eq!(d.value(f), at, "{f:?}");
         }
-        // A box the profile turned off stays off; the better lighting, which the Standard
-        // graphics mode once turned off, is always on.
+        // A box the profile turned off stays off.
         let off = FidelityPreferences::from_preferences(&Preferences::parse(
             "[Fidelity]\nShadows=False\nLighting=False\nRetailLook=True\n",
         ));
         assert_eq!(off.value(FidelityFeature::Shadows), 0);
-        assert_eq!(off.value(FidelityFeature::Lighting), 1);
         // The ticked boxes are in effect, whatever interface an older profile names.
         let horizon = FidelityPreferences::from_preferences(&Preferences::parse(
             "[UI]\nInterface=Modern\n[Fidelity]\nAmbientOcclusion=True\n",
@@ -945,7 +748,7 @@ mod tests {
         let old = FidelityPreferences::from_preferences(&Preferences::parse(
             "[UI]\nInterface=2\n[Fidelity]\nEnabled=1\nPreset=2\nWater=3\nLighting=3\n",
         ));
-        assert_eq!(old.effective(FidelityFeature::Lighting), 1);
+        assert_eq!(old, d);
         // Every option has its name, and every name its option.
         assert_eq!(fidelity::NAMES.len(), FidelityFeature::ALL.len());
         for f in FidelityFeature::ALL {
@@ -968,15 +771,10 @@ mod tests {
             "a word it does not know leaves it at its default"
         );
         let switched = |s: &str| FidelityPreferences::parse_switch(s).unwrap();
-        assert!(
-            !switched("GodRays=3").any_effective(),
-            "God Rays draws inside the better lighting"
-        );
         assert_eq!(
             switched("Lighting=1,GodRays=2").effective(FidelityFeature::GodRays),
             2
         );
-        assert!(switched("Lighting=1,GodRays=2").any_effective());
     }
 
     #[test]
@@ -994,13 +792,9 @@ mod tests {
             lights.default_value().unwrap_or(0),
             "a word it does not know leaves it at its default"
         );
-        let alone = FidelityPreferences::parse_switch("LightDrawDistance=500,NoFlameFlicker=1")
-            .expect("a switch");
-        assert!(!alone.any_effective());
         let switched = FidelityPreferences::parse_switch("Lighting=1,LightDrawDistance=200")
             .expect("a switch");
         assert_eq!(switched.effective(lights), 200);
-        assert_eq!(switched.without_presentation_choices().value(lights), 0);
         assert_eq!(lights.clamp(20), 0);
         assert_eq!(FidelityFeature::NoFlameFlicker.clamp(3), 1);
     }
@@ -1023,12 +817,6 @@ mod tests {
             "a word it does not know leaves it at its default"
         );
         assert_eq!(level(FidelityPreferences::default()), Ok(LOW));
-        assert!(
-            !FidelityPreferences::parse_switch("CloudDetail=high")
-                .unwrap()
-                .any_effective(),
-            "Cloud Detail draws inside the better lighting"
-        );
         let switched = FidelityPreferences::parse_switch("Lighting=1,CloudDetail=high").unwrap();
         assert_eq!(level(switched), Ok(HIGH));
         let numbered = FidelityPreferences::parse_switch("Lighting=1,Shadows=high").unwrap();
@@ -1043,13 +831,8 @@ mod tests {
     fn fidelity_values_read_and_set_by_name_and_out_of_range_values_clamp() {
         use pyreal_client_contract::PrefValue;
         let p = FidelityPreferences::from_preferences(&Preferences::parse(
-            "[UI]\nInterface=Horizon\n[Fidelity]\nDebug=9\nShadows=1\n",
+            "[UI]\nInterface=Horizon\n[Fidelity]\nShadows=1\n",
         ));
-        assert_eq!(
-            p.effective(FidelityFeature::Debug),
-            0,
-            "an unknown view is off"
-        );
         assert_eq!(p.effective(FidelityFeature::Shadows), 1);
         let mut q = FidelityPreferences::default();
         assert!(!q.set_named("fidelity.interface", &PrefValue::Bool(true)));
@@ -1076,16 +859,15 @@ mod tests {
         assert_eq!(read("True").effective(FidelityFeature::DepthMapping), 3);
         assert_eq!(
             read("9").effective(FidelityFeature::DepthMapping),
-            3,
+            2,
             "a word it does not know leaves it at its default"
         );
         assert_eq!(read("Off").effective(FidelityFeature::NoWind), 1);
         let switched = |s: &str| FidelityPreferences::parse_switch(s).unwrap();
-        assert!(
-            !switched("DepthMapping=3,NoWind=1").any_effective(),
-            "depth mapping draws inside the better lighting, and stilling the wind nothing"
+        assert_eq!(
+            switched("Lighting=1,DepthMapping=1").effective(FidelityFeature::DepthMapping),
+            1
         );
-        assert!(switched("Lighting=1,DepthMapping=1").any_effective());
     }
 
     #[test]
@@ -1106,15 +888,13 @@ mod tests {
         assert_eq!(read("GroundCoverDrawDistance=Off").effective(cover), 1);
         // The trees' old draw distance is read as nothing, from a profile or a capture's line.
         assert_eq!(read("TreeDrawDistance=5x"), read(""));
-        assert!(
-            !FidelityPreferences::parse_switch("TreeDrawDistance=500,NoWind=1")
-                .unwrap()
-                .any_effective()
+        assert_eq!(
+            FidelityPreferences::parse_switch("TreeDrawDistance=500,NoWind=1"),
+            FidelityPreferences::parse_switch("NoWind=1")
         );
         let switched = FidelityPreferences::parse_switch("Lighting=1,GroundCoverDrawDistance=1")
             .expect("a switch");
         assert_eq!(switched.effective(cover), 1);
-        assert_eq!(switched.without_presentation_choices().value(cover), 0);
         assert_eq!(FidelityFeature::GroundCoverDrawDistance.clamp(20), 0);
         assert_eq!(FidelityFeature::GroundCoverDrawDistance.clamp(1), 1);
         assert_eq!(FidelityFeature::NoWind.clamp(3), 1);
@@ -1126,12 +906,6 @@ mod tests {
         let mut q = FidelityPreferences::default();
         assert!(q.set_named(fidelity::RENDER_SCALE, &PrefValue::Int(67)));
         assert_eq!(q.effective(FidelityFeature::RenderScale), 67);
-        assert!(!q.any_effective(), "a scale alone draws nothing");
-        assert!(!q.any_stored());
-        assert_eq!(
-            q.without_presentation_choices(),
-            FidelityPreferences::default()
-        );
         for (raw, stored) in [(100, 0), (49, 0), (2, 0), (1, 1), (50, 50), (99, 99)] {
             assert!(q.set_named(fidelity::RENDER_SCALE, &PrefValue::Int(raw)));
             assert_eq!(q.value(FidelityFeature::RenderScale), stored, "{raw}");
@@ -1153,10 +927,9 @@ mod tests {
             FidelityPreferences::default()
         );
         let r = RenderPreferences::from_preferences(&Preferences::parse(
-            "[UI]\nInterface=Horizon\n[Fidelity]\nDebug=1\n",
+            "[UI]\nInterface=Horizon\n[Fidelity]\nShadows=False\n",
         ));
-        assert!(r.fidelity.any_effective());
-        assert_eq!(r.fidelity.effective(FidelityFeature::Debug), 1);
+        assert_eq!(r.fidelity.effective(FidelityFeature::Shadows), 0);
         // The live path: a name the render preferences do not own themselves lands in the
         // section.
         let mut live = RenderPreferences::default();
@@ -1168,14 +941,15 @@ mod tests {
         assert!(!live.set_named("Fidelity.NoSuchOption", &PrefValue::Int(1)));
         // A capture's settings, as Horizon draws them.
         let off = FidelityPreferences::parse_switch("off").expect("off");
-        assert!(!off.any_effective());
+        assert_eq!(off, FidelityPreferences::default());
         let list = FidelityPreferences::parse_switch("Debug=1, Fidelity.Lighting=high+Shadows=on")
             .expect("list");
-        assert_eq!(list.effective(FidelityFeature::Debug), 1);
-        assert_eq!(list.effective(FidelityFeature::Lighting), 3);
         assert_eq!(list.effective(FidelityFeature::Shadows), 1);
-        let older = FidelityPreferences::parse_switch("Lighting=1,Interface=0").expect("older");
-        assert!(older.any_effective() && older.any_stored());
+        assert_eq!(
+            list,
+            FidelityPreferences::parse_switch("Shadows=on").expect("one")
+        );
+        assert!(FidelityPreferences::parse_switch("Lighting=1,Interface=0").is_ok());
         assert!(FidelityPreferences::parse_switch("Lighting").is_err());
         assert!(FidelityPreferences::parse_switch("Puddles=1").is_err());
         assert!(FidelityPreferences::parse_switch("Shadows=lots").is_err());

@@ -9,8 +9,6 @@
 //! * `num_buildings` is a `ushort` and the upper half of the same dword is a *packMask* whose bit 0
 //!   says a restriction table follows.
 
-use std::collections::BTreeMap;
-
 use pyreal_dat::{packobj::read_n, Cursor, DatError, DbType};
 use pyreal_primitives::{DataId, Frame};
 
@@ -530,12 +528,6 @@ impl Decode for ParticleEmitterInfo {
             is_parent_local: c.i32()?,
         })
     }
-}
-
-/// The restriction table's entries as a map, for callers that do not care about bucket order.
-#[must_use]
-pub fn restrictions_as_map(t: &RestrictionTable) -> BTreeMap<u32, u32> {
-    t.entries.iter().copied().collect()
 }
 
 #[cfg(test)]

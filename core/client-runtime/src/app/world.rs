@@ -80,9 +80,8 @@ impl<S: Shell> App<S> {
     }
 
     /// This frame's share of the object identity verdicts ([`Self::object_identity`]): a few
-    /// milliseconds, more while the objects wait to take a look the player asked for or no world
-    /// is drawn, and the verdicts handed to the presentation the frame they are ready. A store reopened after a
-    /// patch starts them again for the new files.
+    /// milliseconds, more while no world is drawn, and the verdicts handed to the presentation the
+    /// frame they are ready. A store reopened after a patch starts them again for the new files.
     fn prepare_object_identity(&mut self) {
         let Some(prep) = self.object_identity.as_mut() else {
             return;
@@ -95,9 +94,9 @@ impl<S: Shell> App<S> {
         if prep.offered {
             return;
         }
-        // More of each frame while the objects wait for it, and while no world is drawn (the
-        // login and character screens, whose frames are light), so it is ready by world entry.
-        let budget = if prep.awaited || self.world.is_none() {
+        // More of each frame while no world is drawn (the login and character screens, whose
+        // frames are light), so it is ready by world entry.
+        let budget = if self.world.is_none() {
             prep.budget.max(IDENTITY_WAITING_BUDGET)
         } else {
             prep.budget
@@ -131,28 +130,6 @@ impl<S: Shell> App<S> {
         }
     }
 
-    /// Whether the objects wait on the verdicts to take the look asked for, which gives the
-    /// verdicts more of each frame; the player is told once.
-    fn note_object_look_waiting(&mut self, w: &crate::frame_events::RenderPrefWork) {
-        let Some(prep) = self.object_identity.as_mut() else {
-            return;
-        };
-        prep.awaited = w.objects_waiting;
-        if w.objects_waiting && !prep.noticed {
-            prep.noticed = true;
-            let text = "The objects' look is still being prepared; it is drawn as soon as it is \
-                        ready.";
-            tracing::info!("{text}");
-            self.objects.world.scroll.add_feedback_to_scroll(
-                text,
-                pyreal_client_model::scroll::LOCAL_ERROR_TYPE,
-                true,
-                0,
-                pyreal_client_contract::feedback::Feedback::LOCAL,
-            );
-        }
-    }
-
     /// Build the landblocks the window scrolled onto this frame.
     ///
     /// A failure here is not fatal: the block stays undrawn and the next scroll will ask for it
@@ -173,35 +150,8 @@ impl<S: Shell> App<S> {
             .present
             .update_render_preferences(&store, self.world.as_mut())
         {
-            Ok(w) => {
-                // The poll itself, whether or not it moved anything: this event's payload is
-                // what `last_render_pref_work` reads.
-                self.events.push(FrameEvent::RenderPreferencesPolled(w));
-                self.report_landscape_refusals(&w);
-                self.note_object_look_waiting(&w);
-                if w.flushed
-                    || w.mid_radius_changed
-                    || w.detail_texturing_changed
-                    || w.ground_changed
-                    || w.sky_changed
-                    || w.objects_changed
-                {
-                    self.events.push(FrameEvent::RenderPreferencesApplied);
-                    tracing::info!(
-                        "render preferences changed -- flush {}, mid_radius {}, \
-                         detail textures {}, ground {}, sky {}, objects {}, \
-                         {} block(s) queued, {} resident",
-                        w.flushed,
-                        w.mid_radius_changed,
-                        w.detail_texturing_changed,
-                        w.ground_changed,
-                        w.sky_changed,
-                        w.objects_changed,
-                        w.blocks_queued,
-                        w.blocks_rebuilt,
-                    );
-                }
-            }
+            // The poll itself, whether or not it moved anything.
+            Ok(()) => self.events.push(FrameEvent::RenderPreferencesPolled),
             Err(e) => {
                 self.events
                     .push(FrameEvent::StreamFailed(StreamStage::RenderPreferences));

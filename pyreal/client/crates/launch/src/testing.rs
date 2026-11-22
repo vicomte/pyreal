@@ -1,4 +1,4 @@
-//! Synthetic dats and installs, and one world list's answers, for tests in this crate and the ones
+//! Synthetic dats and plugins, and one world list's answers, for tests in this crate and the ones
 //! above it.
 
 use std::path::Path;

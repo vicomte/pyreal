@@ -2,8 +2,7 @@
 //! the ISAAC key stream, fragments and reassembly, retransmission and the handshake records.
 //!
 //! **Depends on** `pyreal-primitives`. **Used by** the client's connection (`pyreal-client-net`),
-//! the client runtime, the client and its test kit, and the capture tools
-//! (`dereth-pcap`, `dereth-corpus`).
+//! the client runtime, and the client and its test kit.
 //!
 //! **Must never** open a socket or look past a blob's first byte: the socket is the caller's, and
 //! message bodies belong to `pyreal-protocol`.

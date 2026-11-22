@@ -76,7 +76,6 @@ pub enum Default {
 ///
 /// `pyreal-client`'s `gpu` binary is automatic: its `--test-threads=1` is a device lock inside one
 /// process, and separate processes each open their own device, which every driver supports.
-/// `dereth-render`'s `gpu` binary is small and stays one process.
 pub const SHARD_DEFAULT: &[((&str, &str), Default)] = &[
     (("pyreal-client", "dat"), Default::Fixed(4)),
     (("pyreal-testkit", "dat"), Default::Fixed(4)),

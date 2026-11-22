@@ -1,7 +1,7 @@
 //! The vendor seam: `pyreal_client_model`'s open shop priced into the retired retail UI [`ShopView`].
 //!
 //! The same shape as [`crate::allegiance_view`], and for the same reason:
-//! `dereth-ui-screens` may not depend on `pyreal-client-model`, so the pricing has to happen on
+//! the retired retail UI could not depend on `pyreal-client-model`, so the pricing has to happen on
 //! this side of the seam, in the crate that can see both.
 //!
 //! **This file gives four vendor operations their production callers:** sell pricing, buy pricing,

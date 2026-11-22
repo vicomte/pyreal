@@ -135,6 +135,6 @@ The client has the art built in.
 - `src/pad.rs`: gamepad mode.
 - `src/options.rs`, `src/scale.rs`, `src/looks.rs`: its settings, the interface scale, and the
   remembered looks.
-- `src/art.rs`, `src/pieces.rs` and `pieces/`, `src/font.rs`, `src/resample.rs`: the art, the fonts
-  and pictures drawn at sizes their atlases lack.
+- `src/art.rs`, `src/pieces.rs` and `pieces/`, `src/font.rs`: the art and the fonts. Pictures drawn
+  at sizes their atlases lack are resampled by `pyreal-ui-kit`'s `src/resample.rs`.
 - `src/draw.rs`: the quads, turned into the shared overlay's batches.

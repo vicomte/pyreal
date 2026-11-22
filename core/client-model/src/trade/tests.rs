@@ -197,10 +197,6 @@ fn the_counters_split_on_container_properties_which_is_always_zero() {
     assert_eq!(t.num_partner_objects(), 1);
     assert!(t.is_partner_trading_item(ObjectId(20)));
     assert!(!t.is_partner_trading_item(ObjectId(10)));
-    assert!(!t.both_accepted());
-    t.accepted = true;
-    t.partner_accepted = true;
-    assert!(t.both_accepted());
 
     // A `Trade` unpacked off the wire *can* carry a non-zero one, and then the split matters.
     let mut w = Trade::default();
@@ -303,7 +299,7 @@ fn accept_trade_from_the_server_has_three_arms() {
     w.handle_accept_trade(ME, &mut out);
     assert!(w.trade.trade.accepted && !w.trade.trade.partner_accepted);
     w.handle_accept_trade(PARTNER, &mut out);
-    assert!(w.trade.trade.both_accepted());
+    assert!(w.trade.trade.accepted && w.trade.trade.partner_accepted);
     w.handle_accept_trade(ObjectId(0), &mut out);
     assert!(!w.trade.trade.accepted, "source 0 clears mine");
     assert!(w.trade.trade.partner_accepted, "and only mine");
@@ -725,7 +721,7 @@ fn the_empty_senders_carry_the_opcodes_their_bytes_spell() {
             .collect::<Vec<_>>(),
         vec![ITEM]
     );
-    assert!(w.trade.trade.both_accepted());
+    assert!(w.trade.trade.accepted && w.trade.trade.partner_accepted);
     assert!(w.trade.acceptance_darkened);
 
     // The close button is the one path that hides it; that visibility change raises the send.
@@ -738,10 +734,9 @@ fn the_empty_senders_carry_the_opcodes_their_bytes_spell() {
     assert_eq!(req.0.len(), 4, "one request either way");
 }
 
-/// A close notice zeroes both ids and resets the mirror; ending the character session discards
-/// the whole system.
+/// A close notice zeroes both ids and resets the mirror.
 #[test]
-fn closing_and_ending_the_session_both_clear_the_system() {
+fn closing_clears_both_ids() {
     let mut w = world_with_player();
     let mut out = RecordingSink::default();
     register(&mut w);
@@ -751,9 +746,4 @@ fn closing_and_ending_the_session_both_clear_the_system() {
     assert_eq!(w.trade.partner, ObjectId(0));
     assert_eq!(w.trade.initiator, ObjectId(0));
     assert!(w.trade.open, "a 0x01FF leaves an empty window on screen");
-
-    register(&mut w);
-    w.trade.end_character_session();
-    assert_eq!(w.trade, TradeSystem::default());
-    assert_eq!(w.trade.trade.stamp.to_bits(), 0xBFF0_0000_0000_0000);
 }

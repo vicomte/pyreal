@@ -28,7 +28,7 @@ replaces = ["example.oldname"]   # optional: ids this plugin takes the place of
 ubscript = true                   # optional: a script written for UtilityBelt's scripting
 
 [hosts]                           # optional
-exclude = ["dereth-headless"]     # hosts (by host.name) it does not run in
+exclude = ["dereth-test"]         # hosts (by host.name) it does not run in
 
 [net]                             # optional, with the net.http permission
 domains = ["example.org"]         # the hosts its HTTPS requests may reach, and their subdomains

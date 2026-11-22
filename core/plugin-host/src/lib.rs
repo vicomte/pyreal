@@ -2,8 +2,8 @@
 //! frame into events, runs timers, keeps each plugin's store and declared windows, and answers the server's
 //! plugin audit.
 //!
-//! **Depends on** the interface (`pyreal-plugin-api`), and on the game as the headless client
-//! reaches it: the runtime's frame hook (`pyreal-client-runtime`), the object model
+//! **Depends on** the interface (`pyreal-plugin-api`), and on the game as the client reaches
+//! it: the runtime's frame hook (`pyreal-client-runtime`), the object model
 //! (`pyreal-client-model`), the view (`pyreal-client-contract`), the identifiers
 //! (`pyreal-primitives`), the game rules
 //! objects are classified by (`pyreal-rules`), the appraisal's wire types and the message codecs (`pyreal-protocol`) and
@@ -177,7 +177,7 @@ const PREFIX: &str = "[Plugins] ";
 /// What a host is.
 #[derive(Debug, Clone)]
 pub struct HostConfig {
-    /// `host.name`: `dereth-desktop`, `dereth-headless`, …
+    /// `host.name`: `dereth-desktop`, `dereth-test`, …
     pub name: String,
     /// `host.version`.
     pub version: String,
@@ -454,9 +454,6 @@ pub struct PluginHost {
     /// every plugin listening.
     ui_inbox: VecDeque<(Option<String>, Event)>,
     shared: Shared,
-    /// The host's own lines (loads, refusals, suspensions), kept for a test or a tool to read; each
-    /// is in the client's log too.
-    console: VecDeque<String>,
     last_flush: Option<f64>,
     now: f64,
     claimed_once: bool,
@@ -555,7 +552,6 @@ impl PluginHost {
             observer: observe::Observer::default(),
             ui_inbox: VecDeque::new(),
             shared: Shared::default(),
-            console: VecDeque::new(),
             last_flush: None,
             now: 0.0,
             claimed_once: false,
@@ -996,12 +992,6 @@ impl PluginHost {
     pub fn console(&self, id: &str) -> Option<Vec<String>> {
         self.slot(id)
             .map(|s| s.state.console.iter().cloned().collect())
-    }
-
-    /// The host's own lines, oldest first.
-    #[must_use]
-    pub fn host_console(&self) -> Vec<String> {
-        self.console.iter().cloned().collect()
     }
 
     /// Every declared window of every active plugin, and the host's own: `(plugin id, window id,
@@ -1848,10 +1838,6 @@ impl PluginHost {
         // A line can carry a plugin's own text (a failure's message, a manifest's key).
         let line = pyreal_plugin_api::engine::console_line(&line).into_owned();
         tracing::info!(target: "dereth::plugins", "{line}");
-        if self.console.len() == slot::CONSOLE_LINES {
-            self.console.pop_front();
-        }
-        self.console.push_back(line);
     }
 
     /// A line in the chat window from the host itself.

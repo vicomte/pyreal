@@ -17,8 +17,6 @@ pyreal-client-contract.workspace = true
 pyreal-ui-kit.workspace = true
 # The numbers the marks are placed with.
 pyreal-primitives.workspace = true
-# The game's font records, which the plain skin draws its text in.
-pyreal-assets.workspace = true
 # A plugin's pictures (`image` nodes) are PNG files from its package or fetched by it; decoded here
 # into the kit's pictures.
 png.workspace = true

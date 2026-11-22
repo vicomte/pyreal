@@ -117,16 +117,6 @@ impl Iterations {
             .join("/")
     }
 
-    pub fn is_end_of_retail(&self) -> bool {
-        // highres is optional on the player's side: without it the set is still end of retail.
-        self.portal == Self::END_OF_RETAIL.portal
-            && self.cell == Self::END_OF_RETAIL.cell
-            && self.local == Self::END_OF_RETAIL.local
-            && self
-                .highres
-                .is_none_or(|h| Some(h) == Self::END_OF_RETAIL.highres)
-    }
-
     /// Compare what the player has (`self`) with what a world expects.
     ///
     /// `roles` is which files the world actually compares: GDLE's check covers portal and cell
@@ -270,9 +260,6 @@ pub struct DatSet {
     pub created_by_launcher: bool,
 }
 
-/// The id reserved for the shared end-of-retail set.
-pub const SHARED_SET_ID: &str = "eor";
-
 impl DatSet {
     pub fn iterations(&self) -> Iterations {
         let mut it = Iterations::default();
@@ -290,17 +277,8 @@ impl DatSet {
         self.files.iter().map(|f| f.size).sum()
     }
 
-    /// The world this set belongs to, if it is a private copy.
-    pub fn owner_world(&self) -> Option<&str> {
-        match &self.origin {
-            DatOrigin::World { slug } => Some(slug),
-            _ => None,
-        }
-    }
-
     /// Re-read the folder, reusing the stored reading of any file whose size and modification time
-    /// are unchanged. That is what keeps the pre-launch check under a millisecond or two when
-    /// nothing has moved.
+    /// are unchanged. That keeps a re-read under a millisecond or two when nothing has moved.
     ///
     /// Returns whether any iteration rose, which after a session on a patching world means the
     /// world wrote to the set; `now` is recorded as the time it did.
@@ -323,12 +301,6 @@ impl DatSet {
         }
         rose
     }
-}
-
-/// Read the four files of a folder. Files that are absent are simply not listed; files that are
-/// present but unreadable are listed with their error, so the interface can say which one is wrong.
-pub fn scan_dir(path: &Path) -> Vec<DatFileState> {
-    scan_files(path, &[])
 }
 
 /// Read a folder's Classic pair, `portal.dat` and `cell.dat`: each file that is there, by its size,
@@ -458,28 +430,6 @@ fn reading(
     }
 }
 
-/// The role a file named `name` plays in a set of `kind`: the later set's four files (any
-/// language's local file), or the older set's `portal.dat` and `cell.dat`. `None` for a name that
-/// is no file of such a set.
-#[must_use]
-pub fn role_of(kind: SetKind, name: &str) -> Option<DatRole> {
-    let lower = name.to_ascii_lowercase();
-    match kind {
-        SetKind::Classic | SetKind::Original => CLASSIC_FILES
-            .iter()
-            .find(|(_, n)| *n == lower)
-            .map(|(r, _)| *r),
-        SetKind::Modern => DatRole::ALL
-            .iter()
-            .copied()
-            .find(|r| r.file_name().eq_ignore_ascii_case(name))
-            .or_else(|| {
-                (lower.starts_with("client_local_") && lower.ends_with(".dat"))
-                    .then_some(DatRole::Local)
-            }),
-    }
-}
-
 fn kind_matches(role: DatRole, kind: DatKind) -> bool {
     matches!(
         (role, kind),
@@ -601,7 +551,7 @@ pub(crate) mod tests {
         fake_set(&d, Iterations::END_OF_RETAIL);
         let set = check_folder(SetKind::Modern, &d, "eor").unwrap();
         assert_eq!(set.origin, DatOrigin::Shared);
-        assert!(set.iterations().is_end_of_retail());
+        assert_eq!(set.iterations(), Iterations::END_OF_RETAIL);
         assert!(check_folder(SetKind::Classic, &d, "c1").is_err(), "no pair");
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -673,6 +623,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// Read the four files of a folder afresh.
+    pub fn scan_dir(path: &Path) -> Vec<DatFileState> {
+        scan_files(path, &[])
+    }
+
     pub fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("pyreal-launch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -693,7 +648,6 @@ pub(crate) mod tests {
             created_by_launcher: false,
         };
         assert_eq!(set.iterations(), Iterations::END_OF_RETAIL);
-        assert!(set.iterations().is_end_of_retail());
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,5 +1,4 @@
-//! System-memory mip policy (BOX/MIRROR, compressed sources capped at four) and the separate
-//! runtime image-texture eligibility.
+//! System-memory mip policy (BOX/MIRROR, compressed sources capped at four).
 //!
 //! Texture records are described in `docs/formats/14-textures.md`. Upload, scaling and mipmap
 //! generation preserve the verified level policy below.
@@ -23,9 +22,6 @@
 use pyreal_primitives::{TextureData, TextureFormat};
 
 use crate::RenderError;
-
-/// `D3DX_FILTER_BOX | D3DX_FILTER_MIRROR`, the exact filter word the client passes.
-pub const D3DX_FILTER_BOX_MIRROR: u32 = 0x0007_0005;
 
 /// The cap in `if (levels > 4) levels = 4`.
 pub const MAX_MIP_LEVELS: u32 = 4;
@@ -55,24 +51,6 @@ pub fn level_count(width: u32, height: u32, is_compressed: bool) -> u32 {
     }
     // 1 + floor(log2(m)); ilog2 is exactly floor(log2()) for a non-zero integer.
     (1 + m.ilog2()).min(MAX_MIP_LEVELS)
-}
-
-/// Runtime image-texture copy, distinct from the compressed system-memory cap in [`level_count`].
-/// Retail's D3D texture fetch requests AUTOGEN only for one uncompressed system-memory level and
-/// supported hardware. D3D9 sublevels are driver-owned and extend down to 1x1. Only BGRA8 is
-/// implemented by the current device path; BC and explicit chains pass through untouched.
-#[must_use]
-pub fn runtime_level_count(source: &TextureData, supported: bool) -> usize {
-    if supported
-        && source.format == TextureFormat::Bgra8
-        && source.levels.len() == 1
-        && source.width != 0
-        && source.height != 0
-    {
-        (1 + source.width.max(source.height).ilog2()) as usize
-    } else {
-        source.levels.len()
-    }
 }
 
 /// Compressed image-texture system-memory preparation, before device upload. DXT1-5
@@ -212,114 +190,9 @@ pub fn box_filter_bgra8(
     Ok((out, dw, dh))
 }
 
-/// Build the mip chain for a level-0 image, following the client's policy exactly.
-///
-/// Returns the whole chain **including level 0**, so the result is never empty. A non-compressed
-/// source comes back as a one-element chain, which is what the client's texture creation produces and what
-/// `D3DUSAGE_AUTOGENMIPMAP` then completes on the GPU.
-///
-/// # Errors
-/// BC1/DXT3 use the same bundled-D3DX numeric implementation as production image-texture upload.
-/// DXT2/BC3 encoding is still pending and returns [`RenderError::Unsupported`].
-pub fn build_mip_chain(level0: &TextureData) -> Result<Vec<TextureData>, RenderError> {
-    if let Some(chain) = compressed_system_chain(level0)? {
-        return Ok(chain
-            .levels
-            .into_iter()
-            .enumerate()
-            .map(|(i, bytes)| TextureData {
-                width: (chain.width >> i).max(1),
-                height: (chain.height >> i).max(1),
-                format: chain.format,
-                levels: vec![bytes],
-            })
-            .collect());
-    }
-    let is_compressed = matches!(
-        level0.format,
-        TextureFormat::Bc1
-            | TextureFormat::Bc2
-            | TextureFormat::Bc2Premultiplied
-            | TextureFormat::Bc3
-            | TextureFormat::Bc3Premultiplied
-    );
-    let levels = level_count(level0.width, level0.height, is_compressed);
-    if levels == 1 {
-        return Ok(vec![level0.clone()]);
-    }
-    if is_compressed {
-        return Err(RenderError::Unsupported(
-            "this source format needs its own verified bundled D3DX system mip codec",
-        ));
-    }
-    let mut chain = Vec::with_capacity(levels as usize);
-    chain.push(level0.clone());
-    let mut bits = level0.levels.first().cloned().unwrap_or_default();
-    let (mut w, mut h) = (level0.width, level0.height);
-    for _ in 1..levels {
-        let (next, nw, nh) = box_filter_bgra8(&bits, w, h)?;
-        chain.push(TextureData {
-            width: nw,
-            height: nh,
-            format: level0.format,
-            levels: vec![next.clone()],
-        });
-        bits = next;
-        w = nw;
-        h = nh;
-    }
-    Ok(chain)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn runtime_imgtex_policy_is_separate_from_system_and_provided_chains() {
-        let mut t = TextureData {
-            width: 256,
-            height: 128,
-            format: TextureFormat::Bgra8,
-            levels: vec![vec![]],
-        };
-        assert_eq!(level_count(t.width, t.height, false), 1);
-        assert_eq!(runtime_level_count(&t, true), 9);
-        assert_eq!(runtime_level_count(&t, false), 1);
-        t.levels.push(vec![]);
-        assert_eq!(
-            runtime_level_count(&t, true),
-            2,
-            "provided levels are not replaced"
-        );
-        t.levels.truncate(1);
-        for format in [
-            TextureFormat::Bc1,
-            TextureFormat::Bc2,
-            TextureFormat::Bc2Premultiplied,
-            TextureFormat::Bc3,
-            TextureFormat::Bc3Premultiplied,
-        ] {
-            t.format = format;
-            assert_eq!(
-                runtime_level_count(&t, true),
-                1,
-                "BC system chain is a separate port"
-            );
-        }
-        t.format = TextureFormat::Bgra8;
-        for (w, h, n) in [(1, 1, 1), (1, 16, 5), (7, 3, 3), (0, 8, 1)] {
-            t.width = w;
-            t.height = h;
-            assert_eq!(runtime_level_count(&t, true), n);
-        }
-        t.levels.clear();
-        assert_eq!(
-            runtime_level_count(&t, true),
-            0,
-            "upload validates missing data"
-        );
-    }
 
     // The client's verified level policy is:
     //   levels = 1
@@ -349,14 +222,6 @@ mod tests {
         for (w, h) in [(1u32, 1u32), (8, 8), (256, 256), (1024, 1024)] {
             assert_eq!(level_count(w, h, false), 1, "{w}x{h}");
         }
-    }
-
-    // Oracle: the same quoted code -- the filter word is D3DX_FILTER_BOX | D3DX_FILTER_MIRROR,
-    // written out in the document as the literal 0x00070005.
-    #[test]
-    fn the_filter_word_is_the_documented_literal() {
-        assert_eq!(D3DX_FILTER_BOX_MIRROR, 0x0007_0005);
-        assert_eq!(MAX_MIP_LEVELS, 4);
     }
 
     // Oracle: D3DX_FILTER_MIRROR's definition -- a coordinate outside the extent is reflected about
@@ -442,21 +307,6 @@ mod tests {
         );
     }
 
-    // Oracle: the policy above, applied end to end. A non-compressed source gets one level, which
-    // is the compressed-source level policy.
-    #[test]
-    fn a_non_compressed_source_gets_exactly_one_level() {
-        let t = TextureData {
-            width: 64,
-            height: 64,
-            format: TextureFormat::Bgra8,
-            levels: vec![vec![0x40; 64 * 64 * 4]],
-        };
-        let chain = build_mip_chain(&t).unwrap();
-        assert_eq!(chain.len(), 1);
-        assert_eq!(chain[0].width, 64);
-    }
-
     // Every DXT codec retains source identity and its own numeric path.
     #[test]
     fn all_bc_source_kinds_build_four_system_levels_and_keep_provided_chains() {
@@ -467,11 +317,10 @@ mod tests {
             levels: vec![vec![0; 64 * 64 / 2]],
         };
         assert_eq!(level_count(t.width, t.height, true), 4);
-        let chain = build_mip_chain(&t).unwrap();
-        assert_eq!(chain.len(), 4);
-        assert_eq!(chain[0].levels[0], t.levels[0]);
-        assert_eq!(chain[3].width, 8);
-        assert_eq!(chain[3].levels[0].len(), 32);
+        let chain = compressed_system_chain(&t).unwrap().unwrap();
+        assert_eq!(chain.levels.len(), 4);
+        assert_eq!(chain.levels[0], t.levels[0]);
+        assert_eq!(chain.levels[3].len(), 32);
         for format in [
             TextureFormat::Bc2,
             TextureFormat::Bc3,
@@ -504,7 +353,7 @@ mod tests {
             format: TextureFormat::Bc1,
             levels: vec![vec![0; 8]],
         };
-        assert_eq!(build_mip_chain(&t).unwrap().len(), 1);
+        assert!(compressed_system_chain(&t).unwrap().is_none());
     }
 
     // Oracle: the halving rule -- extents halve per level and never reach zero.

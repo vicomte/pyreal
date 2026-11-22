@@ -58,13 +58,3 @@ pub use parts::{PartArray, PhysicsPart};
 pub use script::{get_script, vc7_qsort, ScriptManager};
 pub use seq::{AnimSequenceNode, Sequence};
 pub use table::{MotionState, MotionTable, MotionTableManager};
-
-/// This crate's error type. Almost everything here reports failure the way the client does — a
-/// zero return, a `None`, a numeric `WeenieError` — so there is very little for it to carry.
-#[derive(Debug, thiserror::Error)]
-pub enum AnimError {
-    /// A `WeenieError` code from the movement layer, passed through unchanged because the client's
-    /// callers compare against the numbers and the UI maps them to chat strings.
-    #[error("movement refused with error 0x{0:02X}")]
-    Movement(u32),
-}

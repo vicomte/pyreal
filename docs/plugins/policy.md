@@ -50,8 +50,7 @@ the policy of a world that publishes none and says why. The host enforces `pk_au
 
 **Where it comes from.** A world publishes it in its world entry (`plugins.policy` or
 `plugin_policy`), inline or as an `https://` URL; the launcher hands it to the Dereth client
-(`--plugin-policy <file or URL>`), and the headless client takes it from
-`--plugin-policy <file>`.
+(`--plugin-policy <file or URL>`).
 
 **A world that publishes none** allows everything: every domain and `session` `allow`, with or
 without a gesture, automation while a player killer too, and no cap on peers. A world that wants

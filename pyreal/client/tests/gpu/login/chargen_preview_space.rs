@@ -121,7 +121,7 @@ fn the_portal_camera_constants_are_the_floats_in_post_init() {
     assert_eq!(portal_space::LIGHT_INTENSITY, 2.0);
     // The light added is `(DISTANT_LIGHT, 2.0)`; DISTANT_LIGHT is 1 in its enum.
     assert_eq!(
-        pyreal_world_render::lighting::LightType::Directional as u32,
+        pyreal_world_render::creature_mode::LightType::Directional as u32,
         1
     );
 }
@@ -343,10 +343,6 @@ fn the_portal_space_is_built_the_way_post_init_builds_it() {
     assert!(
         space.mode.use_world_fov,
         "the world field of view is what makes the tunnel's projection collapse reach the swirl"
-    );
-    assert!(
-        !space.mode.use_sharp_mode,
-        "sharp mode belongs to the character-generation 3D view, not this preview"
     );
     assert_eq!(space.mode.lights.len(), 1);
     let l = space.mode.lights[0];

@@ -1,6 +1,4 @@
 //! Spell examination text and renderer-neutral spell icon layers.
-use pyreal_client_contract::SpellExamineComponent;
-use pyreal_primitives::DataId;
 
 /// Metres per yard — the divisor of the range line.
 pub const METRES_PER_YARD: f64 = 0.9144;
@@ -22,16 +20,6 @@ pub fn school_name(school: u32) -> &'static str {
         4 => "Creature Enchantment",
         5 => "Void Magic",
         _ => "None",
-    }
-}
-
-/// [`school_name`] as the world words it: a world may name the Void school differently.
-#[must_use]
-pub fn school_name_in(school: u32, rules: Option<&pyreal_primitives::WorldRules>) -> &str {
-    let name = school_name(school);
-    match (school, rules) {
-        (5, Some(r)) => r.text_or(pyreal_primitives::TextKey::SchoolVoidMagic, name),
-        _ => name,
     }
 }
 
@@ -117,12 +105,6 @@ pub fn duration_text_for(
     }
 }
 
-/// A spell's charge as its panels show it.
-#[must_use]
-pub fn charge_text(charge: f32) -> String {
-    format!("Charge: {}%", pyreal_rules::spell_charge::percent(charge))
-}
-
 /// The spell examination's range arm. `None` is the exact-zero arm, on which the client clears
 /// the text rather than writing `"Range: 0.0 yds."`.
 #[must_use]
@@ -134,56 +116,6 @@ pub fn range_text(range: f32) -> Option<String> {
         "Range: {:.1} yds.",
         f64::from(range) / METRES_PER_YARD
     ))
-}
-
-/// The spell pane's text append, which is **not**
-/// the object-examination append: it appends a single `"\n"`, never `"\n\n"`, and it has no
-/// font or colour argument.
-///
-/// The guard is that the text already holds more than one glyph, so a block appended after a **one-glyph** block
-/// runs straight on. That is the client's own off-by-one and it is reproduced rather than tidied.
-pub fn add_item_info(acc: &mut String, text: &str) {
-    if acc.encode_utf16().count() > 1 {
-        acc.push('\n');
-    }
-    acc.push_str(text);
-}
-
-/// The caption the client pushes, **including its leading newline**.
-pub const COMPONENTS_CAPTION: &str = "\nCOMPONENTS:";
-/// The indent the client seeds each component line with — five spaces.
-pub const COMPONENT_INDENT: &str = "     ";
-
-/// The whole of the display text for one spell: the description, then the caption when any
-/// component survived, then one indented line per surviving component.
-///
-/// `names` is already the surviving list — see [`surviving_components`], which applies the two
-/// skips the client applies.
-#[must_use]
-pub fn display_text(description: &str, names: &[String]) -> String {
-    let mut out = String::new();
-    add_item_info(&mut out, description);
-    if !names.is_empty() {
-        add_item_info(&mut out, COMPONENTS_CAPTION);
-    }
-    for n in names {
-        add_item_info(&mut out, &format!("{COMPONENT_INDENT}{n}"));
-    }
-    out
-}
-
-/// The components the loop actually draws, in formula order, omit a slot the component table
-/// has no entry for and one whose icon id is `INVALID_DID`.
-/// **Both skips pass over the text append, so the text line goes too.**
-#[must_use]
-pub fn surviving_components(
-    components: &[Option<SpellExamineComponent>],
-) -> Vec<(SpellExamineComponent, DataId)> {
-    components
-        .iter()
-        .filter_map(|c| c.as_ref())
-        .filter_map(|c| c.icon.map(|i| (c.clone(), i)))
-        .collect()
 }
 
 /// The compositor resolves these semantic mapper keys using its own artwork.
@@ -255,7 +187,7 @@ mod era_text_tests {
     use super::*;
 
     #[test]
-    fn a_duration_reads_as_its_range_and_a_charge_as_a_percent() {
+    fn a_duration_reads_as_its_range() {
         assert_eq!(
             duration_range_text(1800.0).as_deref(),
             Some("Duration: 22.5-37.5 min.")
@@ -271,7 +203,6 @@ mod era_text_tests {
             duration_range_text(100.0).as_deref(),
             Some("Duration: 1.3-2.1 min.")
         );
-        assert_eq!(charge_text(0.94), "Charge: 94%");
         let with = pyreal_primitives::EraFeatures::LAUNCH;
         let without = pyreal_primitives::EraFeatures::END_OF_RETAIL;
         assert!(duration_text_for(1800.0, with).unwrap().contains('-'));

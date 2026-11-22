@@ -41,7 +41,7 @@ pub mod dbobj;
 pub mod encode;
 pub mod error;
 /// The escape pass every string-table row goes through before it is shown. Here, beside
-/// [`ui::StringTable`], so the UI and the headless client unescape a row the same way.
+/// [`ui::StringTable`], so every reader of a row unescapes it the same way.
 pub mod escape;
 pub mod fingerprint;
 pub mod geometry;
@@ -292,59 +292,4 @@ pub fn decode_any_in(
             MasterProperty => MasterProperty(MasterProperty),
         }
     )
-}
-
-/// The types [`decode_any`] can handle today.
-#[must_use]
-pub fn decodable_types() -> &'static [DbType] {
-    &[
-        DbType::GfxObj,
-        DbType::Setup,
-        DbType::Anim,
-        DbType::Palette,
-        DbType::PalSet,
-        DbType::Surface,
-        DbType::SurfaceTexture,
-        DbType::RenderSurface,
-        DbType::RenderTexture,
-        DbType::Environment,
-        DbType::MTable,
-        DbType::Wave,
-        DbType::STable,
-        DbType::DegradeInfo,
-        DbType::Clothing,
-        DbType::Scene,
-        DbType::Region,
-        DbType::ParticleEmitter,
-        DbType::PhysicsScript,
-        DbType::PhysicsScriptTable,
-        DbType::LandBlock,
-        DbType::Lbi,
-        DbType::Cell,
-        DbType::SpellTable,
-        DbType::SpellComponentTable,
-        DbType::SkillTable,
-        DbType::XpTable,
-        DbType::Attribute2ndTable,
-        DbType::CharGen,
-        DbType::ChatPoseTable,
-        DbType::CombatTable,
-        DbType::ContractTable,
-        DbType::ObjectHierarchy,
-        DbType::TabooTable,
-        DbType::NameFilterTable,
-        DbType::BadData,
-        DbType::QualityFilter,
-        DbType::QuestDefDb,
-        DbType::EnumMapper,
-        DbType::DidMapper,
-        DbType::DualDidMapper,
-        DbType::StringTable,
-        DbType::StringType,
-        DbType::StringState,
-        DbType::Font,
-        DbType::ActionMap,
-        DbType::Keymap,
-        DbType::MasterProperty,
-    ]
 }

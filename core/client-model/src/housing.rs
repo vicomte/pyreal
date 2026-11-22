@@ -766,20 +766,6 @@ impl crate::world::World {
         true
     }
 
-    /// Query the slumlord named by the profile with `0x0258`.
-    ///
-    /// The panel guards this action on having a profile; the equivalent here is that it has a
-    /// profile to name a slumlord from, so this repeats only the non-zero target.
-    pub fn query_lord(&mut self, req: &mut dyn crate::RequestSink, target: ObjectId) -> bool {
-        if target.0 == 0 {
-            return false;
-        }
-        req.send(crate::Request::QueryLord(
-            pyreal_protocol::trade::HouseQueryLord { target },
-        ));
-        true
-    }
-
     /// Receive `0x0227 House_UpdateRentTime`.
     ///
     /// When house data exists, the new rent time replaces the old one, every rent-payment

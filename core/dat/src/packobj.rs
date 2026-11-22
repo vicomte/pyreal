@@ -31,12 +31,6 @@ pub fn packable_hash_table_header(c: &mut Cursor<'_>) -> Result<HashHeader, DatE
     })
 }
 
-/// The `PackableList` format has a plain `u32` count, then the elements in list order. No
-/// alignment of its own; the element type does whatever it does.
-pub fn packable_list_count(c: &mut Cursor<'_>) -> Result<u32, DatError> {
-    c.u32()
-}
-
 /// Read `n` elements with `f`, which is the shape almost every `PackObj` body has.
 pub fn read_n<'a, T, F>(c: &mut Cursor<'a>, n: usize, mut f: F) -> Result<Vec<T>, DatError>
 where

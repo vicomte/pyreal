@@ -129,10 +129,6 @@ fn base_pack(env: Env<'_>, exe: Option<&Path>) -> Option<PathBuf> {
     checkout.exists().then_some(checkout)
 }
 
-/// The environment variable that names the drawn ground's tuning file, in place of
-/// `terrain-tuning.toml` beside the preferences file.
-pub const TERRAIN_TUNING_ENV: &str = "PYREAL_TERRAIN_TUNING";
-
 /// The original game's settings directory under `Documents`, which a retail installation writes.
 pub const RETAIL_SETTINGS_DIR_NAME: &str = "Asheron's Call";
 
@@ -530,9 +526,6 @@ pub fn load_config(
             &|n: &str| std::env::var_os(n),
             std::env::current_exe().ok().as_deref(),
         );
-        if let Some(file) = process_env(TERRAIN_TUNING_ENV).filter(|v| !v.is_empty()) {
-            cfg.terrain_tuning = Some(PathBuf::from(file));
-        }
         if cfg.preferences_file.as_os_str().is_empty() && !cfg.headless {
             cfg.preferences_file = default_preferences.to_path_buf();
         }

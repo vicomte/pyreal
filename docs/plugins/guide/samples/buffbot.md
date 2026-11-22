@@ -95,29 +95,6 @@ commands are shortcuts:
 | `/buffbot selfprofiles` | each self profile, what it casts now and the time left on each |
 | `/buffbot selfprofile <name> <family>, <family>, ...` | sets a self profile (with no families, removes it) |
 
-## Running it on its own
-
-A buffbot is meant to be left running. The headless client runs it with no window at all, as a
-daemon that stays in the world and logs in again after a lost connection (a server restarted):
-
-```text
-# buffbot.script: each connection's setup
-enter Buffbel
-run 5
-plugin load plugins/buffbot
-run 3
-say /buffbot on
-```
-
-```text
-dereth-headless --daemon --connect play.example.org:9000 --account mybuffbot \
-  --password-file buffbot-password.txt --world --plugin-store buffbot-store \
-  --log-file buffbot.log --script buffbot.script
-```
-
-The log file holds every request, cast, fizzle and failure the plugin notes, with the time, and the
-chat. The headless client's README says more of the daemon.
-
 ## Asking it
 
 The [Tank](tank.md) asks a buffbot for buffs on its own (its Buffs page: the buffbot's name, the

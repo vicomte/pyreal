@@ -216,14 +216,6 @@ pub fn dat_dirs(
     }
 }
 
-/// Whether to offer "Create a private copy": the world needs a set of its own, has none, and is not
-/// one whose set comes from its own download.
-pub fn offers_private_copy(state: &LauncherState, world: &World) -> bool {
-    world.needs_private_dats()
-        && world.dats.custom.is_none()
-        && state.private_set_for(&world.slug).is_none()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +342,7 @@ mod tests {
             path: d.clone(),
             kind: SetKind::Modern,
             origin,
-            files: crate::datset::scan_dir(&d),
+            files: crate::datset::tests::scan_dir(&d),
             last_patched_by_server: None,
             created_by_launcher: false,
         }

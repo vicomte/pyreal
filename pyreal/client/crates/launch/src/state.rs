@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::datset::{DatOrigin, DatSet, SetKind, SHARED_SET_ID};
+use crate::datset::{DatOrigin, DatSet, SetKind};
 use crate::world::{Emulator, Endpoint, World};
 
 pub const STATE_FILE: &str = "worlds.json";
@@ -75,20 +75,6 @@ pub struct Account {
     /// First used on a world that makes accounts on first login.
     #[serde(default)]
     pub created_by_launcher: bool,
-}
-
-/// A saved combination, as the old launcher kept it. Read for its type's sake; Pyreal keeps none.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Favourite {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    pub world_slug: String,
-    pub account: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dat_set_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub classic_set_id: Option<String>,
 }
 
 /// A world on the player's list: a name, a host and a port, and what the player said of it.
@@ -198,6 +184,9 @@ pub struct WorldPrefs {
     /// Seconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_played: Option<u64>,
+    /// The era the world's status ping last named, used when a later ping goes unanswered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub era: Option<String>,
 }
 
 /// Settings across worlds.
@@ -483,14 +472,6 @@ impl LauncherState {
         self.worlds.iter().find(|w| w.slug == slug)
     }
 
-    pub fn dat_set(&self, id: &str) -> Option<&DatSet> {
-        self.dat_sets.iter().find(|s| s.id == id)
-    }
-
-    pub fn dat_set_mut(&mut self, id: &str) -> Option<&mut DatSet> {
-        self.dat_sets.iter_mut().find(|s| s.id == id)
-    }
-
     /// The default Modern set.
     pub fn shared_set(&self) -> Option<&DatSet> {
         self.default_set(SetKind::Modern)
@@ -501,11 +482,6 @@ impl LauncherState {
         self.dat_sets
             .iter()
             .find(|s| s.kind == kind && s.origin == DatOrigin::Shared)
-    }
-
-    /// The private set for a world, if one has been made.
-    pub fn private_set_for(&self, slug: &str) -> Option<&DatSet> {
-        self.dat_sets.iter().find(|s| s.owner_world() == Some(slug))
     }
 
     /// Put `set` in as the default of its kind, in place of any set at the same folder.
@@ -542,20 +518,6 @@ impl LauncherState {
                 *a = Account { label, ..account };
             }
             None => self.accounts.push(account),
-        }
-    }
-
-    /// Forget an account. The caller deletes its vault entry.
-    pub fn forget_account(&mut self, slug: &str, username: &str) {
-        self.accounts
-            .retain(|a| !(a.world_slug == slug && a.username.eq_ignore_ascii_case(username)));
-        if let Some(p) = self.world_prefs.get_mut(slug) {
-            if p.account
-                .as_deref()
-                .is_some_and(|a| a.eq_ignore_ascii_case(username))
-            {
-                p.account = None;
-            }
         }
     }
 
@@ -715,36 +677,20 @@ impl LauncherState {
         self.last_world = Some(slug.to_owned());
     }
 
-    /// Make the set `id` the default of its kind. Only a set the player added can be the default:
-    /// a world's private copy or a custom set belongs to its world.
-    pub fn set_default_set(&mut self, id: &str) -> bool {
-        let Some(kind) = self
-            .dat_sets
-            .iter()
-            .find(|s| s.id == id)
-            .filter(|s| matches!(s.origin, DatOrigin::Shared | DatOrigin::Unassigned))
-            .map(|s| s.kind)
-        else {
+    /// Remember `era` as the one `slug`'s status ping named. Whether it changed.
+    pub fn remember_era(&mut self, slug: &str, era: &str) -> bool {
+        let p = self.world_prefs.entry(slug.to_owned()).or_default();
+        if p.era.as_deref() == Some(era) {
             return false;
-        };
-        for s in &mut self.dat_sets {
-            if s.kind == kind && s.origin == DatOrigin::Shared {
-                s.origin = DatOrigin::Unassigned;
-            }
-            if s.id == id {
-                s.origin = DatOrigin::Shared;
-            }
         }
+        p.era = Some(era.to_owned());
         true
     }
 
-    /// A fresh id, unique within this state.
-    pub fn new_id(&self, prefix: &str) -> String {
-        let taken = |id: &str| id == SHARED_SET_ID || self.dat_sets.iter().any(|s| s.id == id);
-        (1u32..)
-            .map(|n| format!("{prefix}{n}"))
-            .find(|id| !taken(id))
-            .expect("some id is free")
+    /// The era `slug`'s status ping last named.
+    #[must_use]
+    pub fn remembered_era(&self, slug: &str) -> Option<&str> {
+        self.world_prefs.get(slug)?.era.as_deref()
     }
 }
 

@@ -11,7 +11,7 @@ autotests = false
 [dependencies]
 # The interface: the manifest, permissions, events, the UI tree, values and the engine boundary.
 pyreal-plugin-api.workspace = true
-# The game, as the headless client reaches it: the frame hook the host installs itself as
+# The game, as the client reaches it: the frame hook the host installs itself as
 # (`pyreal-client-runtime`), the object model it reads (`pyreal-client-model`) and the view and
 # chat types (`pyreal-client-contract`). No crate under `pyreal/client/` (`cargo xtask seams`,
 # `seam: plugin-host names no client crate`).

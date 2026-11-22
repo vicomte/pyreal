@@ -725,16 +725,6 @@ impl PartArray {
         }
     }
 
-    /// Set the part array's translucency.
-    pub fn set_translucency_internal(&mut self, t: f32, locked: bool) {
-        if self.setup.is_none() {
-            return;
-        }
-        for p in &mut self.parts {
-            p.set_translucency(t, locked);
-        }
-    }
-
     /// Returns false for a bad index.
     pub fn set_part_translucency_internal(&mut self, i: u32, t: f32, locked: bool) -> bool {
         match self.parts.get_mut(usize::try_from(i).unwrap_or(usize::MAX)) {
@@ -853,12 +843,6 @@ impl PartArray {
                     })
             })
             .collect()
-    }
-
-    /// Without gfxobjs to scan, the setup's own flag
-    /// is the answer; the client or physics can refine it when the meshes are loaded.
-    pub fn cache_has_physics_bsp(&mut self) {
-        self.has_physics_bsp = self.setup.as_ref().is_some_and(|s| s.has_physics_bsp);
     }
 }
 

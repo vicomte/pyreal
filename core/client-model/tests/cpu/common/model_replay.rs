@@ -231,9 +231,7 @@ pub(crate) fn apply_event(
         }
         EV_UPDATE_ENCHANTMENT => {
             if let Ok(m) = body_of::<pyreal_protocol::qualities::MagicUpdateEnchantment>(body) {
-                if let Some(q) = w.player_qualities_mut() {
-                    q.update_enchantment(&m.0, LocalTime(now.0));
-                }
+                w.update_player_enchantment(&m.0, LocalTime(now.0));
             }
         }
         _ => {}

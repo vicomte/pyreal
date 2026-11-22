@@ -7,7 +7,7 @@
 //!
 //! The client and model test binaries share these counts and the parsed corpus cache.
 
-use super::{capture, session_names, Corpus, Direction, GAME_ACTION};
+use super::{capture, session_names, Corpus, Direction};
 
 /// Whether `path` (a `fixtures/packet-captures/<slug>.jsonl`) is a recording that ends without a
 /// clean `Disconnect`. Those sit in the folder beside the others, but the message corpus index
@@ -55,11 +55,6 @@ pub fn recorded_world_sessions() -> usize {
     n
 }
 
-/// The complement of [`recorded_world_sessions`]: the login-only recordings.
-pub fn recorded_login_only_sessions() -> usize {
-    recorded_sessions() - recorded_world_sessions()
-}
-
 /// Recorded blobs travelling `dir` with `opcode`, over the whole corpus.
 ///
 /// No floor: a zero is a legitimate answer for an opcode no recording carries, and a call site
@@ -68,44 +63,12 @@ pub fn recorded_blobs(dir: Direction, opcode: u32) -> usize {
     corpus().iter().map(|c| c.count(dir, opcode)).sum()
 }
 
-/// Every recorded server-to-client blob.
-pub fn recorded_server_blobs() -> usize {
-    recorded_in_dir(Direction::ServerToClient)
-}
-
-/// Every recorded client-to-server blob.
-pub fn recorded_client_blobs() -> usize {
-    recorded_in_dir(Direction::ClientToServer)
-}
-
-/// Every recorded client game action -- the `0xF7B1` envelope, client to server.
-pub fn recorded_client_actions() -> usize {
-    let n = recorded_blobs(Direction::ClientToServer, GAME_ACTION);
-    assert!(
-        n > 0,
-        "the corpus carries no 0xF7B1 at all; the reader is dead"
-    );
-    n
-}
-
 /// Every recorded `0xF74C` movement body.
 pub fn recorded_movement_events() -> usize {
     let n = recorded_blobs(Direction::ServerToClient, MOVEMENT);
     assert!(
         n > 0,
         "the corpus carries no 0xF74C at all; the reader is dead"
-    );
-    n
-}
-
-fn recorded_in_dir(dir: Direction) -> usize {
-    let n: usize = corpus()
-        .iter()
-        .map(|c| c.blobs.iter().filter(|b| b.dir == dir).count())
-        .sum();
-    assert!(
-        n > 0,
-        "the corpus carries no blob in {dir:?}; the reader is dead"
     );
     n
 }

@@ -158,47 +158,6 @@ impl InputShell {
         }
     }
 
-    /// The names of one interface's saved key maps (`<name>-<slug>.keymap`) in the folder,
-    /// sorted.
-    pub fn scheme_names(&self, slug: &str) -> Result<Vec<String>, pyreal_input::InputError> {
-        Ok(self
-            .keymap_files()?
-            .iter()
-            .filter_map(|f| scheme_name(f, slug))
-            .collect())
-    }
-
-    /// The name of the modern interface's key map in use, when its file is one of the scheme's.
-    #[must_use]
-    pub fn modern_scheme_in_use(&self) -> Option<String> {
-        self.keymap_file_name()
-            .and_then(|f| scheme_name(&f, MODERN_SLUG))
-    }
-
-    /// Every `*.keymap` in the folder, by basename.
-    pub fn keymap_files(&self) -> Result<Vec<String>, pyreal_input::InputError> {
-        let Some(dir) = self
-            .keymap_path
-            .as_deref()
-            .and_then(std::path::Path::parent)
-        else {
-            return Ok(Vec::new());
-        };
-        let mut names = Vec::new();
-        for path in pyreal_client_runtime::platform::files::list(dir)? {
-            if path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("keymap"))
-            {
-                if let Some(name) = path.file_name() {
-                    names.push(name.to_string_lossy().into_owned());
-                }
-            }
-        }
-        names.sort_by_key(|name| name.to_ascii_lowercase());
-        Ok(names)
-    }
-
     /// Initialize the keymap from the selected file when the load dialog closes.
     /// A malformed user file deliberately becomes the two shipped defaults: keymap
     /// initialization clears the partial user map after adding it fails and then adds
@@ -234,48 +193,6 @@ impl InputShell {
         self.manager.shipped_maps = Some(maps);
         self.keymap_path = Some(path);
         self.keymap_unreadable = unreadable;
-        Ok(true)
-    }
-
-    /// Back to the shipped defaults: the player's own keys are dropped.
-    pub fn restore_shipped_keys(&mut self) -> bool {
-        let Some((game, base)) = self.manager.shipped_maps.as_deref() else {
-            return false;
-        };
-        let restored = pyreal_input::InputManager::load_over_defaults(
-            None,
-            &[game, base],
-            Some(&self.manager.action_map),
-        );
-        *self.modern_map_mut() = restored;
-        true
-    }
-
-    /// Delete the key map file `name` (a basename, `.keymap` added when absent) beside the one in
-    /// use. The one in use is not deleted.
-    pub fn delete_keymap_file(&mut self, name: &str) -> Result<bool, pyreal_input::InputError> {
-        let Some(dir) = self
-            .keymap_path
-            .as_deref()
-            .and_then(std::path::Path::parent)
-        else {
-            return Ok(false);
-        };
-        let mut file = std::path::PathBuf::from(name.trim());
-        if file.file_name() != Some(file.as_os_str()) {
-            return Ok(false);
-        }
-        if file
-            .extension()
-            .is_none_or(|e| !e.eq_ignore_ascii_case("keymap"))
-        {
-            file = std::path::PathBuf::from(format!("{}.keymap", name.trim()));
-        }
-        let path = dir.join(file);
-        if self.keymap_path.as_deref() == Some(path.as_path()) {
-            return Ok(false);
-        }
-        pyreal_client_runtime::platform::files::remove_file(&path)?;
         Ok(true)
     }
 

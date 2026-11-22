@@ -1,7 +1,7 @@
 //! The frame's event log, and the one store behind `App`'s test-only counters.
 //!
 //! [`crate::app::App`] has ~30 `pub fn`s whose only callers are under `tests/`:
-//! `actions_routed`, `frames_drawn`, `world_resets`, `stream_failures` and the rest. As separate
+//! `actions_routed`, `frames_drawn`, `world_resets`, `jump_counts` and the rest. As separate
 //! `u64` fields each would say *how many* without saying *which*, *when*, or *in what order*.
 //!
 //! So they are one append-only log. Every counted site pushes a `FrameEvent` at the place and
@@ -20,74 +20,18 @@
 //! * **totals** — one `u64` per `FrameEventKind`, for the whole process. This is what the
 //!   accessors read, so it can never be trimmed.
 //! * **amounts** — one `u64` per kind, summing `FrameEvent::amount`. Four counts advance by
-//!   more than one (`world_textures_released` adds the slots released), and this is where that
+//!   more than one (`WorldReset` adds the texture slots released), and this is where that
 //!   quantity lives.
 //! * **the ring** — the events themselves, for the last `ring_frames` frames plus the frame in
 //!   progress. Text, order and `FrameEvents::since` read this. It is bounded because a station
 //!   that runs ten thousand frames must not grow a buffer per frame, and because nothing needs an
 //!   event's *payload* from an hour ago — the totals already carry the count.
 //!
-//! `FrameEvents::last` keeps the most recent event of each kind for ever, which is how
-//! `App::last_render_pref_work` survives the trim.
+//! `FrameEvents::last` keeps the most recent event of each kind for ever, past the trim.
 
 use std::collections::VecDeque;
 
 use crate::frame::FrameStep;
-/// A landscape style refused for want of its files: the files it needed and the style kept.
-pub type LandscapeRefusal = (
-    pyreal_client_contract::options::landscape::RequiredFiles,
-    Option<pyreal_client_contract::options::landscape::RegionStyle>,
-);
-
-/// What one `WorldScene::update_from_preferences` poll actually did.
-///
-/// Every field is the state of one preference poll's own local
-/// flags, and they exist so that "the option changed and the renderer did nothing" and "the
-/// option did not change" cannot print alike.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RenderPrefWork {
-    /// Either texture-detail level moved, so every landblock was released and rebuilt.
-    pub flushed: bool,
-    /// `Render.LandscapeDrawDistance` moved, so the smart-box middle radius changed.
-    pub mid_radius_changed: bool,
-    /// The compare — `Render.BuildingDetailTextures` moved. **Counted and not
-    /// acted on**: this build has no detail-texture pass. See
-    /// `WorldScene::update_from_preferences` for the retail chain it would reach.
-    pub detail_texturing_changed: bool,
-    /// Window slots the rebuild queued.
-    pub blocks_queued: usize,
-    /// Blocks resident once the rebuild had streamed.
-    pub blocks_rebuilt: usize,
-    /// How many of the four detail classes hold a surface after the apply —
-    /// `2` (building and environment) with the preference on, `0` with it off. It is the
-    /// difference between "the poll noticed" ([`Self::detail_texturing_changed`]) and "the
-    /// subsystem did something", which the other fields cannot distinguish.
-    pub detail_surfaces: usize,
-    /// `[Render] Ground` moved and the ground was rebuilt with the new land surface.
-    pub ground_changed: bool,
-    /// `[Render] Sky` moved and the sky, its light and its fog were rebuilt.
-    pub sky_changed: bool,
-    /// `[Render] Ground` named a style whose files are not present: the files it needed, and the
-    /// style the ground kept (`None` is the world's own). The preference went back to that style.
-    pub ground_refused: Option<LandscapeRefusal>,
-    /// The same for `[Render] Sky`.
-    pub sky_refused: Option<LandscapeRefusal>,
-    /// `[Render] Objects` moved and every object, the body and the landscape's objects were
-    /// rebuilt with the new look.
-    pub objects_changed: bool,
-    /// The same as [`Self::ground_refused`] for `[Render] Objects`.
-    pub objects_refused: Option<LandscapeRefusal>,
-    /// `[Render] Objects` asks for another era's look whose verdicts the application is still
-    /// working out: the objects keep the look they have until they arrive.
-    pub objects_waiting: bool,
-    /// `[Fidelity]` moved, and the high-fidelity presentation was installed, changed or
-    /// removed.
-    pub fidelity_changed: bool,
-    /// `[Fidelity]` asked for the high-fidelity presentation, and this device cannot
-    /// draw it (it draws only on the `wgpu` device, asked at start-up for what it draws with): it
-    /// stays off, and the player is told.
-    pub fidelity_refused: bool,
-}
 
 /// Which of `App::apply_input_actions`'s five consumers took an input action.
 ///
@@ -189,7 +133,7 @@ pub enum FrameEvent {
     /// function rather than about a second login. `App::world_resets` is this kind's total.
     WorldReset {
         /// Texture slots `App::reset_world_view` has handed back. Summed over the
-        /// run by `FrameEvent::amount`, which is `App::world_textures_released`.
+        /// run by `FrameEvent::amount`.
         ///
         /// Observable texture release during land teardown. It is counted rather than assumed
         /// because a teardown that drops the scene without calling
@@ -199,18 +143,10 @@ pub enum FrameEvent {
     },
     /// How many times a streamed landblock failed to build. Asserted on by the tests: a decode or
     /// a device failure that is merely tolerated is a gap that hides inside a green suite.
-    /// `App::stream_failures` is this kind's total; the payload says which half failed.
+    /// The payload says which half failed.
     StreamFailed(StreamStage),
     /// Render-preference updating returned, whether or not anything changed.
-    ///
-    /// What that poll last did, for the tests and the report line: the payload of
-    /// the most recent one of these is `App::last_render_pref_work`.
-    RenderPreferencesPolled(RenderPrefWork),
-    /// Frames on which the render-preference poll found a
-    /// scene-owned `Render.*` preference had moved and did something about it. Zero for a session
-    /// in which nobody touched the options page, which is what makes it a usable instrument.
-    /// `App::render_pref_applies`.
-    RenderPreferencesApplied,
+    RenderPreferencesPolled,
     /// How many times `App::position_use_time` has run, counted **before** its
     /// early return. `App::position_use_times`.
     ///
@@ -304,8 +240,6 @@ pub enum FrameEventKind {
     StreamFailed,
     /// [`FrameEvent::RenderPreferencesPolled`].
     RenderPreferencesPolled,
-    /// [`FrameEvent::RenderPreferencesApplied`].
-    RenderPreferencesApplied,
     /// [`FrameEvent::PositionUseTime`].
     PositionUseTime,
     /// [`FrameEvent::PlayerTeleportUseTime`].
@@ -334,7 +268,7 @@ pub enum FrameEventKind {
 ///
 /// `FrameEventKind::ALL` is checked against it by a unit test, so adding a variant and
 /// forgetting this constant is a red, not a silent out-of-bounds.
-pub const KIND_COUNT: usize = 25;
+pub const KIND_COUNT: usize = 24;
 
 impl FrameEventKind {
     /// Every kind, in declaration order. The totals arrays are this long.
@@ -352,7 +286,6 @@ impl FrameEventKind {
         FrameEventKind::WorldReset,
         FrameEventKind::StreamFailed,
         FrameEventKind::RenderPreferencesPolled,
-        FrameEventKind::RenderPreferencesApplied,
         FrameEventKind::PositionUseTime,
         FrameEventKind::PlayerTeleportUseTime,
         FrameEventKind::PlayerTeleportApplied,
@@ -389,7 +322,6 @@ impl FrameEventKind {
             Self::WorldReset => "world-reset",
             Self::StreamFailed => "stream-failed",
             Self::RenderPreferencesPolled => "render-preferences-polled",
-            Self::RenderPreferencesApplied => "render-preferences-applied",
             Self::PositionUseTime => "position-use-time",
             Self::PlayerTeleportUseTime => "player-teleport-use-time",
             Self::PlayerTeleportApplied => "player-teleport-applied",
@@ -428,8 +360,7 @@ impl FrameEvent {
             Self::WorldCameraTurnApplied => FrameEventKind::WorldCameraTurnApplied,
             Self::WorldReset { .. } => FrameEventKind::WorldReset,
             Self::StreamFailed(_) => FrameEventKind::StreamFailed,
-            Self::RenderPreferencesPolled(_) => FrameEventKind::RenderPreferencesPolled,
-            Self::RenderPreferencesApplied => FrameEventKind::RenderPreferencesApplied,
+            Self::RenderPreferencesPolled => FrameEventKind::RenderPreferencesPolled,
             Self::PositionUseTime => FrameEventKind::PositionUseTime,
             Self::PlayerTeleportUseTime => FrameEventKind::PlayerTeleportUseTime,
             Self::PlayerTeleportApplied => FrameEventKind::PlayerTeleportApplied,
@@ -473,16 +404,6 @@ impl std::fmt::Display for FrameEvent {
             Self::JumpRequested { status } => write!(f, " status={status}"),
             Self::WorldReset { textures_released } => write!(f, " textures={textures_released}"),
             Self::StreamFailed(s) => write!(f, " {}", stage_name(*s)),
-            Self::RenderPreferencesPolled(w) => write!(
-                f,
-                " flushed={} mid-radius={} detail-texturing={} queued={} rebuilt={} surfaces={}",
-                w.flushed,
-                w.mid_radius_changed,
-                w.detail_texturing_changed,
-                w.blocks_queued,
-                w.blocks_rebuilt,
-                w.detail_surfaces,
-            ),
             Self::PlayerTeleportBeforeABody { count, reason } => {
                 write!(f, " count={count} {}", no_body_name(*reason))
             }
@@ -732,7 +653,7 @@ mod tests {
         log.push(FrameEvent::WorldReset {
             textures_released: 0,
         });
-        // `world_resets` and `world_textures_released` were two fields and are one event.
+        // Resets and released texture slots were two fields and are one event.
         assert_eq!(log.total(FrameEventKind::WorldReset), 2);
         assert_eq!(log.amount(FrameEventKind::WorldReset), 3);
 
@@ -780,25 +701,15 @@ mod tests {
     }
 
     #[test]
-    fn last_survives_the_trim_which_is_what_last_render_pref_work_needs() {
+    fn last_survives_the_trim() {
         let mut log = FrameEvents::with_ring_frames(1);
-        let w = RenderPrefWork {
-            flushed: true,
-            blocks_queued: 4,
-            ..RenderPrefWork::default()
-        };
-        log.push(FrameEvent::RenderPreferencesPolled(w));
+        let e = FrameEvent::StreamFailed(StreamStage::Landblocks);
+        log.push(e);
         for _ in 0..5 {
             log.drain_frame();
         }
-        assert_eq!(
-            log.count(|e| matches!(e, FrameEvent::RenderPreferencesPolled(_))),
-            0
-        );
-        assert_eq!(
-            log.last(FrameEventKind::RenderPreferencesPolled),
-            Some(FrameEvent::RenderPreferencesPolled(w))
-        );
+        assert_eq!(log.count(|e| matches!(e, FrameEvent::StreamFailed(_))), 0);
+        assert_eq!(log.last(FrameEventKind::StreamFailed), Some(e));
     }
 
     // The serialisation a golden file names. No address, no pointer, one line each.
@@ -818,7 +729,7 @@ mod tests {
             },
             FrameEvent::ServerControlLost(ControlLossSite::Transfer),
             FrameEvent::EscapeOptionsToggle { answered: true },
-            FrameEvent::RenderPreferencesPolled(RenderPrefWork::default()),
+            FrameEvent::RenderPreferencesPolled,
             FrameEvent::FrameDrawn,
         ];
         assert_eq!(
@@ -831,8 +742,7 @@ mod tests {
              player-teleport-before-a-body count=2 no-character\n\
              server-control-lost transfer\n\
              escape-options-toggle answered=true\n\
-             render-preferences-polled flushed=false mid-radius=false detail-texturing=false \
-             queued=0 rebuilt=0 surfaces=0\n\
+             render-preferences-polled\n\
              frame-drawn"
         );
         for e in events {

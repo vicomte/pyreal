@@ -5,8 +5,7 @@
 //! `wasmparser` and `wasm-encoder` to take a component's core module out, check it and rewrite it;
 //! `scoped-tls-hkt` to lend the host to the module's imports for one entry; and, with the
 //! `interpreter` feature (on by default), `wasmi` as the runtime. **Used by** the products that
-//! load plugins: the desktop and headless clients run modules in [`interp::Interpreter`], the
-//! browser client in the browser's own WebAssembly through its [`Backend`].
+//! load plugins: the desktop client runs modules in [`interp::Interpreter`].
 //!
 //! **Must never** depend on another crate of this workspace or reach a platform (`cargo xtask
 //! seams`, `seam: plugin-wasm deps`): a runtime that needs one is a [`Backend`] its product

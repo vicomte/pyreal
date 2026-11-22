@@ -127,9 +127,6 @@ impl Presentation for SimPresentation {
         self.device.capture_png(path)
     }
 
-    fn texture_filtering(&self) -> u32 {
-        self.device.texture_filtering()
-    }
     fn apply_device_preference_requests(
         &mut self,
         requests: Vec<pyreal_client_contract::UiRequest>,
@@ -229,7 +226,7 @@ impl Presentation for SimPresentation {
         &mut self,
         store: &RetailDatStore,
         _world: Option<&mut WorldState>,
-    ) -> Result<crate::frame_events::RenderPrefWork, pyreal_world_data::landblock::WorldError> {
+    ) -> Result<(), pyreal_world_data::landblock::WorldError> {
         self.device.update_render_preferences(store, None)
     }
 
@@ -279,9 +276,6 @@ impl Presentation for SimPresentation {
     ) {
         self.device
             .preview_set_light(id, light, intensity, direction)
-    }
-    fn preview_use_sharp_mode(&mut self, id: pyreal_client_contract::overlay::PreviewSpace) {
-        self.device.preview_use_sharp_mode(id)
     }
     fn preview_use_world_fov(&mut self, id: pyreal_client_contract::overlay::PreviewSpace) {
         self.device.preview_use_world_fov(id)
@@ -383,21 +377,6 @@ impl Presentation for SimPresentation {
         index: usize,
     ) -> Option<u32> {
         self.device.preview_curr_frame_number(id, index)
-    }
-    fn preview_object_bounding_box(
-        &self,
-        id: pyreal_client_contract::overlay::PreviewSpace,
-        index: usize,
-        store: &pyreal_dat::RetailDatStore,
-    ) -> Option<pyreal_physics::geom::BBox> {
-        self.device.preview_object_bounding_box(id, index, store)
-    }
-    fn preview_part_array_mut(
-        &mut self,
-        id: pyreal_client_contract::overlay::PreviewSpace,
-        index: usize,
-    ) -> Option<&mut pyreal_animation::parts::PartArray> {
-        self.device.preview_part_array_mut(id, index)
     }
 
     fn scene<'a>(&'a self, world: Option<&'a WorldState>) -> Option<Box<dyn Scene + 'a>> {
@@ -502,12 +481,6 @@ macro_rules! impl_sim_scene_reads {
             }
             fn game_date_time(&self) -> Option<(String, String)> {
                 self.halves().0.game_date_time()
-            }
-            fn frame_rate_fps(&self) -> f32 {
-                0.0
-            }
-            fn degrade_meter(&self) -> (bool, f32, f32) {
-                (false, 1.0, 0.0)
             }
             fn render_preferences(&self) -> crate::render_prefs::RenderPreferences {
                 self.halves().1.cfg.render

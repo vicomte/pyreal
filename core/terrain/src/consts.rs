@@ -60,13 +60,6 @@ pub const NE_CORNER: [u8; 4] = [2, 1, 0, 3];
 /// The same for the NW corner.
 pub const NW_CORNER: [u8; 4] = [3, 2, 1, 0];
 
-/// The shift per `ImageScaleType` (FULL, HALF, QUARTER, EIGHTH, —).
-/// Note the last entry is 8, not 4: the table is `{0,1,2,4,8}` and not `{0,1,2,3,4}`.
-pub const IMAGE_SHIFT: [u32; 5] = [0, 1, 2, 4, 8];
-
-/// The floor for the merged land texture size.
-pub const MIN_TEX_SIZE: u32 = 8;
-
 /// The terrain texture's U size.
 pub const TEXTURE_U_SIZE: f32 = 1.0;
 /// The terrain texture's V size.

@@ -70,9 +70,9 @@ is there too.
 
 ## 3. A window and a command
 
-A window is declared, not drawn: the plugin says what it holds and the host draws it its own way
-(the headless client keeps the tree without drawing it). `ui.window` answers a handle; `win:get(id)`
-is a node, and setting one of its properties changes the window.
+A window is declared, not drawn: the plugin says what it holds and the host draws it its own way.
+`ui.window` answers a handle; `win:get(id)` is a node, and setting one of its properties changes
+the window.
 
 ```lua
 local win = nil
@@ -175,34 +175,6 @@ the player turns on loads at once. The click gives the plugin an **activation** 
 count as interactive. The same use with no click behind it would be *automated*: the world's
 policy would have to allow that domain (`loot`, or `nav`) without a gesture. [permissions.md](../permissions.md) has the rule
 and [actions.md](../actions.md) every action, what ends it and its timeout.
-
-## Trying it without a window: the headless client
-
-The headless client runs a script against the game with no window and no graphics device. It keeps
-each plugin's windows as trees, which a script can print and click. It reads the game's data files from `--dat-dir` (or the working folder)
-and replays the recorded sessions in `fixtures/packet-captures/`.
-
-```text
-# kills.script
-login long-solo-play +Aldric
-replay 120
-ui dump
-ui click example.kills main reset
-say /kills
-tick 1
-chat
-plugin console example.kills
-```
-
-```text
-cargo run -p dereth-headless -- --script kills.script --plugins path/to/kills --dat-dir <the game's data folder> --captures fixtures/packet-captures
-```
-
-Two minutes into that recording the character has killed a sparring golem, so `ui dump` shows
-`label #count text="1"`; after the click on **Reset**, `/kills` answers `Corpses seen: 0`. `ui
-dump` prints each window in the text form of [ui.md](../ui.md#the-tree-as-text), which is also
-what the conformance suite compares; `tick 1` runs one more frame, so the command's answer is
-there for `chat`. The script verbs are listed by `dereth-headless --help`.
 
 ## Next
 

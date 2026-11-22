@@ -3,7 +3,7 @@
 //!
 //! **Depends on** `pyreal-primitives`. **Used by** the client's session (`pyreal-client-net`), the
 //! object model and game rules (`pyreal-client-model`, `pyreal-rules`), the client runtime, the
-//! SDK, the client and its test kit, and the capture tools (`dereth-pcap`, `dereth-corpus`).
+//! SDK, and the client and its test kit.
 //!
 //! **Must never** hold state or talk to a network: it consumes and produces bytes, and what reacts
 //! to a message is the session or the game above it.

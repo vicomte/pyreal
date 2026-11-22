@@ -3,25 +3,6 @@
 use super::*;
 
 impl Hud {
-    /// The host's transit for the Salvage panel's notices -- see
-    /// [`pyreal_client_contract::panels::salvage::SalvageNotice`].
-    ///
-    /// Two methods rather than a `pub` field, because the two calls mean different things:
-    /// `App` clears unconditionally at the head of the frame (an undelivered batch must not
-    /// survive a screen change and open a window for a tool used two screens ago) and queues only
-    /// when the panel generation that will receive them already existed.
-    pub fn clear_salvage_notices(&mut self) {
-        self.pending_salvage.clear();
-    }
-
-    /// See [`Self::clear_salvage_notices`].
-    pub fn queue_salvage_notices(
-        &mut self,
-        notices: Vec<pyreal_client_contract::panels::salvage::SalvageNotice>,
-    ) {
-        self.pending_salvage.extend(notices);
-    }
-
     /// One frame's worth of session events, applied.
     ///
     /// Returns the chat lines that arrived, in order — for the caller to log. They are also queued
@@ -140,8 +121,8 @@ impl Hud {
                     //
                     // Rebasing the login blob against **zero** would make that difference
                     // `wire_start + duration - cur_time`, i.e. the whole elapsed session too
-                    // negative, and `format_duration` clamps at zero: every timed buff the
-                    // `0x0013` carried would read **0:00**, while still expiring at the right
+                    // negative, and the panel shows a negative duration as zero: every timed buff
+                    // the `0x0013` carried would read **0:00**, while still expiring at the right
                     // moment because the expiry is the server's `0x02C3 Magic_RemoveEnchantment`
                     // and not this number. `0x0013` is the
                     // only place a re-login learns its enchantments from.

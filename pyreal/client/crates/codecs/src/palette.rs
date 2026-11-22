@@ -30,10 +30,6 @@ impl Default for ExpandedPalette {
     }
 }
 
-/// Minimum lighting, the third field of the dat object. Carried for completeness; the
-/// draw path does not read it.
-pub const DEFAULT_MIN_LIGHTING: f32 = 0.1;
-
 /// The number of entries in an expanded palette.
 pub const PALETTE_ENTRIES: usize = 2048;
 /// How many times a 256-colour table is replicated to fill one.
@@ -117,14 +113,6 @@ impl ExpandedPalette {
             return false;
         }
         self.modify(offset, &colors[..count])
-    }
-
-    /// Clone before modifying, so the base palette
-    /// in the cache is never mutated. A palette produced this way has no DataID, which is why every
-    /// dyed item gets an *uncached* combined texture.
-    #[must_use]
-    pub fn make_modified(&self) -> Self {
-        self.clone()
     }
 
     /// Expand one index the way the client does.
@@ -238,7 +226,7 @@ mod tests {
     #[test]
     fn a_modified_palette_does_not_disturb_its_base() {
         let base = ExpandedPalette::from_dat(&vec![0x1111_1111u32; 2048]).unwrap();
-        let mut dyed = base.make_modified();
+        let mut dyed = base.clone();
         assert!(dyed.modify(0, &[0x2222_2222; 8]));
         assert_eq!(base.0[0], 0x1111_1111);
         assert_eq!(dyed.0[0], 0x2222_2222);

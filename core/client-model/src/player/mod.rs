@@ -528,12 +528,6 @@ impl PlayerSystem {
             .find(|i| self.shortcuts.get(*i).is_some_and(Option::is_none))
     }
 
-    /// The player module's favourite-spell list for one tab.
-    #[must_use]
-    pub fn favorite_spells(&self, tab: usize) -> Option<&Vec<u32>> {
-        self.spell_tabs.get(tab)
-    }
-
     /// Add `spell` as a favorite at `index` in `bank`.
     ///
     /// ```text
@@ -858,8 +852,6 @@ mod tests {
     fn there_are_eight_spell_tabs_and_the_filter_defaults_to_all_fourteen_bits() {
         let p = PlayerSystem::new();
         assert_eq!(p.spell_tabs.len(), 8);
-        assert!(p.favorite_spells(7).is_some());
-        assert!(p.favorite_spells(8).is_none());
         assert_eq!(p.spell_filters, 0x3FFF);
         assert_eq!(DEFAULT_SPELL_FILTERS.count_ones(), 14);
     }

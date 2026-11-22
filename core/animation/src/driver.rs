@@ -283,13 +283,6 @@ impl MotionDriver {
             .is_some_and(|p| own == Some(&p.gfxobj_id))
     }
 
-    /// Whether part `k` shows the object's own body: its setup's model, or a worn model mostly
-    /// drawn with the body's own surfaces and pictures (a hood around the wearer's face).
-    #[must_use]
-    pub fn wears_own_body(&self, k: usize) -> bool {
-        self.wears_own_model(k) || self.wears_own_body_in(k, &self.body_surfaces())
-    }
-
     /// The surfaces of every part of the setup's own model, in part order.
     fn body_surfaces(&self) -> Vec<crate::data::GfxObjSurfaces> {
         self.part_array
@@ -304,7 +297,9 @@ impl MotionDriver {
             })
     }
 
-    /// [`Self::wears_own_body`] against the setup's surfaces, already looked up.
+    /// Whether part `k` shows the object's own body: its setup's model, or a worn model mostly
+    /// drawn with the body's own surfaces and pictures (a hood around the wearer's face). `body` is
+    /// the setup's surfaces, already looked up.
     fn wears_own_body_in(&self, k: usize, body: &[crate::data::GfxObjSurfaces]) -> bool {
         if self.wears_own_model(k) {
             return true;
@@ -1326,6 +1321,11 @@ impl MotionSource for MotionDriver {
     /// Whether the object has a movement manager and that manager says a `MoveTo` is in flight.
     fn is_moving_to(&self) -> bool {
         self.movement.is_moving_to()
+    }
+
+    /// Whether the movement manager's sticky target is set.
+    fn is_sticky(&self) -> bool {
+        self.movement.sticky.is_sticky()
     }
 }
 

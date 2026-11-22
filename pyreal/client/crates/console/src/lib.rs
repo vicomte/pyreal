@@ -124,14 +124,6 @@ pub enum Console {
     None,
 }
 
-impl Console {
-    /// Whether anything can be written. For a caller that wants to say so in a log.
-    #[must_use]
-    pub fn is_open(self) -> bool {
-        self != Self::None
-    }
-}
-
 /// Borrow the console of whatever started us, if it has one. A console is never created.
 ///
 /// Call this **first thing in `main`**, before anything writes to stdout or stderr: `std` resolves

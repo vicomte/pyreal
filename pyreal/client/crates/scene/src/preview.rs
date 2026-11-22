@@ -1,6 +1,6 @@
 //! The creature-mode preview spaces' plain half: the bodies a space holds (their parts,
-//! animation, scripts and emitters), the dressing of a creation model and the paper doll's
-//! selection lighting. The spaces themselves, drawn by the engine, are [`crate::previews`].
+//! animation, scripts and emitters) and the dressing of a creation model. The spaces
+//! themselves, drawn by the engine, are [`crate::previews`].
 //!
 //! # Why this exists as a host module and not as a screen
 //!
@@ -34,9 +34,6 @@
 //! seconds** and accumulates nothing per frame.
 
 use pyreal_animation::parts::PartArray;
-
-/// The selection mask retail computes for the player: the whole doll.
-pub const WHOLE_DOLL_MASK: u32 = 0x7FFF_FFFF;
 
 /// The asset cache's `UIASSET` group, through which both preview enums resolve.
 pub const UIASSET_GROUP: u32 = 7;
@@ -222,145 +219,6 @@ impl PaletteSetCache {
         .unwrap_or_default();
         self.sets.insert(pal_set, v.clone());
         v
-    }
-}
-
-/// Part-selection lighting for the equipment doll: it blinks whenever the selected-
-/// item notice names a worn item or the player.
-///
-/// The original panel stores a flip count, the next-flip time, and the selection mask. It lights
-/// the doll's preview physics body, never the world body, so this state lives with the preview
-/// space and receives that object's part array from the caller.
-///
-/// On a global-message-3 tick once the current time reaches the stored next-flip time, count 1
-/// applies `(mask, 0.99, 1.0)` for **bright**, count 2 applies `(mask, 0.0, 0.35)` for **dim**,
-/// and count 3 restores the original lighting and unregisters the update. Each flip re-arms the
-/// next-flip time as `cur_time + 0.2`; beginning the sequence sets it to `cur_time`,
-/// so the bright flip lands on the **next** tick, not synchronously — unlike the world
-/// producer, which lights on the notice itself. Bright 0.2 s, dim 0.2 s, restored: 0.4 s.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct PaperDollSelectionLighting {
-    /// Flip count, 0 when idle.
-    pub flip_count: u32,
-    /// Next-flip time, in client-clock seconds.
-    pub time_next_flip: f64,
-    /// Selection mask: `0x7FFFFFFF` for the whole doll, else the OR of the doll regions.
-    pub selection_mask: u32,
-}
-impl PaperDollSelectionLighting {
-    /// Compute the selection mask for the player or a worn object.
-    ///
-    /// `0x7FFFFFFF` when `id` is the player; otherwise the OR of the
-    /// region bits whose upper inventory object at `loc` is `id`, in the client's own order:
-    /// `0x404 → 4`, `0x2040 → 0x40`, `0x4080 → 0x80`, `0x100 → 0x100`, `0x202 → 2`,
-    /// `0x808 → 8`, `0x1010 → 0x10`, `0x20 → 0x20`, `0x404 → 4` (asked twice), `1 → 1`.
-    /// `upper_inv_obj` is `pyreal_client_model::objects::ObjectInventory::upper_inv_obj`, whose `None`
-    /// is the client's fall-through to the player id — which cannot equal a non-player `id`,
-    /// so `None` is simply no match.
-    #[must_use]
-    pub fn selection_mask_from_object(
-        id: pyreal_primitives::ObjectId,
-        player: Option<pyreal_primitives::ObjectId>,
-        upper_inv_obj: &dyn Fn(u32) -> Option<pyreal_primitives::ObjectId>,
-    ) -> u32 {
-        if Some(id) == player {
-            return WHOLE_DOLL_MASK;
-        }
-        const REGIONS: [(u32, u32); 10] = [
-            (0x404, 4),
-            (0x2040, 0x40),
-            (0x4080, 0x80),
-            (0x100, 0x100),
-            (0x202, 2),
-            (0x808, 8),
-            (0x1010, 0x10),
-            (0x20, 0x20),
-            (0x404, 4),
-            (1, 1),
-        ];
-        let mut mask = 0;
-        for (loc, bit) in REGIONS {
-            if upper_inv_obj(loc) == Some(id) {
-                mask |= bit;
-            }
-        }
-        mask
-    }
-
-    /// Begin part-selection lighting: a zero mask does nothing; otherwise set the flip count to 1
-    /// and the next flip time to `cur_time`, store the mask, and restore the doll's lighting so a
-    /// blink already in flight starts over from the shared material.
-    /// Answers whether a blink was begun.
-    pub fn begin(&mut self, mask: u32, cur_time: f64, doll: Option<&mut PartArray>) -> bool {
-        if mask == 0 {
-            return false;
-        }
-        self.flip_count = 1;
-        self.time_next_flip = cur_time;
-        self.selection_mask = mask;
-        if let Some(doll) = doll {
-            doll.restore_lighting_internal();
-        }
-        true
-    }
-
-    /// The part-selection lighting update, one global-message-3 tick.
-    pub fn update(&mut self, cur_time: f64, doll: Option<&mut PartArray>) {
-        if self.flip_count == 0 || self.time_next_flip > cur_time {
-            return;
-        }
-        let (l, d) = match self.flip_count {
-            1 => pyreal_animation::parts::SELECTION_HIGH_LIGHTING,
-            2 => pyreal_animation::parts::SELECTION_LOW_LIGHTING,
-            _ => {
-                self.end(doll);
-                return;
-            }
-        };
-        if let Some(doll) = doll {
-            Self::apply(self.selection_mask, l, d, doll);
-        }
-        self.flip_count += 1;
-        self.time_next_flip = cur_time + pyreal_animation::parts::SELECTION_FLIP_INTERVAL;
-    }
-
-    /// Ending the part-selection lighting: count and mask to zero, lighting restored on
-    /// the doll, and the tick unregistered (here: `update` early-outs on a zero count).
-    pub fn end(&mut self, doll: Option<&mut PartArray>) {
-        self.flip_count = 0;
-        self.selection_mask = 0;
-        if let Some(doll) = doll {
-            doll.restore_lighting_internal();
-        }
-    }
-
-    /// Apply part-selection lighting: light the whole doll for the player's `0x7FFFFFFF`, else
-    /// light each part named by a region bit of the selection mask.
-    /// The part indices are the human setup's: 0 abdomen, 1/5 upper legs, 2/6 lower legs,
-    /// 3/7 feet, 4/8 toes, 9 chest, 10/13 upper arms, 11/14 lower arms, 12/15 hands, 16 head.
-    pub fn apply(mask: u32, luminosity: f32, diffuse: f32, doll: &mut PartArray) {
-        if mask == WHOLE_DOLL_MASK {
-            doll.set_lighting_internal(luminosity, diffuse);
-            return;
-        }
-        const TABLE: [(u32, &[u32]); 9] = [
-            (0x1, &[0x10]),
-            (0x2 | 0x200, &[9]),
-            (0x4 | 0x400, &[0]),
-            (0x8 | 0x800, &[10, 13]),
-            (0x10 | 0x1000, &[11, 14]),
-            (0x40 | 0x2000, &[1, 5]),
-            (0x80 | 0x4000, &[2, 6]),
-            (0x20, &[12, 15]),
-            (0x100, &[3, 7, 4, 8]),
-        ];
-        for (bits, parts) in TABLE {
-            if mask & bits != 0 {
-                for &p in parts {
-                    doll.set_part_lighting_internal(p, luminosity, diffuse);
-                }
-            }
-        }
     }
 }
 

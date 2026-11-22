@@ -1,10 +1,5 @@
 //! `COMBAT_MODE` — the five ids. They live in the contract because `GameView::combat_mode`'s
 //! default body is [`NONCOMBAT`].
-//!
-//! Only the ids are here. `toolbar::combat_mode::BUTTONS` (which pairs each id with an
-//! [`ElementId`] of the stance row) and `toolbar::combat_mode::toolbar_active`
-//! stay in `dereth-ui-screens`, and that module `pub use`s this one so
-//! the retired retail UI's `toolbar::combat_mode::MELEE` still resolves.
 
 /// Undefined combat mode.
 pub const UNDEF: u32 = 0;
@@ -17,8 +12,7 @@ pub const MISSILE: u32 = 4;
 /// See [`UNDEF`].
 pub const MAGIC: u32 = 8;
 
-// The toolbar's two reads of the same four modes, shared with
-// the retired retail UI's `toolbar::combat_mode`. `pyreal_client_runtime::{hud, interaction}` call both: the HUD
+// The toolbar's two reads of the same four modes. `pyreal_client_runtime::{hud, interaction}` call both: the HUD
 // ghosts the shortcut numerals with `toolbar_active`, and the input path matches a pressed
 // element against `BUTTONS`. Element ids and one comparison.
 

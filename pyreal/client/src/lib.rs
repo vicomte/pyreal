@@ -2,7 +2,7 @@
 //! and the sound device, plugged into the runtime's frame loop.
 //!
 //! **Depends on** the client shell (`pyreal-client-shell`), scene (`pyreal-scene`) and desktop
-//! host (`pyreal-desktop`), with renderer backend selection (`dereth-render`), host input replay
+//! host (`pyreal-desktop`), with host input replay
 //! (`pyreal-input`), shared types (`pyreal-primitives`) and
 //! console (`pyreal-console`) and shared application state (`pyreal-client-runtime`), and the plugin
 //! host and its engines (`pyreal-plugin-api`, `pyreal-plugin-host`, `pyreal-plugin-lua`,
@@ -19,7 +19,7 @@
 //!
 //! The frame loop is the runtime's and the application is the client shell's, generic over its
 //! host. The host is the desktop's ([`pyreal_desktop`]), and what this crate adds is the product
-//! itself, [`Dereth`]: its name, its settings folder, its icon, with [`app::App`] and
+//! itself, [`Pyreal`]: its name, its settings folder, its icon, with [`app::App`] and
 //! [`app::ClientShell`] specialized on the [`Desktop`] host.
 //!
 //! ```text
@@ -48,18 +48,19 @@ pub mod desktop_entry;
 
 /// The client, as a product on the desktop host: Pyreal.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Dereth;
+pub struct Pyreal;
 
 /// The application's identity: the macOS bundle's identifier and the Linux desktop's app id.
 pub const APP_ID: &str = "com.jacobjohnston.Pyreal";
 
-impl pyreal_desktop::Product for Dereth {
+impl pyreal_desktop::Product for Pyreal {
     const BINARY_NAME: &'static str = "pyreal";
     const BUILD_ID: &'static str = concat!("pyreal ", env!("CARGO_PKG_VERSION"));
     const BUILD_COMMIT: &'static str = match option_env!("PYREAL_BUILD_COMMIT") {
         Some(commit) => commit,
         None => "unknown",
     };
+    const BUILD_HASH: &'static str = env!("PYREAL_BUILD_HASH");
     const SETTINGS_DIR_NAME: &'static str = pyreal_desktop::folders::CLIENT_DIR_NAME;
     const TITLE: &'static str = "Pyreal";
     const ICON_PNG: &'static [u8] = include_bytes!("../assets/pyreal-256.png");
@@ -94,8 +95,8 @@ impl pyreal_desktop::Product for Dereth {
     }
 }
 
-/// The desktop, as the client shell's host, for the Dereth client.
-pub type Desktop = pyreal_desktop::Desktop<Dereth>;
+/// The desktop, as the client shell's host, for Pyreal.
+pub type Desktop = pyreal_desktop::Desktop<Pyreal>;
 
 /// What `pyreal --version` prints: the version, and the commit and target a release build
 /// was made from (`unknown` in a build that did not say).
@@ -117,6 +118,24 @@ mod tests {
         let first = text.lines().next().unwrap();
         assert_eq!(first, format!("pyreal {}", env!("CARGO_PKG_VERSION")));
         assert!(text.lines().any(|l| l.starts_with("target: ")), "{text}");
+    }
+
+    /// A build from a checkout carries the checkout's own build hash, as `build.py` reads it.
+    #[test]
+    fn the_build_hash_is_the_checkouts_short_commit() {
+        use pyreal_desktop::Product;
+        if std::env::var_os("PYREAL_BUILD_HASH").is_some() {
+            return;
+        }
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "--short=8", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output();
+        let Some(head) = out.ok().filter(|o| o.status.success()) else {
+            return;
+        };
+        let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+        assert_eq!(super::Pyreal::BUILD_HASH, head);
     }
 }
 

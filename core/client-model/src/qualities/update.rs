@@ -2,7 +2,7 @@
 //!
 //! Source: `docs/networking/messages/03-qualities-and-updates.md` (the opcode table, the two body
 //! shapes and the update-stat tag table), plus the client's sequence-gate behavior, represented
-//! by [`PropertySequenceGate`].
+//! by [`PropertySequenceGate`](super::PropertySequenceGate).
 //!
 //! # Why this exists
 //!
@@ -25,7 +25,7 @@
 //! ```
 //!
 //! The gate runs **before** the setter and consumes the sequence whether or not the value could be
-//! stored, which is why [`apply`] distinguishes [`Applied`](Outcome::Applied) from
+//! stored, which is why [`Outcome`] distinguishes [`Applied`](Outcome::Applied) from
 //! [`Unstorable`](Outcome::Unstorable) rather than folding both into a boolean.
 //!
 //! # The one thing that is easy to get wrong
@@ -36,8 +36,7 @@
 //! stale updates. [`decode`] therefore returns a [`StatKey`] built from the *tag*, not from the
 //! opcode.
 
-use crate::qualities::{PropertySequenceGate, StatKey, StatType, StatValue};
-use crate::Qualities;
+use crate::qualities::{StatKey, StatType, StatValue};
 use pyreal_primitives::{DataId, ObjectId};
 use pyreal_protocol::archive::Reader;
 use pyreal_protocol::{qualities as wire, Message, Opcode};
@@ -72,7 +71,7 @@ pub struct QualityUpdate {
     pub value: StatValue,
 }
 
-/// What [`apply`] did.
+/// What an update did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// The timestamp gate rejected it: an older stamp under the wrap rule. Nothing was
@@ -306,23 +305,6 @@ pub fn decode(opcode: Opcode, body: &[u8]) -> Option<QualityUpdate> {
     }
 }
 
-/// The client's per-type stat update: gate-then-write, against one quality set and its `PropertySequenceGate`.
-///
-/// The order is the client's: the stamp is taken first and is consumed even when the value cannot
-/// be stored, so a server that sends `SkillLevel` for a skill the client does not carry burns the
-/// sequence exactly as retail does. Reversing the two would let a later, storable update be
-/// rejected as stale.
-pub fn apply(q: &mut Qualities, stamper: &mut PropertySequenceGate, u: &QualityUpdate) -> Outcome {
-    if !stamper.update(u.key.0, u.sequence) {
-        return Outcome::Stale;
-    }
-    if q.set(u.key, u.value.clone()) {
-        Outcome::Applied
-    } else {
-        Outcome::Unstorable
-    }
-}
-
 /// True for a key that makes the stat-management panel redraw after a raise.
 ///
 /// The stat panel's `0x10000004` arm clears
@@ -377,6 +359,7 @@ pub fn answers_a_raise_update(u: &QualityUpdate) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Qualities;
     use pyreal_protocol::types::qualities::{Attribute, SecondaryAttribute, Skill};
 
     /// The body `pyreal_client_net::client_session` hands over: the type dword, then the message.
@@ -526,8 +509,12 @@ mod tests {
     /// whether or not the value could be stored.
     #[test]
     fn a_stale_stamp_is_rejected_before_the_setter_and_an_unstorable_one_still_burns_it() {
-        let mut q = Qualities::new();
-        let mut st = PropertySequenceGate::new();
+        const ME: ObjectId = ObjectId(0x5000_0001);
+        let mut w = crate::World::new();
+        w.player = Some(ME);
+        let mut o = crate::Weenie::new(ME);
+        o.qualities = Some(Qualities::new());
+        w.tables.weenies.insert(ME, o);
         let key = StatKey::new(StatType::Skill, 7);
         let s = Skill {
             level_from_pp: 3,
@@ -544,28 +531,42 @@ mod tests {
             value: StatValue::SkillLevel(level),
         };
 
+        let level = |w: &crate::World| {
+            let q = w.weenie(ME).unwrap().qualities.as_ref().unwrap();
+            q.skill(7).expect("skill").level_from_pp
+        };
+
         // Nothing under id 7 yet: the gate passes, the setter cannot land it.
-        assert_eq!(apply(&mut q, &mut st, &up(0, 4)), Outcome::Unstorable);
         assert_eq!(
-            st.stamp(key.0),
+            w.apply_player_quality_update(&up(0, 4)),
+            Some(Outcome::Unstorable)
+        );
+        assert_eq!(
+            w.weenie(ME).unwrap().stamper.as_ref().unwrap().stamp(key.0),
             Some(0),
             "and the sequence was consumed anyway"
         );
 
-        q.set_skill(7, s);
+        let q = w.tables.weenies.get_mut(ME).unwrap().qualities.as_mut();
+        q.unwrap().set_skill(7, s);
         // Sequence 0 again is "not older", so it applies; the client's rule is not-older, not newer.
-        assert_eq!(apply(&mut q, &mut st, &up(0, 4)), Outcome::Applied);
-        assert_eq!(q.skill(7).expect("skill").level_from_pp, 4);
-
-        assert_eq!(apply(&mut q, &mut st, &up(1, 5)), Outcome::Applied);
-        assert_eq!(q.skill(7).expect("skill").level_from_pp, 5);
-        // 0 after 1 is one step backwards under the half-range window.
-        assert_eq!(apply(&mut q, &mut st, &up(0, 99)), Outcome::Stale);
         assert_eq!(
-            q.skill(7).expect("skill").level_from_pp,
-            5,
-            "a stale update must not reach the setter"
+            w.apply_player_quality_update(&up(0, 4)),
+            Some(Outcome::Applied)
         );
+        assert_eq!(level(&w), 4);
+
+        assert_eq!(
+            w.apply_player_quality_update(&up(1, 5)),
+            Some(Outcome::Applied)
+        );
+        assert_eq!(level(&w), 5);
+        // 0 after 1 is one step backwards under the half-range window.
+        assert_eq!(
+            w.apply_player_quality_update(&up(0, 99)),
+            Some(Outcome::Stale)
+        );
+        assert_eq!(level(&w), 5, "a stale update must not reach the setter");
     }
 
     /// Oracle: the four partial setters' contract — there is no record to hang a bare level on.

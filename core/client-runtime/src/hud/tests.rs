@@ -1336,3 +1336,35 @@ fn a_spells_examined_range_reads_the_buffed_skill() {
     // 5 + 0.25 * 150, not 5 + 0.25 * 100.
     assert_eq!(v.range, 42.5);
 }
+
+/// The once-a-frame sync composes the material prefix, so a salvage bag's name carries its
+/// material and not the shard's bare name.
+#[test]
+fn the_frame_sync_gives_salvage_its_material_name() {
+    use pyreal_client_contract::view::GameView;
+    use pyreal_client_model::Weenie;
+    let id = ObjectId(0x8000_0001);
+    let mut objects = crate::objects::ObjectStream::new();
+    let mut bag = Weenie::new(id);
+    bag.pwd.name = "Salvage (100)".into();
+    bag.pwd.material_type = Some(16);
+    objects.world.tables.weenies.insert(id, bag);
+    let mut hud = Hud::new();
+    hud.material_names = Some(pyreal_assets::DidMapper {
+        id: MATERIAL_TYPE_NAMES,
+        enum_to_id: Vec::new(),
+        enum_to_name: vec![(16, "Granite".into())],
+        enum_to_id_internal: Vec::new(),
+        enum_to_name_internal: Vec::new(),
+    });
+    hud.sync(&objects, None);
+    let view = HudView {
+        hud: &hud,
+        world: &objects.world,
+    };
+    assert_eq!(view.name(id), Some("Granite Salvage (100)"));
+    assert_eq!(hud.stats.display_names_composed, 1);
+    // A second frame with nothing changed composes nothing.
+    hud.sync(&objects, None);
+    assert_eq!(hud.stats.display_names_composed, 1);
+}

@@ -40,9 +40,9 @@ test-support = []
 # `cargo test -p pyreal-client-net` prints `test result: ok. 0 passed` for it. That is indistinguishable
 # from a passing gate in every summary anyone reads, and it is the same silence as the
 # `SKIP replay_handshake` that was removed one level down: an optional gate is a gate that does not
-# run. `--no-default-features` still gives the JSON-free transport, and nothing in the
-# workspace asks for that -- serde_json is already a plain dependency of pyreal-input, pyreal-horizon
-# and pyreal-world-render, all of which the client links.
+# run. `--no-default-features` still gives the JSON-free transport, which `pyreal-horizon` takes
+# (it reads only the world's address). The client turns the feature on anyway, and serde_json is
+# already a plain dependency of pyreal-horizon, pyreal-launch and pyreal-client-runtime.
 replay = ["dep:serde_json"]
 
 [dev-dependencies]

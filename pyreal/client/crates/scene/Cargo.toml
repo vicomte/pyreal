@@ -34,8 +34,6 @@ pyreal-physics.workspace = true
 pyreal-animation.workspace = true
 # The landscape's terrain neighbourhood, which picks the ambient sounds.
 pyreal-audio.workspace = true
-# The wire appearance a server object arrives with.
-pyreal-protocol.workspace = true
 # The target reticule's projection and the preferences the renderer applies.
 pyreal-client-contract.workspace = true
 # The character-generation state the preview spaces read.
@@ -52,8 +50,6 @@ pyreal-art-pack.workspace = true
 pyreal-engine.workspace = true
 wgpu = "30"
 pyreal-codecs.workspace = true
-# An art pack's models are glTF, whose text is JSON.
-serde_json.workspace = true
 
 [dev-dependencies]
 # `pyreal_dat::testing`: where the tests find the retail dats.

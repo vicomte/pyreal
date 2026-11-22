@@ -1,6 +1,6 @@
 //! The allegiance seam: `pyreal_client_model`'s hierarchy walked into the retired retail UI roster.
 //!
-//! This is the join the client's allegiance panel makes: `dereth-ui-screens` may not depend on
+//! This is the join the client's allegiance panel makes: the retired retail UI could not depend on
 //! `pyreal-client-model`, so the walk has to
 //! happen on this side of the seam, in the crate that can see both. It lives in its own file
 //! rather than in `hud.rs` so that the whole of the conversion is reviewable in one place — the

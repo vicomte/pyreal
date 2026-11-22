@@ -7,8 +7,8 @@ timer, a window of its own. This document and its companions are the plugin inte
 package holds, what a plugin may do, what it hears, what it reads, what it can show, and how a
 host is tested against all of it.
 
-The interface belongs to no one client. Dereth's desktop client, its headless client and its web
-client implement it, and so can any other host: a different client, or an add-on that runs Dereth
+The interface belongs to no one client. Dereth's desktop client implements it, and so can any
+other host: a different client, or an add-on that runs Dereth
 plugins inside another program. A plugin written against this document runs in every host that
 passes the conformance profiles it needs.
 
@@ -168,8 +168,6 @@ Draft 0.7 defines every capability.
 | host | `host.name` | capabilities (0.7) |
 |---|---|---|
 | Dereth, desktop | `dereth-desktop` | `core`, `ui.window`, `ui.hud`, `ui.icons`, the four `overlay.*`, `map.clicks`, `nav.moveto`, `nav.journey`, `nav.path`, `session.pregame`, `peers.local`, `net.http`, `messages`, `retail_ui`, `game.data` |
-| Dereth, headless | `dereth-headless` | `core`, `ui.window`, `ui.hud` (the trees are kept and can be clicked by a script; nothing is drawn), `session.pregame`, `peers.local` (a bus inside its process, or with `--peers <dir>` the other headless clients naming that folder), `messages`, and `nav.moveto`, `nav.journey`, `nav.path` and `game.data` with `--world` |
-| the retail client, through Decal | `dereth-decal` | `core`, `ui.window` and `ui.hud` (as Decal views), `overlay.world` and `overlay.arrow` (as Decal's 3-D objects), `nav.moveto`, `session.pregame` (the list and logging off; a plugin cannot choose the character), `messages`, `peers.local` (with the desktop clients on the same machine) and `game.data` (the game's own files); an action Decal has no call for fails as `unavailable`, and an attack, a jump and a held movement key are the game's own keys, pressed only with the player's leave and while the game's window is in front ([the Decal host](../../pyreal/decal/README.md)) |
 
 **What the interface draws.** The desktop client draws everything: windows,
 HUDs, toasts, the plugin bar, the host's own windows, labels, nametags, floating text, the arrow,
@@ -197,8 +195,7 @@ folder named with `--offer-plugins <dir>` (the launcher's installs and the playe
 lists), each on the first time the client finds it; a folder named with `--plugins <dir>` loads at
 once. `--no-plugins` starts it with none, `--plugin-dev` reloads a plugin whenever one of its files
 changes, and `--plugin-policy` names the world's [policy](policy.md) (the launcher passes it).
-Stores are kept in the `plugin-store` folder beside it. The headless client loads the folders
-named with `--plugins` and keeps stores where `--plugin-store` says, or in memory. Players install
+Stores are kept in the `plugin-store` folder beside it. Players install
 plugins from plugin sources ([sources.md](sources.md)) through the launcher, which keeps them for
 the desktop client.
 

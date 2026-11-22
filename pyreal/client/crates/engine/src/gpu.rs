@@ -279,6 +279,3 @@ impl Gpu {
         m
     }
 }
-
-/// A shared handle, for the parts that keep the device beside their own state.
-pub type SharedGpu = Arc<Gpu>;

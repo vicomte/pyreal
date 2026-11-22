@@ -13,15 +13,14 @@ nothing but its own package and the host.
 
 Plugins are experimental. A host loads plugins when it starts: the desktop client
 the plugins that are on in the plugin panel (the launcher's start on, the others when the player
-turns them on), and the desktop client each `--plugins` folder; the headless client each
-`--plugins` folder ([install-and-update.md](install-and-update.md)). For each package, in order,
+turns them on), and each `--plugins` folder ([install-and-update.md](install-and-update.md)). For each package, in order,
 the host:
 
 1. **reads the manifest**, and refuses a package whose manifest does not read (an unknown key, a
    malformed id or version, an entry file that is not there);
 2. **checks the API version**: it runs a plugin when the majors are equal and its own minor is at
    least the plugin's (`it needs plugin API 0.6, and this host has 0.5`);
-3. **checks the required capabilities** against what it offers (`this host (dereth-headless) has
+3. **checks the required capabilities** against what it offers (`this host (dereth-test) has
    no nav.moveto`), and the manifest's `hosts.exclude`;
 4. **refuses a second plugin with the same id**;
 5. **picks the engine** by the entry file (`.lua` or `.luau` the Lua engine, `.wasm` the
@@ -169,9 +168,6 @@ bar:
 What a plugin prints, and each error it meets, is told in the chat under its name; the chat also
 says when a plugin is loaded, reloaded, unloaded, enabled or disabled
 ([api.md](../api.md#commands)). Logging out closes every plugin window and HUD, and the panel.
-
-The headless client's script has the same verbs as `plugin load <folder or zip>`, `plugin unload`,
-`plugin reload`, `plugin list` and `plugin console`.
 
 ## The sandbox
 

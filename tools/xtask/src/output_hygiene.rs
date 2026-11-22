@@ -240,12 +240,6 @@ static INSTALL_DECL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bpub const DEFAULT_CLIENT_DIR:\s*&str\s*=\s*__path_literal_(\d+)__\s*;")
         .expect("INSTALL_DECL")
 });
-static INSTALL_FALLBACK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"fn client_dir\(\) -> PathBuf\s*\{\s*PathBuf::from\(std::env::var\((__path_literal_\d+__)\)\.unwrap_or_else\(\|_\|\s*__path_literal_(\d+)__\.into\(\)\)\)\s*\}",
-    )
-    .expect("INSTALL_FALLBACK")
-});
 
 /// What a workspace-root call resolves to, so a destination built on it is read against the
 /// workspace rather than against the crate.
@@ -446,18 +440,7 @@ fn scan_folded(
         let declared = INSTALL_DECL
             .captures_iter(&code)
             .any(|m| m[1].parse::<usize>().ok() == Some(index));
-        let fallback = INSTALL_FALLBACK.captures_iter(&code).any(|m| {
-            m[2].parse::<usize>().ok() == Some(index)
-                && LITERAL
-                    .captures(&m[1])
-                    .and_then(|v| v[1].parse::<usize>().ok())
-                    .and_then(|k| literals.get(k))
-                    .and_then(|l| l.0.as_deref())
-                    == Some("PYREAL_TEST_DAT_DIR")
-        });
-        let excepted = (path == "core/dat/src/store.rs" && declared)
-            || (path == "pyreal/client/tests/gpu/world/house_barrier.rs" && fallback);
-        if !excepted {
+        if !(path == "core/dat/src/store.rs" && declared) {
             issues.push((*line, "absolute checkout path in executable literal"));
         }
     }
@@ -826,16 +809,11 @@ mod tests {
         assert_eq!(scan(source), (vec![], 0));
     }
 
-    /// The dat fallback helper is an exact input shape, not a file exemption.
+    /// A checkout path as a dat folder's fallback is reported like any other.
     #[test]
-    fn the_dat_fallback_is_an_exact_input_helper_not_a_file_exemption() {
-        let path = "pyreal/client/tests/gpu/world/house_barrier.rs";
+    fn a_dat_fallback_to_a_checkout_path_is_reported() {
         let source = r#"fn client_dir() -> PathBuf { PathBuf::from(std::env::var("PYREAL_TEST_DAT_DIR").unwrap_or_else(|_| r"C:\checkout\data".into())) }"#;
-        assert!(scan_at(path, source).0.is_empty());
-        let more = format!("{source}\nfn output() {{ File::create(\"C:/checkout/out\"); }}");
-        assert!(!scan_at(path, &more).0.is_empty());
-        let renamed = source.replace("PYREAL_TEST_DAT_DIR", "OUTPUT_DIR");
-        assert!(!scan_at(path, &renamed).0.is_empty());
+        assert!(!scan_at("pyreal/client/tests/world.rs", source).0.is_empty());
     }
 
     /// An output call the evaluator cannot follow is counted as unresolved, never proven safe.

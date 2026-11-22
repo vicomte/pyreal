@@ -165,9 +165,9 @@ impl<S: Shell> App<S> {
         // "checked before the batch so a run with no traffic still ends" -- is once-a-frame
         // work, not per-event work. Running the whole call per session event would silently make
         // all four conditional on this frame having had traffic.
-        // CD-044: what the patch stream brought since the last frame goes in as its `0xF7E2`s.
-        let streamed = self.take_bulk_records();
-        self.process_logon_event_queue(shell, streamed);
+        // CD-044: this frame's share of what the patch stream brought goes in as its `0xF7E2`s.
+        self.apply_bulk_records();
+        self.process_logon_event_queue(shell, Vec::new());
         spans.step(FrameStep::PacketStep);
         self.events.push(FrameEvent::Step(FrameStep::PacketStep));
         if let Some(link) = self.link.as_mut() {
@@ -455,9 +455,8 @@ impl<S: Shell> App<S> {
             // So the rectangle is `<SBOX>`'s screen box, and reading it here -- once per frame, from
             // the live tree -- is the same answer the notice would carry with none of the machinery,
             // because a notice this build has no subscriber list for would be transcribed and unwired
-            // rather than a fix. What is *not* optional is that something consume it: without this,
-            // `hud::world_view::client_rect` and `dereth_render::camera::compute_game_viewport` are
-            // called by nobody and the viewport never moves.
+            // rather than a fix. What is *not* optional is that something consume it: without
+            // `set_game_viewport` below, the viewport never moves.
             spans.step(FrameStep::DrawWorld);
             self.events.push(FrameEvent::Step(FrameStep::DrawWorld));
             if let Some(r) = self.cfg.report.as_ref() {
@@ -481,11 +480,11 @@ impl<S: Shell> App<S> {
             }
             // The performance panel, over whatever the interface drew.
             if perf_panel && self.perf_font {
-                let mut lines = self.perf.summary().lines();
-                // The render scale drawn now, which a Dynamic render scale moves.
-                if let Some(scale) = self.present.render_scale_in_use() {
-                    lines.push(format!("{:<9} {scale:5}%", "SCALE"));
-                }
+                let lines = crate::perf::panel_lines(
+                    &self.perf.summary(),
+                    self.present.render_scale_in_use(),
+                    self.build_hash,
+                );
                 let items = crate::perf::panel_items(&lines, self.present.size());
                 if let Err(e) = self.present.draw_overlay(&items) {
                     tracing::warn!("the performance panel failed: {e}");

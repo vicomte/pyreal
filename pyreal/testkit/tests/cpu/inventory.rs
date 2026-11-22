@@ -252,7 +252,8 @@ pub fn the_trade_window_follows_the_shards_lists() {
     .when(Inbound::message(
         &pyreal_protocol::trade::TradeAcceptTradeRecv { source: PARTNER },
     ));
-    let both = c.view().world().trade.trade.both_accepted();
+    let both =
+        c.view().world().trade.trade.accepted && c.view().world().trade.trade.partner_accepted;
     c.when(Inbound::message(
         &pyreal_protocol::trade::TradeDeclineTradeRecv { source: PARTNER },
     ));
@@ -1942,8 +1943,8 @@ pub fn the_quantity_only_moves_a_stackable_row() {
     w.shop.stock[0].pwd.value = Some(2_000);
     let pwd = w.shop.stock[0].pwd.clone();
     let priced = (
-        w.shop.profile.vendor_sell_price(&pwd, 1),
-        w.shop.profile.vendor_sell_price(&pwd, 7),
+        w.shop.profile.vendor_sell_price_on(true, &pwd, 1),
+        w.shop.profile.vendor_sell_price_on(true, &pwd, 7),
     ) == (100, 700);
 
     c.assert_behaviour(

@@ -519,8 +519,7 @@ pub enum Request {
     /// (`BreakAllegiance` above).
     AllegianceBreakAllegianceBoot(pyreal_protocol::social::AllegianceBreakAllegianceBoot),
     /// Request allegiance information — `0x027B`,
-    /// `@allegiance info <name>`. The shard answers with `0x027C`, whose chat block
-    /// [`crate::allegiance::allegiance_info_block`] formats.
+    /// `@allegiance info <name>`. The shard answers with `0x027C`.
     AllegianceInfoRequest(pyreal_protocol::social::AllegianceInfoRequest),
     /// Kick a member from allegiance chat — `0x02A0`,
     /// `@allegiance chat kick <name>[, <reason>]`.

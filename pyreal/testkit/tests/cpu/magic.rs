@@ -808,7 +808,7 @@ pub fn the_desired_level_reaches_the_shard_and_the_vendor_buys_the_shortfall() {
         // have asked for ten.
         w.shop.buy_list == vec![(stock, 6)]
             // and the running total is the shop's own price, not a second price chain here.
-            && filled.total == w.shop.profile.vendor_sell_price(&pwd, 6)
+            && filled.total == w.shop.profile.vendor_sell_price_on(true, &pwd, 6)
     };
     let counted = filled.desired_rows == 2
         && filled.short_rows == 2

@@ -90,7 +90,7 @@ local fight = require("dereth.combat")
 local outbox = {}
 local last_tell = -100
 
--- A line for the log: the plugin's console (the daemon's log file keeps it) and the window's.
+-- A line for the log: the plugin's console and the window's.
 function B.note(fmt, ...)
 	local line = string.format(fmt, ...)
 	print(line)

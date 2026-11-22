@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-terrain"
-description = "The landscape's geometry and static contents: landblock meshes, terrain merge keys, stitching, vertex lighting, water, roads, scenery placement and the per-cell building registry, as pure functions of the retail records."
+description = "The landscape's geometry and static contents: landblock meshes, terrain merge keys, stitching, water, roads, scenery placement and the per-cell building registry, as pure functions of the retail records."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

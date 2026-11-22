@@ -74,16 +74,10 @@ pub fn unit_value(pwd: &PublicWeenieDesc) -> i32 {
 }
 
 impl VendorProfile {
-    /// The price charged to the player.
+    /// The price charged to the player, on a world whose trade notes do or do not cash anywhere.
     ///
     /// `value` on a stack is the **whole stack's** value, so the unit value is divided out first
     /// and the count passed separately.
-    #[must_use]
-    pub fn vendor_sell_price(&self, pwd: &PublicWeenieDesc, count: i32) -> i32 {
-        self.vendor_sell_price_on(true, pwd, count)
-    }
-
-    /// [`Self::vendor_sell_price`] on a world whose trade notes do or do not cash anywhere.
     #[must_use]
     pub fn vendor_sell_price_on(
         &self,
@@ -100,15 +94,8 @@ impl VendorProfile {
         )
     }
 
-    /// The price the vendor pays the player.
-    ///
-    /// A refused item prices at **0**.
-    #[must_use]
-    pub fn vendor_buy_price(&self, pwd: &PublicWeenieDesc) -> i32 {
-        self.vendor_buy_price_on(true, pwd)
-    }
-
-    /// [`Self::vendor_buy_price`] on a world whose trade notes do or do not cash anywhere.
+    /// The price the vendor pays the player, on a world whose trade notes do or do not cash
+    /// anywhere. A refused item prices at **0**.
     #[must_use]
     pub fn vendor_buy_price_on(&self, notes_cash_anywhere: bool, pwd: &PublicWeenieDesc) -> i32 {
         if self.inq_acceptability(pwd) != 0 {
@@ -183,7 +170,7 @@ impl VendorProfile {
 /// Open-shop state, stock and the buy/sell baskets.
 ///
 /// The pending vendor/item ids and open-vendor id share a model with the profile, stock and
-/// baskets. The panel lives in `dereth-ui-screens`, and both interaction and display use this state.
+/// baskets. Both interaction and display use this state.
 ///
 /// **`vendor_id` has three readers.**
 /// The selection-change splitter seed, the use-object
@@ -517,7 +504,7 @@ pub struct FillComponents {
     pub not_stocked: usize,
     /// Rows the shop stocks but in fewer than the shortfall.
     pub short_stocked: usize,
-    /// `vendor_sell_price` summed over what was added.
+    /// `vendor_sell_price_on` summed over what was added.
     pub total: i32,
     /// Whether `max_price` cut the walk short.
     pub aborted: bool,
@@ -1295,8 +1282,7 @@ impl crate::world::World {
     /// codes; the fifth, [`NOT_CARRIED`], is this function's own containment test and
     /// precedes the profile entirely.
     ///
-    /// **The container escape** is the same `if` the *return-value* half
-    /// ([`Self::drag_item_accepted`]) carries:
+    /// **The container escape** is the same `if` retail's *return-value* half carries:
     ///
     /// ```text
     /// the object holds at least one item, or the shop profile's acceptability reason for
@@ -1328,33 +1314,6 @@ impl crate::world::World {
             return None;
         }
         self.shop.profile.refusal_message(&w.pwd)
-    }
-
-    /// Whether the vendor drop target should show an accepting drag cursor.
-    ///
-    /// [`Self::drag_item_acceptable`] above is the same function's *other* out-channel, the
-    /// display-string notice on `0x1A`, and retail's `quiet` argument suppresses
-    /// only that. For an unknown object this returns `false`; the message helper instead
-    /// supplies [`NOT_CARRIED`]. Real sell-list rows have known objects.
-    ///
-    /// An owned container with items is accepted even if the vendor would refuse the container
-    /// itself. The message helper follows the same rule: insertion offers eligible contents
-    /// while omitting the nonempty container. The count here is contained items; side packs are a
-    /// separate list.
-    #[must_use]
-    pub fn drag_item_accepted(&self, item: ObjectId) -> bool {
-        // No weenie for the id -> false.
-        let Some(w) = self.weenie(item) else {
-            return false;
-        };
-        // Not owned by the player -> "You can only sell items you are carrying", false.
-        if !self.is_owned_by_player(item) {
-            return false;
-        }
-        if self.inventory(item).is_some_and(|i| !i.items.is_empty()) {
-            return true;
-        }
-        self.shop.profile.is_acceptable(&w.pwd)
     }
 
     /// Sell one selected item immediately.
@@ -2049,12 +2008,12 @@ mod tests {
     fn stack_values_are_divided_before_the_count_is_reapplied() {
         let s = shop();
         let stack = item(1000, 10, item_type::MISC);
-        assert_eq!(s.vendor_sell_price(&stack, 10), 1500);
+        assert_eq!(s.vendor_sell_price_on(true, &stack, 10), 1500);
         // The vendor pays 0.5 * 100 * 10 = 500.
-        assert_eq!(s.vendor_buy_price(&stack), 500);
+        assert_eq!(s.vendor_buy_price_on(true, &stack), 500);
         // An unstacked item: unit is the whole value, count 1.
         let single = item(100, 0, item_type::MISC);
-        assert_eq!(s.vendor_buy_price(&single), 50);
+        assert_eq!(s.vendor_buy_price_on(true, &single), 50);
     }
 
     /// Vendor acceptability checks, in order, with the four reason codes.
@@ -2091,7 +2050,10 @@ mod tests {
             "too valuable"
         );
         // A refused item prices at zero.
-        assert_eq!(s.vendor_buy_price(&item(1000, 0, item_type::MISC)), 0);
+        assert_eq!(
+            s.vendor_buy_price_on(true, &item(1000, 0, item_type::MISC)),
+            0
+        );
     }
 
     /// Messages for each refusal reason.

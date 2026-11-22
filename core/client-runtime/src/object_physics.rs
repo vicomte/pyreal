@@ -431,62 +431,6 @@ impl ObjectPhysics {
         self.handles.is_empty()
     }
 
-    // ---------------------------------------------------------------------------------------
-    // **Growth instrumentation.** [`Self::len`] already reports the body table; these are the
-    // six *other* per-object maps beside it, which a leave/return cycle also writes and which a
-    // cull has to give back. Gauges, read by the long-session growth station only.
-    //
-    // [`Self::geometry`] is deliberately included even though it is a memo keyed on
-    // `(setup, placement)` rather than on the object: it is the one table here that is *meant*
-    // to survive a cull, so a station that did not print it could not tell "the cache is doing
-    // its job" apart from "the cache is the leak".
-    // ---------------------------------------------------------------------------------------
-
-    /// Memoised `(setup, placement)` collision hulls, hits and cached misses alike. Bounded by
-    /// the distinct appearances seen, **not** by the live object count.
-    #[must_use]
-    pub fn geometry_cache_count(&self) -> usize {
-        self.geometry.len()
-    }
-
-    /// Rows of the placement-id memo.
-    #[must_use]
-    pub fn posed_count(&self) -> usize {
-        self.posed.len()
-    }
-
-    /// Rows of the last-handed-to-`set_position` memo.
-    #[must_use]
-    pub fn placed_count(&self) -> usize {
-        self.placed.len()
-    }
-
-    /// Rows of the last-written `PhysicsState` memo.
-    #[must_use]
-    pub fn stated_count(&self) -> usize {
-        self.stated.len()
-    }
-
-    /// Rows of the movement-restriction memo.
-    #[must_use]
-    pub fn restricted_count(&self) -> usize {
-        self.restricted.len()
-    }
-
-    /// Objects currently latched as "placed with no cell" — the membership
-    /// that schedules the object's destruction.
-    #[must_use]
-    pub fn lost_count(&self) -> usize {
-        self.lost.len()
-    }
-
-    /// Handles retired and not yet freed by the next [`Self::sync`]. Non-zero only *between* a
-    /// deletion and the following sync.
-    #[must_use]
-    pub fn retired_count(&self) -> usize {
-        self.retired.len()
-    }
-
     /// Bring the physics world into line with what the server has said.
     ///
     /// `exclude` is the player's own object id. The client has **one** physics object for the

@@ -216,26 +216,6 @@ pub fn rows_of(action: ActionId) -> impl Iterator<Item = &'static Row> {
     ROWS.iter().filter(move |r| r.action() == action)
 }
 
-/// The retail page's caption for a row the shipped string table does not name: Disable Most
-/// Weather Effects, under the Character Options page's own words for it.
-#[must_use]
-pub fn modern_caption(map: InputMapId, action: ActionId) -> Option<&'static str> {
-    (map == map::CHARACTER_OPTIONS
-        && action
-            == pyreal_client_contract::actions::names::action_for_enum_name(
-                "PlayerOption_DisableMostWeatherEffects",
-            )
-            .unwrap_or(ActionId(0)))
-    .then_some("Disable Most Weather Effects")
-}
-
-/// The retail page's tab (action class) for a row the shipped action map gives none: Disable
-/// Most Weather Effects, which goes with the other character options.
-#[must_use]
-pub fn modern_class(map: InputMapId, action: ActionId) -> Option<u32> {
-    modern_caption(map, action).map(|_| crate::pyreal::class::CHARACTER_SETTINGS)
-}
-
 use map as M;
 use why as Why;
 use Group as G;

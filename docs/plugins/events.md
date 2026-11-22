@@ -128,9 +128,8 @@ first.
   edge) is told to no one, nor is one on anything standing over the map.
 
 The desktop client tells the presses on Horizon's map window, where the pad's A at the
-map's cursor is a left press there. The headless
-client has no map and offers no `map.clicks`; the conformance driver presses the map with a
-step's `map_click`.
+map's cursor is a left press there. The conformance driver presses the map with a step's
+`map_click`.
 
 ## Where a plugin runs
 

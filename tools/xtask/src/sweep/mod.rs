@@ -44,11 +44,7 @@
 //! pass through to the test processes unchanged.
 //!
 //! `PYREAL_TEST_DAT_DIR` is left alone: the tests' own lookup already falls back to the main
-//! checkout's install when a git worktree has none. `PYREAL_TEST_FFMPEG` is resolved when unset,
-//! because a package manager can install `ffmpeg` where a noninteractive shell has no PATH to it,
-//! and the audio decode oracle then read as an unexpected red on a tree where nothing was wrong
-//! (measured: 5 passed / 1 failed bare, 6 / 0 with the variable pointed at the installed binary). A
-//! missing ffmpeg still fails loudly with the test's own message.
+//! checkout's install when a git worktree has none.
 
 pub mod known_red;
 pub mod shard;
@@ -319,10 +315,8 @@ impl Registry {
 /// `--no-gpu` handed all of them to the lane it advertised as adapter-free.
 pub const GPU_MARKERS: &[&str] = &[
     "gpu_lock",
-    "D3D12",
     "headless_app",
     "Device",
-    "dereth_render::",
     "cfg(gpu)",
     "feature = \"wgpu\"",
 ];
@@ -423,8 +417,7 @@ pub fn cargo_config_env(start: &Path) -> ConfigEnv {
 }
 
 /// What the sweep adds to the environment of every run: the Cargo configuration's `[env]` entries
-/// the environment does not already set (or that are forced), and `PYREAL_TEST_FFMPEG` when it is
-/// unset and an installed `ffmpeg` can be found.
+/// the environment does not already set (or that are forced).
 pub fn sweep_env() -> Vec<(String, String)> {
     env_over(&cargo_config_env(&workspace_root()), |k| {
         std::env::var_os(k).is_some()
@@ -433,70 +426,11 @@ pub fn sweep_env() -> Vec<(String, String)> {
 
 /// [`sweep_env`] over a given configuration and environment.
 fn env_over(config: &ConfigEnv, is_set: impl Fn(&str) -> bool) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = config
+    config
         .iter()
         .filter(|(k, (_, force))| *force || !is_set(k))
         .map(|(k, (v, _))| (k.clone(), v.clone()))
-        .collect();
-    if !is_set("PYREAL_TEST_FFMPEG") && !env.iter().any(|(k, _)| k == "PYREAL_TEST_FFMPEG") {
-        if let Some(found) = find_ffmpeg() {
-            env.push((
-                "PYREAL_TEST_FFMPEG".to_owned(),
-                found.to_string_lossy().into_owned(),
-            ));
-        }
-    }
-    env
-}
-
-/// The `ffmpeg` the audio decode oracle needs, or `None`.
-///
-/// PATH first, because that is the answer the test would have found by itself; then the roots an
-/// install actually lands in. `None` rather than a guess, so a machine with no ffmpeg still gets
-/// the test's own loud failure instead of a bad path.
-pub fn find_ffmpeg() -> Option<PathBuf> {
-    let exe = if cfg!(windows) {
-        "ffmpeg.exe"
-    } else {
-        "ffmpeg"
-    };
-    if let Some(path) = std::env::var_os("PATH") {
-        for d in std::env::split_paths(&path) {
-            let p = d.join(exe);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    if let Some(la) = std::env::var_os("LOCALAPPDATA") {
-        let pkgs = PathBuf::from(la)
-            .join("Microsoft")
-            .join("WinGet")
-            .join("Packages");
-        let mut hits = Vec::new();
-        for e in std::fs::read_dir(&pkgs).into_iter().flatten().flatten() {
-            if !e.file_name().to_string_lossy().starts_with("Gyan.FFmpeg") {
-                continue;
-            }
-            for v in std::fs::read_dir(e.path()).into_iter().flatten().flatten() {
-                let p = v.path().join("bin").join("ffmpeg.exe");
-                if p.is_file() {
-                    hits.push(p);
-                }
-            }
-        }
-        hits.sort();
-        if let Some(p) = hits.pop() {
-            return Some(p);
-        }
-    }
-    [
-        r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-    ]
-    .iter()
-    .map(PathBuf::from)
-    .find(|p| p.is_file())
+        .collect()
 }
 
 /// A number printed by a command, or `None`.
@@ -1857,9 +1791,7 @@ mod tests {
             (root.join("clients/x").to_string_lossy().into_owned(), false)
         );
         assert_eq!(config["FORCED"], ("yes".to_owned(), true));
-        let env = env_over(&config, |k| {
-            k == "DATS" || k == "FORCED" || k == "PYREAL_TEST_FFMPEG"
-        });
+        let env = env_over(&config, |k| k == "DATS" || k == "FORCED");
         let keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             keys,

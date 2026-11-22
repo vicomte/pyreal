@@ -21,9 +21,7 @@
 //! | [`eras`] | the eras and systems a world can play; a world that does not say plays the end of retail |
 //! | [`dat`] | a dat's iteration number, read straight off disk in a few small reads |
 //! | [`datset`] | a Modern set (the four later dats, identified by iterations) or a Classic one (`portal.dat` and `cell.dat`) |
-//! | [`install`] | which client build a folder holds, by the executable's hash and a manifest |
 //! | [`choices`] | which dat sets a world may be played with |
-//! | [`mod@check`] | the check before connecting: what the world would refuse, and the fix for each |
 //! | [`launch`] | the [`LaunchPlan`] the client starts a session from, in process |
 //! | [`state`] | the player's worlds, accounts, dat sets and per-world choices, and the old launcher's file |
 //! | [`vault`] | the seam to the operating system's secret store, where passwords live and nowhere else |
@@ -33,13 +31,11 @@
 
 #![forbid(unsafe_code)]
 
-pub mod check;
 pub mod choices;
 pub mod dat;
 pub mod datset;
 pub mod direct;
 pub mod eras;
-pub mod install;
 pub mod join;
 pub mod known;
 pub mod launch;
@@ -54,10 +50,8 @@ pub mod world;
 #[doc(hidden)]
 pub mod testing;
 
-pub use check::{check, CheckId, CheckInput, Finding, Fix, Report, RunningClient, Verdict};
 pub use datset::{DatOrigin, DatRole, DatSet, Iterations, SetKind};
-pub use install::{ClientKind, Installation};
 pub use launch::{plan, LaunchPlan, LaunchRequest};
-pub use state::{Account, Favourite, LauncherState, WorldPrefs};
+pub use state::{Account, LauncherState, WorldPrefs};
 pub use vault::Vault;
 pub use world::{Emulator, World, WorldState};

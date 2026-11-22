@@ -1,4 +1,4 @@
-//! The terrain compositor blends: a retail corner alpha map carries its mask in the alpha channel
+//! The terrain splat blends: a retail corner alpha map carries its mask in the alpha channel
 //! (reading any other channel gives a flat mask and a hard replace on every texel, which looks
 //! like per-cell patches with no blending), and a palettised `PFID_INDEX16` surface decodes to real
 //! colour rather than solid black. Fixture: the retail dats (a missing install fails).
@@ -53,7 +53,7 @@ fn a_retail_alpha_map_carries_its_mask_in_the_alpha_channel() {
     assert_eq!(
         spread(2),
         0,
-        "channel 2 (R) is flat, so merge_overlay reading pixels[..][2] gets a constant"
+        "channel 2 (R) is flat, so a blend reading pixels[..][2] gets a constant"
     );
 }
 

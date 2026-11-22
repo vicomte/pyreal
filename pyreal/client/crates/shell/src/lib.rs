@@ -3,9 +3,9 @@
 //! it.
 //!
 //! **Depends on** the runtime and what it is built from (`pyreal-client-runtime`,
-//! `pyreal-client-model`, `pyreal-client-contract`, `pyreal-client-net`, `pyreal-protocol`, `pyreal-rules`,
-//! `pyreal-primitives`, `pyreal-chargen`, `pyreal-dat`, `pyreal-assets`, `pyreal-physics`, `pyreal-animation`,
-//! `pyreal-audio`, `pyreal-world-data`, `pyreal-presentation`), the drawn world (`pyreal-scene`, with
+//! `pyreal-client-model`, `pyreal-client-contract`, `pyreal-client-net`, `pyreal-protocol`,
+//! `pyreal-primitives`, `pyreal-dat`, `pyreal-physics`, `pyreal-animation`,
+//! `pyreal-world-data`, `pyreal-presentation`), the drawn world (`pyreal-scene`, with
 //! `pyreal-world-render`), the cursor's pictures (`pyreal-codecs`), the device input (`pyreal-input`), the interface
 //! (`pyreal-horizon`, with the game's words and tables it reads, `pyreal-ui-logic`) and the plugin
 //! host it seats the windows of (`pyreal-plugin-host`, `pyreal-plugin-api`, `pyreal-plugin-ui`, with
@@ -54,5 +54,3 @@ pub mod present;
 
 /// The message pump: host events in, Win32 messages out, the window procedure in the middle.
 pub mod pump;
-/// The `Render.*` preference owners, over the scene's.
-pub mod render_prefs;

@@ -425,10 +425,6 @@ impl World {
         self.tables.inventories.get(id)
     }
 
-    pub fn inventory_mut(&mut self, id: ObjectId) -> Option<&mut ObjectInventory> {
-        self.tables.inventories.get_mut(id)
-    }
-
     #[must_use]
     pub fn physics(&self, id: ObjectId) -> Option<&PhysicsPresence> {
         self.tables.physics.get(id)
@@ -1404,11 +1400,6 @@ impl World {
         }
     }
 
-    /// Delete an object by id, with the being-deleted callback before table removal.
-    pub fn delete_object(&mut self, id: ObjectId, now: ServerTime, out: &mut dyn NoticeSink) {
-        self.delete_object_with_dispatch(id, now, &mut |_, notice| out.emit(notice));
-    }
-
     /// The old object remains queryable through removal notices and child work. The deleted notice
     /// follows actual table removal.
     pub fn delete_object_with_dispatch(
@@ -1771,27 +1762,6 @@ impl World {
         let changed = self.open_container != Some(container);
         self.open_container = Some(container);
         changed
-    }
-
-    /// Recursively determine whether all referenced inventory objects have arrived; this gates the
-    /// login completion check.
-    #[must_use]
-    pub fn all_contained_objects_exist(&self, id: ObjectId) -> bool {
-        self.contents_exist_walk(id, &mut Vec::new())
-    }
-
-    /// Each container once, as [`Self::remove_contents_walk`].
-    fn contents_exist_walk(&self, id: ObjectId, seen: &mut Vec<ObjectId>) -> bool {
-        if seen.contains(&id) {
-            return true;
-        }
-        seen.push(id);
-        let Some(inv) = self.tables.inventories.get(id) else {
-            return true;
-        };
-        inv.all_contents()
-            .into_iter()
-            .all(|c| self.tables.weenies.contains_key(c) && self.contents_exist_walk(c, seen))
     }
 
     /// Apply the server's authoritative item move.
@@ -2375,17 +2345,6 @@ impl World {
         self.weenie_mut(p)?.qualities.as_mut()
     }
 
-    /// Store a **copy** of the player description and always fire its notice, even when no player
-    /// row is available for the copy.
-    pub fn set_player_visual_desc(
-        &mut self,
-        d: pyreal_protocol::types::ObjDesc,
-        out: &mut dyn NoticeSink,
-    ) {
-        self.player_objdesc = Some(d);
-        out.emit(Notice::PlayerObjDescChanged);
-    }
-
     /// The local clock this crate hands to the rebasing paths.
     ///
     /// A convenience, not a policy: enchantment and skill times are rebased against the local
@@ -2405,7 +2364,7 @@ mod tests {
 
     /// A container the server lists inside itself is walked once, not until the stack runs out.
     #[test]
-    fn a_container_listed_inside_itself_ends_the_contents_walks() {
+    fn a_container_listed_inside_itself_ends_the_contents_walk() {
         let mut w = World::new();
         let (bag, pouch) = (ObjectId(0x8000_0010), ObjectId(0x8000_0011));
         for id in [bag, pouch] {
@@ -2428,7 +2387,6 @@ mod tests {
             },
         );
         w.remove_contents_from_destruction_queue(bag);
-        assert!(w.all_contained_objects_exist(bag));
     }
 
     /// A lost cell whose last object leaves goes too; outdoor cells are never popped by a load.
@@ -2788,7 +2746,7 @@ mod tests {
         // 12 names the chest but is in a cell -> must NOT cascade.
         w.weenie_mut(ObjectId(12)).unwrap().pwd.container_id = Some(ObjectId(1));
 
-        w.delete_object(ObjectId(1), ServerTime(0.0), &mut out);
+        w.delete_object_with_dispatch(ObjectId(1), ServerTime(0.0), &mut |_, n| out.emit(n));
         assert!(w.tables.doomed.contains_key(ObjectId(10)));
         assert!(!w.tables.doomed.contains_key(ObjectId(11)));
         assert!(!w.tables.doomed.contains_key(ObjectId(12)));

@@ -211,14 +211,6 @@ impl<S: Shell> App<S> {
         if let Some(path) = cfg.art_pack.as_deref() {
             present.open_art_pack(path);
         }
-        // And the drawn ground's tuning file, beside the preferences unless one is named.
-        let tuning = cfg.terrain_tuning.clone().or_else(|| {
-            (!cfg.preferences_file.as_os_str().is_empty())
-                .then(|| cfg.preferences_file.with_file_name("terrain-tuning.toml"))
-        });
-        if let Some(file) = tuning.as_deref() {
-            present.offer_terrain_tuning(file);
-        }
 
         let timer = Clock::init();
 
@@ -308,7 +300,6 @@ impl<S: Shell> App<S> {
             orbit: None,
             orbit_keys: crate::orbit::MovementKeys::default(),
             orbit_pending: Vec::new(),
-            fidelity_told: Vec::new(),
             orbit_look: (0.0, 0.0),
             report_placed: false,
             press_attacks: false,
@@ -365,6 +356,7 @@ impl<S: Shell> App<S> {
             hitch_epoch: std::time::Instant::now(),
             hitch_world: false,
             build_commit: "unknown",
+            build_hash: "",
             playable_at: None,
             // The reporter seeds `last_sent_position_time` with the clock start, not zero.
             position: pyreal_client_net::client_session::PositionReporter::new(clock_start),
@@ -377,6 +369,8 @@ impl<S: Shell> App<S> {
             host_state: HostState::default(),
             pending_ddd: Vec::new(),
             bulk: None,
+            patch_share: crate::bulk_patch::FRAME_SHARE,
+            patch_clock: crate::bulk_patch::WorkClock::default(),
             ddd,
             ddd_invalidation: None,
             store_generation: 0,
@@ -544,7 +538,14 @@ impl<S: Shell> App<S> {
                     // button-click row: the same resident object supplies portal and Admin_Environs
                     // sounds. Loading only the click row would make those other producers reach a
                     // valid table selection and then mix silence because their waves do not exist.
-                    audio.create_table_waves(&self.store, table);
+                    // The table's waves are linked once while it is the UI's, not again each
+                    // session, and a table it replaces lets its links go.
+                    if self.ui_sound_table != Some(table) {
+                        if let Some(old) = self.ui_sound_table {
+                            audio.release_table_waves(old);
+                        }
+                        audio.create_table_waves(&self.store, table);
+                    }
                     self.ui_sound_table = Some(table);
                 }
             }
@@ -638,19 +639,55 @@ impl<S: Shell> App<S> {
         if let Some(start) = self.window.render_scale() {
             pyreal_client_contract::options::render_scale::register(start);
         }
-        match crate::config::read_user_preferences(&self.cfg.preferences_file) {
+        let kept = match crate::config::read_user_preferences(&self.cfg.preferences_file) {
             Ok(Some(ini)) => {
                 let (applied, ignored) = store::load(&ini);
                 tracing::debug!("user preferences: {applied} applied, {ignored} for other owners");
+                pyreal_client_contract::options::auto_quality::names_a_preset_option(
+                    ini.entries.iter().map(|(k, _)| k.as_str()),
+                )
             }
             // "A missing file is not an error": retail ignores the preference loader's result,
             // and the registered defaults are then what the page shows.
-            Ok(None) => tracing::info!("no UserPreferences.ini; registered defaults stand"),
-            Err(e) => tracing::warn!(
-                "could not read {}: {e}; registered defaults stand",
-                self.cfg.preferences_file.display()
-            ),
+            Ok(None) => {
+                tracing::info!("no UserPreferences.ini; registered defaults stand");
+                false
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "could not read {}: {e}; registered defaults stand",
+                    self.cfg.preferences_file.display()
+                );
+                true
+            }
+        };
+        self.choose_quality_for_this_machine(kept);
+    }
+
+    /// Set the quality preset suggested for the graphics card, when one is due
+    /// ([`pyreal_client_contract::options::auto_quality::choose_at_start`]).
+    fn choose_quality_for_this_machine(&mut self, profile_names_a_preset_option: bool) {
+        use pyreal_client_contract::options::{auto_quality, store};
+        let Some(adapter) = self.present.graphics_adapter() else {
+            return;
+        };
+        let Some(preset) = auto_quality::choose_at_start(
+            &adapter,
+            profile_names_a_preset_option,
+            store::inq_value,
+        ) else {
+            return;
+        };
+        tracing::info!(
+            "quality preset {} chosen for {}",
+            preset.name(),
+            adapter.name
+        );
+        let values = auto_quality::values_choosing(preset, &adapter);
+        for (name, value) in &values {
+            store::set_value(name, value.clone());
         }
+        self.interaction.queue_render_preferences(values);
     }
 
     /// Play the one sound the bring-up proves the device with, once.
@@ -693,11 +730,14 @@ pub(super) fn restore_window_place(
             tracing::info!("no screen holds {x},{y} now: the window opens on the main one");
         }
     }
-    let unforced = match display.window_size {
-        Some(size) if from_preference => {
-            crate::config::fit_window_size(size, window.largest_client_size())
-        }
-        _ => unforced,
+    // The saved size, or else the saved resolution, cut to the screen the window opens on.
+    let unforced = if from_preference {
+        crate::config::fit_window_size(
+            display.window_size.unwrap_or(unforced),
+            window.largest_client_size(),
+        )
+    } else {
+        unforced
     };
     if display.window_full_screen {
         window.enter_full_screen_of_its_own();

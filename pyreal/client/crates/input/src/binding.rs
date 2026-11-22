@@ -205,7 +205,7 @@ impl InputManager {
     ///
     /// The client routes **every** control here before any input
     /// map is consulted, because it registers as input handler `0x20`
-    /// ([`crate::dispatch::handler_flags::KEY_HIT`]), a single exclusive slot. So this function
+    /// (the key-hit flag), a single exclusive slot. So this function
     /// sees controls no map binds, and its job is to say which of them may become a binding.
     ///
     /// The steps are the client's, in its order:

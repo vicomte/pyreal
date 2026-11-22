@@ -65,7 +65,7 @@ it is given as a number, because "roughly two minutes" is not a specification.
 ### Naming a test
 
 A named test looks like `core/client-net/tests/cpu/net/replay.rs`, or a function inside a module, for example
-`core/client-net/src/sequence_gate.rs :: the_deadlock_breaker_fires_at_more_than_19_stamps_held_more_than_300_seconds`.
+`core/client-net/src/client_session/ordering.rs :: the_deadlock_breaker_needs_both_nineteen_stamps_and_three_hundred_seconds`.
 
 Tests under `tests/cpu/` and inside `src/` run with no assets and no device: they are the public
 tier and anyone can run them. Tests under `tests/dat/` need the original client's data files and

@@ -201,6 +201,16 @@ impl<S: Shell> App<S> {
                         self.actions.steer(crate::actions::Action::begin(id));
                     }
                 }
+                TravelCommand::Face(heading) => {
+                    if let Some(c) = self
+                        .world
+                        .as_mut()
+                        .and_then(|w| w.character.as_mut())
+                        .filter(|_| self.pending_scene.is_none())
+                    {
+                        c.face_heading(heading);
+                    }
+                }
                 TravelCommand::Use(id) => self.submit_requests(vec![UiRequest::Use(id)]),
                 TravelCommand::Wield(item) => self.submit_requests(vec![UiRequest::Inventory(
                     pyreal_client_contract::view::InventoryIntent::Wield { item },
@@ -251,7 +261,7 @@ impl<S: Shell> App<S> {
     ///
     /// Screenshots are encoded as PNG. This workspace has
     /// **no JPEG encoder** — `zune-jpeg`
-    /// in `dereth-render` is a decoder, and adding one would change `Cargo.lock`, which `--locked`
+    /// in `pyreal-codecs` is a decoder, and adding one would change `Cargo.lock`, which `--locked`
     /// forbids — so the file is a PNG through the existing `Gpu::capture_png` read-back and is
     /// named `.png`. Naming a PNG `.jpg` would be worse than the honest extension; the numbering,
     /// the padding and the directory are retail's, and swapping the encoder later changes one
@@ -329,59 +339,6 @@ impl<S: Shell> App<S> {
                     tracing::warn!("--set-at {setting:?} names no preference this client sets");
                 }
             }
-        }
-    }
-
-    /// The landscape styles the scene refused this poll: the options value goes back to the style
-    /// still drawn, so a page shows what is on screen, and the player is told why in the chat
-    /// window, on the channel the client's own refusals use.
-    pub(super) fn report_landscape_refusals(&mut self, w: &crate::frame_events::RenderPrefWork) {
-        use pyreal_client_contract::options::landscape::{Landscape, RegionStyle, WORLD_DEFAULT};
-        if w.fidelity_refused {
-            // Why, as the device and the renderer chosen for the next start say it: another
-            // renderer, or a restart that asks for the presentation. Each line once a session.
-            let why = self.hifi_availability().refusal();
-            tracing::warn!("{why}");
-            if !self.fidelity_told.contains(&why) {
-                self.fidelity_told.push(why);
-                self.objects.world.scroll.add_feedback_to_scroll(
-                    why,
-                    pyreal_client_model::scroll::LOCAL_ERROR_TYPE,
-                    true,
-                    0,
-                    pyreal_client_contract::feedback::Feedback::LOCAL,
-                );
-            }
-        }
-        for (which, refused) in [
-            (Landscape::Ground, w.ground_refused),
-            (Landscape::Sky, w.sky_refused),
-            (Landscape::Objects, w.objects_refused),
-        ] {
-            let Some((files, kept)) = refused else {
-                continue;
-            };
-            let kept_value = pyreal_client_contract::PrefValue::Int(
-                kept.map_or(WORLD_DEFAULT, RegionStyle::value),
-            );
-            let _ =
-                pyreal_client_contract::options::store::set_value(which.name(), kept_value.clone());
-            // The next login's scene keeps what is drawn too.
-            for scene in [self.pending_scene.as_mut(), self.scene_config.as_mut()]
-                .into_iter()
-                .flatten()
-            {
-                scene.render.set_named(which.name(), &kept_value);
-            }
-            let text = which.notice(files);
-            tracing::warn!("{text}");
-            self.objects.world.scroll.add_feedback_to_scroll(
-                text,
-                pyreal_client_model::scroll::LOCAL_ERROR_TYPE,
-                true,
-                0,
-                pyreal_client_contract::feedback::Feedback::LOCAL,
-            );
         }
     }
 

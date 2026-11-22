@@ -117,6 +117,5 @@ Any static host that serves files over HTTPS will do for the launcher.
 
 The template's Pages workflow makes the list and the zips from the repository's GitHub releases
 and deploys them to GitHub Pages, with no branch to keep ([publishing.md](guide/publishing.md)). Dereth's own source has a host of
-its own, `https://plugins.dereth.network/plugins.json`: `cargo xtask deploy plugins` builds it from
-the samples in `pyreal/plugins/` that `pyreal/plugins/published.toml` names, and puts it on its
-Cloudflare Pages project, with headers that let any page read it, the list kept five minutes and each versioned zip a year.
+its own, `https://plugins.dereth.network/plugins.json`, on a Cloudflare Pages project, with headers
+that let any page read it, the list kept five minutes and each versioned zip a year.

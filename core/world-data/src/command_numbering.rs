@@ -161,37 +161,6 @@ pub fn spell_component_table(t: &mut SpellComponentTable, n: CommandNumbering) {
     }
 }
 
-/// The wire index the numbering `n` gives the final command `id`; `None` when `n` has no such
-/// command. Under the final numbering it is the id's low half, which is its index.
-#[must_use]
-#[allow(clippy::cast_possible_truncation)] // the low half of the id is the final index
-pub fn wire_index(n: CommandNumbering, id: u32) -> Option<u16> {
-    if n == CommandNumbering::Final {
-        return Some(id as u16);
-    }
-    n.command_to_wire(pyreal_animation::command::MotionCommand(id))
-}
-
-/// The final index of the wire index `i` in the numbering `n`; `i` itself when `n` has no final
-/// counterpart for it (the final numbering always answers `i`).
-#[must_use]
-pub fn final_index_from_wire(n: CommandNumbering, i: u16) -> u16 {
-    if n == CommandNumbering::Final {
-        return i;
-    }
-    n.to_final_index(i).unwrap_or(i)
-}
-
-/// The final id of the full id `id` in the numbering `n`; `id` itself when `n` has no final
-/// command for it.
-#[must_use]
-pub fn final_id(n: CommandNumbering, id: u32) -> u32 {
-    if n == CommandNumbering::Final {
-        return id;
-    }
-    n.to_final(id).map_or(id, |c| c.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

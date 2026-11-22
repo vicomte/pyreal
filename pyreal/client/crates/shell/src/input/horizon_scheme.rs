@@ -7,9 +7,6 @@ use super::InputShell;
 use pyreal_input::{ActionId, MasterInputMap};
 use std::path::PathBuf;
 
-/// The Horizon interface's slug: its key maps are `<name>-horizon.keymap`.
-pub const HORIZON_SLUG: &str = "horizon";
-
 /// The Horizon interface's key map file, beside the others.
 pub const HORIZON_KEYMAP_FILE: &str = "dereth-horizon.keymap";
 
@@ -617,15 +614,6 @@ impl InputShell {
         };
         pyreal_client_runtime::platform::files::write(&path, horizon.map.to_keymap_text())?;
         Ok(true)
-    }
-
-    /// The Horizon interface's default layout back in use, the player's own keys dropped.
-    pub fn restore_horizon_defaults(&mut self) {
-        let defaults = self.horizon_keymap().defaults.clone();
-        if self.horizon_active {
-            self.manager.keymap = defaults.clone();
-        }
-        self.horizon_keymap().map = defaults;
     }
 
     /// The keys the Horizon layout gives `action` in `map`.

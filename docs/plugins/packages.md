@@ -14,8 +14,7 @@ Lua, TOML, JSON, XML, image, font, VTank profile and route files, a compiled plu
 files alone; no file in it is a signature the host reads.
 
 A host lists packages from its own places: the desktop client its per-user plugins folder (folders
-and `.zip` files in it), and the headless client `--plugins <folder or zip>` (a package, or a folder
-of them).
+and `.zip` files in it).
 
 ## Its hash
 

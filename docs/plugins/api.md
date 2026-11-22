@@ -79,8 +79,8 @@ data table), or nil; `files.package_list()` the path of every file in it.
 `files.data(path)` answers a file's text, or nil; `files.data_list()` every file's path;
 `files.save_data(path, text)` writes one (at most 4 MiB, 1,000 files; paths are `/`-separated,
 stay inside the folder, and no part starts with a dot). It needs no permission: a plugin reaches only its own folder. The desktop
-keeps it at `plugin-data/<id>` in the settings folder; the headless client at `--plugin-data
-<dir>/<id>`; a host with nowhere to keep it answers nil and refuses the write.
+keeps it at `plugin-data/<id>` in the settings folder; a host with nowhere to keep it answers nil
+and refuses the write.
 
 **A file the player picks.** `files.import{ prompt, extensions }` is a promise of `{ name, text }`
 (at most 4 MiB): the host asks the player each time, in a dialog of the interface
@@ -290,7 +290,7 @@ local rich = game.world:find{ container = game.player.id, sort = "distance",
 | `game.player.game_time` | the game's calendar: `{ ticks, year, month, month_name, day, hour, hour_name, day_fraction, is_day, minutes_until_day, minutes_until_night }` (a day is 2 h 7 min; daytime runs from Dawnsong to the end of Warmtide-and-Half) |
 | `policy.info()` | the world's policy in force: `{ published, rules, peers_local, notes }` (see [policy.md](policy.md)) |
 | `session.info()` | the session: `{ phase, characters, world, account, portal_space, context }` (see [pregame.md](pregame.md)) |
-| `host.name` | `dereth-desktop`, `dereth-headless`, … |
+| `host.name` | `dereth-desktop`, … |
 | `host.version` | the host's own version, for reports, never for feature tests |
 | `host.has(capability)` | whether the host offers it |
 | `permissions.has(name)` | whether the plugin may use what the permission covers: true for each but `net.http`, which its manifest must name ([permissions](permissions.md)) |

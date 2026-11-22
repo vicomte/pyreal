@@ -1,11 +1,9 @@
-//! The landscape: mesh construction, texturing, LOD, lighting, water and ordering.
+//! The landscape: mesh construction, texturing, LOD and water.
 
 pub mod drawn;
 pub mod fill;
-pub mod lighting;
 pub mod merge;
 pub mod mesh;
-pub mod order;
 pub mod palshift;
 pub mod stitch;
 pub mod water;
@@ -59,7 +57,6 @@ pub mod tests_support {
             cell_keys: Vec::new(),
             cell_water: Vec::new(),
             water_type: WaterType::NotWater,
-            colours: Vec::new(),
             max_zval: z + 200.0,
             min_zval: z - 1.0,
         }

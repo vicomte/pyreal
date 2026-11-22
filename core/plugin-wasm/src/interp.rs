@@ -1,6 +1,5 @@
-//! The runtime on the desktop, headless and wherever no WebAssembly engine of the platform's is
-//! used: `wasmi`, an interpreter in Rust (so it also runs where compiling code at run time is not
-//! allowed).
+//! The runtime on the desktop: `wasmi`, an interpreter in Rust (so it also runs where compiling
+//! code at run time is not allowed).
 
 use crate::abi::{Flat, Guest};
 use crate::{host_import, module::FUEL_EXPORT, Backend, Instance};

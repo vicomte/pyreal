@@ -34,7 +34,7 @@ which lists the plugins and their state, says why the chosen one stopped, and ha
 `/plugin reload <id>` do the same in the chat window, and `/plugin enable <id>` and
 `/plugin disable <id>` enable or disable a plugin the client found (one the launcher offers starts
 enabled, any other is listed `disabled` until enabled, and the host remembers which are enabled
-and which the player disabled; [install-and-update](guide/install-and-update.md)). A plugin named
+and which the player disabled; [Plugins in Pyreal](README.md#plugins-in-pyreal)). A plugin named
 to load (`--plugins`) is enabled again after a fault, but not disabled. `/plugin policy` tells the
 world's policy in force, and `/plugin huds unlock` and `/plugin huds lock` unlock and lock the
 plugins' HUDs for the player to move ([ui.md](ui.md#huds)).

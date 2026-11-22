@@ -1,6 +1,5 @@
-//! `cargo xtask package`: the release files of Pyreal (the client, the art pack and the plugin
-//! author's tool), built the same way on a contributor's machine and in a
-//! release workflow ([`pyreal`]), and what they share: the build facts, the targets, the
+//! `cargo xtask package`: the release files of Pyreal (the client and the art pack), built the
+//! same way on a contributor's machine and in a release workflow ([`pyreal`]), and what they share: the build facts, the targets, the
 //! deny scan, the header checks, the archives and the notices.
 
 pub(crate) mod archive;
@@ -41,6 +40,9 @@ pub struct BuildFacts {
     /// The public repository the release files are downloaded from ([`pyreal::SOURCE_URL_ENV`]);
     /// empty when the environment names none: no upstream is baked in.
     pub source_url: String,
+    /// The website's `release.json` the client checks first ([`pyreal::UPDATE_URL_ENV`]); empty
+    /// when the environment names none.
+    pub update_url: String,
 }
 
 impl BuildFacts {
@@ -104,11 +106,15 @@ pub fn build_facts(ws: &Path, allow_dirty: bool) -> Result<BuildFacts, String> {
         Ok(u) if !u.trim().is_empty() => u.trim().trim_end_matches('/').to_owned(),
         _ => String::new(),
     };
+    let update_url = std::env::var(pyreal::UPDATE_URL_ENV)
+        .map(|u| u.trim().to_owned())
+        .unwrap_or_default();
     Ok(BuildFacts {
         commit,
         hash,
         epoch,
         source_url,
+        update_url,
     })
 }
 

@@ -1,6 +1,5 @@
-//! `cargo xtask package pyreal`: Pyreal's release files (the client and the plugin author's
-//! tool, with the base art pack when one is named), built the same way on a contributor's machine
-//! and in a release workflow.
+//! `cargo xtask package pyreal`: Pyreal's release files (the client, with the base art pack when
+//! one is named), built the same way on a contributor's machine and in a release workflow.
 //!
 //! ```text
 //! cargo xtask package pyreal [--base-pack <file>] [--target <triple>]... [--out <dir>] [--allow-dirty]
@@ -8,18 +7,17 @@
 //! ```
 //!
 //! For each target (the host's own by default; each builds on its own operating system) it builds
-//! the client and the tool with cargo and writes into `<target dir>/package/pyreal-<version>/` (or
+//! the client with cargo and writes into `<target dir>/package/pyreal-<version>/` (or
 //! `--out`):
 //!
 //! | system | the release file |
 //! |---|---|
-//! | Windows | `pyreal-<v>-windows-x86_64.zip`: `Pyreal.exe`, `pyreal-plugin.exe` and the notices, under `pyreal-<v>/` |
-//! | macOS | `Pyreal-<v>-macos-<arch>.dmg`: `Pyreal.app` beside a link to Applications in a laid-out window, the client and the tool in `Contents/MacOS`, the notices in `Contents/Resources` |
-//! | Linux | `pyreal-<v>-linux-x86_64.tar.gz`: `pyreal`, `pyreal-plugin` and the notices, under `pyreal-<v>/` |
+//! | Windows | `pyreal-<v>-windows-x86_64.zip`: `Pyreal.exe` and the notices, under `pyreal-<v>/` |
+//! | macOS | `Pyreal-<v>-macos-<arch>.dmg`: `Pyreal.app` beside a link to Applications in a laid-out window, the client in `Contents/MacOS`, the notices in `Contents/Resources` |
+//! | Linux | `pyreal-<v>-linux-x86_64.tar.gz`: `pyreal` and the notices, under `pyreal-<v>/` |
 //!
-//! The plugin author's tool is also a file of its own for the same platform
-//! ([`tool_file_name`]). Each target's lines of `MANIFEST.txt` go in `<file>.manifest`; then the
-//! index is written over the folder: `MANIFEST.txt`, `release.json` and `SHA256SUMS`.
+//! Each target's lines of `MANIFEST.txt` go in `<file>.manifest`; then the index is written over
+//! the folder: `MANIFEST.txt`, `release.json` and `SHA256SUMS`.
 //! `--gather <dir>` builds nothing: it checks the files already in `<dir>` and writes the index.
 //!
 //! **The dat guard.** Only named files are copied, and the deny scan runs over what was staged and
@@ -135,14 +133,11 @@ pub const BASE_PACK: &str = guard::BASE_PACK;
 /// The public repository the release files are downloaded from, when one is named.
 pub const SOURCE_URL_ENV: &str = "PYREAL_BUILD_SOURCE_URL";
 
+/// The website's copy of the latest `release.json`, which the client's update check reads first.
+pub const UPDATE_URL_ENV: &str = "PYREAL_BUILD_UPDATE_URL";
+
 /// The macOS bundle's name.
 pub const APP: &str = "Pyreal.app";
-
-/// The plugin author's tool, released beside the client for each platform.
-pub const TOOL: &str = "pyreal-plugin";
-
-/// The tool's crate, by its manifest.
-const TOOL_MANIFEST: &str = "tools/plugin/Cargo.toml";
 
 /// The client's crate.
 const CLIENT: &str = "pyreal-client";
@@ -156,30 +151,6 @@ pub fn client_in_release(target: Target) -> String {
         Os::Windows => "Pyreal.exe".to_owned(),
         Os::Mac => format!("Contents/MacOS/{}", crate::bundle::EXECUTABLE),
         Os::Linux => "pyreal".to_owned(),
-    }
-}
-
-/// The plugin author's tool's release file for `target`: a zip on Windows, a tarball elsewhere.
-pub fn tool_file_name(target: Target, version: &str) -> String {
-    let ext = if target.os == Os::Windows {
-        "zip"
-    } else {
-        "tar.gz"
-    };
-    format!("{TOOL}-{version}-{}.{ext}", target.platform_name())
-}
-
-/// The one top-level folder of the tool's archive.
-pub fn tool_root(version: &str) -> String {
-    format!("{TOOL}-{version}")
-}
-
-/// Where the tool is in the release file for `target`, beside the client.
-pub fn tool_in_release(target: Target) -> String {
-    match target.os {
-        Os::Windows => format!("{TOOL}{}", target.exe_suffix()),
-        Os::Mac => format!("Contents/MacOS/{TOOL}"),
-        Os::Linux => TOOL.to_owned(),
     }
 }
 
@@ -225,14 +196,6 @@ pub fn check_base_pack(path: &Path) -> Result<(), String> {
     }
 }
 
-/// The files the tool's archive holds below its folder: the program and the notices.
-pub fn tool_contents(target: Target) -> Vec<String> {
-    let mut out = vec![format!("{TOOL}{}", target.exe_suffix())];
-    out.extend(NOTICES.iter().map(|n| (*n).to_owned()));
-    out.sort();
-    out
-}
-
 /// The release file for `target`.
 pub fn release_file_name(target: Target, version: &str) -> String {
     let p = target.platform_name();
@@ -254,7 +217,7 @@ pub fn archive_root(target: Target, version: &str) -> String {
 /// The files the release file's archive holds below its top-level folder: those it must hold, and
 /// those it may (what the icon compiler and the signature write on some machines and not others).
 pub fn contents(target: Target) -> (Vec<String>, Vec<String>) {
-    let mut required = vec![client_in_release(target), tool_in_release(target)];
+    let mut required = vec![client_in_release(target)];
     required.extend(NOTICES.iter().map(|n| format!("{}{n}", notices_in(target))));
     let mut optional = vec![base_pack_in_release(target)];
     if target.os == Os::Mac {
@@ -310,10 +273,8 @@ pub fn codesign_runs(
 /// What a file of a release folder is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Asset {
-    /// The release file: the client and the tool.
+    /// The release file: the client.
     Client(Target),
-    /// The plugin author's tool for a platform.
-    Tool(Target),
     /// One file's lines of `MANIFEST.txt`.
     ManifestPart,
     /// A file the index writes, replaced on every run.
@@ -335,17 +296,13 @@ pub fn classify(name: &str, version: &str) -> Result<Asset, String> {
         if name == file {
             return Ok(Asset::Client(t));
         }
-        let tool = tool_file_name(t, version);
-        if name == tool {
-            return Ok(Asset::Tool(t));
-        }
-        if name == format!("{file}.manifest") || name == format!("{tool}.manifest") {
+        if name == format!("{file}.manifest") {
             return Ok(Asset::ManifestPart);
         }
     }
     Err(format!(
-        "`{name}` is not a file of the Pyreal {version} release (a release file, the plugin \
-         author's tool, either's .manifest or the index)"
+        "`{name}` is not a file of the Pyreal {version} release (a release file, its .manifest or \
+         the index)"
     ))
 }
 
@@ -539,6 +496,7 @@ pub fn build_env(ws: &Path, facts: &BuildFacts, target: Target) -> Vec<(String, 
         (super::build_hash::ENV.to_owned(), facts.hash.clone()),
         ("PYREAL_BUILD_TARGET".to_owned(), target.triple.to_owned()),
         (SOURCE_URL_ENV.to_owned(), facts.source_url.clone()),
+        (UPDATE_URL_ENV.to_owned(), facts.update_url.clone()),
         ("LUAU_CXXFLAGS".to_owned(), LUAU_RELEASE_FLAGS.to_owned()),
     ];
     if target.os == Os::Mac {
@@ -657,7 +615,6 @@ struct Job<'a> {
 impl Job<'_> {
     fn run(&self) -> Result<(), String> {
         let client = self.build_program(CLIENT, CLIENT_BINARY)?;
-        let tool = self.build_program(TOOL, TOOL)?;
         let notices = self.notices()?;
         let t = self.target;
         let root = archive_root(t, self.version);
@@ -674,7 +631,6 @@ impl Job<'_> {
         } else {
             copy(&client, &tree.join(client_in_release(t)))?;
         }
-        copy(&tool, &tree.join(tool_in_release(t)))?;
         if let Some(pack) = self.base_pack {
             copy(pack, &tree.join(base_pack_in_release(t)))?;
         }
@@ -684,9 +640,7 @@ impl Job<'_> {
                 &tree.join(format!("{}{n}", notices_in(t))),
             )?;
         }
-        for program in [client_in_release(t), tool_in_release(t)] {
-            set_executable(&tree.join(program))?;
-        }
+        set_executable(&tree.join(client_in_release(t)))?;
         if t.os == Os::Mac {
             let identity = dmg::signing_identity();
             let notary = dmg::Notary::from_env()?;
@@ -697,14 +651,13 @@ impl Job<'_> {
                 &tree.display().to_string(),
                 identity.as_deref(),
                 notary.is_some(),
-                &[tool_in_release(t), client_in_release(t)],
+                &[client_in_release(t)],
             ) {
                 let refs: Vec<&str> = args.iter().map(String::as_str).collect();
                 run_in(self.stage, "codesign", &refs, &[], &[])?;
             }
         }
-        self.finish_tree(&tree, &root)?;
-        self.package_tool(&tool)
+        self.finish_tree(&tree, &root)
     }
 
     /// A program of the workspace, built with cargo for the target and staged under a name of
@@ -737,18 +690,6 @@ impl Job<'_> {
         Ok(staged)
     }
 
-    /// A console program's header: its line for the manifest.
-    fn check_tool(&self, bytes: &[u8]) -> Result<String, String> {
-        let t = self.target;
-        headers::check_console_app(bytes, t, targets::PYREAL_GLIBC_FLOOR).map_err(|problems| {
-            format!(
-                "the header check refused {TOOL} for {}:\n  {}",
-                t.triple,
-                problems.join("\n  ")
-            )
-        })
-    }
-
     /// The client's header, checked as a windowed program's.
     fn check_client(&self, bytes: &[u8]) -> Result<String, String> {
         headers::check_app_binary(bytes, self.target, targets::PYREAL_GLIBC_FLOOR).map_err(
@@ -762,72 +703,17 @@ impl Job<'_> {
         )
     }
 
-    /// The plugin author's tool as a release file of its own beside the client's: its header
-    /// checked as a console program's, and archived with its notices ([`tool_archive`]).
-    fn package_tool(&self, tool: &Path) -> Result<(), String> {
-        let t = self.target;
-        let exe = format!("{TOOL}{}", t.exe_suffix());
-        let program = read(tool)?;
-        let described = self.check_tool(&program)?;
-        println!("  {exe}: {described}");
-        let about = self.stage.join("tool-about");
-        mkdir(&about)?;
-        let licenses = licence_page(self.ws, TOOL_MANIFEST, t, &about, TOOL)?;
-        let crates = crates_of(self.ws, "Cargo.toml", TOOL, t)?;
-        let mit = String::from_utf8_lossy(&read(&self.ws.join("LICENSE"))?).into_owned();
-        let notice = notice::tool_notice(&notice::ToolFacts {
-            version: self.version,
-            target: t.triple,
-            commit: &self.facts.commit,
-            source_url: &self.facts.source_url,
-            crates: &crates,
-            mit_license: &mit,
-        });
-        let members = tool_members(t, program, &mit, &notice, &licenses);
-        let named: Vec<(&str, &[u8])> = members
-            .iter()
-            .map(|m| (m.name.as_str(), m.bytes.as_slice()))
-            .collect();
-        self.refuse_machine_folders(&self.stage.join(TOOL), &named)?;
-        let bytes = tool_archive(t, self.version, &members, self.facts.epoch)?;
-        let file = tool_file_name(t, self.version);
-        let path = self.out_dir.join(&file);
-        write(&path, &bytes)?;
-        check_tool_archive(&path, t, self.version)?;
-        println!(
-            "  {}: {} bytes, sha256 {}",
-            path.display(),
-            bytes.len(),
-            sha256_hex(&bytes)
-        );
-        let lines: Vec<(String, Vec<u8>, String)> = members
-            .into_iter()
-            .map(|m| {
-                let d = if m.name == exe {
-                    described.clone()
-                } else {
-                    String::new()
-                };
-                (m.name, m.bytes, d)
-            })
-            .collect();
-        self.write_manifest(&file, None, &lines)
-    }
-
     /// `LICENSE`, `NOTICE.txt` and `THIRD-PARTY-LICENSES.html`: the folder they are written in.
     fn notices(&self) -> Result<PathBuf, String> {
         let t = self.target;
         let mut all_crates = crates_of(self.ws, "Cargo.toml", CLIENT, t)?;
-        all_crates.extend(crates_of(self.ws, "Cargo.toml", TOOL, t)?);
         all_crates.sort();
         all_crates.dedup();
         let mit = String::from_utf8_lossy(&read(&self.ws.join("LICENSE"))?).into_owned();
         let about = self.stage.join("about");
         mkdir(&about)?;
         let page = |manifest: &str, name: &str| licence_page(self.ws, manifest, t, &about, name);
-        let exe = t.exe_suffix();
         let client_page = page("pyreal/client/Cargo.toml", CLIENT)?;
-        let tool_page = page(TOOL_MANIFEST, TOOL)?;
         let dir = self.stage.join("notices");
         mkdir(&dir)?;
         let fonts = HORIZON_FONTS
@@ -857,11 +743,7 @@ impl Job<'_> {
             .next()
             .unwrap_or(CLIENT)
             .to_owned();
-        let tool_name = format!("{TOOL}{exe}");
-        let pages = [
-            (client_name.as_str(), client_page),
-            (tool_name.as_str(), tool_page),
-        ];
+        let pages = [(client_name.as_str(), client_page)];
         write(
             &dir.join("THIRD-PARTY-LICENSES.html"),
             notice::splice_licence_pages(&pages)?.as_bytes(),
@@ -884,14 +766,10 @@ impl Job<'_> {
             ));
         }
         let client = client_in_release(t);
-        let tool = tool_in_release(t);
         let mut described = Vec::new();
         let d = self.check_client(&read(&dir.join(&client))?)?;
         println!("  {client}: {d}");
         described.push((client.clone(), d));
-        let d = self.check_tool(&read(&dir.join(&tool))?)?;
-        println!("  {tool}: {d}");
-        described.push((tool.clone(), d));
         let mut members = Vec::new();
         for e in &staged {
             if e.kind == Kind::File {
@@ -899,7 +777,7 @@ impl Job<'_> {
                 members.push(Member {
                     name: e.path.clone(),
                     bytes: read(&path)?,
-                    executable: executable(&path) || e.path == client || e.path == tool,
+                    executable: executable(&path) || e.path == client,
                 });
             }
         }
@@ -1028,72 +906,6 @@ fn set_executable(path: &Path) -> Result<(), String> {
     }
 }
 
-/// The members of the tool's archive for `target`: the program, then the license, the notice and
-/// the third-party licenses' page.
-pub fn tool_members(
-    target: Target,
-    program: Vec<u8>,
-    mit: &str,
-    notice: &str,
-    licenses: &str,
-) -> Vec<Member> {
-    let text = |name: &str, body: &str| Member {
-        name: name.to_owned(),
-        bytes: body.as_bytes().to_vec(),
-        executable: false,
-    };
-    vec![
-        Member {
-            name: format!("{TOOL}{}", target.exe_suffix()),
-            bytes: program,
-            executable: true,
-        },
-        text("LICENSE", mit),
-        text("NOTICE.txt", notice),
-        text("THIRD-PARTY-LICENSES.html", licenses),
-    ]
-}
-
-/// The tool's archive: `members` under [`tool_root`], a zip on Windows and a tarball elsewhere,
-/// each file dated `epoch`.
-///
-/// # Errors
-/// The archive could not be written.
-pub fn tool_archive(
-    target: Target,
-    version: &str,
-    members: &[Member],
-    epoch: i64,
-) -> Result<Vec<u8>, String> {
-    let root = tool_root(version);
-    if target.os == Os::Windows {
-        archive::zip_bytes(&root, members, epoch)
-    } else {
-        archive::tar_gz_bytes(&root, members, epoch)
-    }
-}
-
-/// What the deny scan finds in the tool's archive, as read back: exactly [`tool_contents`], none
-/// of them named like the game's data or carrying its header, under the caps.
-pub fn tool_findings(entries: &[Entry], target: Target) -> Vec<String> {
-    guard::scan_tree(entries, &tool_contents(target), &[], FILE_CAP, TOTAL_CAP)
-}
-
-/// The deny scan of a written tool archive.
-pub(crate) fn check_tool_archive(path: &Path, target: Target, version: &str) -> Result<(), String> {
-    let entries = archive::archive_entries(path, &tool_root(version))?;
-    let findings = tool_findings(&entries, target);
-    if findings.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "the deny scan refused {}:\n  {}",
-            path.display(),
-            findings.join("\n  ")
-        ))
-    }
-}
-
 /// The deny scan of a written release file.
 pub(crate) fn check_archive(path: &Path, target: Target, version: &str) -> Result<(), String> {
     let entries: Vec<Entry> = archive::archive_entries(path, &archive_root(target, version))?;
@@ -1146,13 +958,11 @@ pub(crate) fn write_index(dir: &Path, version: &str, facts: &BuildFacts) -> Resu
         .collect();
     names.sort();
     let mut clients = Vec::new();
-    let mut tools = Vec::new();
     let mut parts = Vec::new();
     let mut refused = Vec::new();
     for name in &names {
         match classify(name, version) {
             Ok(Asset::Client(t)) => clients.push((name.clone(), t)),
-            Ok(Asset::Tool(t)) => tools.push((name.clone(), t)),
             Ok(Asset::ManifestPart) => parts.push(name.clone()),
             Ok(Asset::Index) => {}
             Err(e) => refused.push(e),
@@ -1177,18 +987,6 @@ pub(crate) fn write_index(dir: &Path, version: &str, facts: &BuildFacts) -> Resu
         } else {
             check_archive(&dir.join(name), *t, version)?;
         }
-        if !tools.iter().any(|(_, tt)| tt == t) {
-            return Err(format!(
-                "{name} has no plugin author's tool beside it ({})",
-                tool_file_name(*t, version)
-            ));
-        }
-    }
-    for (name, t) in &tools {
-        check_tool_archive(&dir.join(name), *t, version)?;
-        if !clients.iter().any(|(_, ct)| ct == t) {
-            return Err(format!("{name} has no client file beside it"));
-        }
     }
     let mut manifest = format!(
         "# pyreal {version}, commit {}\n# target\tfile\tsize\tsha256\theader\n",
@@ -1199,18 +997,16 @@ pub(crate) fn write_index(dir: &Path, version: &str, facts: &BuildFacts) -> Resu
     }
     write(&dir.join("MANIFEST.txt"), manifest.as_bytes())?;
     let mut assets = Vec::new();
-    for (program, list) in [("pyreal", &clients), (TOOL, &tools)] {
-        for (name, t) in list {
-            let bytes = read(&dir.join(name))?;
-            assets.push(serde_json::json!({
-                "program": program,
-                "target": t.triple,
-                "platform": t.updater_platform(),
-                "file": name,
-                "size": bytes.len(),
-                "sha256": sha256_hex(&bytes),
-            }));
-        }
+    for (name, t) in &clients {
+        let bytes = read(&dir.join(name))?;
+        assets.push(serde_json::json!({
+            "program": "pyreal",
+            "target": t.triple,
+            "platform": t.updater_platform(),
+            "file": name,
+            "size": bytes.len(),
+            "sha256": sha256_hex(&bytes),
+        }));
     }
     let release = serde_json::json!({
         "schema": 1,
@@ -1226,11 +1022,7 @@ pub(crate) fn write_index(dir: &Path, version: &str, facts: &BuildFacts) -> Resu
     let mut json = serde_json::to_string_pretty(&release).map_err(|e| e.to_string())?;
     json.push('\n');
     write(&dir.join("release.json"), json.as_bytes())?;
-    let mut summed: Vec<String> = clients
-        .iter()
-        .chain(&tools)
-        .map(|(n, _)| n.clone())
-        .collect();
+    let mut summed: Vec<String> = clients.iter().map(|(n, _)| n.clone()).collect();
     summed.extend(["MANIFEST.txt".to_owned(), "release.json".to_owned()]);
     summed.sort();
     let mut sums = String::new();

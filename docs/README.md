@@ -14,7 +14,7 @@ and what the Asheron's Call client does, written down so the code can be checked
 | [SOUND.md](SOUND.md) | The two sound engines and what feeds them |
 | [MAP_PLACES.md](MAP_PLACES.md) | Where the map's places come from, and their document |
 | [screenshots/README.md](screenshots/README.md) | Retail beside Pyreal at eight places |
-| [../tools/README.md](../tools/README.md) | The workspace's programs: xtask, the plugin tool, the art tool, the engine's viewer and the rest |
+| [../tools/README.md](../tools/README.md) | The workspace's programs: xtask, the art tool, the engine's viewer and the rest |
 
 ## The behaviour specification
 
@@ -122,8 +122,10 @@ The on-disk formats, one page per record kind; start with [formats/README.md](fo
 
 #### Plugins
 
-The plugin interface: what a plugin package declares, hears, reads and shows, and the conformance
-suite a host is tested with; start with [plugins/README.md](plugins/README.md).
+The plugin interface Pyreal's plugin host keeps to: what a plugin package declares, hears, reads
+and shows, and the conformance suite a host is tested with; start with
+[plugins/README.md](plugins/README.md). The plugins, and the tools and guides for writing them,
+live with the Dereth project (<https://github.com/jacobjohnston/dereth>).
 
 | Page | Provenance |
 |---|---|
@@ -135,7 +137,6 @@ suite a host is tested with; start with [plugins/README.md](plugins/README.md).
 | [plugins/ui.md](plugins/ui.md) — declared windows | design |
 | [plugins/audit.md](plugins/audit.md) — the server's plugin audit and the client's answers | wire format, design |
 | [plugins/conformance.md](plugins/conformance.md) — test plugins, profiles and the host driver | design |
-| [plugins/guide/README.md](plugins/guide/README.md) — writing a plugin in Lua or WebAssembly, its lifecycle and sandbox, installing and updating, and each bundled sample walked through | design |
 | [plugins/reference/README.md](plugins/reference/README.md) — every operation, permission, capability, UI node, limit and conformance case, generated from the code | design |
 
 #### Message catalogue

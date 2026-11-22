@@ -151,61 +151,6 @@ PYREAL
     out
 }
 
-/// Everything the plugin author's tool's `NOTICE.txt` states.
-#[derive(Debug, Clone)]
-pub struct ToolFacts<'a> {
-    pub version: &'a str,
-    pub target: &'a str,
-    pub commit: &'a str,
-    /// The public repository, without a trailing slash.
-    pub source_url: &'a str,
-    pub crates: &'a [Crate],
-    /// The project's MIT license (the repository's top-level `LICENSE`).
-    pub mit_license: &'a str,
-}
-
-/// The plugin author's tool's `NOTICE.txt`.
-pub fn tool_notice(f: &ToolFacts) -> String {
-    let tag = super::version::Product::Pyreal.tag_for(f.version);
-    let url = f.source_url.trim_end_matches('/');
-    let title = format!("pyreal-plugin {} ({})", f.version, f.target);
-    let (own, third): (Vec<&Crate>, Vec<&Crate>) = f.crates.iter().partition(|c| is_own(c));
-    let line = |c: &&Crate| format!("  {} {} ({})", c.name, c.version, c.licence);
-    let mut out = format!(
-        "{title}
-{rule}
-
-This package is pyreal-plugin, the plugin author's tool of Pyreal {version}: it makes a plugin
-repository, checks a plugin as Pyreal checks it, packs it, releases it and lists it in a
-plugin source. It is made from the Dereth project's plugin tool and is free software under
-Dereth's MIT license, which is in LICENSE beside this file and below.
-
-
-SOURCE CODE
-
-This build was made from commit {commit} of
-  {url}
-The source of exactly that commit:
-  {url}/tree/{commit}
-The release this package belongs to:
-  {url}/releases/tag/{tag}
-
-
-PYREAL-PLUGIN
-
-{mit}",
-        rule = "=".repeat(title.len()),
-        version = f.version,
-        commit = f.commit,
-        mit = indent(f.mit_license.trim_end()),
-    );
-    out.push_str(&built_from_section(
-        &own.iter().map(line).collect::<Vec<_>>(),
-        &third.iter().map(line).collect::<Vec<_>>(),
-    ));
-    out
-}
-
 /// A notice's sections for the typefaces a package carries, as (typeface, what carries it and for
 /// what, license text).
 fn font_sections(fonts: &[(&str, &str, String)]) -> String {

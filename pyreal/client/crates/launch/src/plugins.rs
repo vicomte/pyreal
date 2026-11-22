@@ -26,18 +26,11 @@
 //!
 //! Beside the sources, the sources' file keeps a list of **folders on this computer**
 //! ([`Shelf::local`]): each one plugin's folder or a plugin repository, whose plugins are the
-//! folders directly in it, as the author's tool finds a repository's
-//! ([`pyreal_plugin_template::packages_in`]); nothing deeper is looked at. Their plugins are offered
-//! to the client as they are on disk, with no zip, no check against a source and no updates
-//! ([`Shelf::local_plugins`]). One with the id of an installed plugin is offered in its place;
-//! the installed one keeps updating. Taking a folder off the list deletes nothing.
-//!
-//! A folder the launcher's Make Your Own wrote in is the author's own, and the launcher keeps a
-//! copy of the author's tool it ships with at its root ([`Shelf::tool_folders`], [`keep_tool`]),
-//! with the lines that keep the copy out of git in its `.gitignore`. The copy is written again
-//! whenever it is not the tool the launcher ships, which after an update it is not. A folder added
-//! any other way gets no copy, and taking a folder off the list stops the copying and leaves the
-//! copy where it is.
+//! folders directly in it, as the author's tool finds a repository's; nothing deeper is looked
+//! at. Their plugins are offered to the client as they are on disk, with no zip,
+//! no check against a source and no updates ([`Shelf::local_plugins`]). One with the id of an
+//! installed plugin is offered in its place; the installed one keeps updating. Taking a folder off
+//! the list deletes nothing.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -372,11 +365,8 @@ impl std::fmt::Display for PluginError {
 
 impl std::error::Error for PluginError {}
 
-/// The sources' file. An earlier launcher's `others_allowed` in it is ignored, and goes at the
-/// next write; a file from before the folders on this computer reads as having none, and one from
-/// before the author's tool was kept in them as keeping it in none. The folders it is kept in are
-/// a list of their own rather than a mark on each folder's entry, so a launcher from before still
-/// reads the file whole.
+/// The sources' file. An earlier launcher's `others_allowed` and `tool_folders` in it are ignored,
+/// and go at the next write; a file from before the folders on this computer reads as having none.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct SourcesFile {
     #[serde(default)]
@@ -385,8 +375,6 @@ struct SourcesFile {
     auto_update: AutoUpdate,
     #[serde(default)]
     local: Vec<PathBuf>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    tool_folders: Vec<PathBuf>,
 }
 
 /// Where a shelf keeps what it holds: its two records, [`SOURCES_FILE`] and [`INSTALLED_FILE`],
@@ -476,12 +464,6 @@ pub struct Shelf<K = Folder> {
     /// The folders on this computer whose plugins are offered as they are on disk, in the order
     /// added.
     pub local: Vec<PathBuf>,
-    /// The folders of [`Shelf::local`] that Make Your Own wrote in, where the launcher keeps a copy
-    /// of the author's tool ([`keep_tool`]), in the order added.
-    pub tool_folders: Vec<PathBuf>,
-    /// The folders of [`Shelf::tool_folders`] whose copy could not be put there when last tried.
-    /// Not kept.
-    pub tool_failed: Vec<PathBuf>,
     /// The folders on this computer as [`Shelf::local_plugins`] last read them: the page is made
     /// every frame.
     read: std::cell::RefCell<LocalReading>,
@@ -623,9 +605,35 @@ fn manifest_in(folder: &Path) -> Result<Manifest, String> {
 
 /// The plugin folders in `folder`, as the author's tool finds a repository's: the folder itself
 /// when it is a plugin's, else the folders directly in it that are. None when it is not there or
-/// cannot be read.
+/// cannot be read. Sorted.
 fn plugins_in(folder: &Path) -> Vec<PathBuf> {
-    pyreal_plugin_template::packages_in(folder).unwrap_or_default()
+    let mut out = folders_searched(folder).unwrap_or_default();
+    out.retain(|dir| dir.join(pyreal_plugin_package::MANIFEST_FILE).is_file());
+    out
+}
+
+/// Folders a repository's plugins are not looked for in.
+const NOT_SEARCHED: &[&str] = &["target", "dist", "site", "node_modules"];
+
+/// The folders [`plugins_in`] looks for a manifest in: `root` itself when it holds one, else the
+/// folders directly in it, hidden folders and build output left out. Sorted.
+fn folders_searched(root: &Path) -> std::io::Result<Vec<PathBuf>> {
+    if root.join(pyreal_plugin_package::MANIFEST_FILE).is_file() {
+        return Ok(vec![root.to_path_buf()]);
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || NOT_SEARCHED.contains(&name.as_str()) {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            out.push(entry.path());
+        }
+    }
+    out.sort();
+    Ok(out)
 }
 
 /// Whether a file or folder is there, is a file, its size and its time: what a reading of it is
@@ -676,7 +684,7 @@ impl LocalReading {
             });
         // A folder that did not read is read again next time.
         let Some(searched) = kept.or_else(|| {
-            let dirs = pyreal_plugin_template::folders_searched(listed).ok()?;
+            let dirs = folders_searched(listed).ok()?;
             Some(
                 dirs.into_iter()
                     .map(|dir| {
@@ -721,91 +729,6 @@ impl LocalReading {
     }
 }
 
-/// The author's tool's file name, as Dereth ships it beside the launcher on this system and as
-/// the launcher keeps its copy in a plugin repository.
-pub const TOOL_FILE: &str = if cfg!(windows) {
-    "pyreal-plugin.exe"
-} else {
-    "pyreal-plugin"
-};
-
-/// What a Local row says when the tool's copy in its folder could not be brought up to date.
-const TOOL_FAILED: &str = "Could not update pyreal-plugin in this folder.";
-
-/// Keep a copy of the author's tool at the root of the plugin repository `folder`: `bytes` as the
-/// file `name`, executable, written in place of a copy that is not those bytes (an older
-/// release's, or none), and the lines of [`pyreal_plugin_template::TOOL_IGNORED`] its
-/// `.gitignore` lacks added to it. A copy that is the tool already is left as it is, and so is
-/// the `.gitignore`. Answers whether the copy was written.
-///
-/// # Errors
-/// The copy or the `.gitignore` could not be written.
-pub fn keep_tool(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<bool> {
-    let copy = folder.join(name);
-    let same = std::fs::metadata(&copy).is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64)
-        && std::fs::read(&copy).is_ok_and(|b| b == bytes);
-    if same {
-        return Ok(false);
-    }
-    // Written beside it and moved over it, so a copy is never left half written.
-    let mut part = copy.clone().into_os_string();
-    part.push(".part");
-    let part = PathBuf::from(part);
-    std::fs::write(&part, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o755))?;
-    }
-    if let Err(e) = std::fs::rename(&part, &copy) {
-        let _ = std::fs::remove_file(&part);
-        return Err(e);
-    }
-    ignore_tool(folder)?;
-    Ok(true)
-}
-
-/// Add to the `.gitignore` in `folder` (made when there is none) the lines of
-/// [`pyreal_plugin_template::TOOL_IGNORED`] it lacks, and only those, in the file's own line
-/// endings. A line it has with or without the leading `/` counts.
-fn ignore_tool(folder: &Path) -> std::io::Result<()> {
-    let path = folder.join(".gitignore");
-    let mut text = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e),
-    };
-    let had: Vec<&[u8]> = text
-        .split(|b| *b == b'\n')
-        .map(<[u8]>::trim_ascii)
-        .collect();
-    let missing: Vec<&str> = pyreal_plugin_template::TOOL_IGNORED
-        .iter()
-        .copied()
-        .filter(|want| {
-            let bare = want.trim_start_matches('/');
-            !had.iter()
-                .any(|h| *h == want.as_bytes() || *h == bare.as_bytes())
-        })
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    let eol: &[u8] = if text.windows(2).any(|w| w == b"\r\n") {
-        b"\r\n"
-    } else {
-        b"\n"
-    };
-    if !text.is_empty() && !text.ends_with(b"\n") {
-        text.extend_from_slice(eol);
-    }
-    for line in missing {
-        text.extend_from_slice(line.as_bytes());
-        text.extend_from_slice(eol);
-    }
-    std::fs::write(&path, text)
-}
-
 impl<K: Keep> Shelf<K> {
     /// The shelf `keep` holds, for a client of API version [`ApiVersion::CURRENT`]: Dereth's own
     /// source and nothing installed when it holds nothing yet. A record that does not read is
@@ -830,8 +753,6 @@ impl<K: Keep> Shelf<K> {
                 None => sources.push(s),
             }
         }
-        let mut tool_folders = file.tool_folders;
-        tool_folders.retain(|f| file.local.contains(f));
         Self {
             keep,
             host: ApiVersion::CURRENT,
@@ -839,8 +760,6 @@ impl<K: Keep> Shelf<K> {
             auto_update: file.auto_update,
             plugins,
             local: file.local,
-            tool_folders,
-            tool_failed: Vec::new(),
             read: std::cell::RefCell::default(),
         }
     }
@@ -850,7 +769,6 @@ impl<K: Keep> Shelf<K> {
             sources: self.sources.clone(),
             auto_update: self.auto_update,
             local: self.local.clone(),
-            tool_folders: self.tool_folders.clone(),
         };
         self.keep.write(SOURCES_FILE, &record(&file)?)
     }
@@ -1005,29 +923,7 @@ impl<K: Keep> Shelf<K> {
         Ok(found)
     }
 
-    /// Add `folder`, which Make Your Own wrote in, to the folders on this computer if it is not on
-    /// the list, and to the folders the launcher keeps the author's tool in
-    /// ([`Shelf::tool_folders`]). Answers how many plugins it holds.
-    ///
-    /// # Errors
-    /// As [`Shelf::add_local`], less its being on the list already.
-    pub fn add_own(&mut self, folder: &Path) -> Result<usize, PluginError> {
-        let found = plugins_in(folder).len();
-        if found == 0 {
-            return Err(PluginError::NoPluginIn(folder.display().to_string()));
-        }
-        if !self.local.iter().any(|f| f == folder) {
-            self.local.push(folder.to_owned());
-        }
-        if !self.tool_folders.iter().any(|f| f == folder) {
-            self.tool_folders.push(folder.to_owned());
-        }
-        self.save_sources()?;
-        Ok(found)
-    }
-
-    /// Take `folder` off the folders on this computer, and so off those the launcher keeps the
-    /// author's tool in. Nothing in it is touched, the tool's copy included.
+    /// Take `folder` off the folders on this computer. Nothing in it is touched.
     ///
     /// # Errors
     /// It is not on the list, or the folder could not be written.
@@ -1037,8 +933,6 @@ impl<K: Keep> Shelf<K> {
         if self.local.len() == before {
             return Err(PluginError::FolderNotListed(folder.display().to_string()));
         }
-        self.tool_folders.retain(|f| f != folder);
-        self.tool_failed.retain(|f| f != folder);
         self.save_sources()
     }
 
@@ -1367,7 +1261,6 @@ impl<K: Keep> Shelf<K> {
             .collect();
         let mut local = Vec::new();
         for listed in &self.local {
-            let first = local.len();
             let mut held = found.iter().filter(|l| &l.listed == listed).peekable();
             if held.peek().is_none() {
                 local.push(LocalView::empty(listed));
@@ -1375,9 +1268,6 @@ impl<K: Keep> Shelf<K> {
             for l in held {
                 let installed = l.id().is_some_and(|id| self.get(id).is_some());
                 local.push(LocalView::of(l, installed, self.host));
-            }
-            if self.tool_failed.contains(listed) {
-                local[first].tool_problem = Some(TOOL_FAILED.to_owned());
             }
         }
         PluginsView {
@@ -1727,9 +1617,6 @@ pub struct LocalView {
     pub in_place_of_installed: bool,
     /// Another plugin of its id, found before it, is loaded instead.
     pub id_taken: bool,
-    /// On the first row of a folder the launcher keeps the author's tool in: the copy there could
-    /// not be brought up to date, in words for the page.
-    pub tool_problem: Option<String>,
 }
 
 impl LocalView {
@@ -1766,7 +1653,6 @@ impl LocalView {
             needs_newer_pyreal: false,
             in_place_of_installed: false,
             id_taken: false,
-            tool_problem: None,
         }
     }
 

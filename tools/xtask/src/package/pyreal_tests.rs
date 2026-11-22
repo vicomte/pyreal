@@ -49,16 +49,15 @@ fn release_files_are_named_for_version_and_platform_and_read_back() {
     assert_eq!(pyreal::archive_root(target(LINUX), V), "pyreal-0.2.0");
 }
 
-/// Every package holds the client, the tool and the notices, the Mac bundle its plist too; the
-/// base pack only where one was given, where the client looks for it.
+/// Every package holds the client and the notices, the Mac bundle its plist too; the base pack only
+/// where one was given, where the client looks for it. No plugin tool is in it.
 #[test]
-fn a_release_holds_the_client_the_tool_and_the_notices_and_may_hold_the_base_pack() {
+fn a_release_holds_the_client_and_the_notices_and_may_hold_the_base_pack() {
     let (mac, mac_optional) = pyreal::contents(target(MAC_ARM));
     assert!(mac_optional.contains(&"Contents/Resources/base-pack.dat".to_owned()));
     assert!(!mac.iter().any(|f| f.ends_with(".dat")));
     for want in [
         "Contents/MacOS/Pyreal",
-        "Contents/MacOS/pyreal-plugin",
         "Contents/Resources/NOTICE.txt",
         "Contents/Info.plist",
     ] {
@@ -66,17 +65,15 @@ fn a_release_holds_the_client_the_tool_and_the_notices_and_may_hold_the_base_pac
     }
     assert!(mac_optional.contains(&"Contents/Resources/Assets.car".to_owned()));
     let (win, win_optional) = pyreal::contents(target(WINDOWS));
-    assert!(
-        win.contains(&"Pyreal.exe".to_owned()) && win.contains(&"pyreal-plugin.exe".to_owned())
-    );
+    assert!(win.contains(&"Pyreal.exe".to_owned()));
     assert!(win_optional.contains(&"base-pack.dat".to_owned()));
     let (linux, _) = pyreal::contents(target(LINUX));
     assert!(linux.contains(&"pyreal".to_owned()) && linux.contains(&"LICENSE".to_owned()));
     for t in [WINDOWS, LINUX, MAC_ARM] {
         let (all, _) = pyreal::contents(target(t));
-        assert!(!all
-            .iter()
-            .any(|f| f.contains("pyreal-client") || f.contains("launcher")));
+        assert!(!all.iter().any(|f| f.contains("pyreal-client")
+            || f.contains("launcher")
+            || f.contains("pyreal-plugin")));
     }
 }
 
@@ -154,10 +151,10 @@ fn a_written_windows_zip_reads_back_and_passes_the_scan() {
 /// runtime, with the secure timestamp when notarizing, and none signs ad hoc.
 #[test]
 fn the_programs_are_signed_before_the_bundle_and_an_identity_hardens_them() {
-    let nested = ["Contents/MacOS/pyreal-plugin".to_owned()];
+    let nested = ["Contents/MacOS/Pyreal".to_owned()];
     let runs = pyreal::codesign_runs("/x/Pyreal.app", Some("ABCD"), true, &nested);
     assert_eq!(runs.len(), 2);
-    assert!(runs[0].last().unwrap().ends_with("pyreal-plugin"));
+    assert!(runs[0].last().unwrap().ends_with("Contents/MacOS/Pyreal"));
     assert_eq!(runs[1].last().unwrap(), "/x/Pyreal.app");
     assert!(runs[1].windows(2).any(|w| w == ["--options", "runtime"]));
     assert!(runs.iter().all(|r| r.contains(&"--timestamp".to_owned())));
@@ -181,15 +178,14 @@ fn the_base_pack_is_a_file_package_pyreal_may_be_given() {
     assert!(pyreal::check_base_pack(&missing).is_err());
 }
 
-/// The client and the plugin author's tool carry one version, which names the
-/// release's tag.
+/// The client carries the version, which names the release's tag.
 #[test]
 fn the_crates_carry_one_version_which_names_the_tag() {
     let ws = workspace_root();
     let v = Product::Pyreal.version(&ws).expect("the crates agree");
     version::parse_release_version(&v).expect("a release version");
     assert_eq!(Product::Pyreal.tag_for(&v), format!("v{v}"));
-    assert_eq!(version::pyreal_manifests(&ws).len(), 2);
+    assert_eq!(version::pyreal_manifests(&ws).len(), 1);
 }
 
 /// Every file the package reads from the tree is there.
@@ -200,7 +196,6 @@ fn every_file_the_package_reads_from_the_tree_is_there() {
         "pyreal/about.toml",
         "pyreal/about.hbs",
         "LICENSE",
-        "tools/plugin/Cargo.toml",
         "pyreal/client/Cargo.toml",
         "pyreal/client/assets/Pyreal.icon",
         "pyreal/client/assets/Pyreal.icns",
@@ -280,86 +275,17 @@ fn a_linux_host_with_a_newer_glibc_is_refused_before_anything_is_built() {
     assert_eq!(targets::glibc_of("musl libc"), None);
 }
 
-/// The plugin author's tool is a release file of its own for each platform Pyreal ships, named for
-/// the version and the platform, and the folder's classification reads it and its manifest back.
+/// The plugin tool is not a file of the release: it lives with the Dereth project.
 #[test]
-fn the_plugin_authors_tool_is_a_release_file_for_each_platform() {
-    let names: Vec<String> = targets::PYREAL_TRIPLES
-        .iter()
-        .map(|t| pyreal::tool_file_name(target(t), V))
-        .collect();
-    assert_eq!(
-        names,
-        [
-            "pyreal-plugin-0.2.0-windows-x86_64.zip",
-            "pyreal-plugin-0.2.0-linux-x86_64.tar.gz",
-            "pyreal-plugin-0.2.0-macos-aarch64.tar.gz",
-        ]
-    );
-    for triple in targets::PYREAL_TRIPLES {
-        let t = target(triple);
-        let name = pyreal::tool_file_name(t, V);
-        assert_eq!(pyreal::classify(&name, V), Ok(Asset::Tool(t)));
-        assert_eq!(
-            pyreal::classify(&format!("{name}.manifest"), V),
-            Ok(Asset::ManifestPart)
-        );
-        assert_eq!(guard::name_finding(&name), None, "{name}");
+fn a_plugin_tool_file_is_not_a_file_of_the_release() {
+    for name in [
+        "pyreal-plugin-0.2.0-windows-x86_64.zip",
+        "pyreal-plugin-0.2.0-linux-x86_64.tar.gz",
+        "pyreal-plugin-0.2.0-macos-aarch64.tar.gz",
+        "pyreal-plugin-0.2.0-macos-aarch64.tar.gz.manifest",
+    ] {
+        assert!(pyreal::classify(name, V).is_err(), "{name}");
     }
-    assert!(pyreal::classify("pyreal-plugin-0.1.0-windows-x86_64.zip", V).is_err());
-    assert!(pyreal::classify("pyreal-plugin-0.2.0-windows-x86_64.tar.gz", V).is_err());
-}
-
-/// The tool's archive holds the program and its notices under one folder, the program executable
-/// where the system has the bit; the deny scan refuses one missing a notice or holding anything
-/// more.
-#[test]
-fn the_tools_archive_holds_the_program_and_its_notices_and_nothing_else() {
-    let dir = std::env::temp_dir().join(format!("xtask-tool-archive-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a folder");
-    for triple in [WINDOWS, LINUX, MAC_ARM] {
-        let t = target(triple);
-        let members =
-            pyreal::tool_members(t, b"program".to_vec(), "MIT", "the notice", "<html></html>");
-        assert_eq!(
-            members
-                .iter()
-                .map(|m| m.name.clone())
-                .collect::<Vec<_>>()
-                .len(),
-            pyreal::tool_contents(t).len()
-        );
-        assert!(members[0].executable && members[0].name.starts_with("pyreal-plugin"));
-        let write = |members: &[Member], name: &str| {
-            let path = dir.join(name);
-            let bytes = pyreal::tool_archive(t, V, members, 1_700_000_000).expect("archived");
-            std::fs::write(&path, bytes).expect("written");
-            path
-        };
-        let path = write(&members, &pyreal::tool_file_name(t, V));
-        pyreal::check_tool_archive(&path, t, V).expect("passes the scan");
-        let entries = archive::archive_entries(&path, &pyreal::tool_root(V)).expect("reads");
-        assert!(pyreal::tool_findings(&entries, t).is_empty());
-
-        let short: Vec<Member> = members
-            .iter()
-            .filter(|m| m.name != "NOTICE.txt")
-            .cloned()
-            .collect();
-        let path = write(&short, &pyreal::tool_file_name(t, V));
-        let refused = pyreal::check_tool_archive(&path, t, V).expect_err("a notice missing");
-        assert!(refused.contains("NOTICE.txt"), "{refused}");
-        let mut stray = members.clone();
-        stray.push(Member {
-            name: "client_portal.dat".into(),
-            bytes: b"x".to_vec(),
-            executable: false,
-        });
-        let path = write(&stray, &pyreal::tool_file_name(t, V));
-        assert!(pyreal::check_tool_archive(&path, t, V).is_err());
-    }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Notarizing takes all three parts of the API key or none, and waits for Apple's answer.

@@ -23,8 +23,6 @@ pyreal-plugin-package.workspace = true
 # The client's plugin API version, which a plugin's release must not exceed, and plugins' versions
 # in SemVer's order.
 pyreal-plugin-api.workspace = true
-# Plugins in folders on this computer, found in a folder as the author's tool finds a repository's.
-pyreal-plugin-template.workspace = true
 # The eras a world can play and the systems each has: the client's own table.
 pyreal-primitives.workspace = true
 # A plugin source's list may be TOML.

@@ -20,15 +20,32 @@ unchanged. Until 1.0 a minor version may still change things; after it, minor ve
 others wait for the player. Its windows and HUDs open only when the player asks
 ([ui.md](ui.md#opening-a-window)).
 
-To write a plugin, start with [the guide](guide/README.md): getting started in Lua and in
-WebAssembly, a plugin's lifecycle and sandbox, installing and updating, publishing, and each
-sample walked through. To look something up, [the reference](reference/README.md) lists every operation,
-permission, capability, UI node, limit and conformance case, generated from the code.
+Pyreal's plugin host keeps to this interface. The plugins themselves, the tool that makes, checks,
+packs and releases them, the plugin template and the guides to writing one live with the Dereth
+project, at <https://github.com/jacobjohnston/dereth>. To look something up, [the
+reference](reference/README.md) lists every operation, permission, capability, UI node, limit and
+conformance case, generated from the code.
+
+## Plugins in Pyreal
+
+Pyreal loads and runs plugins; its releases carry none. It finds them in these places:
+
+- the `plugins` folder in its settings folder;
+- the `plugins` folder beside the program;
+- the Plugins screen before any world, which installs plugins from a file, a folder or a plugin
+  source the player adds ([sources.md](sources.md)), and keeps them updated;
+- each folder named with `--plugins`, whose plugins load at once, and each named with
+  `--offer-plugins`, whose plugins are enabled the first time Pyreal finds them.
+
+Every plugin found is listed in the plugin panel (`/plugin`). One put in a folder by hand waits
+there until the player enables it (**Enable**, or `/plugin enable <id>`), and Pyreal remembers the
+choice. `/plugin reload <id>` loads one again after its files change, and with `--plugin-dev` that
+happens on its own.
 
 | document | what it covers |
 |---|---|
 | [manifest.md](manifest.md) | `plugin.toml`: a package's identity, entry file, permissions and capabilities |
-| [packages.md](packages.md) | folders and zips, installing one from a source, the `pyreal-plugin` tool |
+| [packages.md](packages.md) | folders and zips, and installing one from a source |
 | [sources.md](sources.md) | plugin sources: `plugins.json`, a list of plugins at their latest release, and how a release is checked |
 | [permissions.md](permissions.md) | what a plugin may do, a file the player picks, gestures and automation |
 | [events.md](events.md) | what a plugin hears, and in what order |
@@ -47,7 +64,6 @@ permission, capability, UI node, limit and conformance case, generated from the 
 | [ubscript.md](ubscript.md) | scripts written for UtilityBelt's scripting, run as they are: its script API, HUDs and ImGui, and what it answers |
 | [conformance.md](conformance.md) | the conformance suite: test plugins, profiles and the host driver |
 | [wasm.md](wasm.md) | compiled plugins: WebAssembly components against [`wit/dereth-plugin.wit`](wit/dereth-plugin.wit), generated with [`dereth.d.luau`](dereth.d.luau) from the API's schema |
-| [guide/](guide/README.md) | the guide: getting started in Lua and WebAssembly, lifecycle and sandbox, install and update, publishing, running the samples, each sample walked through |
 | [reference/](reference/README.md) | the reference, generated from the code: operations, permissions, capabilities, UI nodes, limits, conformance cases |
 
 ## A plugin in one page
@@ -78,14 +94,6 @@ name = "XP"
 version = "1.0.0"
 api = "0.1"
 ```
-
-Eleven sample plugins are in `pyreal/plugins/` of the repository, each walked through in
-[the guide](guide/samples/README.md): an XP meter, a chat logger and filter, a looter driven by a
-loot profile, combat and corpse trackers, ID notices that appraise what drops, a navigator that
-points the way and walks there, auto-login, multi-client follow, a buffbot, an inventory log and
-tools in the manner of Mag-Tools, and an unattended macro in the manner of VTank (the Tank), as a
-reference for automation. [parity.md](parity.md) sets them beside the plugins players know,
-feature by feature.
 
 ## How a plugin runs
 

@@ -310,31 +310,29 @@ fn a_pattern_that_does_not_compile_matches_as_text() {
     assert!(p.classify(&w, &ch, other).is_none());
 }
 
-/// The sample profiles, from the plugins and the conformance cases.
+/// Loot profiles: those the Looter and Tank samples carried (`tests/fixtures/loot`) and the
+/// conformance cases'.
 const SAMPLES: [(&str, &str); 8] = [
     (
         "looter",
-        include_str!("../../../../pyreal/plugins/looter/rules.utl"),
+        include_str!("../../tests/fixtures/loot/looter.utl"),
     ),
     (
         "mao-newb",
-        include_str!("../../../../pyreal/plugins/tank/profiles/mao-newb.utl"),
+        include_str!("../../tests/fixtures/loot/mao-newb.utl"),
     ),
     (
         "mao-small",
-        include_str!("../../../../pyreal/plugins/tank/profiles/mao-small.utl"),
+        include_str!("../../tests/fixtures/loot/mao-small.utl"),
     ),
-    (
-        "basic",
-        include_str!("../../../../pyreal/plugins/tank/profiles/basic.utl"),
-    ),
+    ("basic", include_str!("../../tests/fixtures/loot/basic.utl")),
     (
         "litmus",
-        include_str!("../../../../pyreal/plugins/tank/profiles/litmus.utl"),
+        include_str!("../../tests/fixtures/loot/litmus.utl"),
     ),
     (
         "academy",
-        include_str!("../../../../pyreal/plugins/tank/profiles/academy.utl"),
+        include_str!("../../tests/fixtures/loot/academy.utl"),
     ),
     (
         "loot-by-hand",

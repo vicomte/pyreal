@@ -1,10 +1,11 @@
 # Tools
 
-The workspace's programs include `xtask/`, `art/`, `engine-view/`, `gpu-probe/` and `plugin/`. They
+The workspace's programs include `xtask/`, `art/`, `engine-view/` and `gpu-probe/`. They
 are crates like any other, but they are things people run, so each has its own section. Every
 check and runner is Rust, reached through `cargo xtask`. Two scripts sit beside them:
 `screenshots/capture.py`, which draws the screenshot library, and `report_library.py`, which
-draws the report library's places.
+draws the report library's places. The plugin tools live with the Dereth project
+(<https://github.com/jacobjohnston/dereth>).
 `sweep-timings/` holds the recorded per-test times the sweep deals shards by.
 
 ## `xtask`: the task runner
@@ -24,19 +25,6 @@ each a failure, never a skip. It holds the known-red table and fails on a stale 
 `PYREAL_TEST_SHARDS=N` or `--shards N` sets the process count, `--serial` forces one process,
 and the shard logs and per-test timings go under `sweep/` in cargo's target directory. `cargo
 xtask sweep --help` lists the rest.
-
-## `pyreal-plugin`: the plugin author's tool
-
-Makes a new plugin repository from its template (`new`), checks a plugin as the hosts check it
-and compiles its scripts (`check`), packs it into a zip with its SHA-256 beside it (`pack`),
-releases it (`release`, `notes`), lists a release in a plugin source's `plugins.json` (`add`),
-drops from that list the plugins a repository no longer holds (`prune`), and builds a Rust plugin
-as a component (`build`). It carries Pyreal's version: its rules are those of
-the client released with it, and each Pyreal release carries it prebuilt for every platform
-(`cargo xtask package pyreal`). The template is `plugin-template/template/`, in a library
-(`pyreal-plugin-template`); the guide is
-`docs/plugins/guide/publishing.md`, and the formats are in `docs/plugins/packages.md` and
-`docs/plugins/sources.md`.
 
 ## `pyreal-art`: the art survey and art packs
 

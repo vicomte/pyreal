@@ -1,5 +1,4 @@
-//! The release version Pyreal's client and the plugin author's tool share, and the release tags
-//! that name it.
+//! The release version Pyreal's client carries, and the release tags that name it.
 
 use std::path::{Path, PathBuf};
 
@@ -77,9 +76,8 @@ fn manifests_version(ws: &Path, manifests: &[PathBuf], what: &str) -> Result<Str
 /// The prefix of a Pyreal release tag: `v<version>`.
 pub const PYREAL_TAG_PREFIX: &str = "v";
 
-/// The crates that carry Pyreal's version: the client, and the plugin author's tool, whose rules
-/// are those of the client released with it.
-pub const PYREAL_MANIFESTS: &[&str] = &["pyreal/client/Cargo.toml", "tools/plugin/Cargo.toml"];
+/// The crates that carry Pyreal's version: the client.
+pub const PYREAL_MANIFESTS: &[&str] = &["pyreal/client/Cargo.toml"];
 
 /// The manifests of the crates that carry Pyreal's version.
 pub fn pyreal_manifests(ws: &Path) -> Vec<PathBuf> {
@@ -88,11 +86,7 @@ pub fn pyreal_manifests(ws: &Path) -> Vec<PathBuf> {
 
 /// Pyreal's version, read from its crates' manifests and required to agree.
 pub fn pyreal_version(ws: &Path) -> Result<String, String> {
-    manifests_version(
-        ws,
-        &pyreal_manifests(ws),
-        "Pyreal crate (the client and the plugin author's tool)",
-    )
+    manifests_version(ws, &pyreal_manifests(ws), "Pyreal crate (the client)")
 }
 
 /// A release version: `MAJOR.MINOR.PATCH`, optionally followed by a pre-release suffix

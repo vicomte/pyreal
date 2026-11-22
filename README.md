@@ -30,6 +30,10 @@ If you're looking for a modern Asheron's Call client to play, I'd warmly recomme
 [Dereth](https://github.com/dereth-network/dereth). It has proper releases, a launcher, and the
 thoughtful, careful work that makes it all possible. Think of Pyreal as my sketchbook beside it.
 
+Pyreal loads and runs plugins written for Dereth. The plugins themselves, and the tools and guides
+for making them, live with the Dereth project at
+[github.com/jacobjohnston/dereth](https://github.com/jacobjohnston/dereth).
+
 Pyreal also owes a lot to:
 
 - **Empyrean**, Dereth's server, ported from ACE. Pyreal plays on Empyrean worlds and reads the

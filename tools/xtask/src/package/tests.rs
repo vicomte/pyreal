@@ -19,7 +19,7 @@ const MAC_ARM: &str = "aarch64-apple-darwin";
 
 /// A flat package's files: the deny scan's fixture.
 fn allowlist() -> Vec<String> {
-    ["LICENSE", "NOTICE.txt", "README.md", "pyreal-plugin"]
+    ["LICENSE", "NOTICE.txt", "README.md", "pyreal"]
         .map(str::to_owned)
         .to_vec()
 }
@@ -105,7 +105,7 @@ fn data_state_and_capture_names_are_refused_in_any_case() {
     }
     for name in [
         "README.md",
-        "pyreal-plugin.exe",
+        "pyreal.exe",
         "database.md",
         "Contents/Resources/base-pack.dat",
     ] {
@@ -153,7 +153,7 @@ fn links_folders_strays_gaps_and_oversized_files_are_each_refused() {
 
     let mut big = clean_entries();
     big.iter_mut()
-        .find(|e| e.path == "pyreal-plugin")
+        .find(|e| e.path == "pyreal")
         .expect("listed")
         .size = pyreal::FILE_CAP + 1;
     let over = deny_scan(&big, &allow);
@@ -356,7 +356,7 @@ fn the_machine_folders_looked_for_include_the_workspace_and_the_target_folder() 
 fn members() -> Vec<Member> {
     vec![
         Member {
-            name: "pyreal-plugin".to_owned(),
+            name: "pyreal".to_owned(),
             bytes: b"\x7fELF binary".to_vec(),
             executable: true,
         },
@@ -385,7 +385,7 @@ fn archives_are_byte_identical_for_the_same_files_and_commit() {
         archive::zip_entries(&z1).expect("read"),
     ] {
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["root/", "root/LICENSE", "root/pyreal-plugin"]);
+        assert_eq!(paths, ["root/", "root/LICENSE", "root/pyreal"]);
         assert_eq!(entries[2].head, b"\x7fELF binary");
     }
     // A different commit time is a different archive.
@@ -424,7 +424,7 @@ fn tar_entries_carry_the_commit_time_fixed_modes_and_no_owner() {
 /// top-level folder are refused from the archive itself.
 #[test]
 fn the_archive_scan_refuses_strays_links_and_escapes_in_the_written_archive() {
-    let root = "pyreal-plugin-0.1.0";
+    let root = "pyreal-0.1.0";
     let good: Vec<Member> = allowlist()
         .into_iter()
         .map(|name| Member {
@@ -531,6 +531,7 @@ fn the_commit_time_is_written_in_utc() {
         hash: "a".repeat(8),
         epoch: 1_700_000_000,
         source_url: String::new(),
+        update_url: String::new(),
     };
     assert_eq!(facts.iso_time(), "2023-11-14T22:13:20Z");
 }
@@ -628,8 +629,8 @@ pub(super) fn pe(
     b
 }
 
-/// A statically linked console x86-64 program passes, and the parse reads the imports it was
-/// given.
+/// A statically linked x86-64 console program passes the shared PE check, and the parse reads the
+/// imports it was given.
 #[test]
 fn a_static_console_x64_pe_passes_and_its_imports_are_read() {
     let bytes = pe(
@@ -641,13 +642,17 @@ fn a_static_console_x64_pe_passes_and_its_imports_are_read() {
     );
     let parsed = headers::parse_pe(&bytes).expect("parses");
     assert_eq!(parsed.imports, ["KERNEL32.dll", "WS2_32.dll", "bcrypt.dll"]);
-    let d = console(&bytes, WINDOWS).expect("passes");
-    assert!(d.contains("KERNEL32.dll"), "{d}");
+    assert_eq!(pe_problems(&bytes), Vec::<String>::new());
 }
 
-/// A console program checked for `triple` against Pyreal's glibc floor.
-fn console(bytes: &[u8], triple: &str) -> Result<String, Vec<String>> {
-    headers::check_console_app(bytes, target(triple), targets::PYREAL_GLIBC_FLOOR)
+/// What the shared PE check finds in a Windows program.
+fn pe_problems(bytes: &[u8]) -> Vec<String> {
+    headers::check_pe(&headers::parse_pe(bytes).expect("parses"), target(WINDOWS))
+}
+
+/// A Mac program checked as the client is.
+fn mac(bytes: &[u8]) -> Result<String, Vec<String>> {
+    headers::check_app_binary(bytes, target(MAC_ARM), targets::PYREAL_GLIBC_FLOOR)
 }
 
 /// The Visual C++ runtime, imported or delay-loaded, fails the check and names the fix.
@@ -662,7 +667,7 @@ fn a_pe_importing_the_visual_cpp_runtime_is_refused() {
         (&["MSVCP140.dll"][..], &[][..]),
     ] {
         let bytes = pe(0x8664, 3, imports, delayed, true);
-        let problems = console(&bytes, WINDOWS).expect_err("the runtime is imported");
+        let problems = pe_problems(&bytes);
         assert!(
             problems.iter().any(|p| p.contains("crt-static")),
             "{problems:?}"
@@ -670,13 +675,13 @@ fn a_pe_importing_the_visual_cpp_runtime_is_refused() {
     }
 }
 
-/// The wrong machine and a GUI subsystem are each refused from a console program.
+/// The wrong machine and a GUI subsystem are each refused by the shared PE check.
 #[test]
 fn a_console_pe_with_the_wrong_machine_or_subsystem_is_refused() {
     let arm = pe(0xAA64, 3, &["KERNEL32.dll"], &[], true);
-    assert!(console(&arm, WINDOWS).is_err());
+    assert!(!pe_problems(&arm).is_empty());
     let gui = pe(0x8664, 2, &["KERNEL32.dll"], &[], true);
-    let problems = console(&gui, WINDOWS).expect_err("GUI");
+    let problems = pe_problems(&gui);
     assert!(
         problems.iter().any(|p| p.contains("console")),
         "{problems:?}"
@@ -854,7 +859,7 @@ fn a_macho_linking_only_the_system_at_the_floor_passes() {
     let parsed = headers::parse_macho(&arm).expect("parses");
     assert_eq!(parsed.dylibs, SYSTEM);
     assert_eq!(parsed.min_os, Some((11, 0, 0)));
-    assert!(console(&arm, MAC_ARM).is_ok());
+    assert!(mac(&arm).is_ok());
 }
 
 /// A Homebrew library, an unsigned arm64 binary, a minimum above the floor and the wrong CPU are
@@ -870,16 +875,16 @@ fn a_macho_with_foreign_libraries_no_signature_or_a_newer_minimum_is_refused() {
         Some((11, 0)),
         true,
     );
-    let p = console(&brew, MAC_ARM).expect_err("homebrew");
+    let p = mac(&brew).expect_err("homebrew");
     assert!(p.iter().any(|m| m.contains("/opt/homebrew")), "{p:?}");
     let unsigned = macho(headers::CPU_TYPE_ARM64, SYSTEM, Some((11, 0)), false);
-    let p = console(&unsigned, MAC_ARM).expect_err("unsigned");
+    let p = mac(&unsigned).expect_err("unsigned");
     assert!(p.iter().any(|m| m.contains("signature")), "{p:?}");
     let newer = macho(headers::CPU_TYPE_ARM64, SYSTEM, Some((14, 0)), true);
-    let p = console(&newer, MAC_ARM).expect_err("14.0");
+    let p = mac(&newer).expect_err("14.0");
     assert!(p.iter().any(|m| m.contains("14.0")), "{p:?}");
     let intel = macho(headers::CPU_TYPE_X86_64, SYSTEM, Some((11, 0)), true);
-    assert!(console(&intel, MAC_ARM).is_err());
+    assert!(mac(&intel).is_err());
 }
 
 // ---------------------------------------------------------------- notices
@@ -926,7 +931,7 @@ fn the_licence_pages_join_into_one_document_with_a_section_per_binary() {
     };
     let joined = notice::splice_licence_pages(&[
         ("pyreal-client", page("client licences")),
-        ("pyreal-plugin", page("tool licences")),
+        ("engine-view", page("tool licences")),
     ])
     .expect("joined");
     assert!(joined.starts_with("<html><head>h</head><body>"), "{joined}");
@@ -935,7 +940,7 @@ fn the_licence_pages_join_into_one_document_with_a_section_per_binary() {
         .find("Linked into pyreal-client")
         .expect("client section");
     let tool = joined
-        .find("Linked into pyreal-plugin")
+        .find("Linked into engine-view")
         .expect("tool section");
     assert!(client < joined.find("client licences").expect("body") && tool > client);
     assert!(joined.contains("tool licences"));

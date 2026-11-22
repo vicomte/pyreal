@@ -1,10 +1,10 @@
-# The compiled plugin the test suite runs beside the Lua XP Meter (`pyreal/plugins/xp-meter`): the
+# The compiled plugin the test suite runs beside the Lua XP Meter (`../../plugins/xp-meter`): the
 # same plugin in Rust, built as a WebAssembly component against
 # `docs/plugins/wit/dereth-plugin.wit`. A test fixture, not a sample: no release carries it.
 #
-# Built from the repository's root with `cargo run -p pyreal-plugin -- build
-# pyreal/testkit/tests/fixtures/compiled-plugin/source pyreal/testkit/tests/fixtures/compiled-plugin/package`,
-# which writes the package's `plugin.wasm`. A crate of its own, outside the workspace.
+# Built with the Dereth project's plugin tool (https://github.com/jacobjohnston/dereth):
+# `dereth-plugin build <this folder> ../package`, which writes the package's `plugin.wasm`. A
+# crate of its own, outside the workspace.
 [workspace]
 
 [package]

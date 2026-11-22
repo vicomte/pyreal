@@ -9,7 +9,7 @@ publish = false
 
 # Production dependencies (`cargo xtask seams`, `seam: plugin-package deps`): the interface's
 # manifest types and the four formats a package is made of. Light enough for the launcher, which
-# installs packages, and the author's tool, which makes them.
+# installs packages.
 [dependencies]
 pyreal-plugin-api.workspace = true
 # `plugin.toml`.

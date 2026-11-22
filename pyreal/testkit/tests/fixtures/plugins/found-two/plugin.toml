@@ -1,0 +1,6 @@
+id = "test.found.two"
+name = "Found Two"
+version = "0.3.0"
+api = "0.1"
+entry = "main.lua"
+description = "A plugin that does nothing, for the tests of how found plugins are listed."

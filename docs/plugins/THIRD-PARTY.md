@@ -1,4 +1,6 @@
-# Third-party code in the plugin host and its samples
+# Third-party code in the plugin host
+
+The sample plugins and their own credits live with the Dereth project.
 
 **Provenance: design.** The plugin interface is this client's own addition, not the original's.
 
@@ -72,48 +74,6 @@ SOFTWARE.
 
 The ImGui flag values the `imgui` module gives (`ImGuiWindowFlags` and the rest) are Dear ImGui's,
 under its MIT licence (Copyright (c) 2014-2024 Omar Cornut).
-
-## Alinco (the Buffbot's own buffs, ID Notices)
-
-The Buffbot sample's self profiles (`pyreal/plugins/buffbot/selfbuffs.lua`) and ID Notices' lists
-of names, scroll notices and alerts (`pyreal/plugins/id-notices/`) follow what Alinco3 and its
-AlincoBuffs do for a player, under their MIT licence; no code is translated.
-
-```text
-Copyright (c) 2015 Edward Kozlowski
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-```
-
-## Mag-Tools (the Inventory sample)
-
-The Inventory sample (`pyreal/plugins/inventory/`) does what Mag-Tools' inventory logger, item
-information, stacking, packing and trading by a vendor's profile do for a player, written for
-Dereth from that behavior alone: Mag-Tools is under the LGPL, and none of its code was read,
-copied or translated.
-
-## SuitBuilder (the Inventory sample's suits)
-
-The Inventory sample's suit builder (`pyreal/plugins/inventory/suits.lua`) does what SuitBuilder
-does for a player, the best suit from every character's logged gear, written for Dereth from that
-behavior alone: SuitBuilder is under the LGPL, and none of its code was read, copied or
-translated.
 
 ## VTank metas, meta views and expressions
 

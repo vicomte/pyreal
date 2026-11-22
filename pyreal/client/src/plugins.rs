@@ -9,10 +9,8 @@
 //! first time the client sees them, and the others wait for the player's Enable; a Disable is kept
 //! as an Enable is. A `--plugins` folder's plugins load at once: the command line names them. With
 //! `--plugin-dev` a plugin is reloaded whenever one of its files changes. Plugins beside the
-//! program are found too ([`bundled_dir_for`]): releases carry
-//! none (players install Dereth's from its plugin source, through the launcher). A client built
-//! from the repository finds what any client finds and no more: a developer names the samples'
-//! folder with `--plugins`, or adds it as a folder on the launcher's Plugins page.
+//! program are found too ([`bundled_dir_for`]): releases carry none. Plugins and their authoring
+//! tools come from the Dereth project; a developer names a plugin's folder with `--plugins`.
 //!
 //! The desktop offers every drawn capability (windows, HUDs, markers, the arrow, radar and map
 //! marks), movement, the character list, a bus between the player's clients on this machine

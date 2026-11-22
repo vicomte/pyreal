@@ -2,7 +2,7 @@
 //! per entry, and the plugin API's bindings in Lua.
 //!
 //! **Depends on** `pyreal-plugin-api` and the Luau VM (through `mlua`). **Used by** the client,
-//! which loads plugins, and the plugin author's tool (`pyreal-plugin`).
+//! which loads plugins.
 //!
 //! **Must never** depend on another crate of this workspace or reach the game, the platform or a
 //! file (`cargo xtask seams`, `seam: plugin-lua deps`). Everything a plugin does goes through

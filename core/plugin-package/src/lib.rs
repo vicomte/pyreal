@@ -4,9 +4,8 @@
 //!
 //! **Depends on** the interface (`pyreal-plugin-api`) for the manifest and JSON, `toml` for
 //! `plugin.toml`, `zip` for zip packages, and `sha2` for a compiled plugin's source hash and a
-//! zip's. **Used by** the plugin host (`pyreal-plugin-host`), the launcher's knowledge
-//! (`pyreal-launch`), which installs packages from sources, and the author's tool
-//! (`pyreal-plugin`), which makes them and their sources' lists.
+//! zip's. **Used by** the plugin host (`pyreal-plugin-host`) and the launcher's knowledge
+//! (`pyreal-launch`), which installs packages from sources.
 //!
 //! **Must never** depend on another crate of this workspace, the game, an engine or a platform
 //! (`cargo xtask seams`, `seam: plugin-package deps`): the launcher builds it.

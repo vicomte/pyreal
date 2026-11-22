@@ -1,14 +1,13 @@
 # Plugin sources: `plugins.json`
 
-**Provenance: design.** Plugin sources are this client's own addition, not the original's; every statement here is what Dereth's launcher and its author's tool do, and what another host reading a source must do.
+**Provenance: design.** Plugin sources are this client's own addition, not the original's; every statement here is what Dereth's launcher and its plugin tool do, and what another host reading a source must do.
 
 A **plugin source** is one file, `plugins.json`, at a stable `https://` address, listing many
 plugins, each at its latest release, with where its zip is and the zip's SHA-256. Anyone can run
 one: an author for their own plugins, a group for theirs, a guide site for the ones it recommends.
 The launcher starts with Dereth's own source and nothing installed; the player
-adds others by pasting their address
-([install-and-update.md](guide/install-and-update.md#the-launcher-plugin-sources)).
-The author's tool writes and updates the file ([publishing.md](guide/publishing.md)).
+adds others by pasting their address. Pyreal's Plugins screen starts with no source. The Dereth
+project's plugin tool writes and updates the file (<https://github.com/jacobjohnston/dereth>).
 
 The idea is Dalamud's: its plugin repositories are a hosted JSON list a launcher reads, added by
 URL behind a warning, with an auto-update setting and a per-plugin override. This format adds a
@@ -116,6 +115,6 @@ The launcher adds two rules of its own:
 Any static host that serves files over HTTPS will do for the launcher.
 
 The template's Pages workflow makes the list and the zips from the repository's GitHub releases
-and deploys them to GitHub Pages, with no branch to keep ([publishing.md](guide/publishing.md)). Dereth's own source has a host of
+and deploys them to GitHub Pages, with no branch to keep. Dereth's own source has a host of
 its own, `https://plugins.dereth.network/plugins.json`, on a Cloudflare Pages project, with headers
 that let any page read it, the list kept five minutes and each versioned zip a year.

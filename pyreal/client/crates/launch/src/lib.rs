@@ -4,10 +4,9 @@
 //! **Depends on** the primitives crate (`pyreal-primitives`), for the client's era table, the
 //! data-file crate (`pyreal-dat`), for a dat's identity and iterations in either layout, the plugin
 //! packages crate (`pyreal-plugin-package`), for the plugins it installs and the lists of the
-//! sources it installs them from, the plugin interface (`pyreal-plugin-api`), for the client's
-//! plugin API version and plugins' versions, and the plugin template (`pyreal-plugin-template`),
-//! for which folders of a plugin repository hold its plugins. **Used by** the client
-//! (`pyreal-client`), whose screens before the world are a front end over it.
+//! sources it installs them from, and the plugin interface (`pyreal-plugin-api`), for the client's
+//! plugin API version and plugins' versions. **Used by** the client (`pyreal-client`), whose
+//! screens before the world are a front end over it.
 //!
 //! **Must never** reach for a window, a GPU or the network, or name a platform API: it reads and
 //! writes files (a dat, its own state) and nothing else.

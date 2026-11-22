@@ -19,7 +19,7 @@ and `.zip` files in it).
 ## Its hash
 
 A zip file's SHA-256 identifies the download: a plugin source lists it beside the zip's address,
-and the author's tool writes it beside a zip it packs (`<zip>.sha256`, a `sha256sum` line). Packing
+and the Dereth project's plugin tool writes it beside a zip it packs (`<zip>.sha256`, a `sha256sum` line). Packing
 the same folder always gives the same bytes (files in path order, Deflate, no times), so a release
 can be checked against its source by packing the source again.
 
@@ -47,24 +47,6 @@ lists of plugins at their latest release, each one `plugins.json` at an `https:/
 
 ## The author's tool
 
-`pyreal-plugin` (in the workspace's `tools/plugin`; [publishing.md](guide/publishing.md) walks
-through it):
-
-```text
-pyreal-plugin new <folder> [--id <id>] [--name <name>] [--github <username>/<repo>]
-                                          a new plugin repository, from the template
-pyreal-plugin check <folder>              every check a host makes at load, and every script compiled
-pyreal-plugin pack <folder> <out.zip>     the folder as a zip, and <out.zip>.sha256 beside it
-pyreal-plugin hash <zip>                  a package zip's id, version and SHA-256
-pyreal-plugin build <crate> <package>     a Rust plugin built as a component: <package>/plugin.wasm
-pyreal-plugin release <folder> <version> [--push]
-                                          set the version, close the change log's section, commit, tag
-pyreal-plugin notes <folder> <version>    that version's change-log section
-pyreal-plugin find <repository> <tag>     the plugin a release tag names
-pyreal-plugin add <plugins.json> <zip> <url> [--notes <file>] [--name <name>]
-                                          list the zip's release in a source
-pyreal-plugin latest <repository> <releases.json>
-                                          the zip of each plugin's latest GitHub release, to download
-pyreal-plugin site <repository> <releases.json> <zips> <out> [--name <name>]
-                                          the repository's source made from its GitHub releases
-```
+The tool that makes a plugin repository, checks a plugin as a host checks it, packs, builds,
+releases and lists it in a source lives with the Dereth project, at
+<https://github.com/jacobjohnston/dereth>. Pyreal does not ship it.

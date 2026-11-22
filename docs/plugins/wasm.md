@@ -132,15 +132,16 @@ impl Guest for Plugin {
 export!(Plugin);
 ```
 
-Build it into a package folder with the author's tool, from the repository's root:
+Build it into a package folder with the Dereth project's plugin tool
+(<https://github.com/jacobjohnston/dereth>):
 
 ```text
-pyreal-plugin build <crate folder> <package folder>
+dereth-plugin build <crate folder> <package folder>
 ```
 
 It compiles the crate for `wasm32-unknown-unknown` in release, makes the module a component
 (`wit-component`), writes the hash of the crate's sources into it (the custom section
-`dereth-source-sha256`) and saves it as `<package folder>/plugin.wasm`. Then `pyreal-plugin pack`
+`dereth-source-sha256`) and saves it as `<package folder>/plugin.wasm`. Then `dereth-plugin pack`
 works as for any package.
 
 The test suite's compiled plugin,

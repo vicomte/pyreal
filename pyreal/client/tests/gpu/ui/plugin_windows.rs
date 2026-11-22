@@ -1,6 +1,6 @@
 //! Plugin windows on the desktop, under Horizon: a window a plugin declares is drawn in Horizon's
-//! art and a click on its button reaches the plugin, whole at each scale; the Tank sample's window
-//! on its pages; and the plugin panel as a window.
+//! art and a click on its button reaches the plugin, whole at each scale; and the plugin panel as
+//! a window.
 //! Fixture: a headless `App` on the retail dats with a plugin host installed and plugin packages
 //! built in memory; the pointer is driven through the window's own events, and the frame is read
 //! back from the device.
@@ -318,118 +318,6 @@ fn under_horizon_a_plugin_window_of_fields_and_lists_is_drawn_whole_at_each_scal
             "{w}x{h}: {}",
             said(&mut app)
         );
-    }
-}
-
-/// The Tank sample read from its folder, active before the world (the fixture has no character)
-/// and asking nothing of the host's movement, with a few lines in its log.
-fn tank_host() -> PluginHost {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/tank");
-    let mut files = std::collections::BTreeMap::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("the Tank's folder") {
-            let path = entry.expect("an entry").path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let name = path
-                .strip_prefix(&root)
-                .expect("under the folder")
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/");
-            files.insert(name, std::fs::read(&path).expect("a file"));
-        }
-    }
-    let manifest = String::from_utf8(files["plugin.toml"].clone())
-        .expect("text")
-        .replace(
-            "contexts = [\"world\"]",
-            "contexts = [\"pregame\", \"world\"]",
-        )
-        .replace(
-            "required = [\"nav.moveto\", \"ui.window\"]",
-            "required = [\"ui.window\"]",
-        );
-    files.insert("plugin.toml".into(), manifest.into_bytes());
-    let mut main = files["main.lua"].clone();
-    main.extend_from_slice(
-        b"\nfor i = 1, 14 do E.note(\"a line of the run's log, number %d, longer than the others\", i) end\nwindow.refresh(E)\n",
-    );
-    files.insert("main.lua".into(), main);
-    let config = HostConfig::new(
-        "dereth-desktop",
-        vec![
-            HostCapability::Core,
-            HostCapability::UiWindow,
-            HostCapability::UiHud,
-        ],
-    );
-    let mut host = PluginHost::new(
-        config,
-        Box::new(pyreal_plugin_lua::LuauEngine),
-        Box::new(StaticSource {
-            packages: vec![Package {
-                origin: "tank".into(),
-                files,
-            }],
-        }),
-        Box::new(MemoryStorage::default()),
-    );
-    host.load_all();
-    host
-}
-
-/// The Tank's window is drawn whole on the screen on its Run, Combat, Items, Nav, Route, Loot,
-/// Vitals, Vendor and Meta pages; on a screen too short for its Vitals page, Horizon draws
-/// everything smaller and the page fits.
-#[test]
-fn the_tanks_window_is_drawn_whole_on_its_pages() {
-    let _gpu = gpu_lock();
-    // The pages shown, and each one's place among the window's tabs.
-    let pages = [
-        ("run", 1),
-        ("combat", 2),
-        ("items", 4),
-        ("nav", 5),
-        ("route", 6),
-        ("loot", 7),
-        ("vitals", 8),
-        ("vendor", 10),
-        ("meta", 11),
-    ];
-    for (screen, shown) in [((800, 600), &pages[..]), ((800, 360), &pages[6..7])] {
-        let mut app = app_at(tank_host(), screen);
-        for &(page, at) in shown {
-            hook(&mut app)
-                .host
-                .ui_input(
-                    "network.dereth.tank",
-                    "main",
-                    pyreal_plugin_host::UiInput::Select {
-                        node: "pages".into(),
-                        rows: vec![at],
-                    },
-                )
-                .expect("the page is chosen");
-            for _ in 0..4 {
-                app.frame();
-            }
-            let window = panel(&app, "Tank");
-            let short = if screen.1 < 600 { "-short" } else { "" };
-            let frame = capture(&mut app, &format!("tank-horizon-{page}{short}"));
-            let (x, y, w, h) = window.rect;
-            #[allow(clippy::cast_precision_loss)]
-            let (sw, sh) = (frame.0 as f32, frame.1 as f32);
-            assert!(
-                x >= 0.0 && y >= 0.0 && x + w <= sw + 0.5 && y + h <= sh + 0.5,
-                "{page}: the Tank's window is on the screen: {:?}",
-                window.rect
-            );
-        }
     }
 }
 

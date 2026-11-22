@@ -1178,152 +1178,53 @@ fn at_start_a_source_that_cannot_be_read_is_left_out_of_what_is_said() {
     assert_eq!(w.said_at_start(&shelf), "Updated Meter to 1.1.0.");
 }
 
-/// A folder Make Your Own wrote in is kept as one the launcher keeps the author's tool in, beside
-/// the folders on this computer and read back with them; a folder added any other way is not,
-/// an older file keeps it in none, and taking a folder off the list stops it.
+/// A plugin's own folder is that one plugin, and a repository's plugins are the folders directly
+/// in it that hold a manifest, hidden folders and build output left out; a plugin further down is
+/// not found.
 #[test]
-fn make_your_owns_folders_keep_the_tool_and_others_and_an_older_files_do_not() {
-    let dir = Scratch::new("tool-kept");
-    let (mine, given) = (dir.0.join("mine"), dir.0.join("given"));
+fn a_repositorys_plugins_are_the_folders_directly_in_it() {
+    let dir = Scratch::new("found");
+    let write = |folder: &std::path::Path, id: &str| {
+        std::fs::create_dir_all(folder).expect("a folder");
+        std::fs::write(folder.join("plugin.toml"), format!("id = \"{id}\"\n")).expect("manifest");
+    };
+    let repo = dir.0.join("repo");
+    let two = repo.join("two");
+    write(&two, "example.two");
+    write(&repo.join("plugins/deep"), "example.deep");
+    write(&repo.join("target"), "example.built");
+    write(&repo.join(".hidden"), "example.hidden");
+    assert_eq!(super::plugins_in(&repo), std::slice::from_ref(&two));
+    // A plugin's own folder is that plugin, whatever is under it.
+    write(&two.join("inner"), "example.inner");
+    assert_eq!(super::plugins_in(&two), std::slice::from_ref(&two));
+    // Plugins only deeper: none.
+    let deeper = dir.0.join("deeper");
+    write(&deeper.join("plugins/one"), "example.one");
+    assert!(super::plugins_in(&deeper).is_empty());
+    assert!(super::plugins_in(&dir.0.join("not there")).is_empty());
+}
+
+/// An earlier launcher's file, which kept a copy of the author's tool in some folders, reads with
+/// its folders on the list, and the old list goes at the next write.
+#[test]
+fn an_earlier_files_tool_folders_are_read_past_and_dropped() {
+    let dir = Scratch::new("tool-folders");
+    let mine = dir.0.join("mine");
     write_plugin_folder(&mine.join("hello"), "org.example.hello", "Hello", "0.1.0");
-    write_plugin_folder(&given.join("meter"), "org.example.meter", "Meter", "0.1.0");
-    // An older launcher's file: a folder, and nothing said of the tool.
-    std::fs::create_dir_all(&dir.0).expect("a folder");
     let mine_json = serde_json::to_string(&mine).expect("a path");
+    std::fs::create_dir_all(&dir.0).expect("a folder");
     std::fs::write(
         dir.0.join(SOURCES_FILE),
-        format!(r#"{{"sources": [], "local": [{mine_json}]}}"#),
+        format!(r#"{{"sources": [], "local": [{mine_json}], "tool_folders": [{mine_json}]}}"#),
     )
-    .expect("an older file");
+    .expect("an earlier file");
     let mut shelf = Shelf::open(&dir.0);
     assert_eq!(shelf.local, std::slice::from_ref(&mine));
-    assert!(
-        shelf.tool_folders.is_empty(),
-        "an older file keeps it in none"
-    );
-
-    // Make Your Own's folder, on the list already: kept, and listed once.
-    assert_eq!(shelf.add_own(&mine), Ok(1));
-    assert_eq!(shelf.local, std::slice::from_ref(&mine));
-    assert_eq!(shelf.tool_folders, std::slice::from_ref(&mine));
-    shelf.add_own(&mine).expect("again");
-    assert_eq!(shelf.tool_folders, std::slice::from_ref(&mine), "once");
-    // A folder added with Add Plugin Folder is not.
-    shelf.add_local(&given).expect("added");
-    let again = Shelf::read(&dir.0);
-    assert_eq!(again.local, [mine.clone(), given.clone()]);
-    assert_eq!(again.tool_folders, std::slice::from_ref(&mine));
-    // The file still names each folder on the list as a path, as an older launcher reads it.
-    let text = std::fs::read_to_string(dir.0.join(SOURCES_FILE)).expect("the file");
-    let file: serde_json::Value = serde_json::from_str(&text).expect("JSON");
-    assert!(file["local"]
-        .as_array()
-        .expect("a list")
-        .iter()
-        .all(serde_json::Value::is_string));
-    // A folder holding no plugin is refused, and not listed.
-    let empty = dir.0.join("empty");
-    std::fs::create_dir_all(&empty).expect("a folder");
-    assert!(shelf.add_own(&empty).is_err());
-    assert_eq!(shelf.local.len(), 2);
-
-    // Off the list, it is no longer kept, there or in the file.
-    shelf.tool_failed.push(mine.clone());
+    assert_eq!(shelf.local_plugins().len(), 1);
     shelf.remove_local(&mine).expect("removed");
-    assert!(shelf.tool_folders.is_empty() && shelf.tool_failed.is_empty());
-    assert!(Shelf::read(&dir.0).tool_folders.is_empty());
     let text = std::fs::read_to_string(dir.0.join(SOURCES_FILE)).expect("the file");
     assert!(!text.contains("tool_folders"), "{text}");
-}
-
-/// The tool's copy is written at the repository's root, executable, when it is not the tool,
-/// and left as it is when it is; the `.gitignore` gets the lines that keep it out of git once,
-/// and only those it lacks, in its own line endings.
-#[test]
-fn the_tools_copy_is_written_when_it_is_not_the_tool_and_ignored_by_git_once() {
-    let dir = Scratch::new("tool-copy");
-    let repo = dir.0.join("repo");
-    std::fs::create_dir_all(&repo).expect("a folder");
-    let copy = repo.join(super::TOOL_FILE);
-    let gitignore = repo.join(".gitignore");
-
-    // None there: written, and a .gitignore made with both lines.
-    assert!(super::keep_tool(&repo, super::TOOL_FILE, b"tool 1").expect("kept"));
-    assert_eq!(std::fs::read(&copy).expect("the copy"), b"tool 1");
-    assert_eq!(
-        std::fs::read_to_string(&gitignore).expect("made"),
-        "/pyreal-plugin\n/pyreal-plugin.exe\n"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&copy)
-            .expect("the copy")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o111, 0o111, "executable");
-    }
-    // The tool again: nothing written.
-    std::fs::write(&gitignore, "/dist/\n").expect("the author's own");
-    assert!(!super::keep_tool(&repo, super::TOOL_FILE, b"tool 1").expect("kept"));
-    assert_eq!(
-        std::fs::read_to_string(&gitignore).expect("left"),
-        "/dist/\n"
-    );
-    // Another release's tool: the copy replaced, and only the lines it lacks added, once.
-    std::fs::write(&gitignore, "/dist/\r\npyreal-plugin\r\n# mine").expect("the author's own");
-    assert!(super::keep_tool(&repo, super::TOOL_FILE, b"tool 2").expect("kept"));
-    assert_eq!(std::fs::read(&copy).expect("the copy"), b"tool 2");
-    let lines = "/dist/\r\npyreal-plugin\r\n# mine\r\n/pyreal-plugin.exe\r\n";
-    assert_eq!(
-        std::fs::read_to_string(&gitignore).expect("added to"),
-        lines
-    );
-    assert!(super::keep_tool(&repo, super::TOOL_FILE, b"tool 3").expect("kept"));
-    assert_eq!(std::fs::read_to_string(&gitignore).expect("once"), lines);
-    let names: Vec<_> = std::fs::read_dir(&repo)
-        .expect("read")
-        .map(|e| e.expect("an entry").file_name())
-        .collect();
-    assert_eq!(names.len(), 2, "nothing else left there: {names:?}");
-
-    // A copy that cannot be written is an error, with nothing left half written.
-    let blocked = dir.0.join("blocked");
-    std::fs::create_dir_all(blocked.join(super::TOOL_FILE)).expect("a folder in its place");
-    assert!(super::keep_tool(&blocked, super::TOOL_FILE, b"tool 3").is_err());
-    let names: Vec<_> = std::fs::read_dir(&blocked)
-        .expect("read")
-        .map(|e| e.expect("an entry").file_name())
-        .collect();
-    assert_eq!(names, [super::TOOL_FILE]);
-}
-
-/// A folder whose copy could not be brought up to date says so on its first row, once.
-#[test]
-fn a_folder_whose_copy_could_not_be_written_says_so_on_its_first_row() {
-    let dir = Scratch::new("tool-row");
-    let repo = dir.0.join("repo");
-    write_plugin_folder(&repo.join("a"), "org.example.a", "A", "0.1.0");
-    write_plugin_folder(&repo.join("b"), "org.example.b", "B", "0.1.0");
-    let mut shelf = Shelf::open(dir.0.join("shelf"));
-    shelf.add_own(&repo).expect("added");
-    let said = |shelf: &Shelf| -> Vec<Option<String>> {
-        shelf
-            .view()
-            .local
-            .into_iter()
-            .map(|l| l.tool_problem)
-            .collect()
-    };
-    assert_eq!(said(&shelf), [None, None]);
-    shelf.tool_failed.push(repo.clone());
-    assert_eq!(
-        said(&shelf),
-        [
-            Some("Could not update pyreal-plugin in this folder.".to_owned()),
-            None
-        ]
-    );
 }
 
 #[test]

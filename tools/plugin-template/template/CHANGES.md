@@ -1,5 +1,0 @@
-# Changes
-
-## Unreleased
-
-- First release.

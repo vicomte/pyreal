@@ -19,5 +19,4 @@ never edited by hand.
 | [../api.md](../api.md) | the Lua API: `on`, promises, handles, the libraries | written by hand |
 | [../wit/dereth-plugin.wit](../wit/dereth-plugin.wit), [../dereth.d.luau](../dereth.d.luau) | the compiled-plugin interface and the Luau type definitions | generated from the API's schema |
 
-The [specification](../README.md) states the rules these pages list; the [guide](../guide/README.md)
-explains them with worked plugins.
+The [specification](../README.md) states the rules these pages list.

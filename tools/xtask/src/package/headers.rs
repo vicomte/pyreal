@@ -529,41 +529,6 @@ fn check_desktop_elf(
     ))
 }
 
-/// Check a console program for `target` that runs on the desktop beside a windowed one (the plugin
-/// author's tool): a one-line description for the manifest, or every problem found.
-///
-/// - **Windows:** x86-64 PE32+, the console subsystem, and no import of the Visual C++ runtime.
-/// - **Linux:** as Pyreal's programs: the target's machine and dynamic loader, and no glibc symbol
-///   newer than `glibc_floor`.
-/// - **macOS:** as Pyreal's programs: the CPU, only system libraries, the minimum macOS, and a
-///   code signature on Apple silicon.
-pub fn check_console_app(
-    bytes: &[u8],
-    target: Target,
-    glibc_floor: (u32, u32),
-) -> Result<String, Vec<String>> {
-    match target.os {
-        Os::Linux => check_desktop_elf(bytes, target, glibc_floor),
-        Os::Windows => check_console_pe(bytes, target),
-        Os::Mac => check_mac(bytes, target),
-    }
-}
-
-/// A console program for Windows: a one-line description for the manifest, or every problem found.
-fn check_console_pe(bytes: &[u8], target: Target) -> Result<String, Vec<String>> {
-    let pe = parse_pe(bytes).map_err(|e| vec![e])?;
-    let problems = check_pe(&pe, target);
-    if !problems.is_empty() {
-        return Err(problems);
-    }
-    Ok(format!(
-        "PE32+ machine {:#06x}, console; imports {}{}",
-        pe.machine,
-        pe.imports.join(", "),
-        if pe.resources { "; resources" } else { "" }
-    ))
-}
-
 /// A program for macOS: a one-line description for the manifest, or every problem found.
 fn check_mac(bytes: &[u8], target: Target) -> Result<String, Vec<String>> {
     let m = parse_macho(bytes).map_err(|e| vec![e])?;

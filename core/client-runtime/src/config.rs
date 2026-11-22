@@ -303,10 +303,6 @@ pub struct Config {
     /// `None`: a folder per server in the per-user cache, with one folder in it for each world the
     /// server has served ([`crate::world_overlay::overlay_dir`]).
     pub overlay_dat_dir: Option<PathBuf>,
-    /// `--object-visuals <world|legacy|modern>`: the era whose look the world's objects draw
-    /// with, over `[Render] Objects` (which it also sets, so the options page shows it). `None`:
-    /// the switch was not given and the preference stands; `Some(None)`: the world's own.
-    pub object_visuals: Option<Option<crate::render_prefs::RegionStyle>>,
     /// The art pack the high-fidelity presentation draws, the file the client was installed
     /// with, which the desktop host finds. `None`: no art pack.
     pub art_pack: Option<PathBuf>,
@@ -314,10 +310,6 @@ pub struct Config {
     /// the desktop host finds it beside the client, or `PYREAL_BASE_PACK` names it. `None`: no
     /// base pack.
     pub base_pack: Option<PathBuf>,
-    /// The drawn ground's tuning file, which the high-fidelity presentation reads its knobs from
-    /// and reads again whenever it changes: `PYREAL_TERRAIN_TUNING` in the environment, which
-    /// the desktop host reads. `None`: `terrain-tuning.toml` beside the preferences file.
-    pub terrain_tuning: Option<PathBuf>,
     /// `--era <name>`: the era the server says its world plays (`eor`, `infiltration`), as the
     /// launcher reads it from the world's status. It wins over the era read from the data files,
     /// and chooses which of [`Self::dat_dir`]'s sets draws the world; `None`: the end of retail's
@@ -372,16 +364,13 @@ pub struct Config {
     /// the part array's physics-BSP presence; this switch lets a person compare both collision
     /// paths at the same door.
     pub mesh_collision: bool,
-    /// `[Render] TerrainBlending` (`cpu`, `gpu` or `splat`), read by [`Self::apply_preferences`].
-    /// See [`crate::render_prefs::TerrainBlending`]; the preferences file is its only control.
-    pub terrain_blending: crate::render_prefs::TerrainBlending,
     /// `--land-radius <n>`: the landscape's middle radius, so `2n+1` blocks a side are meshed.
     ///
     /// It is set by `Render.LandscapeDrawDistance` (see
     /// [`crate::render_prefs::landscape_draw_distance`]), applied by [`Self::apply_preferences`]
     /// before the command line, matching the renderer's preference update that applies it
     /// before anything asks the landscape to generate. The default below is that preference's
-    /// registered default, **8**; the switch stays because a bench wants a cheap window.
+    /// registered default, the Medium preset's; the switch stays because a bench wants a cheap window.
     pub land_radius: u32,
     /// `--scenery-radius <n>`: how many rings of blocks grow scenery, buildings and static objects.
     pub scenery_radius: u32,
@@ -407,17 +396,6 @@ pub struct Config {
     /// `--no-character`: leave the body out and fly the free camera over the static scene.
     /// Kept reachable so the static-scene regression does not disappear.
     pub character: bool,
-
-    // ---- the adaptive degrade ----
-    /// Run the degradation governor, so its multiplier follows the measured frame rate and every
-    /// LOD threshold slides with it.
-    ///
-    /// **On by default, as in retail** (the automatic-degradation flag starts set, and
-    /// `Render.AutomaticDegrades` is registered true). The player's `Render.AutomaticDegrades`
-    /// preference turns it off; `--auto-degrades` and `--no-auto-degrades` override both. A
-    /// [`crate::scene::SceneConfig`] built directly, as the tests build theirs, stays pinned; see
-    /// `crate::scene::SceneConfig::auto_degrades`.
-    pub auto_degrades: bool,
 
     // ---- the sky ----
     /// `--time-of-day <0..1>`: where in the in-game day the session starts, 0 = midnight,
@@ -587,9 +565,8 @@ impl Default for Config {
             nav_prep: Vec::new(),
             cell_statics: true,
             mesh_collision: true,
-            terrain_blending: crate::render_prefs::TerrainBlending::default(),
-            // `Render.LandscapeDrawDistance`'s registered default, `Medium`, which is what a fresh
-            // retail profile gets -- not the cheapest window (3, `VeryLow`).
+            // `Render.LandscapeDrawDistance`'s registered default, the Medium preset's, which is
+            // what a fresh profile gets -- not the cheapest window (3, `VeryLow`).
             land_radius: crate::render_prefs::LANDSCAPE_DRAW_DISTANCE_DEFAULT,
             scenery_radius: 1,
             stream_budget_ms: None,
@@ -597,7 +574,6 @@ impl Default for Config {
             object_identity_ms: None,
             world: true,
             character: true,
-            auto_degrades: true,
             time_of_day: None,
             report: None,
             explore: None,
@@ -638,10 +614,8 @@ impl Default for Config {
             action_at: Vec::new(),
             console: true,
             dat_dir: default_dat_dir(),
-            object_visuals: None,
             art_pack: None,
             base_pack: None,
-            terrain_tuning: None,
             classic_dat_dir: None,
             overlay_dat_dir: None,
             world_base: None,
@@ -814,12 +788,6 @@ const REBUILD_SWITCHES: &[Switch] = &[
         short: None,
         arity: Arity::Required,
     },
-    // The era whose look the world's objects draw with.
-    Switch {
-        long: "object-visuals",
-        short: None,
-        arity: Arity::Required,
-    },
     // A preference set part way through a run, and a picture taken part way through.
     Switch {
         long: "set-at",
@@ -951,17 +919,6 @@ const REBUILD_SWITCHES: &[Switch] = &[
     // The embodied character.
     Switch {
         long: "no-character",
-        short: None,
-        arity: Arity::None,
-    },
-    // The adaptive degrade.
-    Switch {
-        long: "auto-degrades",
-        short: None,
-        arity: Arity::None,
-    },
-    Switch {
-        long: "no-auto-degrades",
         short: None,
         arity: Arity::None,
     },
@@ -1269,19 +1226,13 @@ impl Config {
             land_radius: self.land_radius,
             scenery_radius: self.scenery_radius,
             character: self.character,
-            auto_degrades: self.auto_degrades,
             time_of_day: self.time_of_day,
             game_time: self.game_time,
             // The profile's `Camera.*` values, for the body's camera.
             camera: self.camera,
             mouse_look: self.mouse_look,
-            // The profile's `Render.*` values -- the field of view, the aspect ratio, the
-            // texture-detail levels, multi-pass alpha and the two degrade knobs.
-            // The governor switch the command line settled on is the one the options page shows.
-            render: crate::render_prefs::RenderPreferences {
-                automatic_degrades: self.auto_degrades,
-                ..self.render
-            },
+            // The profile's `Render.*` values.
+            render: self.render,
             // A connected client streams the landscape over several frames, so the portal tunnel
             // keeps animating through a teleport; an offline run or a capture builds it all at once.
             // Measured on a live Extreme-distance login, a budget this small still finishes the whole
@@ -1293,9 +1244,6 @@ impl Config {
                     .will_connect()
                     .then_some(std::time::Duration::from_millis(4)),
             },
-            // `[Render] TerrainBlending`, the only control there is for it.
-            gpu_terrain_merge: self.terrain_blending != crate::render_prefs::TerrainBlending::Cpu,
-            terrain_splat: self.terrain_blending == crate::render_prefs::TerrainBlending::Splat,
             // The client keeps the object-identity verdicts in its per-user cache folder. A
             // connected client works them out in the background from start-up, so no frame
             // waits on them; an offline run or a capture works them out when first drawn.
@@ -1425,15 +1373,6 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Read `argv` over this configuration with the command line's own parser: the words the
-    /// launcher puts on the client's command line are read exactly as the client reads them.
-    ///
-    /// # Errors
-    /// [`ConfigError`] for any parse failure.
-    pub fn apply_args(&mut self, argv: &[String]) -> Result<(), ConfigError> {
-        self.parse_args(argv)
-    }
-
     /// The registered display-preference names and defaults, plus the one
     /// `Render.*` preference whose owner is a `SceneConfig` field.
     /// Apply one of the world's switches, as the command line spells it without the dashes:
@@ -1476,9 +1415,6 @@ impl Config {
         // as set there because it is a `SceneConfig` field of its own; `self.render` carries the
         // same value so that the live options-page path and the start-up path agree.
         self.render = crate::render_prefs::RenderPreferences::from_preferences(prefs);
-        // `Render.AutomaticDegrades` is the player's switch for the governor, registered true.
-        self.auto_degrades = self.render.automatic_degrades;
-        self.terrain_blending = crate::render_prefs::terrain_blending(prefs);
         // `[Log] Level=` and `[Log] File=`, rebuild-only: the log's level and
         // whether it is also written to a file. The command line overrides both.
         if let Some(v) = prefs
@@ -1782,17 +1718,6 @@ impl Config {
                     }
                 });
             }
-            "object-visuals" => {
-                let style = pyreal_client_contract::options::landscape::parse(v)
-                    .ok_or_else(|| {
-                        ConfigError::new(format!(
-                            "--object-visuals takes world, classic or modern, not {v:?}"
-                        ))
-                    })?
-                    .map(crate::render_prefs::objects_style);
-                self.render.objects = style;
-                self.object_visuals = Some(style);
-            }
             "set-at" => {
                 let (frame, setting) = v
                     .split_once(':')
@@ -2092,8 +2017,6 @@ impl Config {
             "no-cell-statics" => self.cell_statics = false,
             // The control half of the mesh-collision differential.
             "no-mesh-collision" => self.mesh_collision = false,
-            "auto-degrades" => self.auto_degrades = true,
-            "no-auto-degrades" => self.auto_degrades = false,
             // As `--ui`: accepted, and now the default. See [`Config::connect`].
             "connect" => self.connect = true,
             // Entering the world without connecting is not a state that exists.

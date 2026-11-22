@@ -401,6 +401,8 @@ pub struct GameState {
     /// Where the experimental rendering effects stand on the device the client draws with, for
     /// the options page.
     pub hifi: pyreal_client_contract::options::fidelity::Availability,
+    /// The graphics card drawing to the window, for the quality preset suggested for it.
+    pub graphics_adapter: Option<pyreal_client_contract::options::auto_quality::Adapter>,
     // ---- the connection ----
     /// The running client's version, as its host names it (`0.3.0`): what the pre-game screens
     /// show.
@@ -516,12 +518,10 @@ pub struct GameState {
     pub power_jump: bool,
     /// The combat window's settings: the attack height asked for and the power it aims at.
     pub combat_bar: pyreal_client_contract::view::CombatBar,
-    pub race: String,
     pub gender: String,
     pub heritage: String,
     pub title: String,
     pub attributes: Vec<(String, u32)>,
-    pub vitals_base: Vec<(String, u32)>,
     pub skills: Vec<Skill>,
     /// The attributes and vitals with their raise costs, in the character window's order.
     pub stats: Vec<StatRow>,
@@ -621,8 +621,6 @@ pub struct GameState {
     pub here: Option<(f64, f64)>,
     /// Whether the player stands in a dungeon, where the waypoint's arrows are not shown.
     pub in_dungeon: bool,
-    /// The region the player is in.
-    pub zone: String,
     pub shortcuts: Vec<Shortcut>,
     pub spells: Vec<Spell>,
     /// The spell bar's tabs, each a list of spell ids.
@@ -630,8 +628,6 @@ pub struct GameState {
     /// The keys that turn the spell bar to the previous and the next tab, as the key map names
     /// them, for the bar to show; empty while unknown or unbound.
     pub spell_tab_keys: (String, String),
-    /// The duty list: each contract's title and its lines.
-    pub duties: Vec<(String, Vec<String>)>,
     /// Friends, and whether each is online.
     pub friends: Vec<(String, bool)>,
     /// Pack contents: the main pack's items, then each side pack with its items.
@@ -642,8 +638,6 @@ pub struct GameState {
     pub fellowship: Vec<(String, Vital, Vital, Vital, bool)>,
     /// The in-game date and time of day, as the game words them.
     pub game_time: Option<(String, String)>,
-    /// Frames per second.
-    pub fps: Option<f32>,
     /// Chat lines received this frame.
     pub new_chat: Vec<ChatLine>,
     /// What the world's era has, for the option rows that need it; `None` has everything.
@@ -980,10 +974,6 @@ impl GameState {
                 look: None,
             })
             .collect(),
-            duties: vec![(
-                "Drudge Hideout".into(),
-                vec!["Slay the Drudge Prowlers 3/5".into()],
-            )],
             new_chat: chat
                 .iter()
                 .map(|(t, s)| ChatLine {

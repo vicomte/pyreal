@@ -51,8 +51,11 @@ const RADIUS: f32 = 0.98;
 const LIFT: f32 = 0.85;
 const GLOW_MEAN: f32 = 0.55;
 const SWIRL_MEAN: f32 = 0.22;
-/// How much deeper its colour's hue is than its picture's mean, which the picture's dark edge
-/// greys.
+/// A portal's swirl's starting scale: a portal whose swirl starts larger (the great purple's) is
+/// drawn that much wider.
+const SWIRL_SCALE: f32 = 5.0;
+/// How much deeper its colour is than its picture's mean, which the picture's dark edge greys: its
+/// palest channel's share of its brightest is raised to this power, its hue kept.
 const HUE: f32 = 1.6;
 /// How deep the funnel is (over the radius), as `shaders/gates.wgsl`'s `GATE_FUNNEL`.
 const FUNNEL: f32 = 1.0;
@@ -106,21 +109,9 @@ pub fn gate_of(
 ) -> Option<Gate> {
     let setup = driver.part_array.setup.as_ref()?;
     let script = setup.default_script.filter(|s| is_portal_script(*s))?;
-    // Its colours: its glows', else its swirls', as its script starts them (not every one of them
-    // may be live).
-    let (mut glows, mut swirls, mut sprite) = (Vec::new(), Vec::new(), None);
-    for e in emitters(&*driver.assets, script) {
-        let id = sprite_of(&e).0;
-        let s = sprites.get(&id)?.as_ref()?;
-        match e.particle_type {
-            ParticleType::ParabolicLvgagr => glows.push(s.colour / GLOW_MEAN),
-            ParticleType::ParabolicLvlalr if e.final_scale < e.start_scale * 0.3 => {
-                swirls.push(s.colour / SWIRL_MEAN);
-            }
-            _ => continue,
-        }
-        sprite.get_or_insert(id);
-    }
+    let look = look_of(&*driver.assets, script, |id| {
+        sprites.get(&id).map(|s| s.as_ref().map(|s| s.colour))
+    })?;
     // Placed by its turning swirl, else by its frame.
     let (centre, axis) = driver
         .particles
@@ -136,18 +127,9 @@ pub fn gate_of(
             },
             |e| crate::particles::whirl(driver, e),
         );
-    let colours = if glows.is_empty() { swirls } else { glows };
-    // Its brightest channel at most 1, its hue deepened as its picture shows it.
-    let held = |c: Vec3| {
-        let most = c.max_element().max(1e-4);
-        let h = c / most;
-        Vec3::new(powf(h.x, HUE), powf(h.y, HUE), powf(h.z, HUE)) * most.min(1.0)
-    };
-    let colour = held(*colours.first()?);
-    let heart = held(*colours.last()?);
     let scale = driver.part_array.scale.x.max(1e-3);
     let ground = driver.particle_parent_frame().origin;
-    let radius = setup.height * RADIUS * scale;
+    let radius = setup.height * RADIUS * scale * look.width;
     let centre = centre + offset;
     #[allow(clippy::cast_sign_loss)] // a hash of its place
     let seed = (floor_to_i32(ground.x * 7.31) as u32).wrapping_mul(0x9E37_79B9)
@@ -157,11 +139,73 @@ pub fn gate_of(
         axis,
         radius,
         base: ground.z + offset.z,
-        colour,
-        heart,
+        colour: look.colour,
+        heart: look.heart,
         seed,
+        sprite: look.sprite,
+    })
+}
+
+/// A portal's look from its script: its colour and its heart's, how much wider it is than a
+/// usual portal, and the picture its dust is drawn with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GateLook {
+    pub colour: Vec3,
+    pub heart: Vec3,
+    pub width: f32,
+    pub sprite: u32,
+}
+
+/// The look of the portal whose default script is `script`, its pictures' mean colours as
+/// `colour_of` gives them (`None` while one is not yet known, `Some(None)` when it has none).
+#[must_use]
+pub fn look_of(
+    assets: &dyn pyreal_animation::data::AnimAssets,
+    script: DataId,
+    colour_of: impl Fn(u32) -> Option<Option<Vec3>>,
+) -> Option<GateLook> {
+    // Its colours as its script starts them (not every one of them may be live): its hue its
+    // swirls' (the pictures retail draws; its glows' are software-only and of other hues), its
+    // brightness its glows'.
+    let (mut glows, mut swirls, mut sprite) = (Vec::new(), Vec::new(), None);
+    let mut widest = SWIRL_SCALE;
+    for e in emitters(assets, script) {
+        let id = sprite_of(&e).0;
+        let c = colour_of(id)??;
+        match e.particle_type {
+            ParticleType::ParabolicLvgagr => glows.push(c / GLOW_MEAN),
+            ParticleType::ParabolicLvlalr if e.final_scale < e.start_scale * 0.3 => {
+                swirls.push(c / SWIRL_MEAN);
+                widest = widest.max(e.start_scale);
+            }
+            _ => continue,
+        }
+        sprite.get_or_insert(id);
+    }
+    let hues = if swirls.is_empty() { &glows } else { &swirls };
+    let lights = if glows.is_empty() { &swirls } else { &glows };
+    Some(GateLook {
+        colour: held(*hues.first()?, *lights.first()?),
+        heart: held(*hues.last()?, *lights.last()?),
+        width: widest / SWIRL_SCALE,
         sprite: sprite?,
     })
+}
+
+/// Colour `hue` as bright as `light` (its brightest channel, at most 1), deepened as its picture
+/// shows it: its palest channel's share raised to [`HUE`], the others as far from its brightest in
+/// step, so its hue holds.
+#[must_use]
+pub fn held(hue: Vec3, light: Vec3) -> Vec3 {
+    let most = hue.max_element().max(1e-4);
+    let h = hue / most;
+    let least = h.min_element();
+    let k = if least < 1.0 {
+        (1.0 - powf(least, HUE)) / (1.0 - least)
+    } else {
+        1.0
+    };
+    (Vec3::ONE - (Vec3::ONE - h) * k) * light.max_element().min(1.0)
 }
 
 /// The emitters `script` starts itself.
@@ -266,6 +310,7 @@ pub fn lamp(g: &Gate, cell: u32, shown: f32) -> crate::lamps::Lamp {
     let most = g.colour.max_element().max(1e-4);
     let colour = g.colour / most;
     let source = crate::lamps::LampSource {
+        client_offset: None,
         kind: crate::lamps::LampKind::Portal,
         offset: Vec3::ZERO,
         colour,
@@ -622,5 +667,26 @@ mod tests {
         assert!((m.y_axis.z - g.radius).abs() < 1e-6);
         assert_eq!(Vec3::new(m.y_axis.x, m.z_axis.x, m.z_axis.y), g.heart);
         assert!(m.x_axis.x * crate::puffs::PUFF_SIZE >= g.radius);
+    }
+
+    /// A portal's colour is deepened with its hue kept, so an orange portal stays orange and not
+    /// red, and is as bright as its light says.
+    #[test]
+    fn a_portals_colour_keeps_its_hue() {
+        let hue = |c: Vec3| {
+            let (lo, hi) = (c.min_element(), c.max_element());
+            let mid = c.x + c.y + c.z - lo - hi;
+            (mid - lo) / (hi - lo)
+        };
+        let orange = Vec3::new(0.93, 0.21, 0.05);
+        let held_orange = held(orange, Vec3::new(0.5, 0.1, 0.0));
+        assert!(
+            (hue(held_orange) - hue(orange)).abs() < 1e-4,
+            "{held_orange}"
+        );
+        assert!((held_orange.max_element() - 0.5).abs() < 1e-6);
+        let least = orange.min_element() / orange.max_element();
+        assert!((held_orange.min_element() / 0.5 - powf(least, HUE)).abs() < 1e-4);
+        assert_eq!(held(Vec3::splat(0.3), Vec3::splat(2.0)), Vec3::ONE);
     }
 }

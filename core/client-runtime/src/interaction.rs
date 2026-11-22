@@ -30,12 +30,11 @@
 //! # Why the toolbar's stance click is dispatched here
 //!
 //! The toolbar's element-message handler maps ids `0x10000192`…`0x10000195`
-//! (message 1) onto combat-mode toggling. That handler belongs in
-//! `pyreal/client/crates/ui-screens/src/toolbar/`, but the **request** it must send is this
-//! module's. So the mapping is applied host-side, to the element the click's own hit test found,
-//! and the ids come from [`pyreal_client_contract::combat_mode::BUTTONS`] rather than being
-//! respelled. Moving it into the toolbar would be a one-line change, and the observable behaviour
-//! would be the same: a click on the stance icon toggles combat mode.
+//! (message 1) onto combat-mode toggling. That handler belonged to the retired retail UI's
+//! toolbar, but the **request** it must send is this module's. So the mapping is applied
+//! host-side, to the element the click's own hit test found, and the ids come from
+//! [`pyreal_client_contract::combat_mode::BUTTONS`] rather than being respelled. A click on the
+//! stance icon toggles combat mode.
 //!
 //! This module joins camera and movement input, picking and selection, combat, inventory and
 //! equipment, and the corresponding item messages at the application boundary.
@@ -1089,6 +1088,14 @@ impl Interaction {
         std::mem::take(&mut self.pending_framerate_display)
     }
 
+    /// Queue preference writes to be applied as `@render`'s are, on the next frame.
+    pub fn queue_render_preferences(
+        &mut self,
+        values: impl IntoIterator<Item = (&'static str, pyreal_client_contract::view::PrefValue)>,
+    ) {
+        self.pending_render_preferences.extend(values);
+    }
+
     /// Valid `@render` preference writes in command order.
     pub fn take_render_preferences(
         &mut self,
@@ -1313,7 +1320,7 @@ fn attack_key_height(a: pyreal_client_contract::actions::ActionId) -> Option<Att
 /// Retail's attack height (`HIGH` 1, `MEDIUM` 2, `LOW` 3) as `pyreal_client_model`'s enum —
 /// the one place the combat window's raw number crosses into the model.
 ///
-/// The window carries the raw value because `dereth-ui-screens` does not depend on `pyreal-client-model`;
+/// The window carries the raw value because the retired retail UI did not depend on `pyreal-client-model`;
 /// anything the enum does not name is `MEDIUM`, which is `set_requested_attack_height`'s own
 /// behaviour for an out-of-range argument (it stores whatever it is given, and every producer in
 /// the client passes one of the three literals).

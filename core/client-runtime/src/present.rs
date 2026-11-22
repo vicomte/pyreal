@@ -77,11 +77,6 @@ pub trait Scene: std::fmt::Debug {
 
     /// The map panel's displayed date and time pair.
     fn game_date_time(&self) -> Option<(String, String)>;
-    /// The gameplay UI's FPS meter reads this frame rate.
-    fn frame_rate_fps(&self) -> f32;
-    /// …and the three degrade values the same meter formats beside it: whether the multiplier
-    /// follows the frame rate, the automatic multiplier, and the user-supplied bias.
-    fn degrade_meter(&self) -> (bool, f32, f32);
     /// The render preferences held by this scene.
     fn render_preferences(&self) -> crate::render_prefs::RenderPreferences;
     /// A server object's frame, for the sound placement and the selection geometry.
@@ -234,11 +229,15 @@ pub trait Presentation: std::fmt::Debug {
     // the preference names the device owns
     // ---------------------------------------------------------------------------------------
 
-    fn texture_filtering(&self) -> u32;
     /// Where the experimental rendering effects stand on this device, for the options page; a
     /// presentation without them says they are not built.
     fn hifi_availability(&self) -> pyreal_client_contract::options::fidelity::Availability {
         pyreal_client_contract::options::fidelity::Availability::default()
+    }
+    /// The graphics card drawing to the window, for the quality preset chosen for it; `None`
+    /// without a window.
+    fn graphics_adapter(&self) -> Option<pyreal_client_contract::options::auto_quality::Adapter> {
+        None
     }
     /// The share of the frame's pixels the enhanced graphics draw the world at now, percent,
     /// while they draw: what a Dynamic render scale has moved it to.
@@ -318,7 +317,7 @@ pub trait Presentation: std::fmt::Debug {
         &mut self,
         store: &pyreal_dat::RetailDatStore,
         world: Option<&mut crate::world_state::WorldState>,
-    ) -> Result<crate::frame_events::RenderPrefWork, pyreal_world_data::landblock::WorldError>;
+    ) -> Result<(), pyreal_world_data::landblock::WorldError>;
     /// Set whether the world is hidden and the optional view-distance override.
     fn set_world_view_state(&mut self, hidden: bool, view_distance: Option<f32>);
     /// Whether the backdrop of the screens before the world is drawn, every frame.
@@ -373,13 +372,6 @@ pub trait Presentation: std::fmt::Debug {
     /// draws chooses its window's output by them. A presentation that draws none ignores them.
     fn use_saved_render_preferences(&mut self, prefs: crate::render_prefs::RenderPreferences) {
         let _ = prefs;
-    }
-    /// The file the drawn ground's knobs are read from, read again whenever it changes and
-    /// written with every knob at its default when there is none: a presentation that draws the
-    /// ground itself reads it for every world loaded from now on. A presentation that draws none
-    /// ignores it.
-    fn offer_terrain_tuning(&mut self, file: &std::path::Path) {
-        let _ = file;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -453,7 +445,6 @@ pub trait Presentation: std::fmt::Debug {
         intensity: f32,
         direction: pyreal_primitives::Vec3,
     );
-    fn preview_use_sharp_mode(&mut self, id: PreviewSpace);
     fn preview_use_world_fov(&mut self, id: PreviewSpace);
     /// Give the space a field of view of its own, `radians` high, whatever the world's camera
     /// does: a front end whose previews have their own lens.
@@ -470,11 +461,6 @@ pub trait Presentation: std::fmt::Debug {
         degrees: pyreal_primitives::Vec3,
     );
     fn preview_remove_all_objects(&mut self, id: PreviewSpace);
-    /// Whether the world's objects are drawn with another era's look (`[Render] Objects`), which
-    /// the preview spaces' dressed objects wear too.
-    fn objects_in_other_look(&self) -> bool {
-        false
-    }
     /// # Errors
     /// Whatever the device answers while baking the object's meshes.
     fn preview_add_object(
@@ -508,19 +494,6 @@ pub trait Presentation: std::fmt::Debug {
     fn preview_use_time(&mut self, id: PreviewSpace, dt: f64);
     /// The current frame number of preview object `index`.
     fn preview_curr_frame_number(&self, id: PreviewSpace, index: usize) -> Option<u32>;
-    /// The preview object's bounding box, which the identify portrait frames its camera from.
-    fn preview_object_bounding_box(
-        &self,
-        id: PreviewSpace,
-        index: usize,
-        store: &pyreal_dat::RetailDatStore,
-    ) -> Option<pyreal_physics::geom::BBox>;
-    /// The doll's live part array, for the selection blink.
-    fn preview_part_array_mut(
-        &mut self,
-        id: PreviewSpace,
-        index: usize,
-    ) -> Option<&mut pyreal_animation::parts::PartArray>;
 
     /// The drawn world as one read-only view: the application's world state beside this
     /// presentation's drawing half. `None` when either is missing.
@@ -574,13 +547,15 @@ pub struct NullPresentationCounts {
 #[derive(Debug, Clone, Default)]
 pub struct NullPresentation {
     size: (u32, u32),
-    texture_filtering: u32,
     counts: NullPresentationCounts,
     ground_markers: Vec<pyreal_client_contract::overlay::GroundMarker>,
     waypoint_ring: Option<pyreal_client_contract::overlay::WaypointRing>,
     /// Told when this presentation is dropped.
     #[cfg(test)]
     pub(crate) drop_log: Option<std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>>,
+    /// The graphics card it answers with.
+    #[cfg(test)]
+    pub(crate) graphics_adapter: Option<pyreal_client_contract::options::auto_quality::Adapter>,
 }
 
 #[cfg(test)]
@@ -598,12 +573,13 @@ impl NullPresentation {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             size: (width, height),
-            texture_filtering: 0,
             counts: NullPresentationCounts::default(),
             ground_markers: Vec::new(),
             waypoint_ring: None,
             #[cfg(test)]
             drop_log: None,
+            #[cfg(test)]
+            graphics_adapter: None,
         }
     }
 
@@ -634,6 +610,11 @@ impl NullPresentation {
 impl Presentation for NullPresentation {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    #[cfg(test)]
+    fn graphics_adapter(&self) -> Option<pyreal_client_contract::options::auto_quality::Adapter> {
+        self.graphics_adapter.clone()
     }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
@@ -719,9 +700,6 @@ impl Presentation for NullPresentation {
     ) {
         self.counts.preview_calls += 1;
     }
-    fn preview_use_sharp_mode(&mut self, _id: PreviewSpace) {
-        self.counts.preview_calls += 1;
-    }
     fn preview_use_world_fov(&mut self, _id: PreviewSpace) {
         self.counts.preview_calls += 1;
     }
@@ -801,25 +779,7 @@ impl Presentation for NullPresentation {
     fn preview_curr_frame_number(&self, _id: PreviewSpace, _index: usize) -> Option<u32> {
         None
     }
-    fn preview_object_bounding_box(
-        &self,
-        _id: PreviewSpace,
-        _index: usize,
-        _store: &pyreal_dat::RetailDatStore,
-    ) -> Option<pyreal_physics::geom::BBox> {
-        None
-    }
-    fn preview_part_array_mut(
-        &mut self,
-        _id: PreviewSpace,
-        _index: usize,
-    ) -> Option<&mut pyreal_animation::parts::PartArray> {
-        None
-    }
 
-    fn texture_filtering(&self) -> u32 {
-        self.texture_filtering
-    }
     fn apply_device_preference_requests(
         &mut self,
         requests: Vec<pyreal_client_contract::UiRequest>,
@@ -883,9 +843,9 @@ impl Presentation for NullPresentation {
         &mut self,
         _store: &pyreal_dat::RetailDatStore,
         _world: Option<&mut crate::world_state::WorldState>,
-    ) -> Result<crate::frame_events::RenderPrefWork, pyreal_world_data::landblock::WorldError> {
+    ) -> Result<(), pyreal_world_data::landblock::WorldError> {
         self.counts.update_render_preferences += 1;
-        Ok(crate::frame_events::RenderPrefWork::default())
+        Ok(())
     }
     fn set_world_view_state(&mut self, _hidden: bool, _view_distance: Option<f32>) {}
 

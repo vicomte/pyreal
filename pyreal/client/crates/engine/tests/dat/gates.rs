@@ -115,3 +115,27 @@ fn a_portals_colour_is_found_by_its_setup() {
     }
     assert_eq!(particles.portal_colour(0x0200_0FEF), None);
 }
+
+/// Each portal's colour as drawn is its swirl's hue (the picture retail draws), so the blue portal
+/// is blue and not violet and the orange one orange and not red; the great purple is drawn wider
+/// by as much as its swirl starts larger.
+#[test]
+fn each_portal_is_drawn_in_its_swirls_hue_and_size() {
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let assets = DatAnimAssets::new(Arc::clone(&store));
+    let look = |setup: u32| {
+        let script = assets.setup(DataId(setup)).and_then(|s| s.default_script);
+        pyreal_engine::gates::look_of(&assets, script.expect("its script"), |id| {
+            Some(Some(pyreal_engine::puffs::picture(&store, DataId(id)).1))
+        })
+        .expect("a look")
+    };
+    let blue = look(0x0200_05D2).colour;
+    assert!(blue.z > 0.9 && blue.y >= blue.x, "{blue}");
+    let orange = look(0x0200_05D4).colour;
+    assert!(orange.y > orange.x * 0.15, "{orange}");
+    let yellow = look(0x0200_05D6).colour;
+    assert!(yellow.y > yellow.x * 0.7, "{yellow}");
+    assert!((look(0x0200_01B3).width - 1.0).abs() < 1e-6);
+    assert!((look(0x0200_167E).width - 1.4).abs() < 1e-3);
+}

@@ -246,6 +246,30 @@ fn a_quality_preset_sets_its_values_and_shows_until_a_box_changes() {
 }
 
 #[test]
+fn the_preset_suggested_for_the_graphics_card_is_set_by_its_button() {
+    use pyreal_client_contract::options::auto_quality::{self, Adapter, Kind};
+    let (mut h, mut state) = client_page(READY);
+    state.graphics_adapter = Some(Adapter {
+        name: "Apple M5 Pro".into(),
+        vendor: 0,
+        kind: Kind::Integrated,
+    });
+    h.frame(&state);
+    let asked = tick(&mut h, &state, "Use High");
+    for (name, value) in fidelity::PRESETS[2].values() {
+        assert_eq!(sets(&asked, name), Some(value), "{name}");
+    }
+    assert_eq!(
+        sets(&asked, auto_quality::CHOSEN_PRESET),
+        Some(PrefValue::Int(3))
+    );
+    assert_eq!(presets_shown(&mut h, &state).1, 2);
+    // In use, the button is greyed and sets nothing.
+    let asked = tick(&mut h, &state, "Use High");
+    assert_eq!(sets(&asked, auto_quality::CHOSEN_PRESET), None);
+}
+
+#[test]
 fn anti_aliasing_and_wind_are_ticked_while_their_preferences_are_off() {
     let (mut h, state) = client_page(READY);
     for name in [names::NO_ANTI_ALIASING, names::NO_WIND] {
@@ -530,6 +554,11 @@ fn draw_the_effects_section_for_a_person_to_look_at() {
             in_world: true,
             name: "Tester".into(),
             hifi: hifi.clone(),
+            graphics_adapter: Some(pyreal_client_contract::options::auto_quality::Adapter {
+                name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+                vendor: 0x10DE,
+                kind: pyreal_client_contract::options::auto_quality::Kind::Discrete,
+            }),
             ..GameState::default()
         };
         let art = Arc::new(Art::new(Arc::new(

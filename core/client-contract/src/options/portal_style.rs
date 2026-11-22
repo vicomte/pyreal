@@ -1,23 +1,24 @@
-//! Portal Style: portal space drawn as the original swirl, or enhanced as a tunnel flown through
-//! to the destination. This client's own menu, an integer in the option value store.
+//! Portal Style: portals and portal space drawn as the original swirl, or enhanced as a smoke
+//! vortex in the world and a tunnel flown through to the destination. This client's own menu, an
+//! integer in the option value store.
 
 use crate::view::PrefValue;
 
-/// `[Display] PortalStyle`: how portal space is drawn.
+/// `[Display] PortalStyle`: how portals and portal space are drawn.
 pub const PORTAL_STYLE: &str = crate::options::names::PORTAL_STYLE;
 
 /// The menu's caption.
 pub const CAPTION: &str = "Portal Style";
 
 /// What the menu does, for the row's tooltip.
-pub const NOTE: &str =
-    "How portal space looks while you travel. Original shows the swirl from the \
-                        original game. Enhanced flies you through a tunnel of light.";
+pub const NOTE: &str = "How portals look, in the world and while you travel. Original shows the \
+                        swirl from the original game. Enhanced draws each portal as a whirl of \
+                        smoke in its own colour and flies you through a tunnel of light.";
 
 /// The original swirl.
 pub const ORIGINAL: i32 = 0;
 
-/// The tunnel flown through.
+/// The smoke vortex and the tunnel flown through.
 pub const ENHANCED: i32 = 1;
 
 /// The style until the player changes it.

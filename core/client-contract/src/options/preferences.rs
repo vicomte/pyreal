@@ -186,7 +186,7 @@ pub const UI_PREFERENCES: [UiPref; 27] = [
             "ID_Graphics_Value_Far",
             "ID_Graphics_Value_Horizon",
         ],
-        registered_default: Int(8),
+        registered_default: Int(crate::options::fidelity::TERRAIN_DEFAULT),
     },
     UiPref {
         name: crate::options::names::FIELD_OF_VIEW,

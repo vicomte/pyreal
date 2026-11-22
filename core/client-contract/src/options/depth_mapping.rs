@@ -16,8 +16,11 @@ pub const NOTE: &str = "Gives walls, floors and roofs real depth from the art pa
 /// The level with no relief.
 pub const OFF: i32 = 0;
 
-/// The level until the player changes it: the greatest, as the Medium preset has it.
-pub const DEFAULT: i32 = MOST;
+/// The middle level, which every preset but Low uses.
+pub const MEDIUM: i32 = 2;
+
+/// The level until the player changes it: Medium, as the Medium preset has it.
+pub const DEFAULT: i32 = MEDIUM;
 
 /// The levels the menu offers, least first.
 pub const LEVELS: [&str; 4] = ["Off", "Low", "Medium", "High"];

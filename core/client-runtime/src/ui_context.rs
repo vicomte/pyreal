@@ -19,10 +19,7 @@ use crate::interaction::{TargetMode, UiMouseEvent};
 use crate::objects::ObjectStream;
 use crate::present::{Presentation, Scene};
 use crate::shell::Shell;
-use {
-    crate::app::App, crate::app::EnterWorldScript,
-    pyreal_client_contract::pregame::PregameView as HostState,
-};
+use {crate::app::App, pyreal_client_contract::pregame::PregameView as HostState};
 
 /// One step's view of the game for front end `S`. See the module documentation.
 pub struct UiContext<'a, S: Shell> {
@@ -80,19 +77,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.timer.cur_time
     }
 
-    /// Whether the screen-size choice is still waiting for the host or the player.
-    pub fn resolution_pending(&self) -> bool {
-        self.app.resolution.pending()
-    }
-    /// The size to preserve when another settings apply occurs during a test.
-    pub fn resolution_previous(&self) -> Option<(u32, u32)> {
-        self.app.resolution.previous()
-    }
-    /// The completed choice, for page draft readback without resetting a fresh selection.
-    pub fn resolution_completion(&self) -> Option<crate::resolution::ResolutionCompletion> {
-        self.app.resolution.completion()
-    }
-
     /// The pre-game state: the connection, the character list, the world's name.
     #[must_use]
     pub fn pregame(&self) -> &HostState {
@@ -105,12 +89,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
     pub fn client_version(&self) -> &'static str {
         let id = self.app.interaction.client_build_id;
         id.rsplit(' ').next().unwrap_or(id)
-    }
-
-    /// The scripted entry (`--enter-world`) the pre-game screens are driving.
-    #[must_use]
-    pub fn entry_script(&self) -> EnterWorldScript {
-        self.app.script
     }
 
     /// How busy the game is: nonzero while anything the player asked for is still waiting. See
@@ -306,11 +284,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
         &mut self.app.hud
     }
 
-    /// The HUD slot and the object tables it is drawn from, together.
-    pub fn hud_and_objects(&mut self) -> (&mut S::Hud, &ObjectStream) {
-        (&mut self.app.hud, &self.app.objects)
-    }
-
     /// The step a product installed into the frame (see [`crate::frame_hook`]), for a front end
     /// that draws what it shows.
     #[must_use]
@@ -371,22 +344,14 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.audio.as_mut()
     }
 
-    /// Switch one talk focus on or off. The switch raises a notice, which
-    /// [`Self::deliver_talk_focus_notices`] offers back.
+    /// Switch one talk focus on or off. The switch raises a notice, offered back on the next
+    /// frame's UI step.
     pub fn set_talk_focus_enabled(&mut self, focus: TalkFocus, enabled: bool) {
         self.app
             .objects
             .world
             .chat
             .set_talk_focus_enabled(focus, enabled);
-    }
-
-    /// The talk-focus notices raised since the last delivery, offered now. See
-    /// [`offer_talk_focus_notices`].
-    pub fn deliver_talk_focus_notices(&mut self, answer: &mut TalkFocusAnswer<'_>) {
-        let chat = &mut self.app.objects.world.chat;
-        let notices = chat.take_talk_focus_notices();
-        offer_talk_focus_notices(chat, notices, answer);
     }
 
     // ---- what the front end asks the game to do
@@ -501,21 +466,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
         }
     }
 
-    /// The selection lighting raised since the last call, handed to a front end that lights the
-    /// world its own way.
-    pub fn take_selection_lighting(
-        &mut self,
-    ) -> Vec<(ObjectId, pyreal_animation::parts::LightingMode)> {
-        self.app.interaction.take_pending_lighting()
-    }
-
-    /// Light object `id` in the drawn world as `mode` says.
-    pub fn light_object(&mut self, id: ObjectId, mode: pyreal_animation::parts::LightingMode) {
-        if let Some(mut scene) = self.app.present.scene_mut(self.app.world.as_mut()) {
-            scene.world_mut().apply_object_lighting(id, mode);
-        }
-    }
-
     /// Ordered text changes raised by shared entry operations.
     pub fn take_chat_entry_updates(
         &mut self,
@@ -523,31 +473,9 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.interaction.take_chat_entry_updates()
     }
 
-    /// The retained drafts, without focus effects or replayed commands.
-    pub fn chat_entry_drafts(&self) -> Vec<pyreal_client_contract::chat::entry::EntryUpdate> {
-        self.model()
-            .chat
-            .entries
-            .iter()
-            .map(
-                |(&window, entry)| pyreal_client_contract::chat::entry::EntryUpdate {
-                    window,
-                    text: entry.text.clone(),
-                    cursor: entry.text.chars().count(),
-                    focus: false,
-                },
-            )
-            .collect()
-    }
-
     /// Chat-window titles set by command since the last call.
     pub fn take_chat_window_titles(&mut self) -> Vec<(u32, String)> {
         self.app.interaction.take_chat_window_title_notices()
-    }
-
-    /// Frame-rate display switches set by command since the last call.
-    pub fn take_framerate_display_switches(&mut self) -> Vec<bool> {
-        self.app.interaction.take_framerate_display_notices()
     }
 
     /// A local line in the text scroll.
@@ -557,29 +485,6 @@ impl<'a, S: Shell> UiContext<'a, S> {
             .world
             .scroll
             .add_text_to_scroll(text, kind, true, 0);
-    }
-
-    /// Insert a line whose producer supplies viewport meaning.
-    pub fn add_feedback_line(
-        &mut self,
-        text: &str,
-        kind: u32,
-        feedback: pyreal_client_contract::feedback::Feedback,
-    ) {
-        self.app
-            .objects
-            .world
-            .scroll
-            .add_feedback_to_scroll(text, kind, true, 0, feedback);
-    }
-
-    /// The external-container panel's range watches end (the panel that held them is gone).
-    pub fn end_external_container_watches(&mut self) {
-        self.app
-            .objects
-            .world
-            .object_range_checks
-            .unregister_all(pyreal_client_model::range::RangeHandler::ExternalContainer);
     }
 
     /// Bring the preferences up into the UI's option store. See [`App::start_preferences`].
@@ -678,6 +583,14 @@ impl<'a, S: Shell> UiContext<'a, S> {
     #[must_use]
     pub fn hifi_availability(&self) -> pyreal_client_contract::options::fidelity::Availability {
         self.app.present.hifi_availability()
+    }
+
+    /// The graphics card drawing to the window, for the quality preset suggested for it.
+    #[must_use]
+    pub fn graphics_adapter(
+        &self,
+    ) -> Option<pyreal_client_contract::options::auto_quality::Adapter> {
+        self.app.present.graphics_adapter()
     }
 
     /// A pad's two sticks under the orbit camera, as they are pushed this frame: `movement` moves

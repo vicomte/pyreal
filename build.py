@@ -6,8 +6,8 @@
     python3 build.py --allow-dirty  build uncommitted changes too
     python3 build.py --on-battery   build on battery too (or PYREAL_ON_BATTERY=1)
 
-A build waits for the machine lock that `cargo xtask ci tier1`/`tier2` and engine-view's timing
-runs also take (tools/machine-lock), and names whoever holds it while it waits.
+A build takes a heavy hold on the machine lock (tools/machine-lock), which never waits: it marks the
+machine busy so a quiet timing run waits for the build to finish.
 
 Settings live in build.ini beside this file. The packaging itself is `cargo xtask package pyreal`;
 this script supplies its environment, unpacks Pyreal.app into dist/<commit>/ and checks it. The app
@@ -17,7 +17,6 @@ target/base-pack/ first; the player chooses any other in the client.
 
 import argparse
 import configparser
-import fcntl
 import os
 import re
 import shutil
@@ -25,7 +24,6 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -67,31 +65,10 @@ def on_battery():
 
 
 def machine_lock(env):
-    """Takes the machine lock (tools/machine-lock's file and note), waiting while it is held."""
-    if env.get("PYREAL_MACHINE_LOCK") in ("off", "held"):
-        return None
-    folder = Path.home() / "Library" / "Caches" / "pyreal"
-    folder.mkdir(parents=True, exist_ok=True)
-    lock = open(folder / "machine.lock", "a")
-    said, said_at = None, 0.0
-    while True:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            note = (folder / "machine.holder").read_text() if (folder / "machine.holder").exists() else ""
-            holder = dict(line.split("=", 1) for line in note.splitlines() if "=" in line)
-            if holder != said or time.time() - said_at >= 60:
-                age = int(time.time()) - int(holder.get("since", time.time()))
-                print(f"waiting for the machine lock: held by `{holder.get('what', 'another process')}` "
-                      f"(pid {holder.get('pid', '?')}) in {holder.get('dir', '?')}, "
-                      f"for {age // 60}m {age % 60:02d}s", flush=True)
-                said, said_at = holder, time.time()
-            time.sleep(2)
-    (folder / "machine.holder").write_text(
-        f"pid={os.getpid()}\nwhat=build.py\ndir={ROOT}\nsince={int(time.time())}\n")
-    env["PYREAL_MACHINE_LOCK"] = "held"
-    return lock
+    """Takes a heavy hold on the machine lock (tools/machine-lock/machine_lock.py)."""
+    sys.path.insert(0, str(ROOT / "tools" / "machine-lock"))
+    import machine_lock
+    return machine_lock.hold_heavy("build.py", env, where=str(ROOT))
 
 
 def resolve(path):

@@ -256,9 +256,8 @@ pub fn open_classic_store_or_fail() -> RetailDatStore {
 }
 
 /// One folder holding both dat sets, as a player's one `--dat-dir` does: the retail files of
-/// [`dat_dir`] and the February 2005 `portal.dat` and `cell.dat` of [`classic_dat_dir`], hard-linked
-/// into a folder under the temp directory (no copy is made). The folder is named after the two it
-/// joins, so every test process reuses it, and it is protected for the run as the install is.
+/// [`dat_dir`] and the February 2005 `portal.dat` and `cell.dat` of [`classic_dat_dir`]
+/// ([`linked_folder`]).
 ///
 /// # Panics
 ///
@@ -276,44 +275,99 @@ pub fn both_sets_dir() -> PathBuf {
         }
         let later = dat_dir();
         let older = classic_dat_dir().unwrap_or_default();
-        // FNV-1a over the two folders' spellings: a stable name for the pair.
-        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-        for b in format!("{}|{}", later.display(), older.display()).bytes() {
-            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
-        }
-        let dir = std::env::temp_dir().join(format!("pyreal-both-dat-sets-{hash:016x}"));
-        std::fs::create_dir_all(&dir)
-            .unwrap_or_else(|e| panic!("the folder {} could not be made: {e}", dir.display()));
         let files = ModernDat::ALL
             .iter()
             .map(|d| d.in_dir(&later))
             .chain(crate::ClassicDat::ALL.iter().map(|d| d.in_dir(&older)))
-            .filter(|p| p.is_file());
-        for src in files {
-            let dst = dir.join(src.file_name().unwrap_or_default());
-            let current = std::fs::metadata(&dst)
-                .ok()
-                .zip(std::fs::metadata(&src).ok())
-                .is_some_and(|(d, s)| d.len() == s.len() && d.modified().ok() == s.modified().ok());
-            if current {
-                continue;
-            }
-            let _ = std::fs::remove_file(&dst);
-            if let Err(e) = std::fs::hard_link(&src, &dst) {
-                // Another test process may have linked it first.
-                if !dst.is_file() {
-                    panic!(
-                        "{} could not be linked into {}: {e}",
-                        src.display(),
-                        dir.display()
-                    );
-                }
-            }
-        }
-        crate::protect_install(&dir);
-        dir
+            .collect();
+        linked_folder(
+            &std::env::temp_dir(),
+            "pyreal-both-dat-sets",
+            &[&later, &older],
+            files,
+        )
     })
     .clone()
+}
+
+/// One folder holding the retail files of [`dat_dir`] and nothing else, as a player's install
+/// is: an older set put beside them in the install folder is not in it ([`linked_folder`]).
+///
+/// # Panics
+///
+/// With the shortfall line when the set is not there, or when a file cannot be linked.
+#[must_use]
+pub fn later_set_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        if let Some(msg) = shortfall() {
+            panic!("{msg}");
+        }
+        let later = dat_dir();
+        let files = ModernDat::ALL.iter().map(|d| d.in_dir(&later)).collect();
+        linked_folder(
+            &std::env::temp_dir(),
+            "pyreal-later-dat-set",
+            &[&later],
+            files,
+        )
+    })
+    .clone()
+}
+
+/// A folder in `base` named `name` and after `from` (the folders its files come from), holding
+/// `files` (those there are), each followed through any symbolic link to its file and hard-linked
+/// in (no copy is made). Every test process reuses it, and it is protected for the run as the
+/// install is.
+///
+/// # Panics
+///
+/// When a file cannot be followed or linked (`base` on another volume than the dats), or is not
+/// a file once linked.
+fn linked_folder(base: &Path, name: &str, from: &[&Path], files: Vec<PathBuf>) -> PathBuf {
+    // FNV-1a over the folders' spellings: a stable name for them.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let spelled: Vec<String> = from.iter().map(|p| p.display().to_string()).collect();
+    for b in spelled.join("|").bytes() {
+        hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let dir = base.join(format!("{name}-{hash:016x}"));
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("the folder {} could not be made: {e}", dir.display()));
+    for named in files.into_iter().filter(|p| p.is_file()) {
+        let dst = dir.join(named.file_name().unwrap_or_default());
+        // The file itself: a hard link to a symbolic link copies the link, and a relative one
+        // points nowhere from this folder.
+        let src = std::fs::canonicalize(&named).unwrap_or_else(|e| {
+            panic!("{} could not be followed to its file: {e}", named.display())
+        });
+        let current = std::fs::metadata(&dst)
+            .ok()
+            .zip(std::fs::metadata(&src).ok())
+            .is_some_and(|(d, s)| d.len() == s.len() && d.modified().ok() == s.modified().ok());
+        if current {
+            continue;
+        }
+        let _ = std::fs::remove_file(&dst);
+        if let Err(e) = std::fs::hard_link(&src, &dst) {
+            // Another test process may have linked it first.
+            if !dst.is_file() {
+                panic!(
+                    "{} could not be linked into {}: {e}",
+                    src.display(),
+                    dir.display()
+                );
+            }
+        }
+        assert!(
+            dst.is_file(),
+            "{} linked into {} is not a file there",
+            named.display(),
+            dir.display()
+        );
+    }
+    crate::protect_install(&dir);
+    dir
 }
 
 /// The test-only variable naming a directory that holds the October 1999 launch dat set
@@ -478,6 +532,28 @@ mod classic_tests {
 #[cfg(test)]
 mod scratch_tests {
     use super::*;
+
+    /// A file reached through a relative symbolic link is linked in as the file itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_folder_holds_the_file_a_relative_link_names_not_the_link() {
+        let root = ScratchDir::new("linked-folder").unwrap();
+        let (real, links) = (root.path().join("real"), root.path().join("links"));
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(&links).unwrap();
+        std::fs::write(real.join("portal.dat"), b"the file").unwrap();
+        std::os::unix::fs::symlink("../real/portal.dat", links.join("portal.dat")).unwrap();
+        let dir = linked_folder(
+            root.path(),
+            "linked",
+            &[&links],
+            vec![links.join("portal.dat"), links.join("cell.dat")],
+        );
+        let linked = dir.join("portal.dat");
+        assert!(!linked.is_symlink(), "the file, not a link");
+        assert_eq!(std::fs::read(&linked).unwrap(), b"the file");
+        assert!(!dir.join("cell.dat").exists(), "only the files there are");
+    }
 
     #[test]
     fn same_tag_owners_are_independent_and_cleanup_is_explicit() {

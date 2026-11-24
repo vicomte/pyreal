@@ -199,17 +199,26 @@ fn light_reach_and_flicker_change_the_frame() {
     let d = mean_difference(&far, &near);
     eprintln!("light reach {d:.3}");
     assert!(d > 0.05, "a shorter light reach changes the frame: {d}");
-    // Flicker: two frames a little apart differ with it, not without.
-    let a = frames(&mut engine, &region, &cam, 0.0, 1);
-    let b = frames(&mut engine, &region, &cam, 0.0, 7);
-    engine.renderer.flicker = false;
-    let c = frames(&mut engine, &region, &cam, 0.0, 1);
-    let e = frames(&mut engine, &region, &cam, 0.0, 7);
-    let (on, off) = (mean_difference(&a, &b), mean_difference(&c, &e));
-    eprintln!("flicker on {on:.4} off {off:.4}");
+    // Flicker: toward the torch south of the eye, the town drawn twice in step, once with steady
+    // lamps, the eye adapting by the same step; frame by frame they differ only by the flicker.
+    let (mut lit, _, _) = holtburg();
+    let (mut steady, _, _) = holtburg();
+    steady.renderer.flicker = false;
+    cam.yaw = std::f32::consts::PI;
+    cam.pitch = -0.12;
+    let mut apart = 0.0;
+    for e in [&mut lit, &mut steady] {
+        e.renderer.frame_seconds = Some(1.0 / 60.0);
+    }
+    for _ in 0..24 {
+        let a = frames(&mut lit, &region, &cam, 0.0, 1);
+        let b = frames(&mut steady, &region, &cam, 0.0, 1);
+        apart += mean_difference(&a, &b) / 24.0;
+    }
+    eprintln!("flicker against steady lamps {apart:.4}");
     assert!(
-        off < on,
-        "steady lamps change less frame to frame: {off} against {on}"
+        apart > 0.005,
+        "the torch's flicker changes the frame: {apart}"
     );
 }
 

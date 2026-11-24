@@ -45,13 +45,24 @@ Changelog: none
 `python3 build.py` stop with a note.
 `--on-battery`, or `PYREAL_ON_BATTERY=1`, runs them anyway. `ci prepush` always runs.
 
-**The machine lock.** `ci tier1`, `ci tier2`, `cargo xtask gate`, `cargo xtask gates`,
-`cargo xtask golden`, `python3 build.py` and engine-view's headless runs take one lock for the
-whole machine (`machine.lock` in `~/Library/Caches/pyreal`), so parallel runs queue instead of
-skewing each other's timings. A run that waits says who holds the lock, where, and for how long.
-The lock goes when its holder exits, however it exits. `cargo xtask lock` says who holds it, and
-`cargo xtask lock -- <command>` runs any command holding it, for a timing run of your own. The
-processes a holder starts do not wait on it. `PYREAL_MACHINE_LOCK=off` skips it.
+**The machine lock.** One lock for the whole machine (its files are in `~/Library/Caches/pyreal`)
+has two kinds of hold:
+
+- **Heavy**, for work that loads the machine: `ci tier1`, `ci tier2`, `cargo xtask gate`,
+  `cargo xtask gates`, `cargo xtask golden`, `python3 build.py` and engine-view's headless runs.
+  A heavy hold never waits. It only marks the machine busy, so a timing run knows to wait.
+- **Quiet**, for timing and profiling runs only: `cargo xtask lock --quiet -- <command>`. It waits
+  until the heavy work that started before it has finished, then has the machine to itself. Heavy
+  work that starts while it waits or runs still goes ahead at once, without delaying it, and says
+  which timing run it may skew. It also waits for runs of older checkouts, which took one
+  exclusive lock for everything.
+
+A quiet run that waits says who it waits for, where, and for how long, listing every holder. A
+hold goes when its holder exits, however it exits. `cargo xtask lock` says who holds it, and
+`cargo xtask lock -- <command>` runs any command under a heavy hold (`--heavy` says so outright).
+The processes a holder starts do not wait on it, so a test or render run inside a quiet hold is
+part of the measurement. `PYREAL_MACHINE_LOCK=off` skips it. Python and shell tools take a heavy
+hold with `python3 tools/machine-lock/machine_lock.py heavy -- <command>`.
 
 **The retail comparisons** (`cargo xtask golden`, and rows of `ci tier2`). A few places from
 `pyreal/client/tests/gpu/report-library.txt`, listed in `tools/xtask/src/golden.rs`, are drawn by

@@ -1,6 +1,6 @@
 [package]
 name = "pyreal-machine-lock"
-description = "One lock per machine for work that takes the GPU or every core, so timing runs, the GPU test tiers and release builds queue instead of skewing each other."
+description = "One lock per machine with two holds: heavy work (builds, test tiers, renders) never waits and marks the machine busy, and a quiet hold for timing and profiling runs waits for that work to finish and then has the machine alone."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

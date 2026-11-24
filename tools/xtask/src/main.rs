@@ -2,7 +2,7 @@
 //! cannot express.
 //!
 //! **Depends on** two of the workspace's crates: `pyreal-dat`, for the tests' lookup of the retail
-//! dats (`pyreal_dat::testing`), and `pyreal-machine-lock`, the GPU tiers' turn on the machine;
+//! dats (`pyreal_dat::testing`), and `pyreal-machine-lock`, the heavy runs' hold on the machine;
 //! otherwise it runs `cargo` and reads the workspace's files.
 //! **Used by**
 //! nothing: it is the `cargo xtask` binary (the alias is in `.cargo/config.toml`).
@@ -93,10 +93,13 @@ When to run what:
                             retail's. The goldens live outside the repository (PYREAL_GOLDEN_DIR,
                             else Golden beside the dats' folder); --update draws them again
                             tier0, tier1 and tier2 refuse to run on battery unless --on-battery
-                            (or PYREAL_ON_BATTERY=1); tier1, tier2 and the gates wait for the
-                            machine lock
-  lock [-- <command>]       who holds the machine lock that GPU runs, timing runs and build.py
-                            queue on, or <command> run holding it (PYREAL_MACHINE_LOCK=off skips)
+                            (or PYREAL_ON_BATTERY=1); tier1, tier2, the gates and golden take
+                            a heavy hold on the machine lock
+  lock [[--heavy|--quiet] -- <command>]
+                            who holds the machine lock, or <command> run holding it. A heavy
+                            hold (the tiers, build.py, renders; the default) never waits; --quiet,
+                            for timing and profiling, waits until the heavy work before it has
+                            finished, then has the machine alone (PYREAL_MACHINE_LOCK=off skips)
 
 Rules (each a row of `check` or `ci tier0`):
   fmt-check                 cargo fmt --all --check
@@ -658,9 +661,9 @@ fn ci_guards(args: &[String], list: bool) -> Result<(), String> {
     }
 }
 
-/// `body`'s exit code, run holding the machine lock (see [`guards`]).
+/// `body`'s exit code, run holding a heavy hold on the machine lock (see [`guards`]).
 fn with_machine_lock(what: &str, body: impl FnOnce() -> i32) -> i32 {
-    match guards::machine_lock(what) {
+    match guards::machine_lock(pyreal_machine_lock::Mode::Heavy, what) {
         Ok(_lock) => body(),
         Err(e) => {
             eprintln!("{what}: {e}");

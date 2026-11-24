@@ -24,7 +24,7 @@ regex = "1"
 toml.workspace = true
 # Where the gates look for the retail dats: the same lookup the tests they run use.
 pyreal-dat = { workspace = true, features = ["test-support"] }
-# The GPU tiers and the gates queue on the machine lock.
+# The tiers, the gates and golden take heavy holds on the machine lock; `lock` takes either.
 pyreal-machine-lock.workspace = true
 
 # The retail comparisons read and write their pictures.

@@ -4516,6 +4516,7 @@ mod tests {
             enchantment: id & 0x8000_0000 != 0,
             name: name.to_string(),
             description: format!("{name} does something."),
+            category: 0,
         };
         let view = |m: MagicInfoView| AppraisalView {
             success: true,
@@ -4637,6 +4638,7 @@ mod tests {
             enchantment: false,
             name: "S".to_string(),
             description: "D".to_string(),
+            category: 0,
         };
         let ench = AppraisalSpellView {
             resolved: true,
@@ -5156,6 +5158,7 @@ mod review_text_tests {
                     enchantment: false,
                     name: "S".to_string(),
                     description: "D".to_string(),
+                    category: 0,
                 }]),
                 mana_rate: Some(0.0),
                 ..Default::default()

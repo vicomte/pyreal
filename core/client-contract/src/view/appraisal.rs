@@ -574,6 +574,9 @@ pub struct AppraisalSpellView {
     pub name: String,
     /// The resolved spell description, likewise empty for an unknown id.
     pub description: String,
+    /// The spell's category in the spell table, or 0 for an unknown id: of one category's
+    /// enchantments on an item only the strongest counts.
+    pub category: u32,
 }
 
 /// The inputs of the short and long magic-info blocks that put an item's spells in the appraisal

@@ -261,6 +261,11 @@ pub mod pyreal {
     pub const RETIRED_HOTBAR_SLOT_13: super::ActionId = super::ActionId(0x2000_0010);
     /// Move everything in the open chest or corpse to the pack, or stop doing so.
     pub const LOOT_ALL: super::ActionId = super::ActionId(0x2000_0034);
+    /// Hide the whole interface for a clean picture, or show it again.
+    pub const HIDE_INTERFACE: super::ActionId = super::ActionId(0x2000_0035);
+    /// Open the Journal at its Deaths tab, or shut it there: what killed the player and the last
+    /// hits they took.
+    pub const TOGGLE_DEATH_RECAP: super::ActionId = super::ActionId(0x2000_0037);
     /// Cast spell slot 13, the first of the Horizon spell bar's rows past the first; slots 14 to
     /// 60 follow it in order, twelve to a row.
     pub const USE_SPELL_SLOT_13: super::ActionId = super::ActionId(0x2000_0040);
@@ -886,6 +891,8 @@ pub mod names {
             "UseHotbarSlot_48",
         ),
         (super::pyreal::LOOT_ALL.0, "LootAll"),
+        (super::pyreal::HIDE_INTERFACE.0, "HideInterface"),
+        (super::pyreal::TOGGLE_DEATH_RECAP.0, "ToggleDeathRecap"),
         (super::pyreal::USE_SPELL_SLOT_13.0, "UseSpellSlot_13"),
         (super::pyreal::USE_SPELL_SLOT_13.0 + 1, "UseSpellSlot_14"),
         (super::pyreal::USE_SPELL_SLOT_13.0 + 2, "UseSpellSlot_15"),

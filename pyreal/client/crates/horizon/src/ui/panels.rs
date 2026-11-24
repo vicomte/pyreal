@@ -25,19 +25,24 @@ mod art_packs;
 mod commerce;
 mod examine;
 pub mod info;
+pub mod item_tip;
 mod items;
 pub use items::loot_all_request;
 mod journal;
 pub use journal::{timer_rows, JournalTab, TimerAction, TimerRow};
 pub mod map;
+pub mod marks;
 mod notebook;
 pub mod options;
+pub mod pack_search;
 pub mod pad_items;
 mod reading;
+pub mod recap;
 mod social;
 mod spells;
 mod split;
 mod stats;
+pub mod tracker;
 pub mod world;
 
 /// The windows.
@@ -194,6 +199,14 @@ impl WindowId {
         ((w, kit::BODY_TOP + below), at)
     }
 }
+
+/// The inventory's search box.
+const PACK_SEARCH_FIELD: u32 = 110;
+
+/// The wash over an item or pack the inventory's search does not match, and the mark on a pack
+/// that holds a match.
+const SEARCH_DIM: u32 = 0xC010_0C08;
+const SEARCH_MATCH: u32 = 0xFFF0_C860;
 
 /// The room the inventory keeps under its grid, in layout units: the stack splitter, the count
 /// and the burden gauge.
@@ -353,6 +366,15 @@ pub struct Windows {
     pub pad_menu: Option<Rect>,
     /// How far the inventory's grid and its pack column are scrolled, in pixels.
     inventory_scroll: f32,
+    /// What is typed in the inventory's search box.
+    pub pack_search: String,
+    /// The character's Keep and Junk marks, the requests held back to ask about a Keep item,
+    /// and those the player said yes to.
+    pub marks: marks::Marks,
+    pub keep_asked: Vec<marks::KeepAsked>,
+    keep_released: Vec<pyreal_client_contract::UiRequest>,
+    /// When Add Junk last asked for a Junk item's appraisal.
+    junk_asked_at: f64,
     /// Each cooling item's countdown, run down every frame between the game's reports.
     item_cooldowns: std::collections::HashMap<pyreal_primitives::ObjectId, (f64, f64)>,
     packs_scroll: f32,
@@ -471,6 +493,15 @@ pub struct Windows {
     /// waiting for the server.
     inscribed: Option<examine::Inscribed>,
     tip: Option<(String, Vec<String>)>,
+    /// The appraisals asked for as the pointer rests on items, for item details on hover.
+    pub appraisals: crate::ui::appraisals::Appraisals,
+    /// The item the pointer rests on, and the details drawn for it this frame.
+    item_hover: Option<item_tip::Hover>,
+    item_details: Vec<item_tip::DetailPanel>,
+    /// Resting the pointer on an item asks the game to assess it.
+    pub assess_on_hover: bool,
+    /// Item details show what is worn in the same place without Shift held.
+    pub compare_worn: bool,
     /// The settings window's own state.
     pub options_page: options::OptionsState,
     /// The blacklist: the name being typed, and the row chosen.
@@ -510,12 +541,25 @@ pub struct Windows {
     pub map_view: map::MapView,
     /// The waypoint followed, which the map, the notebook and the minimap set and clear.
     pub waypoints: crate::ui::waypoint::Waypoints,
+    /// The quest tracker's pins and notices.
+    pub tracker: tracker::Tracker,
+    /// The rolling record of hits taken and the last deaths' recaps.
+    pub death_recap: crate::ui::death_recap::DeathRecap,
+    /// The Deaths tab's chosen death, the newest being 0, and how far its list and the chosen
+    /// one's hits are scrolled.
+    death_selected: usize,
+    deaths_scroll: f32,
+    death_recap_scroll: f32,
 }
 
 impl Windows {
-    /// Open the window named `name` (as `--horizon-open` spells it) once the world is up.
+    /// Open the window named `name` (as `--horizon-open` spells it) once the world is up. The
+    /// Journal's Deaths tab is `deaths`.
     pub fn open_by_name(&mut self, name: &str) {
-        if let Some(id) = WindowId::from_name(name) {
+        if matches!(name, "deaths" | "death-recap") {
+            self.pending.push(WindowId::Journal);
+            self.show_journal_tab(JournalTab::Deaths);
+        } else if let Some(id) = WindowId::from_name(name) {
             self.pending.push(id);
         }
     }
@@ -844,6 +888,7 @@ impl Windows {
             self.open(id, ctx.time - 1.0);
         }
         self.tip = None;
+        self.begin_item_hover();
         // Escape closes the window on top, but for a key the key bindings page is waiting for, a
         // dropdown list open in the settings, and a text box with the keyboard, which take it
         // themselves.
@@ -998,8 +1043,10 @@ impl Windows {
         if let (Some(icon), Some(r)) = (self.moving_icon, ctx.input.pad.focus) {
             crate::ui::draw_lifted(p, &icon, (r.x + r.w / 2.0, r.y + r.h / 2.0));
         }
-        if let Some((title, lines)) = &self.tip {
-            kit::tooltip(p, ctx, title, lines);
+        if !self.draw_item_details(p, ctx, state, out) {
+            if let Some((title, lines)) = &self.tip {
+                kit::tooltip(p, ctx, title, lines);
+            }
         }
     }
 
@@ -1426,6 +1473,18 @@ impl Windows {
                 ));
             }
             self.pack_tile(p, ctx, state, r, i, *pack, out);
+            // While searching, a pack holding a match is marked and the rest are dimmed.
+            if !self.pack_search.trim().is_empty() {
+                let (held, _) = self.bag(state, i);
+                if pack_search::any_match(held, &self.marks, &self.pack_search) {
+                    p.fill(
+                        Rect::new(r.right() - 10.0 * k, r.y + 2.0 * k, 8.0 * k, 8.0 * k),
+                        SEARCH_MATCH,
+                    );
+                } else {
+                    p.fill(r, SEARCH_DIM);
+                }
+            }
         }
         p.list.pop_clip();
         // The pad's shoulder buttons step through the packs.
@@ -1441,9 +1500,39 @@ impl Windows {
             .get(self.inventory_bag)
             .and_then(|(_, pack)| *pack)
             .map_or("Main Pack", |pack| pack.name.as_str());
+        // The search box at the heading's right, and the pack's name beside it.
+        let search = Rect::new(
+            body.right() - 180.0 * k,
+            body.y - 3.0 * k,
+            180.0 * k,
+            26.0 * k,
+        );
+        kit::text_box(
+            p,
+            ctx,
+            search,
+            &mut self.pack_search,
+            &mut self.typing_field,
+            PACK_SEARCH_FIELD,
+        );
+        if self.pack_search.is_empty() && self.typing_field != PACK_SEARCH_FIELD {
+            let hint =
+                TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
+            p.text_in(&hint, search.offset(6.0 * k, 0.0), Align::Left, "Search");
+        }
+        if ctx.input.hover(&search) {
+            self.tip = Some((
+                "Search".into(),
+                vec![
+                    "Type part of a name, or a kind such as armor, weapon, salvage, keep or junk."
+                        .into(),
+                    "Hold Ctrl and right-click an item to mark it Keep or Junk.".into(),
+                ],
+            ));
+        }
         p.text_in(
             &heading,
-            Rect::new(grid_x, body.y, body.right() - grid_x, 22.0 * k),
+            Rect::new(grid_x, body.y, search.x - grid_x - 6.0 * k, 22.0 * k),
             Align::Left,
             name,
         );
@@ -1531,6 +1620,11 @@ impl Windows {
                 ctx.input.nav.home(rect);
             }
             self.item_tile(p, ctx, state, rect, items.get(i), out);
+            if let Some(it) = items.get(i) {
+                if !pack_search::matches(it, self.marks.get(it), &self.pack_search) {
+                    p.fill(Rect::new(rect.x, rect.y, rect.w, rect.w), SEARCH_DIM);
+                }
+            }
         }
         p.list.pop_clip();
         // The splitter, while a stack is selected, wherever it is.
@@ -1758,6 +1852,7 @@ impl Windows {
                 let shown: Vec<CharacterOption> = options
                     .iter()
                     .filter(|o| o.needs.met(state.era.as_ref()))
+                    .filter(|o| !state.wire_1999 || options::option_on_1999_wire(o.option))
                     .cloned()
                     .collect();
                 (h.clone(), shown)

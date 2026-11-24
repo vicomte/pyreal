@@ -70,12 +70,16 @@ pub struct Target {
 pub struct Effect {
     /// The spell the enchantment is, for its examination.
     pub spell: u32,
+    /// The layered enchantment id: each caster's copy of a spell has a layer of its own.
+    pub layered: u32,
     pub name: String,
     /// The spell's icon in the game data (AC's `0x06` picture).
     pub ac_icon: u32,
     pub harmful: bool,
     /// Seconds left; `None` for one that does not run out.
     pub remaining: Option<f64>,
+    /// A stronger or later one of its category is in force over it.
+    pub superseded: bool,
 }
 
 /// Where getting into the world stands before character select can be used.
@@ -277,6 +281,8 @@ pub struct Item {
     pub decoration: Option<pyreal_client_contract::view::SlotDecoration>,
     /// Its cooldown: seconds left and its whole length, while it is cooling down.
     pub cooldown: Option<(f64, f64)>,
+    /// What its description and appraisal say about selling it, for Add Junk.
+    pub safety: pyreal_client_contract::view::SellSafety,
 }
 
 /// What the spells in force and vitae make of a skill, an attribute or a vital's maximum.
@@ -398,6 +404,9 @@ pub struct GameState {
     /// Whether the window is full screen, where the host can make it so: what the switch on the
     /// screens before the world shows.
     pub full_screen: Option<bool>,
+    /// The window's size, its screen's usable area and whether it is full screen, for the
+    /// Resolution row, where the host says.
+    pub window_sizes: Option<pyreal_client_contract::resolution::WindowSizes>,
     /// Where the experimental rendering effects stand on the device the client draws with, for
     /// the options page.
     pub hifi: pyreal_client_contract::options::fidelity::Availability,
@@ -589,6 +598,8 @@ pub struct GameState {
     pub link_quiet: Option<f64>,
     /// The object being examined, once the game's appraisal of it has come.
     pub examined: Option<Examined>,
+    /// The appraisals of the objects the interface watched last frame, for item details on hover.
+    pub appraised: Vec<crate::ui::appraisals::Appraised>,
     /// An examine was asked for since the last frame: the window opens.
     pub examine_opened: bool,
     /// The game asked for the examine window to close (the examine key again).
@@ -621,6 +632,16 @@ pub struct GameState {
     pub here: Option<(f64, f64)>,
     /// Whether the player stands in a dungeon, where the waypoint's arrows are not shown.
     pub in_dungeon: bool,
+    /// The character's death count, once the game has sent it: the corpse marker follows it.
+    pub deaths: Option<i32>,
+    /// The landcell the viewer stands in.
+    pub cell: Option<u32>,
+    /// The objects in the world named as the player's corpse.
+    pub own_corpses: Vec<crate::ui::corpse::Lying>,
+    /// The last outside death the game keeps for the character.
+    pub last_outside_death: Option<crate::ui::corpse::Place>,
+    /// Whether the character is a PK Lite.
+    pub pk_lite: bool,
     pub shortcuts: Vec<Shortcut>,
     pub spells: Vec<Spell>,
     /// The spell bar's tabs, each a list of spell ids.
@@ -640,10 +661,19 @@ pub struct GameState {
     pub game_time: Option<(String, String)>,
     /// Chat lines received this frame.
     pub new_chat: Vec<ChatLine>,
+    /// This frame's melee and missile combat lines, as the game composes them from its combat
+    /// notifications, whether or not combat text is squelched in chat.
+    pub combat_lines: Vec<ChatLine>,
+    /// The player's own deaths the game reported by object id this frame: the killer's name,
+    /// `Some(None)` for no killer (a fall, `@die`), `None` for a killer the client does not know.
+    pub own_deaths: Vec<Option<Option<String>>>,
     /// What the world's era has, for the option rows that need it; `None` has everything.
     pub era: Option<pyreal_primitives::EraFeatures>,
     /// The era the world plays.
     pub era_id: pyreal_primitives::EraId,
+    /// The world speaks the November 1999 client's protocol: leave out what its server does not
+    /// take.
+    pub wire_1999: bool,
     /// The world's places for the map, as its server publishes them; `None` for the ones built
     /// in for its era.
     pub map_places: Option<std::sync::Arc<str>>,
@@ -844,31 +874,39 @@ impl GameState {
             effects: vec![
                 Effect {
                     spell: 0,
+                    layered: 0,
                     name: "Strength Self VI".into(),
                     ac_icon: 0,
                     harmful: false,
                     remaining: Some(1742.0),
+                    superseded: false,
                 },
                 Effect {
                     spell: 0,
+                    layered: 0,
                     name: "Heavy Weapon Mastery V".into(),
                     ac_icon: 0,
                     harmful: false,
                     remaining: Some(412.0),
+                    superseded: false,
                 },
                 Effect {
                     spell: 0,
+                    layered: 0,
                     name: "Regeneration Self IV".into(),
                     ac_icon: 0,
                     harmful: false,
                     remaining: Some(8.0),
+                    superseded: false,
                 },
                 Effect {
                     spell: 0,
+                    layered: 0,
                     name: "Vulnerability Other III".into(),
                     ac_icon: 0,
                     harmful: true,
                     remaining: Some(24.0),
+                    superseded: false,
                 },
             ],
             target: Some(Target {

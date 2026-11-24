@@ -2,8 +2,8 @@
 //! their map, toggle types, classes and names.
 //!
 //! The shipped action map has no row for these actions, so the manager registers them beside
-//! the shipped rows in [`INPUT_MAP`]. Only the performance panel has a default key
-//! ([`DEFAULT_KEYS`]). The map is live for the whole run at the lowest priority, and a focused
+//! the shipped rows in [`INPUT_MAP`]. Only the performance panel and Hide Interface have default
+//! keys ([`DEFAULT_KEYS`]). The map is live for the whole run at the lowest priority, and a focused
 //! text box's barrier still stops its bindings.
 
 use crate::actionmap::{ActionMap, ActionMapValue, ToggleType};
@@ -116,6 +116,8 @@ pub const ACTIONS: &[DerethAction] = {
             )
         },
         one_shot(a::LOOT_ALL, class::INTERFACE, "Loot All"),
+        one_shot(a::HIDE_INTERFACE, class::INTERFACE, "Hide Interface"),
+        one_shot(a::TOGGLE_DEATH_RECAP, class::INTERFACE, "Death Journal"),
         one_shot(a::USE_SPELL_SLOT_13, class::INTERFACE, "Spell Slot 13"),
         one_shot(
             ActionId(a::USE_SPELL_SLOT_13.0 + 1),
@@ -357,15 +359,24 @@ pub const ACTIONS: &[DerethAction] = {
 
 /// Shift and Ctrl together, as a key's modifier mask: the key map's first and second meta keys.
 const CTRL_SHIFT: u32 = 0xC000_0000;
+/// Alt, as a key's modifier mask: the key map's third meta key.
+const ALT: u32 = 0x2000_0000;
 
 /// The default keys of this client's actions, each a key's scan code, its modifiers and the
-/// action: Ctrl+Shift+P shows or hides the performance panel (Command+Shift+P on a Mac). No
-/// shipped key map binds it.
-pub const DEFAULT_KEYS: &[(u16, u32, ActionId)] = &[(
-    0x19,
-    CTRL_SHIFT,
-    pyreal_client_contract::actions::pyreal::TOGGLE_PERFORMANCE_PANEL,
-)];
+/// action: Ctrl+Shift+P shows or hides the performance panel (Command+Shift+P on a Mac), and
+/// Alt+Z hides the interface. No shipped key map binds either.
+pub const DEFAULT_KEYS: &[(u16, u32, ActionId)] = &[
+    (
+        0x19,
+        CTRL_SHIFT,
+        pyreal_client_contract::actions::pyreal::TOGGLE_PERFORMANCE_PANEL,
+    ),
+    (
+        0x2C,
+        ALT,
+        pyreal_client_contract::actions::pyreal::HIDE_INTERFACE,
+    ),
+];
 
 /// Bind [`DEFAULT_KEYS`] in `map`'s [`INPUT_MAP`], on the keyboard `map` binds keys on.
 pub fn add_default_keys(map: &mut MasterInputMap) {

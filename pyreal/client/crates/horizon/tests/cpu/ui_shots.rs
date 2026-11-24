@@ -8,6 +8,8 @@
 //! - `PYREAL_UI_TABS`: a comma list of the tab indices to draw (default all of them).
 //! - `PYREAL_UI_MENUS`: more dropdowns to open, by caption, `;` between.
 //! - `PYREAL_UI_LIST`: when set, prints every control's caption on each picture's page.
+//! - `PYREAL_UI_WINDOW`: the window the Resolution row reads, `<w>x<h>/<usable w>x<usable h>`,
+//!   with `/full` for full screen (default: the host says nothing).
 
 use std::path::Path;
 use std::rc::Rc;
@@ -31,7 +33,7 @@ const W: usize = 1920;
 const H: usize = 1080;
 
 /// The dropdowns of this interface's own that the options sheet doesn't list.
-const OWN_MENUS: [&str; 2] = ["Interface Scale", "Status Bar Style"];
+const OWN_MENUS: [&str; 3] = ["Interface Scale", "Status Bar Style", "Resolution"];
 
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
@@ -71,6 +73,18 @@ fn draw_every_options_tab_and_dropdown_for_a_person_to_look_at() {
             active: true,
             ..Availability::default()
         },
+        window_sizes: std::env::var("PYREAL_UI_WINDOW").ok().map(|v| {
+            let size = |t: &str| {
+                let (w, h) = t.split_once('x').expect("<w>x<h>");
+                (w.parse().expect("a width"), h.parse().expect("a height"))
+            };
+            let mut parts = v.split('/');
+            pyreal_client_contract::resolution::WindowSizes {
+                size: size(parts.next().unwrap_or_default()),
+                usable: parts.next().map(size),
+                full_screen: parts.next() == Some("full"),
+            }
+        }),
         ..GameState::default()
     };
     let art = Arc::new(Art::new(Arc::new(
@@ -176,6 +190,30 @@ fn draw_every_options_tab_and_dropdown_for_a_person_to_look_at() {
     }
 }
 
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_the_cross_hotbars_with_each_pad_family_for_a_person_to_look_at() {
+    let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    for (name, family) in [
+        ("xbox", pyreal_input::pad::PadFamily::Xbox),
+        ("playstation", pyreal_input::pad::PadFamily::PlayStation),
+    ] {
+        let h = crate::hud::cross::marked(family, 30);
+        write(&dir.join(format!("pad-{name}.png")), &h, &h.ui.art);
+        let low = pyreal_horizon::draw::Rect::new(560.0, 700.0, 800.0, 380.0);
+        write_part(
+            &dir.join(format!("pad-{name}-bars.png")),
+            &h,
+            &h.ui.art,
+            Some(low),
+        );
+    }
+}
+
 /// Frames enough for the window to fade in and a scroll to land.
 fn settle(h: &mut Harness, state: &GameState) {
     for _ in 0..30 {
@@ -192,7 +230,32 @@ fn write(path: &Path, h: &Harness, art: &Art) {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::draw::Rect>) {
     let (sw, sh) = (h.screen.0 as usize, h.screen.1 as usize);
-    let mut px = vec![[24.0f32, 26.0, 30.0]; sw * sh];
+    // `PYREAL_UI_ALPHA`: the interface alone, see-through where it draws nothing, and its grounds
+    // the world is blurred under beside it (`<name>.grounds.txt`, `x y w h strength` a line), for
+    // `engine-view --ui --ui-grounds`.
+    let alpha = std::env::var_os("PYREAL_UI_ALPHA").is_some();
+    let mut px = vec![
+        if alpha {
+            [0.0f32; 3]
+        } else {
+            [24.0f32, 26.0, 30.0]
+        };
+        sw * sh
+    ];
+    let mut cover = vec![0.0f32; sw * sh];
+    // `PYREAL_UI_BACKDROP`: an RGB picture of the window's size drawn under the interface.
+    if let Some(back) = std::env::var_os("PYREAL_UI_BACKDROP") {
+        let file = std::fs::File::open(back).expect("the backdrop");
+        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+            .read_info()
+            .expect("a PNG backdrop");
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).expect("its pixels");
+        let step = info.color_type.samples();
+        for (p, c) in px.iter_mut().zip(buf.chunks(step)) {
+            *p = [f32::from(c[0]), f32::from(c[1]), f32::from(c[2])];
+        }
+    }
     for q in &h.list.quads {
         let image = q.tex.and_then(|t| art.image(t));
         // A turned quad covers its corners' bounds; each pixel is turned back into its own.
@@ -263,6 +326,8 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
                 for k in 0..3 {
                     p[k] = p[k] * (1.0 - a) + 255.0 * texel[k] * ca[k] * a;
                 }
+                let c = &mut cover[y * sw + x];
+                *c = *c * (1.0 - a) + a;
             }
         }
     }
@@ -276,16 +341,44 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
             (r.h as usize).min(sh - y0),
         )
     });
+    if alpha {
+        let grounds: String = h
+            .list
+            .backdrops
+            .iter()
+            .map(|(r, s)| format!("{} {} {} {} {s}\n", r.x, r.y, r.w, r.h))
+            .collect();
+        std::fs::write(path.with_extension("grounds.txt"), grounds).expect("the grounds' file");
+    }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let rgb: Vec<u8> = (y0..y0 + ph)
-        .flat_map(|y| px[y * sw + x0..y * sw + x0 + pw].iter())
-        .flat_map(|p| p.map(|c| c.clamp(0.0, 255.0) as u8))
+        .flat_map(|y| (y * sw + x0..y * sw + x0 + pw).map(|i| (px[i], cover[i])))
+        .flat_map(|(p, a)| {
+            let c = p.map(|c| {
+                let c = if alpha && a > 0.0 { c / a } else { c };
+                c.clamp(0.0, 255.0) as u8
+            });
+            if alpha {
+                vec![
+                    c[0],
+                    c[1],
+                    c[2],
+                    (a * 255.0).round().clamp(0.0, 255.0) as u8,
+                ]
+            } else {
+                c.to_vec()
+            }
+        })
         .collect();
     let (sw, sh) = (pw, ph);
     let file = std::fs::File::create(path).expect("the picture's file");
     #[allow(clippy::cast_possible_truncation)]
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), sw as u32, sh as u32);
-    enc.set_color(png::ColorType::Rgb);
+    enc.set_color(if alpha {
+        png::ColorType::Rgba
+    } else {
+        png::ColorType::Rgb
+    });
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()
         .and_then(|mut w| w.write_image_data(&rgb))
@@ -310,7 +403,11 @@ fn write_part(path: &Path, h: &Harness, art: &Art, part: Option<pyreal_horizon::
 /// the status bar style by its settings word.
 /// `PYREAL_UI_HUD_OPEN` opens `character` or `spellbook` in place of the fellowship window.
 /// `PYREAL_UI_HUD_WAYPOINT` (`ns,ew`) sets a waypoint, the character standing at
-/// `PYREAL_UI_HUD_HERE` (`ns,ew`, default `40.4,34.5`).
+/// `PYREAL_UI_HUD_HERE` (`ns,ew`, default `40.4,34.5`); `PYREAL_UI_HUD_CORPSE` (`ns,ew`) marks a
+/// corpse there. `PYREAL_UI_HUD_TRACKER` pins a page, a contract and two quest timers to the
+/// quest tracker with the rent owed; `journal` or `notebook` also opens that Journal tab.
+/// `PYREAL_UI_HUD_EFFECTS` puts beneficial effects in force, four of them in their last minute,
+/// and a harmful one; `PYREAL_UI_HUD_DATS` (a data folder) draws their spells' own icons.
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
 fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
@@ -495,7 +592,8 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
         Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?))
     };
     let waypoint = env("PYREAL_UI_HUD_WAYPOINT").and_then(pair);
-    if waypoint.is_some() {
+    let corpse = env("PYREAL_UI_HUD_CORPSE").and_then(pair);
+    if waypoint.is_some() || corpse.is_some() {
         let here = env("PYREAL_UI_HUD_HERE")
             .and_then(pair)
             .unwrap_or((40.4, 34.5));
@@ -570,9 +668,51 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
             bitfield: 0,
         })
         .collect();
+    if env("PYREAL_UI_HUD_EFFECTS").is_some() {
+        state.effects = [
+            ("Strength Self VI", false, 52.0),
+            ("Armor Self VI", false, 37.0),
+            ("Focus Self VI", false, 21.0),
+            ("Regeneration Self VI", false, 7.0),
+            ("Quickness Self VI", false, 1650.0),
+            ("Imperil Other V", true, 140.0),
+        ]
+        .into_iter()
+        .map(|(name, harmful, left)| pyreal_horizon::ui::game::Effect {
+            spell: 0,
+            layered: 0,
+            name: name.into(),
+            ac_icon: 0,
+            harmful,
+            remaining: Some(left),
+            superseded: false,
+        })
+        .collect();
+    }
     let art = Arc::new(Art::new(Arc::new(
         pyreal_horizon::pieces::Pieces::built_in(),
     )));
+    // The spells' own icons, by name, from the data files' spell table.
+    if let Some(dats) = env("PYREAL_UI_HUD_DATS") {
+        use pyreal_assets::Decode as _;
+        use pyreal_horizon::art::AcArt as _;
+        use pyreal_primitives::AssetSource as _;
+        let store = pyreal_dat::RetailDatStore::open_dir(std::path::Path::new(&dats))
+            .expect("the data files open");
+        let id = pyreal_primitives::DataId(0x0E00_000E);
+        let table = pyreal_assets::tables::SpellTable::decode_payload(
+            id,
+            &store.read(id).expect("the spell table"),
+        )
+        .expect("the spell table decodes");
+        for e in &mut state.effects {
+            if let Some((spell, b)) = table.spells.iter().find(|(_, b)| b.name == e.name) {
+                e.spell = *spell;
+                e.ac_icon = b.icon;
+            }
+        }
+        art.set_ac_store(Arc::new(store));
+    }
     let size = env("PYREAL_UI_HUD_SIZE")
         .and_then(|s| {
             let (w, h) = s.split_once('x')?;
@@ -589,6 +729,10 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
             .unwrap_or(1),
         ..Default::default()
     };
+    let tracker = env("PYREAL_UI_HUD_TRACKER");
+    if tracker.is_some() {
+        tracker_state(&mut state);
+    }
     let mut h = Harness {
         ui: HorizonUi::new(Arc::clone(&art), options),
         list: DrawList::default(),
@@ -596,10 +740,40 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
         screen: size,
     };
     h.frame(&state);
+    if let Some(kind) = &tracker {
+        use pyreal_horizon::ui::panels::tracker::Pin;
+        let page = Pin::page(&state.journal.pages[0]).expect("a named page");
+        for pin in [
+            page,
+            Pin::Contract(7),
+            Pin::Quest("colosseum".into()),
+            Pin::Heard("Quest from Ayn Tayan".into()),
+        ] {
+            h.ui.windows.tracker.pin(pin, &state);
+        }
+        if kind == "journal" || kind == "notebook" {
+            use pyreal_horizon::ui::panels::JournalTab;
+            h.ui.windows.open(WindowId::Journal, 0.0);
+            h.ui.windows.show_journal_tab(if kind == "notebook" {
+                JournalTab::Notebook
+            } else {
+                JournalTab::Timers
+            });
+        }
+    }
     if let Some((ns, ew)) = waypoint {
         h.ui.windows
             .waypoints
             .set(pyreal_horizon::ui::waypoint::Waypoint { ns, ew, name: None });
+    }
+    if let Some((ns, ew)) = corpse {
+        let at = pyreal_horizon::ui::corpse::Corpse {
+            ns,
+            ew,
+            in_dungeon: false,
+            cell: None,
+        };
+        h.ui.windows.waypoints.corpse.mark(at, 0.0);
     }
     if env("PYREAL_UI_HUD_LAYOUT").is_some() {
         h.ui.windows.open(WindowId::Layout, 0.0);
@@ -629,6 +803,51 @@ fn draw_the_hud_with_vitals_and_a_fellowship_for_a_person_to_look_at() {
     }
     let name = std::env::var("PYREAL_UI_HUD_NAME").unwrap_or_else(|_| "hud".into());
     write(&dir.join(format!("{name}.png")), &h, &art);
+}
+
+/// The quest tracker's things for the HUD picture: a page with a timer, a contract, a quest timer
+/// from the world and one heard in chat, and the rent owed in two days.
+fn tracker_state(state: &mut GameState) {
+    use pyreal_client_contract::journal::{HeardTimer, JournalPage, QuestTimerView};
+    use pyreal_client_contract::view::{ContractEntry, HouseDataView};
+    state.clock = 1_000.0;
+    state.wall = 1_800_000_000;
+    let page = JournalPage {
+        title: "Drudge Hideout key".into(),
+        page_number: 1,
+        made: 1_700_000_000,
+        timer_running: true,
+        timer_stamp: 1_000.0 + 2.0 * 3_600.0 + 840.0,
+        ..JournalPage::default()
+    };
+    state.journal.pages = vec![page.clone()];
+    state.journal.draft = page;
+    state.journal.current_page = 1;
+    state.journal.loaded = true;
+    state.journal.quests_known = true;
+    state.journal.quests = vec![QuestTimerView {
+        name: "colosseum".into(),
+        title: "Colosseum".into(),
+        min_delta: 72_000,
+        ready_at: Some(f64::NEG_INFINITY),
+        ..QuestTimerView::default()
+    }];
+    state.journal.heard = vec![HeardTimer {
+        title: "Quest from Ayn Tayan".into(),
+        ready_at: 1_000.0 + 15.0 * 3_600.0 + 1_800.0,
+        seconds: 57_600,
+    }];
+    state.contracts = vec![ContractEntry {
+        contract_id: 7,
+        name: "Hunting Olthoi in the Deep".into(),
+        status: "12 of 30 slain".into(),
+        ..ContractEntry::default()
+    }];
+    state.world_services.house = Some(HouseDataView {
+        rent_owed: true,
+        maintenance_next_due: 1_800_000_000 + 2 * 86_400 + 3 * 3_600,
+        ..HouseDataView::default()
+    });
 }
 
 /// Not a claim: an instrument that draws character creation's Profession, Attributes, Skills and
@@ -835,6 +1054,7 @@ fn draw_every_admin_section_for_a_person_to_look_at() {
 /// `PYREAL_MAP_PLACES` a places document to draw in place of the built-in ones;
 /// `PYREAL_MAP_LIST` opens the Places list; `PYREAL_MAP_HIDE` turns kinds off (`npc,camp`).
 /// `PYREAL_MAP_LINK` (`42.2,33.8`) opens the map as a coordinate link does, at that place.
+/// `PYREAL_MAP_CORPSE` and `PYREAL_MAP_WAYPOINT` (`42.2,33.8`) mark a corpse and set a waypoint.
 #[test]
 #[ignore = "an instrument: set PYREAL_UI_SHOTS and PYREAL_MAP_DATS"]
 fn draw_the_map_and_its_places_for_a_person_to_look_at() {
@@ -914,6 +1134,21 @@ fn draw_the_map_and_its_places_for_a_person_to_look_at() {
     if let Some(at) = env("PYREAL_MAP_LINK").map(pair) {
         view.centre = map_pixel(at.0, at.1);
         view.pin = Some((at, None));
+    }
+    if let Some((ns, ew)) = env("PYREAL_MAP_CORPSE").map(pair) {
+        let at = pyreal_horizon::ui::corpse::Corpse {
+            ns,
+            ew,
+            in_dungeon: false,
+            cell: None,
+        };
+        h.ui.windows.waypoints.corpse.mark(at, 0.0);
+    }
+    if let Some((ns, ew)) = env("PYREAL_MAP_WAYPOINT").map(pair) {
+        let name = Some("Holtburg road".to_owned());
+        h.ui.windows
+            .waypoints
+            .set(pyreal_horizon::ui::waypoint::Waypoint { ns, ew, name });
     }
     for _ in 0..60 {
         h.frame(&state);
@@ -1754,4 +1989,572 @@ fn draw_the_journal_for_a_person_to_look_at() {
             .find(|(id, _)| *id == WindowId::Map)
             .map(|(_, r)| r);
     write_part(&dir.join("journal-map.png"), &h, &art, r);
+}
+
+/// Not a claim: item details on hover over the inventory, alone, beside the worn helm, with the
+/// worn helm's appraisal failed and with a spell on it, and a coat beside the three pieces it
+/// would replace, into `<PYREAL_UI_SHOTS>/item-details-*.png`.
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_item_details_on_hover_for_a_person_to_look_at() {
+    use pyreal_client_contract::view::{
+        AppraisalSpellView, AppraisalView, DropTarget, MagicInfoView,
+    };
+    use pyreal_horizon::ui::appraisals::Appraised;
+    use pyreal_horizon::ui::game::{ExaminePane, Examined, Item};
+    use pyreal_horizon::ui::kit::Drop;
+    use pyreal_primitives::ObjectId;
+    let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    store::init();
+    let art = Arc::new(Art::new(Arc::new(
+        pyreal_horizon::pieces::Pieces::built_in(),
+    )));
+    let me = ObjectId(0x5000_0001);
+    let (new, old) = (ObjectId(0x8000_0020), ObjectId(0x8000_0021));
+    let helm = |id, name: &str, worn| Item {
+        id,
+        name: name.into(),
+        stack: Some(1),
+        worn,
+        equip_locations: 0x1,
+        ..Item::default()
+    };
+    let spell = |name: &str, description: &str| AppraisalSpellView {
+        resolved: true,
+        name: name.into(),
+        description: description.into(),
+        ..AppraisalSpellView::default()
+    };
+    let view = |level: i32, value: i32, workmanship: i32, success: bool| AppraisalView {
+        success,
+        delivery: 1,
+        value: Some(value),
+        burden: Some(250),
+        valid_locations: 0x1,
+        armor_level: Some(level),
+        armor_mods: Some([1.0, 0.8, 1.2, 0.6, 0.4, 0.6, 0.0, 0.4]),
+        workmanship: Some(workmanship),
+        magic: MagicInfoView {
+            spells: Some(vec![
+                spell(
+                    "Impenetrability II",
+                    "Improves a shield or piece of armor's armor value by 50 points.",
+                ),
+                spell(
+                    "Strength Self III",
+                    "Increases the wielder's Strength by 20 points.",
+                ),
+            ]),
+            spellcraft: Some(150),
+            cur_mana: Some(410),
+            max_mana: Some(500),
+            mana_rate: Some(-0.05),
+            ..MagicInfoView::default()
+        },
+        ..AppraisalView::default()
+    };
+    let appraised = |id, title: &str, v: &AppraisalView| {
+        let detail = Examined {
+            id,
+            pane: ExaminePane::Item,
+            title: title.into(),
+            runs: pyreal_presentation::appraisal::item_description_runs(v)
+                .into_iter()
+                .map(|r| (r.text, r.same_line, r.color))
+                .collect(),
+            ..Examined::default()
+        };
+        Appraised::of(id, v, detail)
+    };
+    let mut state = GameState {
+        in_world: true,
+        name: "Tester".into(),
+        player_id: Some(me),
+        pack: vec![helm(new, "Steel Helm", 0)],
+        equipped: vec![helm(old, "Leather Cap", 0x1)],
+        ..GameState::default()
+    };
+    state.appraised = vec![
+        appraised(new, "Steel Helm", &view(120, 1200, 7, true)),
+        appraised(old, "Leather Cap", &view(80, 400, 4, true)),
+    ];
+    // The cap with Impenetrability VI cast on it.
+    let mut buffed = view(280, 400, 4, true);
+    if let Some(spells) = buffed.magic.spells.as_mut() {
+        spells.push(AppraisalSpellView {
+            raw_id: 0x8000_05CE,
+            enchantment: true,
+            category: 160,
+            ..spell(
+                "Impenetrability VI",
+                "Improves a shield or piece of armor's armor value by 200 points.",
+            )
+        });
+    }
+    buffed.enchantment_mods.insert(0x1C, true);
+    let coat_places = 0x1E00;
+    let piece = |id: u32, name: &str, places: u32| Item {
+        equip_locations: places,
+        ..helm(ObjectId(id), name, places)
+    };
+    let armour = |places: u32, level: i32, value: i32| AppraisalView {
+        valid_locations: places,
+        ..view(level, value, 6, true)
+    };
+    let mut coat = state.clone();
+    coat.pack = vec![piece(0x8000_0030, "Chainmail Coat", 0)];
+    coat.pack[0].equip_locations = coat_places;
+    coat.equipped = vec![
+        piece(0x8000_0031, "Breastplate", 0x200),
+        piece(0x8000_0032, "Girth", 0x400),
+        piece(0x8000_0033, "Sleeves", 0x1800),
+    ];
+    coat.appraised = vec![
+        appraised(
+            ObjectId(0x8000_0030),
+            "Chainmail Coat",
+            &armour(coat_places, 300, 3000),
+        ),
+        appraised(
+            ObjectId(0x8000_0031),
+            "Breastplate",
+            &armour(0x200, 350, 1500),
+        ),
+        appraised(ObjectId(0x8000_0032), "Girth", &armour(0x400, 250, 800)),
+        appraised(ObjectId(0x8000_0033), "Sleeves", &armour(0x1800, 200, 900)),
+    ];
+    for (name, shift, worn) in [
+        ("item-details.png", false, None),
+        ("item-details-compare.png", true, None),
+        (
+            "item-details-compare-failed.png",
+            true,
+            Some(view(80, 400, 4, false)),
+        ),
+        (
+            "item-details-compare-buffed.png",
+            true,
+            Some(buffed.clone()),
+        ),
+        ("item-details-compare-coat.png", true, None),
+    ] {
+        let mut state = if name.ends_with("coat.png") {
+            coat.clone()
+        } else {
+            state.clone()
+        };
+        if let Some(v) = worn {
+            state.appraised[1] = appraised(old, "Leather Cap", &v);
+        }
+        let mut h = Harness {
+            ui: HorizonUi::new(Arc::clone(&art), Default::default()),
+            list: DrawList::default(),
+            input: InputFrame::default(),
+            screen: (W as f32, H as f32),
+        };
+        h.ui.windows.open(WindowId::Inventory, 0.0);
+        settle(&mut h, &state);
+        let at =
+            h.ui.drops
+                .iter()
+                .rev()
+                .find(|(_, t)| {
+                    matches!(
+                        t,
+                        Some(Drop::Target(DropTarget::ItemListSlot { index: 0, .. }))
+                    )
+                })
+                .map(|(r, _)| *r)
+                .expect("the first slot");
+        h.move_to(at.x + at.w / 2.0, at.y + at.w / 2.0);
+        h.input.shift = shift;
+        settle(&mut h, &state);
+        write(&dir.join(name), &h, &art);
+    }
+}
+
+/// Not a claim: the inventory searched, with Keep and Junk marks, the question before a Keep item
+/// is dropped, and the vendor's Sell tab with Add Junk, into `<PYREAL_UI_SHOTS>/marks-*.png`.
+/// With `PYREAL_MAP_DATS` the items carry icons from the data files.
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_the_pack_search_and_item_marks_for_a_person_to_look_at() {
+    use pyreal_client_contract::view::{ShopView, SlotDecoration};
+    use pyreal_horizon::art::AcArt as _;
+    use pyreal_horizon::ui::game::Item;
+    use pyreal_horizon::ui::panels::marks::Mark;
+    use pyreal_primitives::ObjectId;
+    use pyreal_rules::weenie::item_type as t;
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    let Some(dir) = env("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    store::init();
+    let art = Arc::new(Art::new(Arc::new(
+        pyreal_horizon::pieces::Pieces::built_in(),
+    )));
+    if let Some(dats) = env("PYREAL_MAP_DATS").map(std::path::PathBuf::from) {
+        let store = if dats.join("portal.dat").exists() {
+            pyreal_dat::RetailDatStore::open_classic_dir(&dats)
+        } else {
+            pyreal_dat::RetailDatStore::open_dir(&dats)
+        }
+        .expect("the data files open");
+        art.set_ac_store(Arc::new(store));
+    }
+    let things = [
+        ("Ivory Long Sword", t::MELEE_WEAPON, 0x0600_1355),
+        ("Bronze Helm", t::ARMOR, 0x0600_1393),
+        ("Salvaged Iron", t::TINKERING_MATERIAL, 0x0600_33A4),
+        ("Black Opal", t::GEM, 0x0600_10E6),
+        ("Leather Boots", t::ARMOR, 0x0600_1043),
+        ("Healing Kit", t::MISC, 0x0600_1062),
+        ("Yew Longbow", t::MISSILE_WEAPON, 0x0600_1036),
+        ("Chainmail Gauntlets", t::ARMOR, 0x0600_1031),
+        ("Bread", t::FOOD, 0x0600_1052),
+        ("Copper Ring", t::JEWELRY, 0x0600_10B2),
+    ];
+    let item = |i: u32, (name, kind, icon): (&str, u32, u32)| Item {
+        id: ObjectId(0x8000_0400 + i),
+        name: name.into(),
+        wcid: 0x400 + i,
+        ac_icon: Some(icon),
+        stack: Some(1),
+        safety: pyreal_client_contract::view::SellSafety {
+            appraised: true,
+            value: Some(100),
+            ..Default::default()
+        },
+        decoration: Some(SlotDecoration {
+            obj_type: kind,
+            icon_id: icon,
+            ..SlotDecoration::default()
+        }),
+        ..Item::default()
+    };
+    let mut state = GameState {
+        in_world: true,
+        name: "Tester".into(),
+        player_id: Some(ObjectId(0x5000_0001)),
+        pack: (0u32..).zip(things).map(|(i, x)| item(i, x)).collect(),
+        pack_capacity: Some(102),
+        side_packs: vec![
+            (
+                item(20, ("Sack", t::CONTAINER, 0x0600_1080)),
+                vec![item(21, ("Diamond Helm", t::ARMOR, 0x0600_1393))],
+            ),
+            (item(22, ("Pouch", t::CONTAINER, 0x0600_1080)), Vec::new()),
+        ],
+        ..GameState::default()
+    };
+    let harness = || Harness {
+        ui: HorizonUi::new(Arc::clone(&art), Default::default()),
+        list: DrawList::default(),
+        input: InputFrame::default(),
+        screen: (W as f32, H as f32),
+    };
+    let window = |h: &Harness, id: WindowId| {
+        h.ui.windows
+            .rects(1.0)
+            .into_iter()
+            .find(|(w, _)| *w == id)
+            .map(|(_, r)| r)
+    };
+    let mark = |h: &mut Harness, state: &GameState| {
+        let it = pyreal_horizon::ui::panels::marks::carried(state)
+            .find(|i| i.id == ObjectId(0x8000_0400))
+            .cloned()
+            .expect("carried");
+        h.ui.windows.marks.set(&it, Some(Mark::Keep));
+        let it = pyreal_horizon::ui::panels::marks::carried(state)
+            .find(|i| i.id == ObjectId(0x8000_0402))
+            .cloned()
+            .expect("carried");
+        h.ui.windows.marks.set(&it, Some(Mark::Junk));
+        let it = pyreal_horizon::ui::panels::marks::carried(state)
+            .find(|i| i.id == ObjectId(0x8000_0408))
+            .cloned()
+            .expect("carried");
+        h.ui.windows.marks.set(&it, Some(Mark::Junk));
+    };
+    let mut h = harness();
+    h.ui.windows.open(WindowId::Inventory, 0.0);
+    settle(&mut h, &state);
+    let r = window(&h, WindowId::Inventory);
+    write_part(&dir.join("marks-inventory-before.png"), &h, &art, r);
+    mark(&mut h, &state);
+    settle(&mut h, &state);
+    write_part(&dir.join("marks-inventory-marked.png"), &h, &art, r);
+    h.ui.windows.pack_search = "helm".into();
+    settle(&mut h, &state);
+    write_part(&dir.join("marks-inventory-search-helm.png"), &h, &art, r);
+    h.ui.windows.pack_search = "junk".into();
+    settle(&mut h, &state);
+    write_part(&dir.join("marks-inventory-search-junk.png"), &h, &art, r);
+    h.ui.windows.pack_search.clear();
+    let mut drop = vec![pyreal_client_contract::UiRequest::PutInWorld(ObjectId(
+        0x8000_0400,
+    ))];
+    h.ui.windows.hold_keep(&state, &mut drop);
+    settle(&mut h, &state);
+    write(&dir.join("marks-keep-question.png"), &h, &art);
+
+    state.shop = Some(ShopView {
+        open: true,
+        sell_mode: true,
+        ..ShopView::default()
+    });
+    let mut h = harness();
+    h.frame(&state);
+    mark(&mut h, &state);
+    settle(&mut h, &state);
+    let r = window(&h, WindowId::Vendor);
+    write_part(&dir.join("marks-vendor-sell.png"), &h, &art, r);
+}
+
+/// Not a claim: floating combat numbers over a creature and over the character a moment into a
+/// fight, into `<PYREAL_UI_SHOTS>/combat-numbers-<ms>.png` for each age in `PYREAL_UI_AGES`
+/// (milliseconds, default `150,500,1000`). The creature's head stands at `PYREAL_UI_OVER` (`x,y`,
+/// default `957,486`) and the character's at `PYREAL_UI_PLAYER` (default `960,900`).
+/// `PYREAL_UI_BACKDROP` puts a picture of the world under them.
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_combat_numbers_for_a_person_to_look_at() {
+    use pyreal_client_model::chat::text_type;
+    use pyreal_horizon::draw::{Rect, Spot};
+    use pyreal_horizon::ui::game::{BlipKind, ChatLine, Nameplate, Relation, Target};
+    use pyreal_primitives::ObjectId;
+    let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    let point = |name: &str, default: (f32, f32)| {
+        std::env::var(name).ok().map_or(default, |v| {
+            let (x, y) = v.split_once(',').expect("x,y");
+            (x.parse().expect("x"), y.parse().expect("y"))
+        })
+    };
+    let over = point("PYREAL_UI_OVER", (957.0, 486.0));
+    let player_at = point("PYREAL_UI_PLAYER", (960.0, 900.0));
+    let (player, flamma) = (ObjectId(0x5000_0001), ObjectId(0x8300_0801));
+    let mut state = GameState {
+        in_world: true,
+        connected: true,
+        name: "Tester".into(),
+        player_id: Some(player),
+        radar_range: 75.0,
+        target: Some(Target {
+            id: flamma,
+            name: "Flamma".into(),
+            relation: Relation::Engaged,
+            ..Target::default()
+        }),
+        nameplates: vec![Nameplate {
+            id: flamma,
+            name: "Flamma".into(),
+            x: over.0,
+            y: over.1,
+            kind: BlipKind::Selected,
+            selected: true,
+            bounds: Rect::new(over.0 - 40.0, over.1, 80.0, 200.0),
+            distance: Some(12.0),
+            nearness: 1.0,
+        }],
+        ..GameState::default()
+    };
+    let lines = [
+        (
+            text_type::COMBAT_SELF,
+            "You slash Flamma for 38 points of slashing damage!",
+        ),
+        (
+            text_type::MAGIC,
+            "You freeze Flamma for 112 points with Frost Bolt VI.",
+        ),
+        (text_type::COMBAT_SELF, "Flamma evaded your attack."),
+        (
+            text_type::MAGIC,
+            "Critical hit! You freeze Flamma for 246 points with Frost Bolt VI.",
+        ),
+        (
+            text_type::COMBAT_ENEMY,
+            "Flamma burns your chest for 27 points of fire damage!",
+        ),
+        (
+            text_type::MAGIC,
+            "You cast Heal Self VI and restore 80 points of your health.",
+        ),
+    ];
+    let ages: Vec<u32> = std::env::var("PYREAL_UI_AGES")
+        .unwrap_or_else(|_| "150,500,1000".into())
+        .split(',')
+        .map(|a| a.trim().parse().expect("milliseconds"))
+        .collect();
+    for age in ages {
+        let mut h = Harness::with_built_in_art();
+        // A line every tenth of a second, the last `age` ago.
+        for (ty, text) in lines {
+            state.new_chat = vec![ChatLine {
+                chat_type: u8::try_from(ty).expect("a chat type"),
+                text: text.into(),
+                window: 0,
+            }];
+            h.frame(&state);
+            state.new_chat.clear();
+            for _ in 0..5 {
+                h.frame(&state);
+            }
+        }
+        for _ in 0..(age * 60 / 1000) {
+            h.frame(&state);
+        }
+        h.list.follow(|id, _| {
+            let (x, y) = if id == player { player_at } else { over };
+            Some(Spot::at(x, y))
+        });
+        let art = Arc::clone(&h.ui.art);
+        write(&dir.join(format!("combat-numbers-{age}.png")), &h, &art);
+    }
+}
+
+#[test]
+#[ignore = "an instrument: set PYREAL_UI_SHOTS to a folder"]
+fn draw_the_death_recap_for_a_person_to_look_at() {
+    use pyreal_client_model::chat::text_type;
+    use pyreal_horizon::ui::game::{ChatLine, Vital};
+    let Some(dir) = std::env::var_os("PYREAL_UI_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).expect("the pictures' folder");
+    let world = |deaths| GameState {
+        in_world: true,
+        connected: true,
+        name: "Tester".into(),
+        address: "127.0.0.1:9000".into(),
+        here: Some((40.4, 34.5)),
+        health: Vital {
+            current: 100,
+            max: 100,
+        },
+        deaths: Some(deaths),
+        ..GameState::default()
+    };
+    // Each picture's name, then its lines: chat type, text and the health after it.
+    type Lines = &'static [(u32, &'static str, u32)];
+    let fights: [(&str, Lines); 2] = [
+        (
+            "death-recap",
+            &[
+                (
+                    text_type::COMBAT_ENEMY,
+                    "Mosswart Elder slashes your chest for 24 points of slashing damage!",
+                    76,
+                ),
+                (
+                    text_type::MAGIC,
+                    "Mosswart Elder scorches you for 41 points with Flame Bolt IV.",
+                    35,
+                ),
+                (
+                    text_type::MAGIC,
+                    "You cast Heal Self VI and restore 52 points of your health.",
+                    87,
+                ),
+                (
+                    text_type::MAGIC,
+                    "Drudge Sorcerer casts Drain Health and drains 18 points of your health.",
+                    69,
+                ),
+                (
+                    text_type::COMBAT_ENEMY,
+                    "Mosswart Elder cuts your hand for 15 points of slashing damage!",
+                    54,
+                ),
+                (
+                    text_type::MAGIC,
+                    "You receive 9 points of periodic nether damage.",
+                    45,
+                ),
+                (
+                    text_type::DEFAULT,
+                    "Mosswart Elder cleaves you in twain!",
+                    0,
+                ),
+            ],
+        ),
+        (
+            "death-recap-no-hits",
+            &[(text_type::DEFAULT, "You died!", 0)],
+        ),
+    ];
+    for (name, lines) in fights {
+        let mut h = Harness::with_built_in_art();
+        h.ui.options.death_recap_opens = true;
+        let mut state = world(3);
+        settle(&mut h, &state);
+        // An earlier death, a few minutes before, for the list of deaths.
+        if name == "death-recap" {
+            state.new_chat = vec![ChatLine {
+                chat_type: u8::try_from(text_type::DEFAULT).expect("a chat type"),
+                text: "Drudge Skulker splits you apart!".into(),
+                window: 0,
+            }];
+            state.deaths = Some(4);
+            h.frame(&state);
+            state.new_chat.clear();
+            for _ in 0..60 * 150 {
+                h.frame(&state);
+            }
+        }
+        let died = state.deaths.unwrap_or(3) + 1;
+        for (i, (ty, text, health)) in lines.iter().enumerate() {
+            state.health.current = *health;
+            if i + 1 == lines.len() {
+                state.deaths = Some(died);
+            }
+            state.new_chat = vec![ChatLine {
+                chat_type: u8::try_from(*ty).expect("a chat type"),
+                text: (*text).into(),
+                window: 0,
+            }];
+            h.frame(&state);
+            state.new_chat.clear();
+            for _ in 0..40 {
+                h.frame(&state);
+            }
+        }
+        // The items lost, a few seconds after the death, and the vitae penalty.
+        if name == "death-recap" {
+            state.new_chat = vec![ChatLine {
+                chat_type: 0,
+                text: "You've lost 312 Pyreals, your 4 Mana Charges, and your Iron Kite Shield!"
+                    .into(),
+                window: 0,
+            }];
+            h.frame(&state);
+            state.new_chat.clear();
+            state.vitae = Some(0.95);
+        }
+        state.here = Some((40.4, 33.0));
+        state.health.current = 100;
+        settle(&mut h, &state);
+        let art = Arc::clone(&h.ui.art);
+        let k = h.ui.layout_scale(h.screen);
+        let window =
+            h.ui.windows
+                .rects(k)
+                .into_iter()
+                .find(|(id, _)| *id == WindowId::Journal)
+                .map(|(_, r)| r.inset(-12.0));
+        write_part(&dir.join(format!("{name}.png")), &h, &art, window);
+        write(&dir.join(format!("{name}-screen.png")), &h, &art);
+    }
 }

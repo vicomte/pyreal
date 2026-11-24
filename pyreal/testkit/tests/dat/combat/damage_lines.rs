@@ -446,8 +446,8 @@ pub(super) fn a_critical_a_sneak_and_a_reckless_swing_each_say_so() {
     c.shutdown();
 }
 
-/// Both lines are composed for the chat, and squelching the combat channel stops them being
-/// composed at all.
+/// Both lines are composed for the chat, and squelching the combat channel keeps them out of it;
+/// the interface's own combat readers still get them.
 pub(super) fn both_lines_reach_the_window_and_a_squelch_stops_them() {
     let mut c = a_client_in_the_world();
     c.when(attacker("Drudge Slave", dt::SLASH, 0.30, 12, 0, 0));
@@ -459,9 +459,8 @@ pub(super) fn both_lines_reach_the_window_and_a_squelch_stops_them() {
         ];
     c.shutdown();
 
-    // The squelch, in its own client: the gate is the first thing both handlers reach, so a
-    // squelched combat channel composes nothing at all. It is the negative control for every
-    // sentence above.
+    // The squelch, in its own client: a squelched combat channel puts nothing in the chat. It is
+    // the negative control for every sentence above.
     let mut c = a_client_in_the_world();
     c.world_mut()
         .chat
@@ -473,7 +472,8 @@ pub(super) fn both_lines_reach_the_window_and_a_squelch_stops_them() {
     c.when(defender("Drudge", dt::SLASH, 0.3, 12, 1, 0, 0));
     let squelched = c.view().chat_lines().is_empty()
         && c.view().hud().stats.combat_lines_squelched == 2
-        && c.view().hud().stats.combat_lines == 0;
+        && c.view().hud().stats.combat_lines == 0
+        && c.view().hud().pending_combat.len() == 2;
 
     c.assert_behaviour(
         "combat.damage-line.both-lines-reach-the-window-and-a-squelch-stops-them",

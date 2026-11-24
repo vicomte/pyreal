@@ -129,6 +129,19 @@ impl Hud {
         text_type: u32,
         body: String,
     ) {
+        let line = ChatMessage {
+            feedback: pyreal_client_contract::feedback::Feedback::ORDINARY,
+            ty: u8::try_from(text_type).unwrap_or(0),
+            body,
+            prefix: None,
+            window: 0,
+        };
+        // The interface's combat readers see the line whatever the squelch; an interface that
+        // takes none keeps only the newest.
+        if self.pending_combat.len() >= 64 {
+            self.pending_combat.remove(0);
+        }
+        self.pending_combat.push(line.clone());
         if world.chat.is_squelched(
             pyreal_primitives::ObjectId(0),
             "",
@@ -137,13 +150,7 @@ impl Hud {
             self.stats.combat_lines_squelched += 1;
             return;
         }
-        chat.push(ChatMessage {
-            feedback: pyreal_client_contract::feedback::Feedback::ORDINARY,
-            ty: u8::try_from(text_type).unwrap_or(0),
-            body,
-            prefix: None,
-            window: 0,
-        });
+        chat.push(line);
         self.stats.combat_lines += 1;
     }
 
@@ -387,6 +394,17 @@ impl Hud {
         world: &pyreal_client_model::World,
     ) -> pyreal_client_contract::chat::window::ReplyTargets {
         world.chat.reply_targets()
+    }
+
+    /// The player's own deaths `0x019E` reported since the last call, oldest first: each the
+    /// killer's name, `Some(None)` for no killer, `None` for one not in the object table.
+    pub fn take_own_deaths(&mut self) -> Vec<Option<Option<String>>> {
+        std::mem::take(&mut self.pending_deaths)
+    }
+
+    /// The combat notification lines since the last call, oldest first, squelched or not.
+    pub fn take_combat_lines(&mut self) -> Vec<ChatMessage> {
+        std::mem::take(&mut self.pending_combat)
     }
 
     /// The chat lines waiting for the chat windows, oldest first, for the screen generation

@@ -22,7 +22,9 @@ use crate::ui::paint::{Align, Painter, TextStyle};
 use crate::ui::panels::{WindowId, Windows};
 use crate::ui::Outcome;
 
+mod corpse;
 pub mod cross;
+pub mod effects_ending;
 mod glyphs;
 mod lamps;
 pub mod pad;
@@ -131,8 +133,12 @@ struct Tip {
 pub struct Hud {
     /// The log window.
     pub log: crate::ui::chat::ChatLog,
+    /// The damage and healing numbers over bodies in the world.
+    pub combat_numbers: crate::ui::combat_numbers::CombatNumbers,
     /// The main menu entry whose sub-menu is open.
     menu_open: Option<usize>,
+    /// The low health warning.
+    pub low_health: crate::ui::low_health::LowHealth,
     tip: Option<Tip>,
     /// The selection the last health query was sent for.
     queried: Option<pyreal_primitives::ObjectId>,
@@ -183,12 +189,16 @@ pub struct Hud {
     effects_opened_at: f64,
     window_over_effects: bool,
     effects_scroll: f32,
+    /// The effects ending soon, shown as icons of their own.
+    pub ending: effects_ending::EffectsEnding,
     /// How far the radar is zoomed in: 1 its full reach, down to a quarter; 0 is unset (full).
     radar_zoom: f32,
     /// The heading the radar shows, easing after the character's, and when it was last moved.
     radar_heading: Option<(f32, f64)>,
     /// How far the waypoint is as the radar showed it this frame, and where.
     pub waypoint_distance: Option<(String, Rect)>,
+    /// Where the corpse's stone stood on the radar's rim this frame.
+    pub corpse_stone: Option<Rect>,
     /// The minimap turns with the character; otherwise it stands north up.
     pub minimap_rotates: bool,
     /// How many rows the spell bar shows, as the player chose.
@@ -236,6 +246,29 @@ pub const ACTION_PREVIOUS_MONSTER: u32 = 0x1000_0036;
 pub const ACTION_NEXT_MONSTER: u32 = 0x1000_0037;
 /// The game's map action, which opens and closes the Map window.
 pub const ACTION_MAP: u32 = 0x1000_0017;
+/// `name` with the player's first key for the first of `actions` that has one, as the key
+/// bindings page names the key: "Character (C)". With no key bound, or no key map yet, just the
+/// name.
+#[must_use]
+pub fn with_shortcut(
+    name: &str,
+    keys: Option<&crate::ui::game::KeyBindingsView>,
+    actions: impl IntoIterator<Item = Option<u32>>,
+) -> String {
+    let key = keys.and_then(|k| {
+        actions.into_iter().flatten().find_map(|a| {
+            k.rows
+                .iter()
+                .find(|r| r.action == a)
+                .and_then(|r| r.keys.iter().find(|k| !k.is_empty()))
+        })
+    });
+    match key {
+        Some(key) => format!("{name} ({key})"),
+        None => name.to_owned(),
+    }
+}
+
 /// The menu bar's buttons' side, layout units.
 const MENU_BUTTON: f32 = 34.0;
 
@@ -359,6 +392,10 @@ pub fn window_for_action(action: u32) -> Option<WindowId> {
         0x1000_0128 => WindowId::Journal,
         // This client's own key for the Admin window.
         a if a == pyreal_client_contract::actions::pyreal::TOGGLE_ADMIN_WINDOW.0 => WindowId::Admin,
+        // The death recap's key, for the Journal's Deaths tab.
+        a if a == pyreal_client_contract::actions::pyreal::TOGGLE_DEATH_RECAP.0 => {
+            WindowId::Journal
+        }
         _ => return None,
     })
 }
@@ -449,7 +486,9 @@ impl Hud {
                 }
             } else if let Some(id) = window_for_action(action) {
                 // A key for a system the world lacks does nothing.
-                if (id != WindowId::Admin || state.is_admin)
+                if action == pyreal_client_contract::actions::pyreal::TOGGLE_DEATH_RECAP.0 {
+                    windows.toggle_deaths(ctx.time);
+                } else if (id != WindowId::Admin || state.is_admin)
                     && !key_surface(action).is_some_and(|s| windows.refuses(s))
                 {
                     windows.toggle(id, ctx.time);
@@ -603,6 +642,7 @@ impl Hud {
     pub(crate) fn forget_character(&mut self) {
         self.level_seen = 0;
         self.level_banner_at = None;
+        self.low_health = crate::ui::low_health::LowHealth::default();
     }
 
     /// Whether the log-out question is up.
@@ -735,6 +775,9 @@ impl Hud {
         }
         self.log
             .take(state, |line| line.chat_type != FEEDBACK_CHAT_TYPE);
+        if let Some(text) = self.ending.step(&state.effects, ctx.time) {
+            push_notice(&mut self.notices, &text, ctx.time);
+        }
         if self.notices.len() > 3 {
             let extra = self.notices.len() - 3;
             self.notices.drain(..extra);
@@ -776,6 +819,8 @@ impl Hud {
         if !state.teleporting {
             self.nameplates(p, ctx, state);
         }
+        self.combat_numbers.take(state, ctx.time);
+        self.combat_numbers.draw(p, state, ctx.time);
         // An element a plugin hides is not drawn at all, and takes no pointer.
         macro_rules! element {
             ($name:literal, $call:expr) => {{
@@ -788,6 +833,7 @@ impl Hud {
         }
         element!("server", self.server_info(p, ctx, state));
         self.waypoint_distance = None;
+        self.corpse_stone = None;
         element!(
             "minimap",
             self.minimap(p, ctx, state, &mut windows.waypoints, out)
@@ -795,6 +841,7 @@ impl Hud {
         self.window_over_effects = windows
             .latest_opened_at()
             .is_some_and(|t| t > self.effects_opened_at);
+        element!("ending", self.effects_ending(p, ctx, editing));
         element!("status", self.status_row(p, ctx, state));
         element!("target", self.target_bar(p, ctx, state));
         element!("party", self.party_list(p, ctx, state, out));
@@ -821,12 +868,20 @@ impl Hud {
         self.drop_slots = placed;
         element!("exp", self.exp_bar(p, ctx, state));
         element!("split", windows.ground_split(p, ctx, state, out));
-        element!("menu", self.main_menu(p, ctx, windows, out));
+        element!("menu", self.main_menu(p, ctx, state, windows, out));
+        let dir = self.settings_dir.clone();
+        element!("tracker", {
+            if let Some((title, lines)) = windows.quest_tracker(p, ctx, state, dir.as_deref(), out)
+            {
+                self.tip(title, lines);
+            }
+        });
         for ask in self.asks.drain(..) {
             windows.ask(ask, ctx.time);
         }
         self.level_banner(p, ctx, state);
         self.feedback_notices(p, ctx);
+        windows.tracker_notices(p, ctx.time);
     }
 
     /// While the HUD Layout window is open, the elements' outlines to move them by and the
@@ -1164,6 +1219,9 @@ impl Hud {
                 (self.shown[i], colour),
             );
             let hit = Rect::new(x, y, gw, VITAL_HEIGHT * k);
+            if i == 0 {
+                self.low_health.draw_bar(p, hit);
+            }
             if ctx.over(&hit) {
                 let name = ["Health", "Mana", "Stamina"][i];
                 self.tip(name, vec![format!("{} / {}", v.current, v.max)]);
@@ -1546,6 +1604,13 @@ impl Hud {
         let small = TextStyle::new(Family::Numerals, 10.0, 0xFFFF_FFFF).edge(0xFF00_0000);
         let number = TextStyle::new(Family::Numerals, 14.0, 0xFFEE_E1C5).edge(0xFF00_0000);
         for (y, bar, row) in bars {
+            // The row's wells and the frames' soft inner edges are see-through: the world behind
+            // the frames is blurred, as behind a window.
+            let frame = |i: f32| {
+                kit::slot_bounds(p, Rect::new(x0 + i * (slot + gap), y, slot, slot + 2.0 * k))
+            };
+            let (first, last) = (frame(0.0), frame(11.0));
+            p.backdrop(Rect::new(first.x, first.y, last.right() - first.x, first.h));
             // The bar number, at the bar's leading edge; the spell bar's top row shows its tab,
             // with arrows to change it.
             if bar == 2 && row == 0 {
@@ -2222,6 +2287,7 @@ impl Hud {
                 p.text_in(&style, lr.offset(0.8 * k, 0.0), Align::Centre, letter);
             }
         }
+        self.minimap_corpse(p, ctx, state, waypoints, (r, heading, range));
         self.minimap_waypoint(p, ctx, state, waypoints, (r, heading, range));
         // Zoom in (+) and back out (-), from the radar's full reach to a quarter of it.
         let mut zoom_button = None;
@@ -2597,6 +2663,7 @@ impl Hud {
         &mut self,
         p: &mut Painter<'_>,
         ctx: &mut Ctx<'_>,
+        state: &GameState,
         windows: &mut Windows,
         out: &mut Outcome,
     ) {
@@ -2682,7 +2749,13 @@ impl Hud {
                 .collect();
             if over {
                 if self.menu_open.is_none() {
-                    self.tip(*name, vec![]);
+                    // The key of the first choice that has one.
+                    let title = with_shortcut(
+                        name,
+                        state.key_bindings.as_ref(),
+                        items.iter().map(|(_, a)| a.key_action()),
+                    );
+                    self.tip(title, vec![]);
                 }
                 if ctx.input.clicked(&r) {
                     // A button of one choice opens it at once; another opens its menu.
@@ -2721,6 +2794,12 @@ impl Hud {
                     );
                     if ctx.over(&row) {
                         crate::ui::pregame::list_highlight(p, row, true);
+                        let title = with_shortcut(
+                            label,
+                            state.key_bindings.as_ref(),
+                            [action.key_action()],
+                        );
+                        self.tip(title, vec![]);
                     }
                     let enabled = true;
                     let s = if enabled {
@@ -2871,6 +2950,8 @@ fn stance_toggle(
     use pyreal_client_contract::combat_mode::{MAGIC, MISSILE, NONCOMBAT};
     let peace = combat_mode == NONCOMBAT;
     let k = p.scale;
+    // Blurred only where the button draws, so its rounded ends stay clear.
+    p.backdrop(r);
     let clicked = kit::button(p, ctx, r, "", true);
     let status: Argb = if peace { 0x7028_A040 } else { 0x80C8_2818 };
     p.fill(
@@ -3085,6 +3166,35 @@ enum MenuAction {
     Quit,
 }
 
+impl MenuAction {
+    /// The game's action whose key does this, when it has one.
+    fn key_action(self) -> Option<u32> {
+        match self {
+            Self::Open(id) => window_key_action(id),
+            Self::LogOut => Some(ACTION_LOG_OUT),
+            Self::Quit => Some(ACTION_QUIT),
+        }
+    }
+}
+
+/// The game's action that shows or hides `id`, for the key a menu tooltip names.
+#[must_use]
+pub fn window_key_action(id: WindowId) -> Option<u32> {
+    Some(match id {
+        WindowId::Character => 0x1000_0005,
+        WindowId::Inventory => 0x1000_0019,
+        WindowId::Actions => 0x1000_0011,
+        WindowId::Social => 0x1000_000D,
+        WindowId::Allegiance => 0x1000_000E,
+        WindowId::Map => ACTION_MAP,
+        WindowId::Options => 0x1000_001A,
+        WindowId::Journal => 0x1000_0128,
+        WindowId::House => 0x1000_0018,
+        WindowId::Admin => pyreal_client_contract::actions::pyreal::TOGGLE_ADMIN_WINDOW.0,
+        _ => return None,
+    })
+}
+
 /// What clicking a link in a chat line does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
@@ -3094,6 +3204,8 @@ pub enum LinkTarget {
     Web(String),
     /// Starts a journal page's timer for this many seconds: a quest timer the world gave.
     QuestTimer(u32),
+    /// Sets the waypoint to this place, as it was written (`12.3N, 45.6E`).
+    Place(String),
 }
 
 /// The link put after a line that gives a quest timer.
@@ -3103,9 +3215,10 @@ pub const TRACK_LINK: &str = "Track in Journal";
 pub type Link = (usize, usize, LinkTarget);
 
 /// A chat line's text with the game's text tags taken out, and its links in order: the names the
-/// tags marked, each beginning a tell, and the web addresses in it
-/// ([`pyreal_client_contract::chat::links`]), each asking to be opened. Each link is its first and
-/// last-plus-one character in that text, and what clicking it does.
+/// tags marked, each beginning a tell, the web addresses in it
+/// ([`pyreal_client_contract::chat::links`]), each asking to be opened, and the places written in
+/// it, each setting the waypoint. Each link is its first and last-plus-one character in that text,
+/// and what clicking it does.
 #[must_use]
 pub fn chat_links(raw: &str) -> (String, Vec<Link>) {
     let (text, mut links) = if raw.contains('<') {
@@ -3133,6 +3246,21 @@ pub fn chat_links(raw: &str) -> (String, Vec<Link>) {
                 continue;
             }
             links.push((s, e, LinkTarget::Web(chars[s..e].iter().collect())));
+        }
+        links.sort_by_key(|(s, _, _)| *s);
+    }
+    // A place written in the line, as the game writes one, sets the waypoint there.
+    if text.bytes().any(|b| b.is_ascii_digit()) {
+        let chars: Vec<char> = text.chars().collect();
+        for (span, _) in pyreal_client_model::cmd::waypoint::find_places(&text) {
+            if links
+                .iter()
+                .any(|(s, e, _)| *s < span.end && span.start < *e)
+            {
+                continue;
+            }
+            let written = chars[span.clone()].iter().collect();
+            links.push((span.start, span.end, LinkTarget::Place(written)));
         }
         links.sort_by_key(|(s, _, _)| *s);
     }

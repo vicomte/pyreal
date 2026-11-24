@@ -408,6 +408,8 @@ impl Hud {
                     self.barber = None;
                     self.placements = WindowPlacements::default();
                     self.pending_chat.clear();
+                    self.pending_combat.clear();
+                    self.pending_deaths.clear();
                     // The same argument one queue upstream: a notice still in the
                     // scroll at log-off goes down with the windows.
                     world.scroll.clear();
@@ -519,6 +521,9 @@ impl Hud {
             Opcode::COMMUNICATION_TEXTBOX_STRING => {
                 match comms::CommunicationTextboxString::read(&mut r) {
                     Ok(mut m) => {
+                        if m.text.contains(super::ACE_GREETING) {
+                            self.ace_world = true;
+                        }
                         // A player-killer death broadcast carries the tag `[PKDe]`. With the
                         // hear-PK-deaths option off the line is dropped before anything else;
                         // with it on, the tag is taken out and the line goes on to the squelch
@@ -1782,6 +1787,20 @@ impl Hud {
                     Ok(m) => {
                         self.stats.player_deaths += 1;
                         let ours = world.is_the_player(m.killed) || world.is_the_player(m.killer);
+                        // The player's own death, for the interface's death recap: the killer by
+                        // its id, which the line's text only names.
+                        if world.is_the_player(m.killed) && self.pending_deaths.len() < 8 {
+                            let killer = if m.killer.0 == 0 || world.is_the_player(m.killer) {
+                                Some(None)
+                            } else {
+                                world.weenie(m.killer).map(|w| {
+                                    Some(w.object_name(
+                                        pyreal_client_model::weenie::NameType::Appropriate,
+                                    ))
+                                })
+                            };
+                            self.pending_deaths.push(killer);
+                        }
                         if !ours && !m.message.is_empty() {
                             world.scroll.add_text_to_scroll(
                                 &format!("{}\n", m.message),

@@ -513,23 +513,30 @@ impl WorldState {
     /// [`crate::body_top::name_height`] gives over that origin, which does not follow the body's
     /// animation. Where neither its collision height nor its meshes are known, the top of its
     /// selection sphere, placed and scaled as it is drawn. `None` for an object not drawn this
-    /// frame.
+    /// frame. The player's own body is drawn from `Character`, and stands where it is drawn.
     #[must_use]
     pub fn name_top(&self, id: ObjectId) -> Option<Vec3> {
+        if self.player_object == Some(id) {
+            let c = self.character.as_ref()?;
+            return Some(self.top_over(&c.drawn_frame(), &c.driver().part_array));
+        }
         let o = self.objects.get(&id).filter(|o| o.drawn)?;
-        let driver = o.sim.driver.borrow();
-        let parts = &driver.part_array;
+        Some(self.top_over(&o.frame, &o.sim.driver.borrow().part_array))
+    }
+
+    /// The point a name stands on over a body drawn at `frame` with `parts`.
+    fn top_over(&self, frame: &Frame, parts: &pyreal_animation::parts::PartArray) -> Vec3 {
         let height = crate::body_top::name_height(parts, |g| {
             self.drawn_points.of(self.anim_assets.as_ref()?.store(), g)
         });
         let top = height.map_or_else(
             || {
                 let s = parts.selection_sphere();
-                pyreal_primitives::frame::localtoglobal(&o.frame, s.center).z + s.radius
+                pyreal_primitives::frame::localtoglobal(frame, s.center).z + s.radius
             },
-            |h| o.frame.origin.z + h,
+            |h| frame.origin.z + h,
         );
-        Some(Vec3::new(o.frame.origin.x, o.frame.origin.y, top))
+        Vec3::new(frame.origin.x, frame.origin.y, top)
     }
 
     /// The cell whose native object-list walk owns this object.

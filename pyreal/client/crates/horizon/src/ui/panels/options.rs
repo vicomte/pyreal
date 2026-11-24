@@ -8,13 +8,13 @@
 //!   whether it shows its unread count, whether it is popped out and (but for the main tab) its
 //!   opacity so, kept with this interface's settings, then its chat window's channels, which the
 //!   server keeps: the same filter the tab's own menu sets.
-//! * **Client**: the profile's settings: display, graphics, sound, camera and the interface choice,
-//!   with this interface's scale beside the interface choice (Auto, or one of the steps the window
-//!   offers, with a note naming the window a larger one needs) and its smooth animation and smooth
-//!   movement last under the graphics quality; the experimental rendering effects' quality preset
-//!   and boxes last, under a heading of their own with
-//!   a warning, the status of the device they draw on, and a greyed box with its reason where what
-//!   it needs is off.
+//! * **Interface**: this interface's scale (Auto, or one of the steps the window offers, with a
+//!   note naming the window a larger one needs), UI Blur and the windows' own settings, then the
+//!   HUD's.
+//! * **Graphics**: the screen (the window's resolution first), the quality presets with the render
+//!   scale, then the world's lighting, sky and surfaces, each effect greyed with its reason where
+//!   what it needs is off.
+//! * **Sound**: the profile's sounds.
 //! * **Controls**: how the movement keys move the character, which way the pointer turns the
 //!   camera, its speeds and limits, how quickly it comes round behind the character and whether
 //!   it leans with the ground (the profile's Align Camera to Slope, which the other interfaces'
@@ -43,10 +43,11 @@ use crate::ui::paint::{Align, Painter, TextStyle};
 use crate::ui::Outcome;
 
 /// The window's tabs, in order.
-const TABS: [&str; 6] = [
+const TABS: [&str; 7] = [
     "Character",
     "Chat",
-    "Display",
+    "Interface",
+    "Graphics",
     "Sound",
     "Controls",
     "Key Bindings",
@@ -56,30 +57,37 @@ const TABS: [&str; 6] = [
 pub mod tab {
     pub const CHARACTER: usize = 0;
     pub const CHAT: usize = 1;
-    pub const DISPLAY: usize = 2;
-    pub const SOUND: usize = 3;
-    pub const CONTROLS: usize = 4;
-    pub const KEYS: usize = 5;
+    pub const INTERFACE: usize = 2;
+    pub const GRAPHICS: usize = 3;
+    pub const SOUND: usize = 4;
+    pub const CONTROLS: usize = 5;
+    pub const KEYS: usize = 6;
 }
 
 /// How many keys a row of the key bindings page shows.
 pub const KEY_SLOTS: usize = 3;
 
-/// The caption of the window's size, under Screen & Window.
-pub const WINDOW_SIZE_CAPTION: &str = "Window Size";
+/// The caption of the window's size, first under Screen.
+pub const RESOLUTION_CAPTION: &str = "Resolution";
 
-/// What the window's size is, for its tooltip.
-const WINDOW_SIZE_NOTE: &str =
-    "Shows the window's current size. Drag its edges or use its full-screen button to change it.";
+/// What the window's size does, for its tooltip.
+const RESOLUTION_NOTE: &str = if cfg!(target_os = "macos") {
+    "Sets the window's size. Dragging the window's edges sets it too. On a Retina screen the game \
+     draws twice the detail across and down at each size. Full screen uses the screen's own size, \
+     and Render Scale sets how much detail it draws there."
+} else {
+    "Sets the window's size. Dragging the window's edges sets it too. Full screen uses the \
+     screen's own size, and Render Scale sets how much detail it draws there."
+};
 
-/// The caption of the interface scale's row, under Screen & Window.
+/// The caption of the interface scale's row, first under Windows.
 const SCALE_CAPTION: &str = "Interface Scale";
 
 /// What the interface scale does, for its tooltip.
 const SCALE_NOTE: &str =
     "Sets the size of the windows, text and HUD. Auto picks the largest size that fits the window.";
 
-/// The caption of the status bar style's row, under Screen & Window, and what it does.
+/// The caption of the status bar style's row, first under HUD, and what it does.
 const STATUS_STYLE_CAPTION: &str = "Status Bar Style";
 const STATUS_STYLE_NOTE: &str = "Sets what the health, stamina and mana bars show.";
 
@@ -87,6 +95,30 @@ const STATUS_STYLE_NOTE: &str = "Sets what the health, stamina and mana bars sho
 const WAYPOINTS_CAPTION: &str = "Waypoints";
 const WAYPOINTS_NOTE: &str =
     "Sets where the arrow to a waypoint is shown. On Character lays a ring with an arrow on the ground around your character. Neither is shown in dungeons.";
+
+/// The caption of the assess on hover row, under the waypoints, and what it does.
+const ASSESS_ON_HOVER_CAPTION: &str = "Assess on Hover";
+const ASSESS_ON_HOVER_NOTE: &str =
+    "Assesses an item when the pointer rests on it in your packs, a loot window or a vendor's stock, and shows its details in the tooltip. With it off, the tooltip shows details only for items you have already assessed.";
+
+/// The caption of the worn-item comparison's row, under assess on hover, and what it does.
+const COMPARE_WORN_CAPTION: &str = "Compare With Worn Items";
+const COMPARE_WORN_NOTE: &str =
+    "Shows what you wear in the same place beside an item's details. Without it, hold Shift to compare.";
+
+/// The caption of the effects ending soon row, under the worn-item comparison, and what it does.
+const EFFECTS_ENDING_CAPTION: &str = "Effects Ending Soon";
+const EFFECTS_ENDING_NOTE: &str =
+    "Shows each beneficial effect near its end as an icon with its time left under the effect icons, and says which one is ending. Harmful effects show there while they last.";
+/// The caption of the low health warning's row, under the comparison, and what it does.
+const LOW_HEALTH_CAPTION: &str = "Low Health Warning";
+const LOW_HEALTH_NOTE: &str =
+    "Reddens the edges of the screen and makes the health bar glow when your health falls this low.";
+
+/// The caption of the death recap's row, under the low health warning, and what it does.
+const DEATH_RECAP_CAPTION: &str = "Open Journal on Death";
+const DEATH_RECAP_NOTE: &str =
+    "Opens the Journal at its Deaths tab when you die. The tab names what killed you and lists the last hits you took. It keeps your last 10 deaths until you log out.";
 
 /// The caption of the chat input's row, at the top of the Chat page, and what it does.
 const CHAT_INPUT_CAPTION: &str = "Chat Input";
@@ -128,6 +160,18 @@ pub struct OptionsState {
     pub pad: crate::pad::PadSettings,
     /// Whether the minimap turns with the character.
     pub minimap_rotates: bool,
+    /// Whether resting the pointer on an item asks the game to assess it.
+    pub assess_on_hover: bool,
+    /// Whether item details show what is worn in the same place without Shift held.
+    pub compare_worn: bool,
+    /// How long before its end an effect shows on the HUD.
+    pub effects_ending: crate::ui::hud::effects_ending::EndingSoon,
+    /// Which combat numbers show.
+    pub combat_numbers: crate::ui::combat_numbers::Switches,
+    /// How low health falls before the low health warning shows.
+    pub low_health: crate::ui::low_health::LowHealthAt,
+    /// Whether the Journal opens at its Deaths tab on a death.
+    pub death_recap_opens: bool,
     /// What the vitals' bars read.
     pub status_style: crate::ui::hud::StatusStyle,
     /// Where the way to a waypoint is shown.
@@ -157,7 +201,7 @@ pub struct OptionsState {
     /// Where each control was drawn this frame, by its caption: what a scripted run or a test
     /// clicks.
     pub controls: Vec<(String, Rect)>,
-    /// The art packs, while the host offers them: first on the Display page.
+    /// The art packs, while the host offers them: first under Surfaces & Detail.
     pub art_packs: Option<crate::art_packs::ArtPacksView>,
     /// What the player asked of them, for the host.
     pub art_pack_requests: Vec<crate::art_packs::ArtPackRequest>,
@@ -215,7 +259,9 @@ impl Windows {
         match self.options_page.tab {
             tab::CHARACTER => self.character_options_tab(p, ctx, state, body, out),
             tab::CHAT => self.chat_options(p, ctx, state, area, out),
-            tab::DISPLAY | tab::SOUND => self.client_options(p, ctx, state, area, out),
+            tab::INTERFACE | tab::GRAPHICS | tab::SOUND => {
+                self.client_options(p, ctx, state, area, out);
+            }
             tab::CONTROLS => self.controls_options(p, ctx, area, out),
             tab::KEYS => self.key_bindings(p, ctx, state, area, out),
             _ => {}
@@ -270,6 +316,42 @@ impl Windows {
             .take_if(|(k, _)| k == key)
             .map(|(_, i)| i)
             .filter(|i| *i < names.len() && *i != at)
+    }
+
+    /// The window's size: a list of the common sizes the screen holds, the dragged size last
+    /// when it is none of them, and the screen's size alone, unchangeable, in full screen.
+    fn resolution_row(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        control: Rect,
+        out: &mut Outcome,
+    ) {
+        use pyreal_client_contract::resolution::{self, WindowSizes};
+        self.mark(RESOLUTION_CAPTION, control);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let window = state.window_sizes.unwrap_or_else(|| WindowSizes {
+            size: (
+                self.options_page.window.0.round() as u32,
+                self.options_page.window.1.round() as u32,
+            ),
+            ..WindowSizes::default()
+        });
+        let (names, sizes, at) = resolution::choices(&window);
+        if window.full_screen {
+            kit::dropdown_box(p, ctx, control, &names[0], false, false);
+            return;
+        }
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        if let Some(i) = self.dropdown(p, ctx, RESOLUTION_CAPTION, control, &names, at) {
+            let (w, h) = sizes[i];
+            set_preference(
+                names::DISPLAY_RESOLUTION,
+                PrefValue::Int(store::mode_desc(w, h)),
+                out,
+            );
+        }
     }
 
     /// The preset suggested for the graphics card, with a button that sets it while it is not
@@ -738,7 +820,7 @@ Press Escape to leave it as it is.",
         let page_tab = self.options_page.tab;
         let mut rows = client_lines(page_tab, state);
         // The art pack heads Surfaces & Detail while the library holds one.
-        if page_tab == tab::DISPLAY
+        if page_tab == tab::GRAPHICS
             && self
                 .options_page
                 .art_packs
@@ -880,16 +962,14 @@ Press Escape to leave it as it is.",
                             ctx,
                             Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
                             list,
-                            WINDOW_SIZE_CAPTION,
-                            Some(WINDOW_SIZE_NOTE),
+                            RESOLUTION_CAPTION,
+                            Some(RESOLUTION_NOTE),
                             None,
-                            Some(Impact::Information),
+                            Some(Impact::High),
                         );
-                        let (w, h) = self.options_page.window;
-                        let at = Rect::new(list.x + list.w * 0.55, y, list.w * 0.42, row_h);
-                        let size = format!("{w:.0} \u{d7} {h:.0}");
-                        p.text_in(&label, at, Align::Left, &size);
-                        self.mark(WINDOW_SIZE_CAPTION, at);
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.resolution_row(p, ctx, state, control, out);
                     }
                     Line::Scale => {
                         self.caption(
@@ -984,6 +1064,149 @@ Press Escape to leave it as it is.",
                                 .push(("waypoints".into(), WaypointStyle::ALL[i].word().into()));
                         }
                     }
+                    Line::AssessOnHover => {
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            ASSESS_ON_HOVER_CAPTION,
+                            Some(ASSESS_ON_HOVER_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(ASSESS_ON_HOVER_CAPTION, control);
+                        if let Some(on) =
+                            kit::checkbox(p, ctx, control, self.options_page.assess_on_hover)
+                        {
+                            out.settings
+                                .push(("assess-on-hover".into(), on.to_string()));
+                        }
+                    }
+                    Line::CompareWorn => {
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            COMPARE_WORN_CAPTION,
+                            Some(COMPARE_WORN_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(COMPARE_WORN_CAPTION, control);
+                        if let Some(on) =
+                            kit::checkbox(p, ctx, control, self.options_page.compare_worn)
+                        {
+                            out.settings.push(("compare-worn".into(), on.to_string()));
+                        }
+                    }
+                    Line::EffectsEnding => {
+                        use crate::ui::hud::effects_ending::EndingSoon;
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            EFFECTS_ENDING_CAPTION,
+                            Some(EFFECTS_ENDING_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(EFFECTS_ENDING_CAPTION, control);
+                        let names = EndingSoon::ALL.map(EndingSoon::name);
+                        let at = EndingSoon::ALL
+                            .iter()
+                            .position(|s| *s == self.options_page.effects_ending)
+                            .unwrap_or(0);
+                        if let Some(i) =
+                            self.dropdown(p, ctx, EFFECTS_ENDING_CAPTION, control, &names, at)
+                        {
+                            out.settings
+                                .push(("effects-ending".into(), EndingSoon::ALL[i].word().into()));
+                        }
+                    }
+                    &Line::CombatNumbers(i) => {
+                        use crate::ui::combat_numbers::{KEYS, ROWS};
+                        let (caption, note) = ROWS[i];
+                        let indent = if i == 0 { 16.0 } else { 32.0 } * k;
+                        let at = Rect::new(list.x + indent, y, list.w * 0.5, row_h);
+                        self.caption(
+                            p,
+                            ctx,
+                            at,
+                            list,
+                            caption,
+                            Some(note),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(caption, control);
+                        let was = self
+                            .options_page
+                            .combat_numbers
+                            .get(KEYS[i])
+                            .unwrap_or(true);
+                        if let Some(on) = kit::checkbox(p, ctx, control, was) {
+                            out.settings.push((KEYS[i].into(), on.to_string()));
+                        }
+                    }
+                    Line::LowHealth => {
+                        use crate::ui::low_health::LowHealthAt;
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            LOW_HEALTH_CAPTION,
+                            Some(LOW_HEALTH_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(LOW_HEALTH_CAPTION, control);
+                        let names = LowHealthAt::ALL.map(LowHealthAt::name);
+                        let at = LowHealthAt::ALL
+                            .iter()
+                            .position(|a| *a == self.options_page.low_health)
+                            .unwrap_or(0);
+                        if let Some(i) =
+                            self.dropdown(p, ctx, LOW_HEALTH_CAPTION, control, &names, at)
+                        {
+                            out.settings
+                                .push(("low-health".into(), LowHealthAt::ALL[i].word().into()));
+                        }
+                    }
+                    Line::DeathRecap => {
+                        self.caption(
+                            p,
+                            ctx,
+                            Rect::new(list.x + 16.0 * k, y, list.w * 0.5, row_h),
+                            list,
+                            DEATH_RECAP_CAPTION,
+                            Some(DEATH_RECAP_NOTE),
+                            None,
+                            Some(Impact::None),
+                        );
+                        let control =
+                            Rect::new(list.x + list.w * 0.55, y + 3.0 * k, list.w * 0.42, 28.0 * k);
+                        self.mark(DEATH_RECAP_CAPTION, control);
+                        if let Some(on) =
+                            kit::checkbox(p, ctx, control, self.options_page.death_recap_opens)
+                        {
+                            out.settings
+                                .push((crate::ui::death_recap::OPENS_KEY.into(), on.to_string()));
+                        }
+                    }
                     Line::ScaleNote => {
                         if let Some(text) = &scale_note {
                             let dim = TextStyle::new(Family::Body, 13.0, ctx.colours.dim())
@@ -1007,9 +1230,13 @@ Press Escape to leave it as it is.",
         );
         if self.button(p, ctx, defaults, "Defaults", true) {
             for (name, value) in sheet::defaults(PageId::Client) {
-                if is_sound_preference(name) == (page_tab == tab::SOUND) {
+                if sheet::topic_of_preference(name).and_then(tab_of) == Some(page_tab) {
                     set_preference(name, PrefValue::from(value), out);
                 }
+            }
+            if page_tab == tab::INTERFACE {
+                out.settings
+                    .extend(crate::options::HorizonOptions::interface_defaults());
             }
         }
     }
@@ -1470,6 +1697,14 @@ Press Escape to leave it as it is.",
         if let Some(v) = kit::checkbox(p, ctx, c, pad.enabled) {
             out.settings.push(("gamepad".into(), v.to_string()));
         }
+        // Ticked with no pad connected, the box says why nothing has changed.
+        if pad.enabled && !ctx.input.pad.connected {
+            let dim = label.colour(ctx.colours.dim());
+            let side = (p.art.palette().check_side * k).round() + 10.0 * k;
+            let at = Rect::new(c.x + side, c.y, c.w - side, c.h);
+            self.mark(NO_PAD, at);
+            p.text_in(&dim, at, Align::Left, NO_PAD);
+        }
         {
             let (l, c) = row(14.2);
             self.mark("Movement in Gamepad Mode", c);
@@ -1540,7 +1775,7 @@ enum Line {
     Notice(&'static str),
     /// Where the experimental effects stand on the device, when there is something to say.
     EffectsStatus,
-    /// The window's size, read only: the window's own edges set it.
+    /// The Resolution row: the window's size, from a list or by its edges.
     WindowSize,
     /// This interface's scale, under the window's size.
     Scale,
@@ -1548,10 +1783,22 @@ enum Line {
     StatusStyle,
     /// Where the way to a waypoint is shown.
     WaypointStyle,
+    /// Whether resting the pointer on an item assesses it.
+    AssessOnHover,
+    /// Whether item details compare with what is worn without Shift held.
+    CompareWorn,
+    /// How long before its end an effect shows on the HUD.
+    EffectsEnding,
+    /// A combat numbers switch: all of them, then outgoing, incoming and healing.
+    CombatNumbers(usize),
+    /// How low health falls before the low health warning shows.
+    LowHealth,
+    /// Whether the Journal opens at its Deaths tab on a death.
+    DeathRecap,
     /// Under the scale, which scales a larger window would offer, or why the one chosen is not
     /// the one drawn.
     ScaleNote,
-    /// The pack drawn, first on the Display page while the library holds one.
+    /// The pack drawn, first under Surfaces & Detail while the library holds one.
     ArtPack,
 }
 
@@ -1621,6 +1868,9 @@ const HIDDEN_HEADINGS: [&str; 1] = ["Camera and Mouse"];
 /// camera's own heading captions it.
 const ALIGN_TO_SLOPE: &str = "Align Camera to Slope";
 
+/// Beside the ticked Gamepad Mode box while no pad is connected.
+pub const NO_PAD: &str = "No controller is connected.";
+
 /// Whether this interface leaves `row` off its pages: a row of [`HIDDEN_ROWS`], or a chat window's
 /// opacity, which its chat does not draw with.
 pub(crate) fn hidden_row(row: &Row) -> bool {
@@ -1629,39 +1879,62 @@ pub(crate) fn hidden_row(row: &Row) -> bool {
         || (cfg!(target_os = "macos") && row.caption == FULL_SCREEN)
 }
 
-/// The heading that makes up the Sound tab; the Display tab has every other on the Client page.
-const SOUND_HEADING: &str = "Sound";
-
-/// Whether the preference `name` belongs to the Sound tab.
-fn is_sound_preference(name: &str) -> bool {
-    sheet::headings_for(PageId::Client)
-        .filter(|(heading, _)| heading.title == SOUND_HEADING)
-        .flat_map(|(_, rows)| rows)
-        .any(|row| match row.value {
-            Value::Sound { on, volume } => on == name || volume == name,
-            _ => row.preference() == Some(name),
-        })
+/// Whether a world speaking the November 1999 client's protocol keeps what the row changes: of
+/// the character's options, those [`option_on_1999_wire`] names.
+pub(crate) fn row_on_1999_wire(row: &Row) -> bool {
+    match row.value {
+        Value::Option(o) => option_on_1999_wire(o),
+        Value::Bit { .. } => false,
+        _ => true,
+    }
 }
 
-/// The Display or Sound tab's lines.
-fn client_lines(tab_at: usize, state: &GameState) -> Vec<Line> {
-    let lines = sheet_lines(PageId::Client, state);
-    let mut out = Vec::with_capacity(lines.len());
-    let mut in_sound = false;
-    for line in lines {
-        if let Line::Heading(title) = line {
-            in_sound = title == SOUND_HEADING;
-        }
-        if in_sound == (tab_at == tab::SOUND) {
-            out.push(line);
-        }
+/// Whether a character's option is one of the twelve the 1999 options word has.
+pub(crate) fn option_on_1999_wire(o: pyreal_client_contract::view::PlayerOption) -> bool {
+    use pyreal_client_contract::view::PlayerOption as O;
+    matches!(
+        o,
+        O::AutoRepeatAttack
+            | O::IgnoreAllegianceRequests
+            | O::IgnoreFellowshipRequests
+            | O::AllowGive
+            | O::ViewCombatTarget
+            | O::ShowTooltips
+            | O::UseDeception
+            | O::ToggleRun
+            | O::StayInChatMode
+            | O::AdvancedCombatUI
+            | O::AutoTarget
+            | O::VividTargetingIndicator
+    )
+}
+
+/// The tab a Client page topic is shown on.
+const fn tab_of(topic: sheet::Topic) -> Option<usize> {
+    match topic {
+        sheet::Topic::Sound => Some(tab::SOUND),
+        sheet::Topic::Interface => Some(tab::INTERFACE),
+        sheet::Topic::Graphics => Some(tab::GRAPHICS),
+        // The game camera's heading is hidden: this interface has its own camera.
+        sheet::Topic::Camera => None,
     }
-    out
+}
+
+/// The heading over the HUD's own settings, under the windows' on the Interface tab.
+const HUD_HEADING: &str = "HUD";
+
+/// The Interface, Graphics or Sound tab's lines.
+fn client_lines(tab_at: usize, state: &GameState) -> Vec<Line> {
+    sheet_lines(PageId::Client, state)
+        .into_iter()
+        .filter(|(t, _)| *t == tab_at)
+        .map(|(_, l)| l)
+        .collect()
 }
 
 /// A page's headings and rows as this interface shows them, leaving out what the world's era does
 /// not have and what this interface does its own way.
-fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
+fn sheet_lines(page: PageId, state: &GameState) -> Vec<(usize, Line)> {
     let mut out = Vec::new();
     for (heading, rows) in sheet::headings_for(page) {
         if HIDDEN_HEADINGS.contains(&heading.title) {
@@ -1670,56 +1943,61 @@ fn sheet_lines(page: PageId, state: &GameState) -> Vec<Line> {
         let rows: Vec<_> = rows
             .into_iter()
             .filter(|r| r.needs.met(state.era.as_ref()) && !hidden_row(r))
+            .filter(|r| !state.wire_1999 || row_on_1999_wire(r))
             .filter(|r| !effect_left_out(r, state))
             .collect();
         if rows.is_empty() {
             continue;
         }
-        let mut screen = page == PageId::Client && heading.title == sheet::SCREEN_HEADING;
-        // The quality presets open the Display tab, with what stops the effects when something
-        // does.
-        if screen {
-            out.push(Line::Heading(fidelity::QUALITY_HEADING));
-            out.push(Line::Preset);
-            if state.graphics_adapter.is_some() {
-                out.extend([Line::Suggested, Line::SuggestedFor]);
+        let Some(at) = tab_of(sheet::topic(heading.title)) else {
+            continue;
+        };
+        let mut push = |line| out.push((at, line));
+        push(Line::Heading(heading.title));
+        match heading.title {
+            // The interface's scale opens the Interface tab.
+            sheet::WINDOWS_HEADING => push(Line::Scale),
+            // The window's size, which its own edges set, opens the Graphics tab.
+            sheet::SCREEN_HEADING => push(Line::WindowSize),
+            // The presets lead the Quality heading, with what stops the effects when something
+            // does.
+            sheet::QUALITY_HEADING => {
+                push(Line::Preset);
+                if state.graphics_adapter.is_some() {
+                    push(Line::Suggested);
+                    push(Line::SuggestedFor);
+                }
+                if effects_status(state).is_some() {
+                    push(Line::EffectsStatus);
+                }
             }
-            if effects_status(state).is_some() {
-                out.push(Line::EffectsStatus);
-            }
+            _ => {}
         }
-        out.push(Line::Heading(heading.title));
         for row in rows {
-            // This interface's scale and the window's size, which its own edges set, before Full
-            // Screen, or before UI Blur where the page leaves Full Screen off.
-            let before = [
-                FULL_SCREEN,
-                pyreal_client_contract::options::ui_effects::BLUR_CAPTION,
-            ];
-            if screen && before.contains(&row.caption) {
-                out.extend([
-                    Line::Scale,
-                    Line::WindowSize,
-                    Line::StatusStyle,
-                    Line::WaypointStyle,
-                ]);
-                screen = false;
-            }
-            out.push(Line::Row(row));
+            push(Line::Row(row));
             if let Some(why) = effect_box(row)
                 .filter(|_| effects(state).offered())
                 .and_then(|name| effect_blocked(name, state))
             {
-                out.push(Line::Notice(why.reason()));
+                push(Line::Notice(why.reason()));
             }
         }
-        if screen {
-            out.extend([
-                Line::Scale,
-                Line::WindowSize,
+        if heading.title == sheet::WINDOWS_HEADING {
+            for line in [
+                Line::AssessOnHover,
+                Line::CompareWorn,
+                Line::DeathRecap,
+                Line::Heading(HUD_HEADING),
                 Line::StatusStyle,
+                Line::EffectsEnding,
+                Line::LowHealth,
                 Line::WaypointStyle,
-            ]);
+            ]
+            .into_iter()
+            .chain((0..4).map(Line::CombatNumbers))
+            {
+                push(line);
+            }
         }
     }
     out
@@ -1792,6 +2070,30 @@ fn set_preference(name: &'static str, value: PrefValue, out: &mut Outcome) {
 #[cfg(test)]
 mod hidden_tests {
     use super::*;
+
+    #[test]
+    fn a_1999_world_shows_the_twelve_options_its_word_has_and_the_local_settings() {
+        let pages = [PageId::Character, PageId::Chat, PageId::Client];
+        let option_rows: Vec<&Row> = pages
+            .iter()
+            .flat_map(|&p| sheet::rows_for(p))
+            .filter(|r| matches!(r.value, Value::Option(_)))
+            .collect();
+        let kept = option_rows.iter().filter(|r| row_on_1999_wire(r)).count();
+        assert!(kept <= 12, "{kept}");
+        assert!(kept >= 10, "the sheet names most of the twelve: {kept}");
+        assert!(option_on_1999_wire(
+            pyreal_client_contract::view::PlayerOption::VividTargetingIndicator
+        ));
+        assert!(!option_on_1999_wire(
+            pyreal_client_contract::view::PlayerOption::PersistentAtDay
+        ));
+        let local = sheet::rows_for(PageId::Client).find(|r| matches!(r.value, Value::Check(_)));
+        assert!(
+            local.is_none_or(row_on_1999_wire),
+            "a profile preference stays"
+        );
+    }
 
     #[test]
     fn every_setting_left_off_is_one_the_pages_have_so_none_comes_back_renamed() {

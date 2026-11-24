@@ -128,6 +128,9 @@ pub struct Quad {
     /// 1 at the far): it is hidden wherever the world drawn this frame is nearer. `None`: drawn
     /// over everything.
     pub depth: Option<f32>,
+    /// Stretched on the device, never made at its drawn size: a soft picture as large as the
+    /// screen.
+    pub stretched: bool,
 }
 
 /// A frame's quads, in drawing order.
@@ -344,6 +347,7 @@ impl DrawList {
             clip: self.clips.last().copied(),
             turn: 0.0,
             depth: None,
+            stretched: false,
         });
     }
 
@@ -360,7 +364,17 @@ impl DrawList {
             clip: None,
             turn,
             depth: None,
+            stretched: false,
         });
+    }
+
+    /// As [`Self::image`], stretched on the device rather than made at its drawn size.
+    pub fn image_stretched(&mut self, tex: TexId, src: Rect, dst: Rect, colour: Argb) {
+        let before = self.quads.len();
+        self.image(tex, src, dst, colour);
+        if let Some(q) = self.quads.get_mut(before) {
+            q.stretched = true;
+        }
     }
 
     /// A flat rectangle of `colour`.
@@ -376,6 +390,7 @@ impl DrawList {
             clip: self.clips.last().copied(),
             turn: 0.0,
             depth: None,
+            stretched: false,
         });
     }
 }
@@ -585,7 +600,7 @@ impl Overlay {
             let mut q = on_pixels(q);
             let (texture, tex_size) = match q.tex {
                 Some(id) => {
-                    let made = (q.turn == 0.0 && !texel_for_texel(&q))
+                    let made = (q.turn == 0.0 && !q.stretched && !texel_for_texel(&q))
                         .then(|| self.made(sink, art, &q, &mut spent))
                         .flatten();
                     match made {

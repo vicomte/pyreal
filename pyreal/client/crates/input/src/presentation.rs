@@ -600,6 +600,8 @@ pub const ROWS: &[Row] = &[
     row(M::EMOTES, "YawnStretch", G::Emotes, "Chat Pose \"Yawn Stretch\""),
     row(M::EMOTES, "YMCA", G::Emotes, "Chat Pose \"YMCA\""),
     row(M::UI, "CaptureScreenshot", G::Other, "Capture Screenshot To File"),
+    row(M::OWN, "HideInterface", G::Other, "Hide Interface"),
+    row(M::OWN, "ToggleDeathRecap", G::Panels, "Death Journal"),
     row(M::UI, "ToggleHelp", G::Other, "Help"),
     row(M::UI, "TogglePluginManager", G::Other, "Display Plugin Manager"),
     row(M::UI, "LOGOUT", G::Other, "End Character Session"),
@@ -795,7 +797,7 @@ mod tests {
             );
             assert!(!r.label.is_empty(), "{}", r.action_name);
         }
-        assert_eq!(ROWS.len(), 361);
+        assert_eq!(ROWS.len(), 363);
     }
 
     #[test]

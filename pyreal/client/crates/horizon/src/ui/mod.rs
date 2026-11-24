@@ -6,16 +6,22 @@
 //! ([`input::InputFrame`]), and what the player did comes back as requests the shell hands to the
 //! runtime ([`Outcome`]).
 
+pub mod appraisals;
 pub mod chat;
 pub mod colours;
+pub mod combat_numbers;
+pub mod corpse;
 pub mod creation;
+pub mod death_recap;
 pub mod edit;
 pub mod explore;
 pub mod game;
+pub mod hide;
 pub mod hud;
 pub mod input;
 pub mod kit;
 pub mod layout;
+pub mod low_health;
 pub mod nav;
 pub mod paint;
 pub mod panels;
@@ -127,6 +133,10 @@ pub struct Outcome {
     pub identify_spell: Option<u32>,
     /// Open the chat line with this already typed (a tell to a friend).
     pub chat_prefill: Option<String>,
+    /// Put this on the chat line after what is typed (Share Waypoint).
+    pub chat_paste: Option<String>,
+    /// A place clicked in a chat line, to set the waypoint to.
+    pub waypoint_to: Option<(f64, f64)>,
     /// Actions to fire as a key tapped: pressed and let go.
     pub action_taps: Vec<u32>,
     /// Something to bind to a cross hotbar slot: the bind-to-hotbar notice comes up with it.
@@ -150,6 +160,8 @@ pub struct Outcome {
         &'static str,
         String,
     )>,
+    /// The objects whose appraisals the interface reads next frame ([`appraisals`]).
+    pub watch_appraisals: Vec<pyreal_primitives::ObjectId>,
 }
 
 /// The interface's whole state.
@@ -185,6 +197,8 @@ pub struct HorizonUi {
     pub magic_notices: Vec<pyreal_client_contract::view::MagicNotice>,
     /// Whether the player is off the ground, which refuses a log-off.
     pub airborne: bool,
+    /// Whose buttons the last pad read has.
+    pub pad_family: pyreal_input::pad::PadFamily,
     /// The screens before any world, while the host offers them.
     pub front_door: Option<crate::front_door::FrontDoorView>,
     /// What the player asked of them, for the host.
@@ -193,6 +207,8 @@ pub struct HorizonUi {
     pub worlds: worlds::Worlds,
     /// The waypoint's ring the world is asked to lay round the player this frame.
     pub waypoint_ring: Option<pyreal_client_contract::overlay::WaypointRing>,
+    /// When the player hid the interface with Hide Interface, while it is hidden.
+    pub hidden: Option<f64>,
 }
 
 impl HorizonUi {
@@ -209,6 +225,20 @@ impl HorizonUi {
         self.windows.options_page.waypoint_style = self.options.waypoint_style;
         let waypoints = &mut self.windows.waypoints;
         waypoints.load_for(self.hud.settings_dir.as_deref(), &who);
+        // The corpse marker follows the character's deaths and its corpse.
+        if state.in_world && state.explore.is_none() {
+            let seen = corpse::Seen::of(state, self.windows.death_recap.last.as_ref(), self.time);
+            let news = waypoints.corpse.follow(&seen, self.time);
+            if let Some(line) = news.and_then(corpse::CorpseNews::line) {
+                out.requests.push(UiRequest::DisplayChatText {
+                    feedback: pyreal_client_contract::feedback::Feedback::LOCAL,
+                    channel: pyreal_client_model::chat::text_type::DEFAULT,
+                    text: line.to_owned(),
+                });
+            }
+        } else {
+            waypoints.corpse.out_of_world();
+        }
         self.waypoint_ring = None;
         let Some(here) = state.here.filter(|_| !who.is_empty() && !state.teleporting) else {
             return;
@@ -295,10 +325,12 @@ impl HorizonUi {
             host_buttons: Vec::new(),
             magic_notices: Vec::new(),
             airborne: false,
+            pad_family: pyreal_input::pad::PadFamily::default(),
             front_door: None,
             front_door_requests: Vec::new(),
             worlds: worlds::Worlds::default(),
             waypoint_ring: None,
+            hidden: None,
         }
     }
 
@@ -359,7 +391,28 @@ impl HorizonUi {
             fade: 1.0,
         };
         let mut out = Outcome::default();
+        // The death recap keeps the hits taken, and opens the Journal at its Deaths tab on a death
+        // unless the setting says not. The corpse marker reads what the death cost from it.
+        if self.windows.death_recap.follow(state, self.time) {
+            self.windows
+                .death_came(self.options.death_recap_opens, self.time);
+        }
         self.follow_waypoint(state, &mut out);
+        if state.in_world {
+            let dir = self.hud.settings_dir.as_deref();
+            self.windows
+                .marks
+                .load_for(dir, &state.address, &state.name);
+            // Marks of items gone are dropped once the character's items have had time to come.
+            let settled = self
+                .in_world_since
+                .is_some_and(|t| self.time - t >= panels::marks::SETTLE_SECONDS);
+            self.windows
+                .marks
+                .follow(panels::marks::carried(state), settled);
+        } else {
+            self.windows.marks.left_world();
+        }
         // The scripted steps: the first three seconds into the world, then one every two.
         if state.in_world && state.connected {
             let since = *self.in_world_since.get_or_insert(self.time);
@@ -392,6 +445,7 @@ impl HorizonUi {
             drops: Vec::new(),
             magic: std::mem::take(&mut self.magic_notices),
             airborne: self.airborne,
+            pad_family: self.pad_family,
         };
         // The plugin host's own windows (the plugin panel) and its dialog for a file take the
         // presses on them: nothing under them takes one first. While the dialog is up, Escape is
@@ -399,10 +453,13 @@ impl HorizonUi {
         let (mx, my) = ctx.input.mouse;
         let seat = &self.windows.plugins;
         let asked = state.host_question.is_some() && seat.host.asking.id().is_some();
+        // A hidden interface's plugin windows take nothing; the host's question still does.
+        let shown = self.hidden.is_none();
         let on_host = seat
             .host
             .rects(&seat.frame.views)
             .iter()
+            .filter(|_| shown)
             .chain(asked.then_some(&seat.host.asking.drawn.frame))
             .any(|r| r.contains(mx, my));
         let held_for_host_window = on_host.then(|| std::mem::take(&mut ctx.input.pressed));
@@ -441,6 +498,15 @@ impl HorizonUi {
             Screen::Entering | Screen::Game | Screen::Explore
         ) {
             self.windows.map_view.preload(&self.art);
+        }
+        // The interface hides in the world and explore mode only.
+        if matches!(self.screen, Screen::Game | Screen::Explore) {
+            hide::follow(&mut self.hidden, &mut ctx, state, self.time);
+        } else {
+            self.hidden = None;
+        }
+        if self.hidden.is_some() {
+            *ctx.drag = None;
         }
         match self.screen {
             Screen::Worlds => {
@@ -487,6 +553,10 @@ impl HorizonUi {
                 // Escape closes an open window before it ends the mode.
                 let escape =
                     self.windows.any_open() && ctx.input.take_key(pyreal_ui_kit::input::vk::ESCAPE);
+                let blind = self
+                    .hidden
+                    .is_some()
+                    .then(|| hide::Blind::begin(&p, &mut ctx));
                 if let Some(view) = &state.explore {
                     let back = if self.front_door.is_some() {
                         "Back to the Worlds"
@@ -499,7 +569,8 @@ impl HorizonUi {
                     map: self.windows.is_open(panels::WindowId::Map),
                     settings: self.windows.is_open(panels::WindowId::Options),
                 };
-                let mut asked = explore::corner(&mut p, &mut ctx, open);
+                let mut asked =
+                    explore::corner(&mut p, &mut ctx, state.key_bindings.as_ref(), open);
                 if let Some(w) = self.windows.waypoints.active.clone() {
                     if explore::waypoint(&mut p, &mut ctx, &w, state.here) {
                         self.windows.waypoints.clear();
@@ -523,10 +594,16 @@ impl HorizonUi {
                 if asked.settings {
                     self.windows.toggle(panels::WindowId::Options, self.time);
                 }
-                if self.windows.any_open() {
+                let open = self.windows.any_open();
+                if open {
                     self.windows.options_page.scale = self.options.scale;
                     self.windows.options_page.window = screen;
                     self.windows.frame(&mut p, &mut ctx, state, &mut out);
+                }
+                if let Some(b) = blind {
+                    b.end(&mut p, &mut ctx);
+                }
+                if open {
                     self.windows
                         .options_questions(&mut p, &mut ctx, state, &mut out);
                 }
@@ -588,6 +665,15 @@ impl HorizonUi {
                         pregame::dialog_rect(&p, &prompt.text, i).contains(mx, my)
                     });
                 let held_press = on_a_box.then(|| std::mem::take(&mut ctx.input.pressed));
+                // The low health warning's edges: over the world, under the HUD, kept while hidden.
+                self.hud
+                    .low_health
+                    .frame(&mut p, state, self.options.low_health, dt);
+                // A hidden interface runs blind, and what it draws is cut before the boxes.
+                let blind = self
+                    .hidden
+                    .is_some()
+                    .then(|| hide::Blind::begin(&p, &mut ctx));
                 self.hud.other_text_focus = self.windows.has_text_focus();
                 // The plugins' windows open, closed and sized as the plugins have them; a press
                 // off an open plugin choice's list closes it before anything under it sees it.
@@ -665,8 +751,18 @@ impl HorizonUi {
                 self.windows.options_page.pad = self.options.pad;
                 self.windows.options_page.minimap_rotates = self.options.minimap_rotates;
                 self.hud.minimap_rotates = self.options.minimap_rotates;
+                self.windows.assess_on_hover = self.options.assess_on_hover;
+                self.windows.options_page.assess_on_hover = self.options.assess_on_hover;
+                self.windows.compare_worn = self.options.compare_worn;
+                self.windows.options_page.compare_worn = self.options.compare_worn;
+                self.windows.options_page.effects_ending = self.options.effects_ending;
+                self.hud.ending.threshold = self.options.effects_ending;
+                self.windows.options_page.low_health = self.options.low_health;
+                self.windows.options_page.death_recap_opens = self.options.death_recap_opens;
                 self.hud.spell_rows = self.options.spell_rows;
                 self.hud.status_style = self.options.status_style;
+                self.hud.combat_numbers.switches = self.options.combat_numbers;
+                self.windows.options_page.combat_numbers = self.options.combat_numbers;
                 self.windows.options_page.status_style = self.options.status_style;
                 self.windows.options_page.waypoint_style = self.options.waypoint_style;
                 self.hud.waypoint_style = self.options.waypoint_style;
@@ -713,7 +809,28 @@ impl HorizonUi {
                 if let Some(text) = out.chat_prefill.take() {
                     self.hud.open_chat(text);
                 }
+                if let Some(text) = out.chat_paste.take() {
+                    self.hud.log.paste(&text, &state.chat_draft);
+                }
+                if let Some((ns, ew)) = out.waypoint_to.take() {
+                    let answer = self.windows.waypoints.command(
+                        pyreal_client_model::cmd::waypoint::WaypointCommand::Set {
+                            ns,
+                            ew,
+                            name: None,
+                        },
+                    );
+                    out.requests.push(UiRequest::DisplayChatText {
+                        feedback: pyreal_client_contract::feedback::Feedback::LOCAL,
+                        channel: pyreal_client_model::chat::text_type::DEFAULT,
+                        text: answer,
+                    });
+                }
                 self.hud.frame_overlays(&mut p, &mut ctx, state, &mut out);
+                if let Some(b) = blind {
+                    b.end(&mut p, &mut ctx);
+                    self.windows.doll = None;
+                }
                 if let Some((pressed, keys, chars)) = held {
                     ctx.input.pressed = pressed;
                     ctx.input.keys = keys;
@@ -727,8 +844,11 @@ impl HorizonUi {
                 self.windows
                     .options_questions(&mut p, &mut ctx, state, &mut out);
                 self.windows.questions(&mut p, &mut ctx, state, &mut out);
+                self.windows.keep_question(&mut p, &mut ctx);
                 let part = self.windows.part_of_stack();
                 drag_step(&mut p, &mut ctx, &self.hud.drop_slots, part, &mut out);
+                // What would sell, salvage, trade, give or drop a Keep item waits for a yes.
+                self.windows.hold_keep(state, &mut out.requests);
                 if let Some((slot, bind)) = out.cross_bind.take() {
                     self.hud.cross.assign(slot, Some(bind));
                 }
@@ -746,6 +866,9 @@ impl HorizonUi {
                         .push_input(pyreal_plugin_ui::Input::Command { plugin, verb });
                 }
             }
+        }
+        if let Some(since) = self.hidden {
+            hide::draw_notice(&mut p, state.key_bindings.as_ref(), since, self.time);
         }
         if state.disconnected {
             let text = state
@@ -777,7 +900,14 @@ impl HorizonUi {
             ctx.input.keys.push(pyreal_ui_kit::input::vk::ESCAPE);
         }
         let seat = &mut self.windows.plugins;
+        let blind = self
+            .hidden
+            .is_some()
+            .then(|| hide::Blind::begin(&p, &mut ctx));
         seat.host.windows(&mut p, &mut ctx.kit, &seat.frame.views);
+        if let Some(b) = blind {
+            b.end(&mut p, &mut ctx);
+        }
         seat.host
             .ask(&mut p, &mut ctx.kit, state.host_question.as_ref());
         self.host_buttons = if state.host_question.is_some() {
@@ -795,6 +925,7 @@ impl HorizonUi {
         // Escape is the interface's while it has something to close or let go of; otherwise it is
         // the game's (cancel a use, let a power bar go).
         self.wants_escape = self.screen != Screen::Game
+            || self.hidden.is_some()
             || self.text_focus
             || self.drag.is_some()
             || state.prompts.iter().any(|p| p.modal)
@@ -842,7 +973,7 @@ fn prompts(
 }
 
 /// The game's actions the interface answers itself, rather than the game: the shortcut keys and
-/// the make-shortcut key, the windows' keys, and logging out and quitting.
+/// the make-shortcut key, the windows' keys, Hide Interface, and logging out and quitting.
 #[must_use]
 pub fn takes_action(action: u32) -> bool {
     pyreal_ui_logic::shortcuts::shortcut_action(action).is_some()
@@ -854,6 +985,7 @@ pub fn takes_action(action: u32) -> bool {
         || action == hud::ACTION_USE
         || action == hud::ACTION_NEXT_MONSTER
         || action == hud::ACTION_PREVIOUS_MONSTER
+        || action == pyreal_client_contract::actions::pyreal::HIDE_INTERFACE.0
 }
 
 /// The requests that put `spell_id` at `index` on a tab holding `rows`. A spell the tab already

@@ -1,5 +1,6 @@
 //! The Journal (the contracts the player holds, each with its notes, contact and places, and
-//! Abandon; the notebook, in its own module; and every timer in one list), and the Profile tab's
+//! Abandon; the notebook, in its own module; every timer in one list; and the deaths, in the
+//! recap module), and the Profile tab's
 //! titles and life facts, doing what the game's contracts, titles and character information
 //! panels do.
 
@@ -43,6 +44,7 @@ pub enum JournalTab {
     Contracts,
     Notebook,
     Timers,
+    Deaths,
 }
 
 /// One running or lately ready timer on the Timers tab: what it is called, when it is ready on
@@ -53,6 +55,8 @@ pub struct TimerRow {
     pub ready_at: f64,
     pub from: &'static str,
     pub action: TimerAction,
+    /// What the quest tracker pins for it.
+    pub pin: Option<super::tracker::Pin>,
 }
 
 /// A Timers row's button.
@@ -86,6 +90,7 @@ pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
             ready_at: p.timer_stamp,
             from: "Notebook page",
             action: TimerAction::Open(p.page_number),
+            pin: super::tracker::Pin::page(p),
         })
         .collect();
     rows.extend(state.contracts.iter().filter_map(|c| {
@@ -94,6 +99,7 @@ pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
             ready_at: now + left,
             from: "Contract",
             action: TimerAction::Contracts,
+            pin: Some(super::tracker::Pin::Contract(c.contract_id)),
         })
     }));
     let tracked = |title: &str| {
@@ -108,6 +114,7 @@ pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
             ready_at: at,
             from: "Quest",
             action: TimerAction::Track,
+            pin: Some(super::tracker::Pin::Quest(q.name.clone())),
         })
     }));
     rows.extend(
@@ -119,6 +126,7 @@ pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
                 ready_at: h.ready_at,
                 from: "Heard in chat",
                 action: TimerAction::Track,
+                pin: Some(super::tracker::Pin::Heard(h.title.clone())),
             }),
     );
     rows.sort_by(|a, b| {
@@ -133,19 +141,20 @@ pub fn timer_rows(state: &GameState) -> Vec<TimerRow> {
 }
 
 impl Windows {
-    /// The Journal's tabs, in order: the contracts where the world has them, the notebook and
-    /// the timers.
+    /// The Journal's tabs, in order: the contracts where the world has them, the notebook, the
+    /// timers and the deaths.
     fn journal_tabs(&self) -> Vec<JournalTab> {
-        let mut tabs = Vec::with_capacity(3);
+        let mut tabs = Vec::with_capacity(4);
         if self.has_contracts() {
             tabs.push(JournalTab::Contracts);
         }
-        tabs.extend([JournalTab::Notebook, JournalTab::Timers]);
+        tabs.extend([JournalTab::Notebook, JournalTab::Timers, JournalTab::Deaths]);
         tabs
     }
 
     /// The Journal's tab on show.
-    pub(super) fn journal_page(&self) -> JournalTab {
+    #[must_use]
+    pub fn journal_page(&self) -> JournalTab {
         let tabs = self.journal_tabs();
         tabs.get(self.journal_tab)
             .copied()
@@ -159,7 +168,7 @@ impl Windows {
         }
     }
 
-    /// The Journal: the contracts, the notebook and the timers, a tab each.
+    /// The Journal: the contracts, the notebook, the timers and the deaths, a tab each.
     pub(super) fn journal(
         &mut self,
         p: &mut Painter<'_>,
@@ -186,6 +195,7 @@ impl Windows {
                 JournalTab::Contracts => "Contracts",
                 JournalTab::Notebook => "Notebook",
                 JournalTab::Timers => timers.as_str(),
+                JournalTab::Deaths => "Deaths",
             })
             .collect();
         self.journal_tab = self.journal_tab.min(tabs.len() - 1);
@@ -195,6 +205,7 @@ impl Windows {
             JournalTab::Contracts => self.contracts(p, ctx, state, body),
             JournalTab::Notebook => self.notebook(p, ctx, state, body, out),
             JournalTab::Timers => self.journal_timers(p, ctx, state, body, out),
+            JournalTab::Deaths => self.journal_deaths(p, ctx, state, body),
         }
     }
 
@@ -212,16 +223,17 @@ impl Windows {
         let name = TextStyle::new(Family::Body, 13.0, ctx.colours.text()).edge(ctx.colours.edge());
         let dim = TextStyle::new(Family::Body, 12.0, ctx.colours.dim()).edge(ctx.colours.edge());
         let rows = timer_rows(state);
-        let (from_w, button_w) = (120.0 * k, 96.0 * k);
+        let (from_w, button_w, pin_w) = (120.0 * k, 96.0 * k, 64.0 * k);
         let cols = |r: Rect| {
             let button = Rect::new(r.right() - button_w, r.y, button_w, r.h);
-            let from = Rect::new(button.x - from_w - 8.0 * k, r.y, from_w, r.h);
+            let pin = Rect::new(button.x - pin_w - 4.0 * k, r.y, pin_w, r.h);
+            let from = Rect::new(pin.x - from_w - 8.0 * k, r.y, from_w, r.h);
             let left = Rect::new(from.x - 100.0 * k, r.y, 92.0 * k, r.h);
             let title = Rect::new(r.x + 8.0 * k, r.y, left.x - r.x - 16.0 * k, r.h);
-            (title, left, from, button)
+            (title, left, from, pin, button)
         };
         let head = Rect::new(body.x, body.y, body.w, 22.0 * k);
-        let (t, l, f, _) = cols(head);
+        let (t, l, f, _, _) = cols(head);
         p.text_in(&dim, t, Align::Left, "Timer");
         p.text_in(&dim, l, Align::Left, "Ready in");
         p.text_in(&dim, f, Align::Left, "From");
@@ -265,7 +277,7 @@ impl Windows {
             if ctx.input.hover(&r) {
                 crate::ui::pregame::list_highlight(p, r, false);
             }
-            let (t, l, f, b) = cols(r);
+            let (t, l, f, pin, b) = cols(r);
             let title = kit::middle_ellipsis(p, &name, &row.title, t.w);
             p.text_in(&name, t, Align::Left, &title);
             let left = row.ready_at - state.clock;
@@ -281,6 +293,8 @@ impl Windows {
             p.text_in(&style, l, Align::Left, &words);
             p.text_in(&dim, f, Align::Left, row.from);
             let button = Rect::new(b.x, b.y + 2.0 * k, b.w, b.h - 4.0 * k);
+            let pin = Rect::new(pin.x, button.y, pin.w, button.h);
+            self.pin_button(p, ctx, pin, row.pin.clone(), state);
             match &row.action {
                 TimerAction::Open(page) => {
                     if kit::button(p, ctx, button, "Open", true) {
@@ -416,6 +430,19 @@ impl Windows {
             p.text(&name, x, y, &l);
             y += lh;
         }
+        let pin = Rect::new(
+            body.right() - 224.0 * k,
+            body.bottom() - 30.0 * k,
+            96.0 * k,
+            28.0 * k,
+        );
+        self.pin_button(
+            p,
+            ctx,
+            pin,
+            Some(super::tracker::Pin::Contract(c.contract_id)),
+            state,
+        );
         if kit::button(
             p,
             ctx,

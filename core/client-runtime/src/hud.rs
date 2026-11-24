@@ -114,6 +114,10 @@ pub const AVAILABLE_EXPERIENCE: u32 = 2;
 /// `PropertyInt64` **1 `TotalExperience`** — the experience read-out's int64 quality `1`.
 pub const TOTAL_EXPERIENCE: u32 = 1;
 
+/// The line ACE's system chat greets every login with (`WorldManager.PlayerEnterWorld`).
+/// Empyrean's says "powered by Empyrean (a fork of ACEmulator)" and keeps retail's tie-break.
+pub const ACE_GREETING: &str = "powered by ACEmulator\n";
+
 /// `PropertyInt` **25 `Level`** — the same function's int quality `0x19`.
 pub const LEVEL: u32 = 0x19;
 
@@ -515,6 +519,9 @@ impl SpellCharges {
 pub struct Hud {
     /// The charges on the player's spells, on a world that has them.
     pub spell_charges: SpellCharges,
+    /// The world greeted the player as ACE does ([`ACE_GREETING`]), so ACE's tie-breaks decide
+    /// which enchantment of a category is in force.
+    pub ace_world: bool,
     /// The player's qualities live in the object table's
     /// local-player row because that is the only place retail keeps them. Login creates a local
     /// player description for the player and no other object, then publishes that allocation as
@@ -619,6 +626,13 @@ pub struct Hud {
     /// time, which is step 7 and not step 4, so a
     /// line decoded while the network was pumped waits here until the UI ticks.
     pub pending_chat: Vec<(Option<u64>, ChatMessage)>,
+    /// This frame's combat notification lines (`0x01B1` to `0x01B4`), kept whether or not combat
+    /// text is squelched, for the interface's own readers of combat.
+    pub pending_combat: Vec<ChatMessage>,
+    /// The player's own deaths `0x019E` reported since the interface last took them: the killer's
+    /// name, `Some(None)` when there was no killer (the player, or none), `None` when the killer
+    /// is not in the object table.
+    pub pending_deaths: Vec<Option<Option<String>>>,
     /// Incoming-only synchronous subscriber lifetime. No history for an absent/new screen.
     turbine_chat_generation: Option<u64>,
     /// What the placement blob was last pushed into the screen *for*. See [`AppliedKey`].

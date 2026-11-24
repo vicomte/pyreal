@@ -7,6 +7,7 @@ mod cover;
 mod frame;
 mod light;
 mod marks;
+mod overlay_cost;
 mod portal;
 mod preview;
 mod rings;

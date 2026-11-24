@@ -10,6 +10,7 @@
 //! that began over the world, and gives the rest back.
 
 use crate::art::AcArt as _;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -79,9 +80,6 @@ pub struct Routed {
     pub forward: bool,
 }
 
-/// The box id the screen-size question is shown under, apart from the game's questions.
-const RESOLUTION_PROMPT: u64 = u64::MAX;
-
 /// How much further back than the other interfaces' the doll's camera stands.
 const DOLL_DISTANCE: f32 = 1.15;
 /// How much higher the doll's camera stands, in metres, so the figure sits in the middle of its
@@ -139,6 +137,9 @@ pub struct HorizonFrontEnd {
     spell_detail: Option<u32>,
     /// The spell the spell information window shows.
     spell_identify: Option<u32>,
+    /// The objects whose appraisals the interface watches, and each one's last read.
+    appraisal_watch: Vec<ObjectId>,
+    appraised: BTreeMap<ObjectId, crate::ui::appraisals::Appraised>,
     /// `@clear` was asked for since the last frame.
     chat_cleared: bool,
     /// The link: when the last ping went, how many answers had come by then, and the last
@@ -193,8 +194,6 @@ pub struct HorizonFrontEnd {
     abuse_code: Option<u32>,
     /// The abuse log's last answer, in the game's words.
     abuse_answer: Option<String>,
-    /// The screen-size question the runtime asks, while it asks it.
-    resolution: Option<pyreal_client_contract::resolution::ResolutionPrompt>,
     /// What the creation model in its preview space was dressed from, and how it is turned.
     creation_built: Option<(
         pyreal_primitives::DataId,
@@ -256,6 +255,8 @@ impl HorizonFrontEnd {
             shop_buying: false,
             spell_detail: None,
             spell_identify: None,
+            appraisal_watch: Vec::new(),
+            appraised: BTreeMap::new(),
             chat_cleared: false,
             ping_sent: None,
             ping_ms: None,
@@ -278,7 +279,6 @@ impl HorizonFrontEnd {
             in_sight: None,
             settings_path,
             portal: false,
-            resolution: None,
             creation_built: None,
             creation_palettes: pyreal_scene::preview::PaletteSetCache::default(),
             doll_built: None,
@@ -434,14 +434,6 @@ impl HorizonFrontEnd {
     /// Text copied or cut since the last call, for the host's clipboard.
     pub fn take_copied(&mut self) -> Option<String> {
         self.frame_input.copied.take()
-    }
-
-    /// The screen-size question, while the runtime asks it.
-    pub fn project_resolution(
-        &mut self,
-        prompt: Option<pyreal_client_contract::resolution::ResolutionPrompt>,
-    ) {
-        self.resolution = prompt;
     }
 
     /// The destinations' labels and the floating chat windows' first titles, as the game's
@@ -788,11 +780,21 @@ impl HorizonFrontEnd {
             || cx.pregame().phase == pyreal_client_contract::pregame::GamePhase::EnteringWorld;
         let in_game = self.in_gameplay();
         let chat = hold_early_chat(&mut self.early_chat, in_game, entering, chat);
+        let combat = cx.hud_mut().take_combat_lines();
+        let own_deaths = cx.hud_mut().take_own_deaths();
         let mut state = crate::state::snapshot(cx, chat);
+        if in_game {
+            state.combat_lines = combat
+                .into_iter()
+                .map(crate::ui::game::ChatLine::from_message)
+                .collect();
+            state.own_deaths = own_deaths;
+        }
         if self.ui.windows.admin_wants_weenies() {
             state.weenies = Some(cx.weenie_list());
         }
         state.full_screen = cx.full_screen_offered().then(|| cx.full_screen());
+        state.window_sizes = Some(cx.window_sizes());
         state.hifi = cx.hifi_availability();
         state.graphics_adapter = cx.graphics_adapter();
         state.camera_heading = cx.camera_heading().unwrap_or(state.heading);
@@ -916,24 +918,6 @@ impl HorizonFrontEnd {
                 offer: d.offer.clone(),
             })
             .collect();
-        if let Some(p) = self.resolution {
-            use pyreal_client_contract::resolution::ResolutionPromptKind as K;
-            let text = match p.kind {
-                K::OfferTest => "Test new screen size first, for 15 seconds?",
-                K::Accept => "Accept this setting?",
-                K::ApplyFailed => "Unable to change screen size!",
-                K::RevertFailed => "Unable to restore the previous screen size!",
-                K::Reset => "Resolution Reset",
-            };
-            state.prompts.push(crate::ui::game::Prompt {
-                id: RESOLUTION_PROMPT,
-                question: matches!(p.kind, K::OfferTest | K::Accept),
-                modal: true,
-                waiting: 0,
-                text: text.to_owned(),
-                offer: None,
-            });
-        }
         // A refusal of a character sent, in the creation wizard's own words.
         state.chargen_refusal = cx.pregame().chargen_response.and_then(|code| {
             let token = pyreal_chargen::CgVerification::from_code(code).error_string_id()?;
@@ -1204,6 +1188,7 @@ impl HorizonFrontEnd {
                 .spell_identify
                 .and_then(|id| view.spell_examine(id).map(|d| (id, d)));
             state.combat_bar = view.combat_bar();
+            state.appraised = watched_appraisals(&view, &self.appraisal_watch, &mut self.appraised);
         }
         if let Some(id) = open_container {
             self.outbox.emit(UiRequest::NewParentContainer(id));
@@ -1307,30 +1292,13 @@ impl HorizonFrontEnd {
             self.host_reply = Some(reply);
         }
         for (id, yes) in out.answers {
-            if id == RESOLUTION_PROMPT {
-                use pyreal_client_contract::resolution::{ResolutionAction, ResolutionPromptKind};
-                if let Some(p) = self.resolution.take() {
-                    let question = matches!(
-                        p.kind,
-                        ResolutionPromptKind::OfferTest | ResolutionPromptKind::Accept
-                    );
-                    self.outbox.emit(UiRequest::Resolution(if question {
-                        ResolutionAction::Answer {
-                            token: p.token,
-                            yes,
-                        }
-                    } else {
-                        ResolutionAction::Dismiss { token: p.token }
-                    }));
-                }
-                continue;
-            }
             self.dialogs.answer(id, yes);
         }
         if out.examine_spell.is_some() {
             self.spell_detail = out.examine_spell;
         }
         self.spell_identify = out.identify_spell;
+        self.appraisal_watch = std::mem::take(&mut out.watch_appraisals);
         {
             let view = cx.hud().view(cx.objects());
             if out.book_closed {
@@ -1478,6 +1446,20 @@ impl HorizonFrontEnd {
                     }
                 }
                 "minimap-rotates" => options.minimap_rotates = value == "true",
+                "assess-on-hover" => options.assess_on_hover = value == "true",
+                "compare-worn" => options.compare_worn = value == "true",
+                "effects-ending" => {
+                    if let Some(s) = crate::ui::hud::effects_ending::EndingSoon::from_word(value) {
+                        options.effects_ending = s;
+                    }
+                }
+                key if options.combat_numbers.set(key, value) => {}
+                "low-health" => {
+                    if let Some(at) = crate::ui::low_health::LowHealthAt::from_word(value) {
+                        options.low_health = at;
+                    }
+                }
+                crate::ui::death_recap::OPENS_KEY => options.death_recap_opens = value == "true",
                 "spell-rows" => {
                     if let Some(n) = crate::options::parse_rows(value) {
                         options.spell_rows = n;
@@ -1572,9 +1554,11 @@ impl HorizonFrontEnd {
     }
 
     /// The ring under the selection, on the game screen: its picture uploaded once, and the
-    /// marker asked for each frame (none with nothing selected, or off the game screen).
+    /// marker asked for each frame (none with nothing selected, off the game screen, or with the
+    /// interface hidden).
     fn ground_ring<S: Shell>(&mut self, cx: &mut Cx<'_, S>) {
-        let target = self.ring_target.filter(|_| self.in_gameplay());
+        let shown = self.ui.hidden.is_none();
+        let target = self.ring_target.filter(|_| self.in_gameplay() && shown);
         if target.is_some() && !self.ring_uploaded {
             self.ring_uploaded = true;
             let inner = crate::ring::inner_picture(&self.ui.art);
@@ -1591,7 +1575,8 @@ impl HorizonFrontEnd {
                 }
             }
         }
-        cx.present_mut().set_waypoint_ring(self.ui.waypoint_ring);
+        cx.present_mut()
+            .set_waypoint_ring(self.ui.waypoint_ring.filter(|_| shown));
         cx.present_mut().set_ground_markers(&crate::ring::markers(
             target,
             self.ring_time,
@@ -2049,6 +2034,28 @@ fn spell_tab_keys(keys: Option<&crate::ui::game::KeyBindingsView>) -> (String, S
             .unwrap_or_default()
     };
     (first(COMBAT_PREV_SPELL_TAB), first(COMBAT_NEXT_SPELL_TAB))
+}
+
+/// The appraisals of the objects the interface watches, read again only when a new reply came.
+fn watched_appraisals(
+    view: &dyn pyreal_client_contract::view::GameView,
+    watch: &[ObjectId],
+    last: &mut BTreeMap<ObjectId, crate::ui::appraisals::Appraised>,
+) -> Vec<crate::ui::appraisals::Appraised> {
+    use crate::ui::appraisals::Appraised;
+    last.retain(|id, _| watch.contains(id));
+    watch
+        .iter()
+        .filter_map(|&id| {
+            let p = view.appraisal(id)?;
+            if let Some(a) = last.get(&id).filter(|a| a.delivery == p.delivery) {
+                return Some(a.clone());
+            }
+            let a = Appraised::of(id, &p, crate::state::examined(view, id)?);
+            last.insert(id, a.clone());
+            Some(a)
+        })
+        .collect()
 }
 
 #[cfg(test)]

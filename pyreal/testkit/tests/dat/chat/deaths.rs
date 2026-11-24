@@ -223,6 +223,9 @@ pub fn a_death_you_were_part_of_reaches_the_log_only_when_you_were_not() {
     let mut c = a_client_that_can_die();
     let knows_itself = c.view().world().is_the_player(DEAD_LOCAL);
 
+    // The player's own deaths, as the interface's death recap is told them by the killer's id.
+    let reported = |c: &HeadlessClient| c.view().expect_app().hud().pending_deaths.clone();
+
     let message = "Gaerlan splits Larktest apart!";
     let before = death_counts(&c);
     let composed = hear_a_death(&mut c, death_event(message, DEAD_VICTIM, DEAD_KILLER));
@@ -236,19 +239,30 @@ pub fn a_death_you_were_part_of_reaches_the_log_only_when_you_were_not() {
 
     // The three ways the player can be part of it. The killer side is the one an implementation is
     // most likely to miss, because the victim one alone passes everything else here.
+    // A killer the client does not know is reported as unknown; the player, or none, as no killer.
     let mut refused = true;
-    for (tag, killed, killer) in [
-        ("you are the victim", DEAD_LOCAL, DEAD_KILLER),
-        ("you are the killer", DEAD_VICTIM, DEAD_LOCAL),
-        ("both, a suicide", DEAD_LOCAL, DEAD_LOCAL),
+    for (tag, killed, killer, report) in [
+        ("you are the victim", DEAD_LOCAL, DEAD_KILLER, Some(None)),
+        ("you are the killer", DEAD_VICTIM, DEAD_LOCAL, None),
+        ("both, a suicide", DEAD_LOCAL, DEAD_LOCAL, Some(Some(None))),
+        ("a fall", DEAD_LOCAL, ObjectId(0), Some(Some(None))),
     ] {
         let message = format!("death {tag}");
         let before = death_counts(&c);
-        let composed = hear_a_death(&mut c, death_event(&message, killed, killer));
+        // Read before the frame, whose interface takes them.
+        let mut composed = c
+            .app_mut()
+            .apply_hud_events(&[death_event(&message, killed, killer)]);
+        composed.extend(c.app_mut().apply_hud_events(&[]));
+        let now_reported = reported(&c);
+        c.tick(1);
         let after = death_counts(&c);
+        let report: Option<Option<Option<String>>> = report;
+        let told = now_reported == report.into_iter().collect::<Vec<_>>();
         let holds = (after.0 - before.0, after.1 - before.1, after.4 - before.4) == (1, 0, 0)
-            && !carries(&composed, &message);
-        assert!(holds, "{tag}");
+            && !carries(&composed, &message)
+            && told;
+        assert!(holds, "{tag}: {now_reported:?}");
         refused &= holds;
     }
 

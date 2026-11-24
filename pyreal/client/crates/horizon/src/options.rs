@@ -54,6 +54,18 @@ pub struct HorizonOptions {
     pub pad: crate::pad::PadSettings,
     /// The minimap turns with the character, rather than standing north up.
     pub minimap_rotates: bool,
+    /// Resting the pointer on an item asks the game to assess it.
+    pub assess_on_hover: bool,
+    /// Item details show what is worn in the same place without Shift held.
+    pub compare_worn: bool,
+    /// How long before its end an effect shows on the HUD with a notice; or never.
+    pub effects_ending: crate::ui::hud::effects_ending::EndingSoon,
+    /// Which damage and healing numbers rise over bodies in the world.
+    pub combat_numbers: crate::ui::combat_numbers::Switches,
+    /// How low health falls before the screen's edges redden and the health bar glows.
+    pub low_health: crate::ui::low_health::LowHealthAt,
+    /// The Journal opens at its Deaths tab on a death.
+    pub death_recap_opens: bool,
     /// How many rows the spell bar shows ([`crate::ui::hud::SPELL_ROWS`]).
     pub spell_rows: usize,
     /// What the vitals' bars read.
@@ -97,6 +109,12 @@ impl Default for HorizonOptions {
             },
             pad: crate::pad::PadSettings::default(),
             minimap_rotates: false,
+            assess_on_hover: true,
+            compare_worn: false,
+            effects_ending: crate::ui::hud::effects_ending::EndingSoon::OneMinute,
+            combat_numbers: crate::ui::combat_numbers::Switches::default(),
+            low_health: crate::ui::low_health::LowHealthAt::default(),
+            death_recap_opens: false,
             spell_rows: 1,
             status_style: crate::ui::hud::StatusStyle::default(),
             waypoint_style: crate::ui::waypoint::WaypointStyle::default(),
@@ -348,6 +366,20 @@ impl HorizonOptions {
                 "camera-height" => parse_number(value, &mut o.orbit.height),
                 "camera-recentre" => parse_number(value, &mut o.orbit.recentre),
                 "minimap-rotates" => o.minimap_rotates = parse_switch(value),
+                "assess-on-hover" => o.assess_on_hover = parse_switch(value),
+                "compare-worn" => o.compare_worn = parse_switch(value),
+                "effects-ending" => {
+                    if let Some(s) = crate::ui::hud::effects_ending::EndingSoon::from_word(value) {
+                        o.effects_ending = s;
+                    }
+                }
+                key if o.combat_numbers.set(key, value) => {}
+                "low-health" => {
+                    if let Some(at) = crate::ui::low_health::LowHealthAt::from_word(value) {
+                        o.low_health = at;
+                    }
+                }
+                crate::ui::death_recap::OPENS_KEY => o.death_recap_opens = parse_switch(value),
                 "spell-rows" => {
                     if let Some(n) = parse_rows(value) {
                         o.spell_rows = n;
@@ -415,6 +447,11 @@ tilt-max={}
 camera-height={}
 camera-recentre={}
 minimap-rotates={}
+assess-on-hover={}
+compare-worn={}
+effects-ending={}
+low-health={}
+death-recap-opens={}
 spell-rows={}
 status-bar-style={}
 waypoints={}
@@ -436,11 +473,17 @@ chat-input={}
             self.orbit.height,
             self.orbit.recentre,
             self.minimap_rotates,
+            self.assess_on_hover,
+            self.compare_worn,
+            self.effects_ending.word(),
+            self.low_health.word(),
+            self.death_recap_opens,
             self.spell_rows,
             self.status_style.word(),
             self.waypoint_style.word(),
             self.chat_style.word(),
         );
+        text.push_str(&self.combat_numbers.to_text());
         for slot in 0..DEFAULT_TAB_NAMES.len() {
             let _ = writeln!(
                 text,
@@ -476,6 +519,21 @@ chat-input={}
             .unwrap_or_default()
     }
 
+    /// The Interface tab's own settings at their defaults, as the settings file writes them: what
+    /// its Defaults button sets.
+    #[must_use]
+    pub fn interface_defaults() -> Vec<(String, String)> {
+        Self::default()
+            .to_text()
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .filter(|(key, _)| {
+                INTERFACE_KEYS.contains(key) || crate::ui::combat_numbers::KEYS.contains(key)
+            })
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect()
+    }
+
     /// Write the settings to `path`.
     ///
     /// # Errors
@@ -484,6 +542,19 @@ chat-input={}
         std::fs::write(path, self.to_text())
     }
 }
+
+/// The settings file's keys the Interface tab shows, but the combat numbers'
+/// ([`crate::ui::combat_numbers::KEYS`]).
+pub const INTERFACE_KEYS: [&str; 8] = [
+    "scale",
+    "assess-on-hover",
+    "compare-worn",
+    "effects-ending",
+    "low-health",
+    crate::ui::death_recap::OPENS_KEY,
+    "status-bar-style",
+    "waypoints",
+];
 
 /// A spell bar row count from the settings, held to the rows the spell bar offers.
 #[must_use]

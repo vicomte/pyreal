@@ -1,13 +1,13 @@
-//! The pads, read through `gilrs` on Windows: the one last used, as the shell's pad. Elsewhere the
-//! desktop reads none yet.
+//! The pads, read through `gilrs` on Windows and macOS: the one last used, as the shell's pad.
+//! Elsewhere the desktop reads none yet.
 
 use pyreal_client_shell::gamepad::{HostGamepad, PadState};
 
-/// The desktop's pad: on Windows the pad library, opened the first time it is read; elsewhere
-/// nothing.
+/// The desktop's pad: on Windows and macOS the pad library, opened the first time it is read;
+/// elsewhere nothing.
 #[derive(Default)]
 pub struct DesktopGamepad {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     pads: Option<Pads>,
 }
 
@@ -18,7 +18,7 @@ impl std::fmt::Debug for DesktopGamepad {
 }
 
 /// The pad library, and the pad last used.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 struct Pads {
     /// `None` once it has failed to open, so it is not tried every frame.
     gilrs: Option<gilrs::Gilrs>,
@@ -26,7 +26,7 @@ struct Pads {
 }
 
 impl HostGamepad for DesktopGamepad {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn poll(&mut self) -> Option<PadState> {
         let pads = self.pads.get_or_insert_with(|| Pads {
             gilrs: match gilrs::Gilrs::new() {
@@ -52,14 +52,14 @@ impl HostGamepad for DesktopGamepad {
         Some(read(&gilrs.gamepad(id)))
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     fn poll(&mut self) -> Option<PadState> {
         None
     }
 }
 
 /// One pad's state, as the shell names its controls.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 fn read(pad: &gilrs::Gamepad<'_>) -> PadState {
     use gilrs::{Axis, Button};
     use pyreal_client_shell::gamepad::PadState as S;
@@ -73,6 +73,7 @@ fn read(pad: &gilrs::Gamepad<'_>) -> PadState {
         right_trigger: pad
             .button_data(Button::RightTrigger2)
             .map_or(0.0, gilrs::ev::state::ButtonData::value),
+        family: pyreal_input::pad::PadFamily::of(pad.vendor_id(), pad.name()),
         ..S::default()
     };
     for (ours, theirs) in [

@@ -91,6 +91,8 @@ pub struct PadFrame {
     pub confirm: bool,
     /// Gamepad mode is on: the interface shows what the pad's buttons do.
     pub mode: Option<PadHints>,
+    /// A pad is connected, as read this frame.
+    pub connected: bool,
     /// The target the pad's focus rests on, marked by the pointer.
     pub focus: Option<crate::draw::Rect>,
     /// The window the pad's focus is in, which is brought to the top.

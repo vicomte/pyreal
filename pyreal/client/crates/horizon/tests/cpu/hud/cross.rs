@@ -7,6 +7,7 @@ use pyreal_horizon::pad::CrossSet;
 use pyreal_horizon::ui::game::{GameState, Item, Prompt};
 use pyreal_horizon::ui::hud::cross::{CrossBind, PowerAct};
 use pyreal_horizon::ui::input::PadHints;
+use pyreal_input::pad::PadFamily;
 use pyreal_primitives::ObjectId;
 
 use crate::Harness;
@@ -262,5 +263,75 @@ fn a_plugin_s_command_on_a_slot_goes_to_its_plugin() {
             plugin: "test.looter".into(),
             verb: "loot".into(),
         }]
+    );
+}
+
+/// The PlayStation face buttons' glyphs.
+const PLAYSTATION_GLYPHS: [&str; 4] = [
+    "glyph.triangle",
+    "glyph.circle",
+    "glyph.cross",
+    "glyph.square",
+];
+
+/// The interface with its own art in gamepad mode with a `family` pad, RT holding the right half
+/// up and the sword waiting to be bound, `frames` frames drawn.
+pub(crate) fn marked(family: PadFamily, frames: usize) -> Harness {
+    let state = player();
+    let mut h = Harness::with_built_in_art();
+    h.ui.pad_family = family;
+    h.input.pad.mode = Some(PadHints::World);
+    h.input.pad.set = Some(CrossSet::Right);
+    h.ui.hud.cross.binding = Some(CrossBind::Item(SWORD));
+    for _ in 0..frames {
+        h.frame(&state);
+    }
+    h
+}
+
+/// How many times this frame drew the art's piece `name`.
+fn drawn(h: &Harness, name: &str) -> usize {
+    let Some(s) = h.ui.art.piece(name, h.ui.layout_scale(h.screen)) else {
+        return 0;
+    };
+    h.list
+        .quads
+        .iter()
+        .filter(|q| q.tex == Some(s.tex) && q.src == s.src)
+        .count()
+}
+
+#[test]
+fn an_xbox_pad_or_one_of_no_known_maker_shows_the_lettered_face_buttons() {
+    let h = marked(PadFamily::of(None, "Wireless Gamepad"), 1);
+    for glyph in ["glyph.a", "glyph.x", "glyph.y"] {
+        assert_eq!(drawn(&h, glyph), 1, "{glyph}: on its slot");
+    }
+    assert_eq!(
+        drawn(&h, "glyph.b"),
+        2,
+        "B on its slot and the notice's Exit"
+    );
+    for glyph in PLAYSTATION_GLYPHS {
+        assert_eq!(drawn(&h, glyph), 0, "no {glyph}");
+    }
+}
+
+#[test]
+fn a_playstation_pad_shows_its_signs_on_the_slots_and_the_notice() {
+    let h = marked(
+        PadFamily::of(Some(0x054C), "DualSense Wireless Controller"),
+        1,
+    );
+    for glyph in ["glyph.a", "glyph.b", "glyph.x", "glyph.y"] {
+        assert_eq!(drawn(&h, glyph), 0, "no {glyph}");
+    }
+    for glyph in ["glyph.triangle", "glyph.cross", "glyph.square"] {
+        assert_eq!(drawn(&h, glyph), 1, "{glyph}: on its slot");
+    }
+    assert_eq!(
+        drawn(&h, "glyph.circle"),
+        2,
+        "the circle on its slot and the notice's Exit"
     );
 }

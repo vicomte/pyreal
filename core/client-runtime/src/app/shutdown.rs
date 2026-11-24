@@ -27,9 +27,6 @@ impl<S: Shell> App<S> {
     /// Everything shutting down does but letting the device go.
     fn release_session(&mut self, shell: &mut S) -> crate::shutdown::CleanupLog {
         use crate::shutdown::{Outcome, Step};
-        if let Some(effect) = self.resolution.cancel() {
-            self.apply_resolution_effect(effect);
-        }
         self.state = AppState::ShuttingDown;
         let mut log = crate::shutdown::CleanupLog::default();
 
@@ -128,22 +125,10 @@ impl<S: Shell> App<S> {
         //    untouched.
         log.push(Step::CleanupPreferences, {
             let path = self.cfg.preferences_file.clone();
-            if path.as_os_str().is_empty() || pyreal_client_contract::options::store::len() == 0 {
-                // The preferences-file path empty, or a registry preference load never filled —
-                // which is every test that does not ask for a profile. The client's own skip.
-                Outcome::Nothing
+            if crate::config::save_user_preferences(&path, |ini| self.save_window_size(ini)) {
+                Outcome::Ran
             } else {
-                match crate::config::read_user_preferences(&path) {
-                    // A merge into nothing would drop every key this build does not register.
-                    Err(e) => {
-                        tracing::warn!(
-                            "not saving user preferences: {} could not be read: {e}",
-                            path.display()
-                        );
-                        Outcome::Nothing
-                    }
-                    Ok(found) => self.save_user_preferences(&path, found),
-                }
+                Outcome::Nothing
             }
         });
         // 7-9. The quality registrar, the global event handler and the interface system.
@@ -178,36 +163,6 @@ impl<S: Shell> App<S> {
             },
         );
         log
-    }
-
-    /// Merge the registry into the profile read from `path`, or a new one when there was none,
-    /// and write it back.
-    fn save_user_preferences(
-        &self,
-        path: &std::path::Path,
-        found: Option<pyreal_client_contract::persist::preferences::UserPreferences>,
-    ) -> crate::shutdown::Outcome {
-        use crate::shutdown::Outcome;
-        let mut ini = found.unwrap_or(
-            pyreal_client_contract::persist::preferences::UserPreferences {
-                // `fopen(path, "w")` is text mode on Windows: a file the client wrote has
-                // CRLF, and a first run has to start that way too.
-                crlf: true,
-                ..Default::default()
-            },
-        );
-        let n = pyreal_client_contract::options::store::save_into(&mut ini);
-        self.save_window_size(&mut ini);
-        match crate::platform::files::write(path, ini.to_bytes()) {
-            Ok(()) => {
-                tracing::info!("saved {n} preferences to {}", path.display());
-                Outcome::Ran
-            }
-            Err(e) => {
-                tracing::warn!("saving user preferences failed: {e}");
-                Outcome::Nothing
-            }
-        }
     }
 
     /// Write [`crate::config::DISPLAY_WINDOW_SIZE`] into the profile being saved: the window's last

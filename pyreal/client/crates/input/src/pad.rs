@@ -56,6 +56,38 @@ impl PadButton {
     }
 }
 
+/// Whose buttons a pad has, for marking them as they are printed on it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PadFamily {
+    /// An Xbox pad, and any pad not known to be another's: A, B, X, Y, LB, RB, LT, RT.
+    #[default]
+    Xbox,
+    /// A PlayStation pad (a DualShock or a DualSense): cross, circle, square and triangle, with
+    /// its shoulder buttons and triggers.
+    PlayStation,
+}
+
+impl PadFamily {
+    /// Sony's USB vendor id.
+    pub const SONY: u16 = 0x054C;
+
+    /// The family of a pad with USB vendor id `vendor` (when the pad library knows it) and the
+    /// name `name`.
+    #[must_use]
+    pub fn of(vendor: Option<u16>, name: &str) -> Self {
+        let name = name.to_ascii_lowercase();
+        if vendor == Some(Self::SONY)
+            || ["dualsense", "dualshock", "ps4 controller", "ps5 controller"]
+                .iter()
+                .any(|n| name.contains(n))
+        {
+            Self::PlayStation
+        } else {
+            Self::Xbox
+        }
+    }
+}
+
 /// One pad's state at one moment.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct PadState {
@@ -68,6 +100,8 @@ pub struct PadState {
     /// The triggers, each from 0 (let go) to 1 (pulled all the way).
     pub left_trigger: f32,
     pub right_trigger: f32,
+    /// Whose buttons it has.
+    pub family: PadFamily,
 }
 
 impl PadState {
@@ -120,5 +154,26 @@ mod tests {
         later.set(PadButton::South, false);
         assert!(later.released_since(&now, PadButton::South));
         assert_eq!(later, before);
+    }
+
+    #[test]
+    fn a_sony_pad_is_a_playstation_pad_and_any_other_is_marked_as_an_xbox_pad() {
+        assert_eq!(
+            PadFamily::of(Some(0x054C), "DualSense Wireless Controller"),
+            PadFamily::PlayStation
+        );
+        assert_eq!(
+            PadFamily::of(None, "PS4 Controller"),
+            PadFamily::PlayStation
+        );
+        assert_eq!(
+            PadFamily::of(Some(0x045E), "Xbox Wireless Controller"),
+            PadFamily::Xbox
+        );
+        assert_eq!(
+            PadFamily::of(Some(0x057E), "Pro Controller"),
+            PadFamily::Xbox
+        );
+        assert_eq!(PadFamily::of(None, "Xbox Controller"), PadFamily::Xbox);
     }
 }

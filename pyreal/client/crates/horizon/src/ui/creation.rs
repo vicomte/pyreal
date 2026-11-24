@@ -2665,6 +2665,7 @@ pub(crate) mod tests {
             drops: Vec::new(),
             magic: Vec::new(),
             airborne: false,
+            pad_family: pyreal_input::pad::PadFamily::default(),
         };
         c.turn(&mut p, &mut ctx, Rect::new(100.0, 100.0, 200.0, 400.0));
         let hot = ctx.kit.hot;

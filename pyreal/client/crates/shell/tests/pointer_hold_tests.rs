@@ -616,3 +616,91 @@ fn a_click_at_once_after_a_drag_is_a_click_and_not_a_double_click() {
     );
     c.finish();
 }
+
+/// Gamepad mode leaves the mouse the pointer: with no pad, and with a pad until it is used, a
+/// click reaches the interface; a pad used takes the pointer, and the mouse moved takes it back.
+#[test]
+#[cfg_attr(not(feature = "retail-dats"), ignore = "reads retail data")]
+fn gamepad_mode_leaves_the_mouse_the_pointer() {
+    use pyreal_horizon::draw::Rect;
+    use pyreal_horizon::ui::nav::PanelKind;
+    use pyreal_horizon::ui::panels::WindowId;
+    use pyreal_input::pad::{PadButton, PadState};
+    fn ui(c: &mut Client) -> &mut pyreal_horizon::runtime::HorizonFrontEnd {
+        c.shell.horizon.ui.as_mut().expect("Horizon")
+    }
+    fn middle(r: Rect) -> (f64, f64) {
+        (f64::from(r.x + r.w / 2.0), f64::from(r.y + r.h / 2.0))
+    }
+    /// Settings opened at its first tab: the window, and its Chat tab.
+    fn open_settings(c: &mut Client) -> (Rect, Rect) {
+        ui(c).ui.windows.open(WindowId::Options, -1.0);
+        ui(c).ui.windows.options_page.tab = 0;
+        c.frame();
+        c.frame();
+        let snap = ui(c).frame_input.nav.last.clone();
+        let layer = 1 + snap
+            .layers
+            .iter()
+            .position(|l| l.kind == PanelKind::Window)
+            .expect("Settings is drawn");
+        let chat = ui(c)
+            .ui
+            .windows
+            .options_page
+            .controls
+            .iter()
+            .find(|(label, _)| label == "Chat")
+            .expect("Settings' Chat tab")
+            .1;
+        (snap.layers[layer - 1].rect, chat)
+    }
+    let mut c = Client::new("gamepad-mouse");
+    c.horizon(true);
+
+    for pad in [None, Some(PadState::default())] {
+        c.shell.shared.scripted_pad = pad;
+        let (_, tab) = open_settings(&mut c);
+        let (x, y) = middle(tab);
+        c.pointer_to(x, y);
+        c.button(MouseButton::Left, true);
+        c.button(MouseButton::Left, false);
+        c.frame();
+        assert_ne!(
+            ui(&mut c).ui.windows.options_page.tab,
+            0,
+            "the mouse turns Settings' tab with the pad {pad:?}"
+        );
+    }
+
+    let (window, _) = open_settings(&mut c);
+    let (x, y) = middle(window);
+    #[allow(clippy::cast_possible_truncation)]
+    let mouse = (x as f32 + 1.0, y as f32);
+    c.pointer_to(x + 1.0, y);
+    c.frame();
+    assert_eq!(
+        ui(&mut c).frame_input.mouse,
+        mouse,
+        "an idle pad leaves the mouse the pointer"
+    );
+    let mut up = PadState::default();
+    up.set(PadButton::DPadUp, true);
+    c.shell.shared.scripted_pad = Some(up);
+    c.frame();
+    c.shell.shared.scripted_pad = Some(PadState::default());
+    c.frame();
+    assert_ne!(
+        ui(&mut c).frame_input.mouse,
+        mouse,
+        "the pad used has the pointer"
+    );
+    c.pointer_to(x + 1.0, y);
+    c.frame();
+    assert_eq!(
+        ui(&mut c).frame_input.mouse,
+        mouse,
+        "the mouse moved takes it back"
+    );
+    c.finish();
+}

@@ -325,6 +325,9 @@ pub struct Config {
     /// world whose server wants one other than the end of retail's `"1802"`, as the launcher
     /// reads it from its table of such worlds.
     pub logon_version: String,
+    /// `--wire 1999`: the world's server speaks the November 1999 client's wire, which this client
+    /// speaks itself (`pyreal_wire1999`). `--wire later`, the default, is the later wire.
+    pub wire_1999: bool,
     /// `--world-profile <name>`: the named rules the world's own client played by
     /// (`pyreal_rules::world::PROFILES`), over the end of retail's. Default: none, the end of
     /// retail's rules.
@@ -622,6 +625,7 @@ impl Default for Config {
             era: None,
             era_features: pyreal_primitives::EraFeatureOverrides::default(),
             logon_version: pyreal_transport::conn::CLIENT_VERSION.to_owned(),
+            wire_1999: false,
             world_rules: pyreal_primitives::WorldRules::default(),
         }
     }
@@ -823,6 +827,12 @@ const REBUILD_SWITCHES: &[Switch] = &[
     },
     Switch {
         long: "world-profile",
+        short: None,
+        arity: Arity::Required,
+    },
+    // The wire the world's server speaks.
+    Switch {
+        long: "wire",
         short: None,
         arity: Arity::Required,
     },
@@ -1384,7 +1394,7 @@ impl Config {
     pub fn apply_world_switch(&mut self, name: &str, value: &str) -> Result<(), ConfigError> {
         match name {
             "world-base" | "era" | "era-features" | "logon-version" | "world-profile"
-            | "world-status" => self.evaluate_rebuild(name, Some(value)),
+            | "world-status" | "wire" => self.evaluate_rebuild(name, Some(value)),
             other => Err(ConfigError::new(format!("--{other} is not a world switch"))),
         }
     }
@@ -1796,6 +1806,13 @@ impl Config {
                     return Err(ConfigError::new(format!("bad --logon-version {v:?}")));
                 }
                 v.clone_into(&mut self.logon_version);
+            }
+            "wire" => {
+                self.wire_1999 = match v.trim() {
+                    "1999" => true,
+                    "later" => false,
+                    other => return Err(ConfigError::new(format!("bad --wire {other:?}"))),
+                };
             }
             "world-profile" => {
                 self.world_rules = pyreal_rules::world::profile_rules(v)
@@ -2284,6 +2301,48 @@ pub struct Preferences {
     values: BTreeMap<String, String>,
     /// The user-preference load-success flag.
     pub loaded_ok: bool,
+}
+
+/// The registry merged into the profile at `path` (or a new one) with `extra` written in, and
+/// written back: the save of every normal exit, and of a window system that ends the process
+/// first. `false` when nothing was written.
+///
+/// The merge keeps every key this build does not register, so a file that cannot be read is
+/// left alone.
+pub fn save_user_preferences(path: &Path, extra: impl FnOnce(&mut UserPreferences)) -> bool {
+    if path.as_os_str().is_empty() || pyreal_client_contract::options::store::len() == 0 {
+        // The preferences-file path empty, or a registry preference load never filled, which is
+        // every test that does not ask for a profile. The client's own skip.
+        return false;
+    }
+    let found = match read_user_preferences(path) {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!(
+                "not saving user preferences: {} could not be read: {e}",
+                path.display()
+            );
+            return false;
+        }
+    };
+    let mut ini = found.unwrap_or(UserPreferences {
+        // `fopen(path, "w")` is text mode on Windows: a file the client wrote has CRLF, and a
+        // first run has to start that way too.
+        crlf: true,
+        ..Default::default()
+    });
+    let n = pyreal_client_contract::options::store::save_into(&mut ini);
+    extra(&mut ini);
+    match crate::platform::files::write(path, ini.to_bytes()) {
+        Ok(()) => {
+            tracing::info!("saved {n} preferences to {}", path.display());
+            true
+        }
+        Err(e) => {
+            tracing::warn!("saving user preferences failed: {e}");
+            false
+        }
+    }
 }
 
 /// The player's `UserPreferences.ini`, or `None` when there is none.

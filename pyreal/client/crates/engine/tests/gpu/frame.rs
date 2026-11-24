@@ -1,5 +1,6 @@
-//! The frame's tail on the GPU: the temporal anti-aliasing settling on a still scene, the dynamic
-//! resolution under a tight budget, picking by object, and the UI laid over at the output's size.
+//! The frame's tail on the GPU: the temporal anti-aliasing settling on a still scene, MetalFX's
+//! scales watched to completion, the dynamic resolution under a tight budget, picking by object,
+//! and the UI laid over at the output's size.
 
 use std::sync::Arc;
 
@@ -217,6 +218,72 @@ fn the_temporal_anti_aliasing_settles_on_a_still_scene() {
         .expect("a frame");
     let edges = mean_difference(&plain, &frames[39]);
     assert!(edges > 0.0 && edges < 3.0, "{edges} levels from unjittered");
+}
+
+/// MetalFX at an output large enough for its Neural Engine path, through scalers rebuilt for three
+/// render scales: every scale's command buffer completes and is counted off, and none fails.
+#[test]
+fn metalfx_scales_complete_and_are_counted_off() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let mut engine = engine();
+    door_and_drudge(&mut engine);
+    engine.renderer.anti_aliasing = true;
+    engine.renderer.upscaler = Upscaler::MetalFx;
+    let size = (2400, 1800);
+    for n in 0..12 {
+        engine.renderer.render_scale = [0.5, 0.75, 1.0][n / 4];
+        engine
+            .render_to_rgba(&camera(), &SkyLight::default(), size)
+            .expect("a frame");
+    }
+    assert_eq!(engine.renderer.temporal.used, Some(Upscaler::MetalFx));
+    let watch = engine.renderer.temporal.metalfx_watch();
+    let start = std::time::Instant::now();
+    while watch.pending() > 0 && start.elapsed() < std::time::Duration::from_secs(5) {
+        let _ = engine.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(watch.pending(), 0);
+    assert!(!watch.failed());
+}
+
+/// One MetalFX scaler serves every render scale at an output, above and below the size where
+/// MetalFX turns to the Neural Engine: each step keeps it, and every frame is scaled by it.
+#[test]
+fn one_metalfx_scaler_serves_every_render_scale() {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    for size in [(1728, 1117), (2400, 1800)] {
+        let mut engine = engine();
+        door_and_drudge(&mut engine);
+        engine.renderer.anti_aliasing = true;
+        engine.renderer.upscaler = Upscaler::MetalFx;
+        for scale in [1.0, 0.95, 0.8, 0.65, 0.5, 0.7, 1.0] {
+            engine.renderer.render_scale = scale;
+            for _ in 0..3 {
+                engine
+                    .render_to_rgba(&camera(), &SkyLight::default(), size)
+                    .expect("a frame");
+                assert_eq!(
+                    engine.renderer.temporal.used,
+                    Some(Upscaler::MetalFx),
+                    "{size:?} {scale}"
+                );
+            }
+        }
+        assert_eq!(
+            engine.renderer.temporal.metalfx_scalers_made(),
+            1,
+            "{size:?}"
+        );
+        assert!(
+            !engine.renderer.temporal.metalfx_watch().failed(),
+            "{size:?}"
+        );
+    }
 }
 
 /// Under a budget no frame can meet the drawn size falls to the controller's floor, and the

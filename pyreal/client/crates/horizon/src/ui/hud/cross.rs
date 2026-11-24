@@ -19,6 +19,7 @@
 
 use crate::art::AcArt as _;
 use pyreal_client_contract::UiRequest;
+use pyreal_input::pad::PadFamily;
 use pyreal_primitives::ObjectId;
 
 use crate::art::{Family, Sprite};
@@ -679,7 +680,7 @@ const INVENTORY_ACTION: u32 = 0x1000_0019;
 /// The slot's place in its diamond: up, right, down, left round the middle.
 const ROUND: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
 
-/// The face buttons' letters and colours, top, right, bottom, left.
+/// An Xbox pad's face buttons' letters and colours, top, right, bottom, left.
 const FACE: [(&str, u32); 4] = [
     ("Y", 0xFFE8_C040),
     ("B", 0xFFD8_4A3A),
@@ -790,7 +791,7 @@ impl Hud {
                     p.outline(r.inset(-3.0 * k), 3.0 * k, with_alpha(0xFF70_E0FF, a));
                 }
                 if lit {
-                    draw_button_glyph(p, r, at);
+                    draw_button_glyph(p, r, at, ctx.pad_family);
                     if !name.is_empty() {
                         names.push((at, cx, name));
                     }
@@ -857,12 +858,17 @@ impl Hud {
         p.text(&text, tile.right() + 12.0 * k, r.y + 36.0 * k, &name);
         let line = r.bottom() - 26.0 * k;
         let mut x = tile.right() + 12.0 * k;
+        let family = ctx.pad_family;
         for (b, what) in [("LT/RT", "+ button: Assign to the slot"), ("B", "Exit")] {
-            let marks = super::pad::button_marks(p, b, x, line + 9.0 * k, 18.0 * k);
+            let marks = super::pad::button_marks(p, family, b, x, line + 9.0 * k, 18.0 * k);
             if marks > 0.0 {
                 x += marks + 6.0 * k;
             } else {
-                x += p.text(&key, x, line, b) + 6.0 * k;
+                let named: Vec<&str> = b
+                    .split('/')
+                    .map(|b| super::pad::button_name(family, b))
+                    .collect();
+                x += p.text(&key, x, line, &named.join("/")) + 6.0 * k;
             }
             x += p.text(&text, x, line, what) + 18.0 * k;
         }
@@ -997,14 +1003,15 @@ pub fn draw_set_number(p: &mut Painter<'_>, at: (f32, f32), label: &str) {
     );
 }
 
-/// The button that uses slot `at` (as [`crate::pad::CROSS_BUTTONS`]), in its corner: the d-pad as
-/// a small cross with its arm lit, a face button by its letter in its colour.
-pub fn draw_button_glyph(p: &mut Painter<'_>, r: Rect, at: usize) {
+/// The button that uses slot `at` (as [`crate::pad::CROSS_BUTTONS`]), in its corner, as a `family`
+/// pad marks it: by the art's glyph, or without it the d-pad as a small cross with its arm lit and
+/// a face button by its Xbox letter in its colour.
+pub fn draw_button_glyph(p: &mut Painter<'_>, r: Rect, at: usize, family: PadFamily) {
     let k = p.scale;
-    let glyph = if at < 4 {
-        ["up", "right", "down", "left"][at]
-    } else {
-        ["y", "b", "a", "x"][at - 4]
+    let glyph = match (at, family) {
+        (0..4, _) => ["up", "right", "down", "left"][at],
+        (_, PadFamily::Xbox) => ["y", "b", "a", "x"][at - 4],
+        (_, PadFamily::PlayStation) => super::pad::PLAYSTATION_FACE[at - 4],
     };
     if let Some(g) = p.piece(&format!("glyph.{glyph}")) {
         let side = 20.0 * k;

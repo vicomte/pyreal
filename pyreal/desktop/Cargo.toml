@@ -45,6 +45,10 @@ windows = { version = "0.62", features = ["Foundation", "Globalization", "Storag
 # The pads, through the system's XInput.
 gilrs = { workspace = true, features = ["xinput"] }
 
+# The pads on macOS, through IOKit; gilrs refuses to build anywhere without a Windows backend named.
+[target.'cfg(target_os = "macos")'.dependencies]
+gilrs = { workspace = true, features = ["xinput"] }
+
 # The same two host services off Windows.
 [target.'cfg(not(windows))'.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

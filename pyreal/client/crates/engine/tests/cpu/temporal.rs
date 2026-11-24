@@ -1,6 +1,8 @@
-//! The frame's tail without a device: the jitter, the upscaler's choice, the render scale and the
-//! dynamic resolution's controller.
+//! The frame's tail without a device: the jitter, the upscaler's choice, the render scale, the
+//! dynamic resolution's controller, the drawn sizes one MetalFX scaler takes and the watch on its
+//! scales.
 
+use pyreal_engine::metalfx::{within, Watch, MOST_SCALE};
 use pyreal_engine::temporal::{
     choose, halton, jitter, scaled, Can, DynamicResolution, Upscaler, JITTER_PHASES,
 };
@@ -81,4 +83,61 @@ fn the_dynamic_resolution_holds_its_budget() {
     assert_eq!(d.scale(), d.max_scale);
     // Unknown timings change nothing.
     assert_eq!(d.observe(0.0), d.max_scale);
+}
+
+/// A scale whose command buffer ends in an error turns MetalFX off for good, even after later
+/// scales complete.
+#[test]
+fn a_failed_scale_turns_metalfx_off_for_good() {
+    let watch = Watch::default();
+    assert!(watch.ready() && !watch.failed());
+    watch.begin();
+    watch.end(false);
+    assert!(watch.failed() && !watch.ready());
+    watch.begin();
+    watch.end(true);
+    assert!(watch.failed() && !watch.ready());
+    assert_eq!(watch.pending(), 0);
+}
+
+/// Too many unfinished scales hold MetalFX back until one completes; a stray completion never
+/// counts below none.
+#[test]
+fn unfinished_scales_hold_metalfx_back() {
+    let watch = Watch::default();
+    for _ in 0..Watch::MOST_PENDING {
+        assert!(watch.ready());
+        watch.begin();
+    }
+    assert!(!watch.ready() && !watch.failed());
+    watch.end(true);
+    assert!(watch.ready());
+    for _ in 0..Watch::MOST_PENDING + 3 {
+        watch.end(true);
+    }
+    assert_eq!(watch.pending(), 0);
+}
+
+/// One MetalFX scaler takes every render scale from full down to half, and nothing larger than its
+/// output or smaller than half.
+#[test]
+fn one_metalfx_scaler_takes_every_render_scale_down_to_half() {
+    for output in [(1728, 1117), (3024, 1964), (2400, 1800)] {
+        for step in 0..=10 {
+            let scale = 1.0 - 0.05 * step as f32;
+            assert!(
+                within(scaled(output, scale), output, MOST_SCALE),
+                "{output:?} {scale}"
+            );
+        }
+        assert!(
+            !within(scaled(output, 0.45), output, MOST_SCALE),
+            "{output:?}"
+        );
+        assert!(
+            !within((output.0 + 1, output.1), output, MOST_SCALE),
+            "{output:?}"
+        );
+    }
+    assert!(!within((0, 0), (1728, 1117), MOST_SCALE));
 }

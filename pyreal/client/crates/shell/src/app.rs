@@ -801,6 +801,59 @@ mod tests {
         );
     }
 
+    /// A first run starts on no data files and the player chooses the folder at the front door:
+    /// the keys start on those files, with the key map file in the settings folder.
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn the_keys_start_once_a_first_run_chooses_its_data_folder() {
+        use pyreal_client_runtime::actions::movement::action;
+        let settings =
+            std::env::temp_dir().join(format!("pyreal-first-run-keys-{}", std::process::id()));
+        let cfg = Config {
+            headless: true,
+            connect: false,
+            sound: false,
+            world: false,
+            dat_dir: std::path::PathBuf::new(),
+            preferences_file: settings.join("UserPreferences.ini"),
+            ..Config::default()
+        };
+        let mut app = App::<NullHost>::new(cfg).expect("a client on no data files");
+        app.start_shell().expect("the front door's interface");
+        assert!(app.input_manager().is_none(), "no files, no key tables");
+        app.frame();
+        assert!(app.input_manager().is_none(), "still no files");
+
+        app.use_data_files(&pyreal_dat::testing::dat_dir(), None)
+            .expect("the chosen folder opens");
+        app.frame();
+        let input = app
+            .input_manager()
+            .expect("the keys start on the chosen files");
+        assert_eq!(
+            input.keymap_path(),
+            Some(settings.join(crate::input::DEFAULT_KEYMAP_FILE).as_path())
+        );
+        let walk = input
+            .manager
+            .keymap
+            .section(pyreal_input::InputMapId(4))
+            .map(|s| s.keys_for_action(action::MOVE_FORWARD))
+            .unwrap_or_default();
+        assert!(!walk.is_empty(), "the movement map binds walking forward");
+        let page = app
+            .shell()
+            .horizon()
+            .and_then(|ui| ui.keys.as_ref())
+            .expect("the key bindings page has the bindings");
+        assert!(!page.rows.is_empty(), "the key bindings page lists rows");
+        drop(app);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
     /// A second client starts while the first is still running: startup takes no
     /// one-client-per-machine claim, so the second is not refused and both run their interface.
     ///

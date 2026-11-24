@@ -71,6 +71,10 @@ pub struct PadMode {
     /// Gamepad mode was switched off for this run, there being no pad at the start: the setting
     /// itself stays on.
     pub off_for_session: bool,
+    /// The pad has the pointer, having been used since the mouse last was.
+    pad_has_pointer: bool,
+    /// Where the window last put the mouse's pointer, to give it back.
+    mouse_at: Option<(f32, f32)>,
 }
 
 /// Frames at the start the client waits for a pad before switching gamepad mode off for the run.
@@ -92,16 +96,29 @@ impl PadMode {
     }
 
     /// One of the window's events, as it reaches the interface. Gamepad mode is switched only by
-    /// its setting: neither the keyboard nor the mouse turns it off, and the pad does not turn it
-    /// on.
-    pub fn note_event(&mut self, _event: &HostEvent) {}
+    /// its setting, but the mouse used takes the pointer back from the pad.
+    pub fn note_event(&mut self, event: &HostEvent) {
+        match event {
+            HostEvent::CursorMoved { x, y } => {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    self.mouse_at = Some((*x as f32, *y as f32));
+                }
+                self.pad_has_pointer = false;
+            }
+            HostEvent::PointerMotion { .. }
+            | HostEvent::MouseInput { .. }
+            | HostEvent::MouseWheel { .. } => self.pad_has_pointer = false,
+            _ => {}
+        }
+    }
 }
 
 impl HorizonFrontEnd {
     /// One frame of the pad, after the window's own events (`None` with no pad): in gamepad mode
-    /// its sticks go to the orbit camera and its buttons to the game and the interface; out of
-    /// it, any button switches the mode on. The keys it stands in for that the game should see
-    /// too (Escape) come back, for the shell to route as the window's own.
+    /// its sticks go to the orbit camera and its buttons to the game and the interface, and once
+    /// used it has the pointer until the mouse is used. The keys it stands in for that the game
+    /// should see too (Escape) come back, for the shell to route as the window's own.
     pub fn pad_input<S: Shell>(
         &mut self,
         cx: &mut Cx<'_, S>,
@@ -125,6 +142,10 @@ impl HorizonFrontEnd {
             .map_or(1.0 / 60.0, |t| (now - t).clamp(0.0, 0.25));
         self.pad_mode.last_time = Some(now);
         let step = self.pad_mode.driver.step(pad, &self.ui.options.pad, dt);
+        self.frame_input.pad.connected = pad.is_some();
+        if let Some(pad) = pad {
+            self.ui.pad_family = pad.family;
+        }
         if let Some(b) = self.pad_mode.release_next.take() {
             self.frame_input.down[b] = false;
             self.frame_input.released[b] = true;
@@ -137,10 +158,18 @@ impl HorizonFrontEnd {
         {
             self.ui.options.pad.enabled = false;
         }
-        // Out of gamepad mode the pad is not listened to at all.
-        if !self.ui.options.pad.enabled {
+        // Out of gamepad mode, or with no pad, the pad is not listened to at all.
+        if !self.ui.options.pad.enabled || pad.is_none() {
             self.leave_pad_mode(cx);
             return Vec::new();
+        }
+        // The pad takes the pointer once it is used; until then the mouse keeps it.
+        if step.woke || step.dpad.is_some() {
+            self.pad_mode.pad_has_pointer = true;
+        } else if !self.pad_mode.pad_has_pointer {
+            if let Some(at) = self.pad_mode.mouse_at {
+                self.frame_input.mouse = at;
+            }
         }
         let mut keys = Vec::new();
         // What is held is let go with its button.
@@ -495,6 +524,7 @@ impl HorizonFrontEnd {
         if let Some(at) = pointer
             .or(self.pad_mode.map_cursor)
             .or_else(|| focus.map(|t| t.centre()))
+            .filter(|_| self.pad_mode.pad_has_pointer)
         {
             f.mouse = at;
         }
@@ -633,8 +663,10 @@ impl HorizonFrontEnd {
             PadHints::World
         });
         f.pad.focus = None;
-        // In gamepad mode the pad has the pointer: with no panel focused, it is over nothing.
-        f.mouse = (-1000.0, -1000.0);
+        // While the pad has the pointer, with no panel focused it is over nothing.
+        if self.pad_mode.pad_has_pointer {
+            f.mouse = (-1000.0, -1000.0);
+        }
         // What is begun now and held until its button comes up.
         let mut hold: Vec<(B, u32)> = Vec::new();
         // The d-pad: up and down the fellowship; left and right the alternate selection. (In a

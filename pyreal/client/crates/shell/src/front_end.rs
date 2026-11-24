@@ -51,6 +51,8 @@ pub(crate) struct FrontEndServices<H: Host> {
     /// The reopen of the data files the interface last read them at
     /// ([`pyreal_client_runtime::ui_context::UiContext::store_generation`]).
     files_read: u64,
+    /// The reopen of the data files device input last tried to start on.
+    input_files: u64,
 }
 
 impl<H: Host> std::fmt::Debug for ClientShell<H> {
@@ -96,6 +98,7 @@ impl<H: Host> ClientShell<H> {
                 pointer: crate::pointer::PointerHold::new(H::pointer(hwnd)),
                 scripted_pad: None,
                 files_read: 0,
+                input_files: 0,
             },
             host_overlay: Vec::new(),
             host_hides_ui: false,
@@ -204,6 +207,24 @@ impl<H: Host> ClientShell<H> {
         if let Some(ui) = self.horizon.ui.as_mut() {
             ui.reread_files(cx);
             ui.set_chargen_tables(pyreal_ui_logic::chargen::load(cx.store()));
+        }
+    }
+
+    /// Device input that could not start on the files open at start-up (a first run starts on
+    /// none, before the player chooses a data folder) starts once other files are open.
+    fn start_input_on_new_files(&mut self, cx: &mut Cx<'_, H>) {
+        if self.shared.input.is_some() || cx.store_generation() == self.shared.input_files {
+            return;
+        }
+        self.start_input(cx);
+        let Some(input) = self.shared.input.as_mut() else {
+            return;
+        };
+        tracing::info!("device input started on the newly opened data files");
+        if let Some(ui) = self.horizon.ui.as_mut() {
+            input.activate_horizon(true);
+            self.horizon.keys.invalidate();
+            ui.reread_option_rows(cx);
         }
     }
 
@@ -331,6 +352,7 @@ impl<H: Host> Shell for ClientShell<H> {
     /// The keymap first: the user's `.keymap` is merged **first** so a rebound key wins over both
     /// shipped defaults, and the merged map is written back on exit. Not fatal: a client with no
     /// key bindings is useless but can still draw, and saying so is better than refusing to start.
+    /// Input that does not start here is tried again when other data files open.
     fn start_input(&mut self, cx: &mut Cx<'_, H>) {
         let preferences_file = cx.config().preferences_file.clone();
         let keymap_file = pyreal_client_runtime::platform::files::read_to_string(&preferences_file)
@@ -344,6 +366,7 @@ impl<H: Host> Shell for ClientShell<H> {
                     .map(str::to_owned)
             });
         let keymap = crate::input::keymap_path_for(&preferences_file, keymap_file.as_deref());
+        self.shared.input_files = cx.store_generation();
         match crate::input::InputShell::new(&**cx.store(), keymap.as_ref()) {
             Ok(i) => self.shared.input = Some(i),
             Err(e) => tracing::warn!("no input: {e}"),
@@ -521,16 +544,6 @@ impl<H: Host> Shell for ClientShell<H> {
         }
     }
 
-    fn resolution_prompt(
-        &mut self,
-        _cx: &mut Cx<'_, H>,
-        prompt: Option<pyreal_client_contract::resolution::ResolutionPrompt>,
-    ) {
-        if let Some(ui) = self.horizon.ui.as_mut() {
-            ui.project_resolution(prompt);
-        }
-    }
-
     fn before_ui_input(&mut self, player_airborne: bool) {
         if let Some(ui) = self.horizon.ui.as_mut() {
             ui.before_ui_input(player_airborne);
@@ -563,6 +576,7 @@ impl<H: Host> Shell for ClientShell<H> {
         service_journal(cx);
         self.bring_up(cx);
         self.reread_files_when_patched(cx);
+        self.start_input_on_new_files(cx);
         self.follow_plugins(cx);
         self.horizon_input(cx, now);
         let changed = self

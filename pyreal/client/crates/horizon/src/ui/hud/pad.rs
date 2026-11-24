@@ -4,6 +4,8 @@
 use pyreal_client_contract::UiRequest;
 use pyreal_primitives::ObjectId;
 
+use pyreal_input::pad::PadFamily;
+
 use crate::art::Family;
 use crate::draw::{with_alpha, Rect};
 use crate::pad::{Osk, OskKey, OSK_ROWS};
@@ -186,16 +188,84 @@ pub fn draw_focus_pointer(p: &mut Painter<'_>, r: Rect, time: f64) {
     );
 }
 
-/// The buttons `keys` names ("A", "LT/RT", "Up/Down", "RB+", ...) drawn as their marks from
-/// `x`, centred on `cy`, `h` high: a glyph for a face button, the d-pad, a stick or the menu
-/// buttons, a badge with its name for a shoulder button. The width drawn; 0 when the art has
-/// no marks, and nothing is drawn.
-pub(crate) fn button_marks(p: &mut Painter<'_>, keys: &str, x: f32, cy: f32, h: f32) -> f32 {
-    marks(p, keys, x, cy, h, true)
+/// How a button is marked: by the art's glyph of that name, or by a badge with its name on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mark<'a> {
+    Glyph(&'static str),
+    Badge(&'a str),
 }
 
-/// [`button_marks`], drawing only when `draw`.
-fn marks(p: &mut Painter<'_>, keys: &str, x: f32, cy: f32, h: f32, draw: bool) -> f32 {
+/// The PlayStation face buttons' glyphs, top, right, bottom, left.
+pub(crate) const PLAYSTATION_FACE: [&str; 4] = ["triangle", "circle", "cross", "square"];
+
+/// How `key`, a button named by its place as an Xbox pad prints it ("A", "LT", "Start", "L3",
+/// ...), is marked on a `family` pad.
+pub(crate) fn mark(family: PadFamily, key: &str) -> Mark<'_> {
+    let glyph = match key {
+        "Up" | "D-pad" => Some("up"),
+        "Down" => Some("down"),
+        "Left" => Some("left"),
+        "Right" => Some("right"),
+        _ => None,
+    };
+    if let Some(g) = glyph {
+        return Mark::Glyph(g);
+    }
+    match family {
+        PadFamily::Xbox => match key {
+            "A" => Mark::Glyph("a"),
+            "B" => Mark::Glyph("b"),
+            "X" => Mark::Glyph("x"),
+            "Y" => Mark::Glyph("y"),
+            "L3" => Mark::Glyph("lstick"),
+            "R3" | "RS" => Mark::Glyph("rstick"),
+            "Start" => Mark::Glyph("menu"),
+            "Back" => Mark::Glyph("view"),
+            _ => Mark::Badge(key),
+        },
+        PadFamily::PlayStation => {
+            let face = ["Y", "B", "A", "X"].iter().position(|f| *f == key);
+            if let Some(i) = face {
+                return Mark::Glyph(PLAYSTATION_FACE[i]);
+            }
+            Mark::Badge(button_name(family, key))
+        }
+    }
+}
+
+/// `key` (as [`mark`] names it) by the name a `family` pad prints on it.
+pub(crate) fn button_name(family: PadFamily, key: &str) -> &str {
+    match family {
+        PadFamily::Xbox => key,
+        PadFamily::PlayStation => match key {
+            "A" => "Cross",
+            "B" => "Circle",
+            "X" => "Square",
+            "Y" => "Triangle",
+            "LB" => "L1",
+            "RB" => "R1",
+            "LT" => "L2",
+            "RT" => "R2",
+            "Start" => "Options",
+            "Back" => "Create",
+            "RS" => "R3",
+            _ => key,
+        },
+    }
+}
+
+/// The buttons `keys` names ("A", "LT/RT", "Up/Down", "RB+", ...) drawn as a `family` pad's
+/// marks from `x`, centred on `cy`, `h` high: a glyph for a face button, the d-pad, a stick or the
+/// menu buttons, a badge with its name for a shoulder button. The width drawn; 0 when the art has
+/// no marks, and nothing is drawn.
+pub(crate) fn button_marks(
+    p: &mut Painter<'_>,
+    family: PadFamily,
+    keys: &str,
+    x: f32,
+    cy: f32,
+    h: f32,
+) -> f32 {
     if p.piece("glyph.a").is_none() {
         return 0.0;
     }
@@ -206,53 +276,38 @@ fn marks(p: &mut Painter<'_>, keys: &str, x: f32, cy: f32, h: f32, draw: bool) -
         .map_or((keys, false), |rest| (rest, true));
     let mut at = x;
     for key in keys.split('/') {
-        let glyph = match key {
-            "A" => Some("a"),
-            "B" => Some("b"),
-            "X" => Some("x"),
-            "Y" => Some("y"),
-            "Up" | "D-pad" => Some("up"),
-            "Down" => Some("down"),
-            "Left" => Some("left"),
-            "Right" => Some("right"),
-            "L3" => Some("lstick"),
-            "R3" | "RS" => Some("rstick"),
-            "Start" => Some("menu"),
-            "Back" => Some("view"),
-            _ => None,
-        };
-        if let Some(g) = glyph.and_then(|g| p.piece(&format!("glyph.{g}"))) {
-            if draw {
-                p.sprite(&g, Rect::new(at, cy - h / 2.0, h, h), crate::draw::WHITE);
-            }
-            at += h + gap;
-        } else {
-            // A shoulder button: its name on a badge.
-            let style =
-                TextStyle::new(Family::Heading, h * 0.62 / k, 0xFFF4_E6C4).edge(0xFF00_0000);
-            let w = p.measure(&style, key) + h * 0.8;
-            if draw {
-                let badge = Rect::new(at, cy - h / 2.0, w, h);
-                if !p.halves("badge.normal", badge, crate::draw::WHITE) {
-                    p.fill(badge, 0xC020_2830);
+        let square = Rect::new(at, cy - h / 2.0, h, h);
+        let badge = match mark(family, key) {
+            Mark::Glyph(g) => match p.piece(&format!("glyph.{g}")) {
+                Some(g) => {
+                    p.sprite(&g, square, crate::draw::WHITE);
+                    None
                 }
-                p.text_in(&style, badge, Align::Centre, key);
-            }
-            at += w + gap;
+                None => Some(button_name(family, key)),
+            },
+            Mark::Badge(name) => Some(name),
+        };
+        let Some(name) = badge else {
+            at += h + gap;
+            continue;
+        };
+        let style = TextStyle::new(Family::Heading, h * 0.62 / k, 0xFFF4_E6C4).edge(0xFF00_0000);
+        let w = p.measure(&style, name) + h * 0.8;
+        let badge = Rect::new(at, cy - h / 2.0, w, h);
+        if !p.halves("badge.normal", badge, crate::draw::WHITE) {
+            p.fill(badge, 0xC020_2830);
         }
+        p.text_in(&style, badge, Align::Centre, name);
+        at += w + gap;
     }
     if plus {
         let style = TextStyle::new(Family::Body, h * 0.7 / k, 0xFFF0_C860).edge(0xFF00_0000);
-        at += if draw {
-            p.text_in(
-                &style,
-                Rect::new(at, cy - h / 2.0, 40.0 * k, h),
-                Align::Left,
-                "+",
-            )
-        } else {
-            p.measure(&style, "+")
-        } + gap;
+        at += p.text_in(
+            &style,
+            Rect::new(at, cy - h / 2.0, 40.0 * k, h),
+            Align::Left,
+            "+",
+        ) + gap;
     }
     at - x - gap
 }
@@ -553,5 +608,44 @@ impl Hud {
                 colour,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{button_name, mark, Mark, PadFamily};
+
+    #[test]
+    fn an_xbox_pad_keeps_its_glyphs_and_a_playstation_pad_has_its_signs_and_names() {
+        let x = PadFamily::Xbox;
+        assert_eq!(mark(x, "A"), Mark::Glyph("a"));
+        assert_eq!(mark(x, "Start"), Mark::Glyph("menu"));
+        assert_eq!(mark(x, "Back"), Mark::Glyph("view"));
+        assert_eq!(mark(x, "L3"), Mark::Glyph("lstick"));
+        assert_eq!(mark(x, "LT"), Mark::Badge("LT"));
+        assert_eq!(button_name(x, "RB"), "RB");
+        let ps = PadFamily::PlayStation;
+        for (key, glyph) in [
+            ("A", "cross"),
+            ("B", "circle"),
+            ("X", "square"),
+            ("Y", "triangle"),
+        ] {
+            assert_eq!(mark(ps, key), Mark::Glyph(glyph), "{key}");
+        }
+        for (key, name) in [
+            ("LB", "L1"),
+            ("RB", "R1"),
+            ("LT", "L2"),
+            ("RT", "R2"),
+            ("Start", "Options"),
+            ("Back", "Create"),
+            ("L3", "L3"),
+            ("RS", "R3"),
+        ] {
+            assert_eq!(mark(ps, key), Mark::Badge(name), "{key}");
+        }
+        assert_eq!(button_name(ps, "B"), "Circle");
+        assert_eq!(mark(ps, "Up"), Mark::Glyph("up"), "the d-pad is the same");
     }
 }

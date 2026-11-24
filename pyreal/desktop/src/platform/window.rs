@@ -633,6 +633,8 @@ pub struct WinitWindow {
     player_sizes: bool,
     /// Whether the player can resize the window now.
     drags: std::cell::Cell<bool>,
+    /// The player's `UserPreferences.ini`, saved when the window system ends the process.
+    preferences_file: std::path::PathBuf,
 }
 
 /// What the client counts a window's size and the pointer in.
@@ -1362,6 +1364,7 @@ pub fn open_window(
         before_own_full_screen: std::cell::Cell::new(None),
         entering_own_full_screen: std::cell::Cell::new(None),
         focused: std::cell::Cell::new(false),
+        preferences_file: cfg.preferences_file.clone(),
     };
     if let Some(handle) = opened.raw_handle() {
         let weak = std::rc::Rc::downgrade(&opened.shared);
@@ -1444,9 +1447,18 @@ struct Drain<'a> {
     /// screen.
     presentation: (Option<winit::dpi::PhysicalSize<u32>>, bool),
     queue: &'a mut Vec<HostEvent>,
+    preferences_file: &'a std::path::Path,
 }
 
 impl winit::application::ApplicationHandler for Drain<'_> {
+    /// A Mac's Quit (Command-Q, the Dock, logging out) ends the process once the loop is told,
+    /// before the client's own shutdown: the preferences are saved now.
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if cfg!(target_os = "macos") {
+            pyreal_client_runtime::config::save_user_preferences(self.preferences_file, |_| {});
+        }
+    }
+
     fn new_events(
         &mut self,
         event_loop: &winit::event_loop::ActiveEventLoop,
@@ -1593,6 +1605,54 @@ fn coalesce_resized(queue: &mut Vec<HostEvent>, width: u32, height: u32) {
     queue.push(HostEvent::Resized { width, height });
 }
 
+impl WinitWindow {
+    /// The largest window, in the window's units, whose frame fits in `area` of its monitor.
+    fn window_size_within(
+        &self,
+        area: impl Fn(&winit::monitor::MonitorHandle) -> winit::dpi::PhysicalSize<u32>,
+    ) -> Option<(u32, u32)> {
+        let window = &self.shared.window;
+        let monitor = window
+            .current_monitor()
+            .or_else(|| window.primary_monitor())?;
+        let units = self.shared.units;
+        let scale = monitor.scale_factor();
+        let (w, h) = units.client_size(area(&monitor), scale);
+        let outer = units.client_size(window.outer_size(), scale);
+        let inner = units.client_size(window.inner_size(), scale);
+        Some((
+            w.saturating_sub(outer.0.saturating_sub(inner.0)),
+            h.saturating_sub(outer.1.saturating_sub(inner.1)),
+        ))
+    }
+}
+
+/// The part of `monitor` a window may use, in its pixels, where the window system says.
+#[allow(clippy::unnecessary_wraps)]
+fn usable_area(monitor: &winit::monitor::MonitorHandle) -> Option<winit::dpi::PhysicalSize<u32>> {
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::MonitorHandleExtWindows as _;
+        let r = monitor_work_area(monitor.hmonitor())?;
+        let span = |a: i32, b: i32| u32::try_from(b - a).ok().filter(|v| *v > 0);
+        Some(winit::dpi::PhysicalSize::new(
+            span(r.left, r.right)?,
+            span(r.top, r.bottom)?,
+        ))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::MonitorHandleExtMacOS as _;
+        let (w, h) = pyreal_console::usable_screen_points(monitor.native_id())?;
+        Some(winit::dpi::LogicalSize::new(w, h).to_physical(monitor.scale_factor()))
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = monitor;
+        None
+    }
+}
+
 impl WindowHost for WinitWindow {
     /// A window that goes by points draws full screen at a share of the monitor's own pixels.
     fn render_scale(&self) -> Option<u32> {
@@ -1639,19 +1699,13 @@ impl WindowHost for WinitWindow {
     }
 
     fn largest_client_size(&self) -> Option<(u32, u32)> {
-        let window = &self.shared.window;
-        let monitor = window
-            .current_monitor()
-            .or_else(|| window.primary_monitor())?;
-        let units = self.shared.units;
-        let scale = monitor.scale_factor();
-        let (w, h) = units.client_size(monitor.size(), scale);
-        let outer = units.client_size(window.outer_size(), scale);
-        let inner = units.client_size(window.inner_size(), scale);
-        Some((
-            w.saturating_sub(outer.0.saturating_sub(inner.0)),
-            h.saturating_sub(outer.1.saturating_sub(inner.1)),
-        ))
+        self.window_size_within(|monitor| monitor.size())
+    }
+
+    /// The monitor's work area on Windows and its visible frame on a Mac; on Linux, where winit
+    /// gives neither, the whole monitor.
+    fn usable_window_size(&self) -> Option<(u32, u32)> {
+        self.window_size_within(|monitor| usable_area(monitor).unwrap_or_else(|| monitor.size()))
     }
 
     /// The window's identity, which the cursor images find the window by ([`cursor_window`]).
@@ -1879,6 +1933,7 @@ impl WindowHost for WinitWindow {
                 full_screen,
             ),
             queue: &mut queue,
+            preferences_file: &self.preferences_file,
         };
         let status = self
             .shared
@@ -1939,6 +1994,7 @@ impl WindowHost for WinitWindow {
                 false,
             ),
             queue: &mut queue,
+            preferences_file: &self.preferences_file,
         };
         let _ = self
             .shared

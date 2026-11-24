@@ -1469,6 +1469,7 @@ mod data_files_tests {
             drops: Vec::new(),
             magic: Vec::new(),
             airborne: false,
+            pad_family: pyreal_input::pad::PadFamily::default(),
         };
         let view = FrontDoorView {
             dats: DatsView {
@@ -1819,6 +1820,7 @@ mod update_notice_tests {
             drops: Vec::new(),
             magic: Vec::new(),
             airborne: false,
+            pad_family: pyreal_input::pad::PadFamily::default(),
         };
         let view = FrontDoorView {
             worlds: vec![WorldRow {

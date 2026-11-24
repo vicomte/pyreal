@@ -24,6 +24,8 @@ pub struct Ctx<'a> {
     pub magic: Vec<pyreal_client_contract::view::MagicNotice>,
     /// Whether the player is off the ground, which refuses a log-off.
     pub airborne: bool,
+    /// Whose buttons the pad has, which its marks are drawn as.
+    pub pad_family: pyreal_input::pad::PadFamily,
 }
 
 impl<'a> std::ops::Deref for Ctx<'a> {

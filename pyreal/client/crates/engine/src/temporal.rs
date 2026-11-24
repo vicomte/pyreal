@@ -273,8 +273,12 @@ pub struct Temporal {
     grounds_uniform: wgpu::Buffer,
     out: Option<OutputTargets>,
     scaler: Option<crate::metalfx::TemporalScaler>,
-    /// The sizes a scaler could not be made for, so it is not asked again each frame.
-    no_scaler: Option<((u32, u32), (u32, u32))>,
+    /// The output size a scaler could not be made for, so it is not asked again each frame.
+    no_scaler: Option<(u32, u32)>,
+    /// MetalFX scalers made, for a test.
+    scalers_made: u32,
+    /// How the scales are faring; MetalFX is used only while they are.
+    watch: std::sync::Arc<crate::metalfx::Watch>,
     /// Frames drawn with the jitter, for its phase.
     pub frame: u32,
     /// Whether the newest history holds a frame that may be followed.
@@ -477,6 +481,8 @@ impl Temporal {
             out: None,
             scaler: None,
             no_scaler: None,
+            scalers_made: 0,
+            watch: std::sync::Arc::default(),
             frame: 0,
             valid: false,
             newest: 0,
@@ -526,7 +532,9 @@ impl Temporal {
     }
 
     /// The upscaler this frame takes from `first`, with the anti-aliasing `aa`, drawn at `input`
-    /// for `output`: MetalFX where a scaler is (or can be) made for the sizes.
+    /// for `output`: MetalFX where a scaler is (or can be) made for the output, accepts the drawn
+    /// size, and its scales are faring well ([`crate::metalfx::Watch`]). A new drawn size keeps
+    /// the scaler and its history.
     pub fn choose(
         &mut self,
         gpu: &crate::gpu::Gpu,
@@ -539,22 +547,24 @@ impl Temporal {
             return Upscaler::Plain;
         }
         let mut metalfx = false;
-        if aa && first == Upscaler::MetalFx {
-            let fits = self
-                .scaler
-                .as_ref()
-                .is_some_and(|s| s.input == input && s.output == output);
-            if !fits && self.no_scaler != Some((input, output)) {
-                self.scaler = crate::metalfx::TemporalScaler::new(&gpu.device, input, output);
-                if self.scaler.is_none() {
-                    self.no_scaler = Some((input, output));
+        if self.watch.failed() {
+            self.scaler = None;
+        } else if aa && first == Upscaler::MetalFx {
+            let fits = self.scaler.as_ref().is_some_and(|s| s.output == output);
+            if !fits && self.no_scaler != Some(output) {
+                self.scaler = crate::metalfx::TemporalScaler::new(&gpu.device, output);
+                if self.scaler.is_some() {
+                    self.scalers_made += 1;
+                } else {
+                    self.no_scaler = Some(output);
                 }
                 self.valid = false;
             }
-            metalfx = self
-                .scaler
-                .as_ref()
-                .is_some_and(|s| s.input == input && s.output == output);
+            metalfx = self.watch.ready()
+                && self
+                    .scaler
+                    .as_ref()
+                    .is_some_and(|s| s.output == output && s.accepts(input));
         }
         choose(
             first,
@@ -704,7 +714,9 @@ impl Temporal {
                             jitter: [drawn.jitter.x * iw[0] * 0.5, -drawn.jitter.y * ih[0] * 0.5],
                             motion_scale: [-iw[0], -ih[0]],
                             reset: !continues,
+                            size: drawn.size,
                         },
+                        &self.watch,
                     )
                 });
                 if scaled {
@@ -785,6 +797,18 @@ impl Temporal {
         if how.temporal() {
             self.frame = self.frame.wrapping_add(1);
         }
+    }
+
+    /// How MetalFX's scales are faring.
+    #[must_use]
+    pub fn metalfx_watch(&self) -> &crate::metalfx::Watch {
+        &self.watch
+    }
+
+    /// MetalFX scalers made so far, for a test.
+    #[must_use]
+    pub fn metalfx_scalers_made(&self) -> u32 {
+        self.scalers_made
     }
 
     /// The newest history (the temporal's), for a test.

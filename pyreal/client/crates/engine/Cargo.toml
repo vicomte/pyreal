@@ -39,7 +39,8 @@ thiserror.workspace = true
 # objects over in.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6" }
-objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLAllocation", "MTLCommandBuffer", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture"] }
+block2 = "0.6"
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "block2", "MTLAllocation", "MTLCommandBuffer", "MTLDevice", "MTLPixelFormat", "MTLResource", "MTLTexture"] }
 objc2-metal-fx = { version = "0.3", default-features = false, features = ["std", "MTLFXTemporalScaler"] }
 
 # DX12 compiles shaders with DXC linked in (shader model 6.5, ray queries) rather than falling back to

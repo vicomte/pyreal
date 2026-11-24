@@ -797,6 +797,8 @@ pub enum MaterialPart {
     Surface,
     /// Where it is a metal ([`TextureMaterial::metal`]).
     Metal,
+    /// Where it is clear ([`TextureMaterial::clear`]).
+    Clear,
 }
 
 /// How many materials' pictures [`MaterialSource`] keeps after reading them.
@@ -1592,6 +1594,28 @@ impl ArtPack {
                 Err(e) => problems.push(format!("metal map {path}: {e}")),
             }
         }
+        // The clear maps, each held by its material.
+        for (m, entry) in retextured.iter_mut().zip(&named) {
+            let Some(path) = entry.clear_map.as_deref() else {
+                continue;
+            };
+            let made = match pictures {
+                Pictures::Made => reader
+                    .for_picture(path)
+                    .and_then(|bytes| materials::clear(&bytes, path)),
+                Pictures::Packed(file) => file.picture(&packed::clear_key(path)),
+            };
+            match made {
+                Ok(image) => {
+                    if let Some(r) = recording.as_deref_mut() {
+                        r.pictures
+                            .insert(packed::clear_key(path), vec![image.clone()]);
+                    }
+                    m.clear = Some(image);
+                }
+                Err(e) => problems.push(format!("clear map {path}: {e}")),
+            }
+        }
         // The grit pictures, one each however many materials share it.
         let mut grits: Vec<Image> = Vec::new();
         let mut grit_names: Vec<String> = Vec::new();
@@ -1851,7 +1875,9 @@ impl ArtPack {
             }
             let kept: Vec<(DataId, Option<Fingerprint>)> = (0..m.textures.len())
                 .map(|k| (m.textures[k], m.fingerprint(k)))
-                .filter(|t| !m.palettes.is_empty() || !covered.contains(t))
+                .filter(|t| {
+                    !m.palettes.is_empty() || !m.laid_palettes.is_empty() || !covered.contains(t)
+                })
                 .collect();
             if kept.is_empty() {
                 continue;
@@ -2001,6 +2027,7 @@ impl ArtPack {
             MaterialPart::Surface => &m.surface,
             // Always held: small, and never read again.
             MaterialPart::Metal => return m.metal.clone(),
+            MaterialPart::Clear => return m.clear.clone(),
         };
         if !held.levels.is_empty() {
             return Some(held.clone());
@@ -2015,7 +2042,7 @@ impl ArtPack {
             (MaterialPart::Surface, true) => 2,
             (MaterialPart::Normal, false) => 0,
             (MaterialPart::Surface, false) => 1,
-            (MaterialPart::Metal, _) => return None,
+            (MaterialPart::Metal | MaterialPart::Clear, _) => return None,
         };
         pictures.get(at).cloned()
     }
@@ -2039,14 +2066,17 @@ impl ArtPack {
     }
 
     /// The index of the pack's material drawn on the retail picture `texture` drawn in
-    /// `palettes`, whose fingerprint `record` gives when asked (`docs/ERAS.md`): the first that
-    /// names one of the palettes and is drawn on the record, else the first that names none.
-    /// `record` is asked at most once, and only when a material for `texture` names a fingerprint.
+    /// `palettes`, which an object's look lays over it where `laid` (else they are the picture's
+    /// own), whose fingerprint `record` gives when asked (`docs/ERAS.md`): of those drawn on the
+    /// record, the first whose laid palettes the look lays, else the first that names one of the
+    /// palettes, else the first that names none. `record` is asked at most once, and only when a
+    /// material for `texture` names a fingerprint.
     #[must_use]
     pub fn material_for(
         &self,
         texture: DataId,
         palettes: &[DataId],
+        laid: bool,
         record: impl FnOnce() -> Option<Fingerprint>,
     ) -> Option<usize> {
         let mut record = Some(record);
@@ -2062,18 +2092,24 @@ impl ArtPack {
             m.draws_on
                 .draws(made_from.as_ref(), known.flatten().as_ref())
         };
-        let mut first_plain = None;
+        let (mut first_named, mut first_plain) = (None, None);
         for (i, m) in self.materials.iter().enumerate() {
+            let by_look = laid && m.laid_palettes.iter().any(|p| palettes.contains(p));
             let named = m.palettes.iter().any(|p| palettes.contains(p));
-            if !(named || m.palettes.is_empty()) || !drawn(m) {
+            let plain = m.palettes.is_empty() && m.laid_palettes.is_empty();
+            if !(by_look || named || plain) || !drawn(m) {
                 continue;
             }
-            if named {
+            if by_look {
                 return Some(i);
             }
-            first_plain.get_or_insert(i);
+            if named {
+                first_named.get_or_insert(i);
+            } else {
+                first_plain.get_or_insert(i);
+            }
         }
-        first_plain
+        first_named.or(first_plain)
     }
 
     /// The index of the pack's model drawn in place of the retail object `id`, whose fingerprint
@@ -2188,6 +2224,7 @@ mod tests {
             surface: image(4),
             grit,
             metal: None,
+            clear: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,
@@ -2196,6 +2233,7 @@ mod tests {
             matter: Default::default(),
             fingerprints: Vec::new(),
             palettes: Vec::new(),
+            laid_palettes: Vec::new(),
             draws_on: Default::default(),
             solid: None,
             credit: Credit::default(),
@@ -2290,6 +2328,7 @@ mod tests {
             surface: flat.clone(),
             grit: None,
             metal: None,
+            clear: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,
@@ -2298,12 +2337,13 @@ mod tests {
             matter: Default::default(),
             fingerprints: vec![print],
             palettes: Vec::new(),
+            laid_palettes: Vec::new(),
             draws_on,
             solid: None,
             credit: Credit::default(),
         };
         let pick = |pack: &ArtPack, record: Fingerprint| {
-            pack.material_for(DataId(0x0500_0001), &[], || Some(record))
+            pack.material_for(DataId(0x0500_0001), &[], false, || Some(record))
         };
         let base = ArtPack {
             hash: "b".into(),
@@ -2321,12 +2361,12 @@ mod tests {
             "no entry was made from this record"
         );
         assert_eq!(
-            base.material_for(DataId(0x0500_0001), &[], || None),
+            base.material_for(DataId(0x0500_0001), &[], false, || None),
             Some(0),
             "a record of no known fingerprint takes the first"
         );
         assert_eq!(
-            base.material_for(DataId(0x0500_0002), &[], || Some(eor)),
+            base.material_for(DataId(0x0500_0002), &[], false, || Some(eor)),
             None
         );
 
@@ -2367,13 +2407,14 @@ mod tests {
             levels: Vec::new(),
             format: None,
         };
-        let material = |palettes: &[u32]| TextureMaterial {
+        let material = |palettes: &[u32], laid: &[u32]| TextureMaterial {
             textures: vec![DataId(0x0500_1310)],
             albedo: None,
             normal: flat.clone(),
             surface: flat.clone(),
             grit: None,
             metal: None,
+            clear: None,
             grit_repeat: [1.0; 2],
             damp_floors: false,
             slime: false,
@@ -2383,20 +2424,21 @@ mod tests {
             fingerprints: Vec::new(),
             draws_on: DrawsOn::Matching,
             palettes: palettes.iter().map(|&p| DataId(p)).collect(),
+            laid_palettes: laid.iter().map(|&p| DataId(p)).collect(),
             solid: None,
             credit: Credit::default(),
         };
         let pack = ArtPack {
             materials: vec![
-                material(&[]),
-                material(&[0x0400_0BA1, 0x0400_0B9F]),
-                material(&[0x0400_0BA3]),
+                material(&[], &[]),
+                material(&[0x0400_0BA1, 0x0400_0B9F], &[]),
+                material(&[0x0400_0BA3], &[]),
             ],
             ..ArtPack::default()
         };
         let pick = |palettes: &[u32]| {
             let palettes: Vec<DataId> = palettes.iter().map(|&p| DataId(p)).collect();
-            pack.material_for(DataId(0x0500_1310), &palettes, || None)
+            pack.material_for(DataId(0x0500_1310), &palettes, false, || None)
         };
         assert_eq!(pick(&[0x0400_0B9F]), Some(1));
         assert_eq!(pick(&[0x0400_0BA3]), Some(2));
@@ -2407,13 +2449,29 @@ mod tests {
         );
         assert_eq!(pick(&[]), Some(0));
         let only_named = ArtPack {
-            materials: vec![material(&[0x0400_0BA3])],
+            materials: vec![material(&[0x0400_0BA3], &[])],
             ..ArtPack::default()
         };
         assert_eq!(
-            only_named.material_for(DataId(0x0500_1310), &[DataId(0x0400_0BA6)], || None),
+            only_named.material_for(DataId(0x0500_1310), &[DataId(0x0400_0BA6)], false, || None),
             None
         );
+        // A creature that wears its picture's own palette (a crystal shard in the world's
+        // crystal's blue) takes the material laid for it; the world's crystal, drawn in that palette
+        // as its own, keeps the picture's.
+        let own = 0x0400_0BEF;
+        let laid = ArtPack {
+            materials: vec![material(&[own], &[]), material(&[0x0400_0BF3], &[own])],
+            ..ArtPack::default()
+        };
+        let pick = |palettes: &[u32], by_look| {
+            let palettes: Vec<DataId> = palettes.iter().map(|&p| DataId(p)).collect();
+            laid.material_for(DataId(0x0500_1310), &palettes, by_look, || None)
+        };
+        assert_eq!(pick(&[own], true), Some(1));
+        assert_eq!(pick(&[own], false), Some(0));
+        assert_eq!(pick(&[0x0400_0BF3], false), Some(1));
+        assert_eq!(pick(&[0x0400_0BA6], true), None);
     }
 
     #[test]
@@ -2606,6 +2664,21 @@ file = "rock/missing.gltf"
     }
 
     #[test]
+    fn a_clear_map_keeps_where_it_is_clear_and_where_it_is_metal() {
+        // Red clear, green metal: a clear texel, a plain solid one and a metal one, twice over.
+        let texels = [
+            [255, 0, 0, 255],
+            [0, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 255, 0, 255],
+        ];
+        let rgba: Vec<u8> = texels.iter().cycle().take(16).flatten().copied().collect();
+        let map = materials::clear(&png_of(4, 4, &rgba), "c.png").expect("a clear map");
+        assert_eq!(map.format, Some(images::BlockFormat::Bc5));
+        assert_eq!((map.width, map.height), (4, 4));
+    }
+
+    #[test]
     fn a_material_that_keeps_the_retail_picture_neither_reads_nor_draws_its_base_color() {
         let mut files = HashMap::new();
         files.insert(
@@ -2692,7 +2765,10 @@ license = "CC0-1.0"
         );
         // Another colour under the same id is another era's surface.
         assert_eq!(base.solid_for(DataId(0x0800_06F7), 0xFF00_0032), None);
-        assert_eq!(base.material_for(DataId(0x0800_06F7), &[], || None), None);
+        assert_eq!(
+            base.material_for(DataId(0x0800_06F7), &[], false, || None),
+            None
+        );
         // A pack over the base keeps the base's solid where it has none of its own.
         let top = open(&solid("0x08000203"));
         let both = top.over(&base);

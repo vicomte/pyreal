@@ -5,7 +5,8 @@
 //! `pyreal-primitives` (the ids of objects a report names), `pyreal-world-data` (the region and
 //! the animation assets), `pyreal-animation` (motion commands), `pyreal-chargen` with
 //! `pyreal-assets` (a character dressed as creation dresses one), and `pyreal-machine-lock` (a
-//! headless run's turn on the GPU). **Used by** nothing; people run it to work on the engine.
+//! headless run's heavy hold on the machine). **Used by** nothing; people run it to work on the
+//! engine.
 //!
 //! **Must never** be depended on by the client: it is a development viewer.
 //!
@@ -24,7 +25,7 @@
 //!             [--stance HandCombat] [--motion WalkForward] [--time-in-anim SECONDS] [--facing DEG]
 //!             [--dress CLOTHING,TEMPLATE,SHADE[,PALETTE]]... [--wear CLOTHING,TEMPLATE,SHADE]... [--translucency T]
 //!             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0]
-//!             [--budget MS] [--ui overlay.png] [--select X,Y] [--hover X,Y]
+//!             [--budget MS] [--ui overlay.png] [--ui-grounds FILE] [--select X,Y] [--hover X,Y]
 //!             [--no-particles] [--no-flames] [--no-face-detail] [--no-weather] [--oit] [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--retail-fountains] [--no-wind] [--stride VX,VY]
 //!             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]
 //! ```
@@ -36,7 +37,8 @@
 //!
 //! The world is drawn at `--render-scale` of the output (or at what holds `--budget` ms of GPU
 //! time a frame) and rebuilt at the output's size by the first upscaler that runs from
-//! `--upscaler` on; `--ui` lays a picture over the output as the UI. `--select` and `--hover`
+//! `--upscaler` on; `--ui` lays a picture over the output as the UI, the world blurred under the
+//! grounds `--ui-grounds` lists. `--select` and `--hover`
 //! pick the object under an output pixel after the first frame and highlight it, a body with its
 //! target ring.
 //!
@@ -47,8 +49,9 @@
 //! or `setup,block,x,y` entries, the ones a server would make) are placed on the ground. The dats are a folder of end-of-retail files or
 //! of the older `portal.dat` and `cell.dat`. In a window, WASD and Q/E move, the right mouse
 //! button looks, Shift is faster, and a left click selects what is under the cursor. A headless
-//! run waits for the machine lock (`pyreal-machine-lock`), so its timings are not shared with a
-//! build or another GPU run; `PYREAL_MACHINE_LOCK=off` skips it.
+//! run takes a heavy hold on the machine lock (`pyreal-machine-lock`), which never waits; for pass
+//! timings worth reading, run it under `cargo xtask lock --quiet --`, which has the machine to
+//! itself. `PYREAL_MACHINE_LOCK=off` skips the lock.
 //!
 //! Bodies are animated: a library place's setups, each `--object` (a setup, with the motion table
 //! it moves by when not its own and the scale its weenie gives it) and each `--character` (an Aluvian dressed as character creation
@@ -256,6 +259,8 @@ struct Args {
     budget: Option<f64>,
     /// A picture laid over the output as the UI.
     ui: Option<PathBuf>,
+    /// The UI's see-through grounds, one `x y w h strength` a line, blurred under (UI Blur).
+    ui_grounds: Option<PathBuf>,
     /// Output pixels whose object is selected, and hovered, after the first frame.
     select: Option<(u32, u32)>,
     hover: Option<(u32, u32)>,
@@ -375,6 +380,7 @@ impl Default for Args {
             render_scale: 1.0,
             budget: None,
             ui: None,
+            ui_grounds: None,
             select: None,
             hover: None,
         }
@@ -478,7 +484,7 @@ const USAGE: &str =
             [--out place.png] [--window] [--studio] [--walk] [--no-cut] [--no-hiz] [--no-high-res] [--ground-coloring classic|tod] [--lod-bias 1.0] [--lod-pixels 0] [--no-caster-cull] [--particles-every-pixel] [--cards-from 1.0]
             [--far BLOCKS] [--fog-end METRES]
             [--no-aa] [--upscaler metalfx|temporal|spatial|plain] [--render-scale 1.0] [--budget MS]
-            [--ui overlay.png] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--no-face-detail] [--no-weather] [--oit]
+            [--ui overlay.png] [--ui-grounds FILE] [--select X,Y] [--hover X,Y] [--no-particles] [--no-flames] [--no-face-detail] [--no-weather] [--oit]
             [--script SCRIPT@X,Y[,Z]] [--body-script SCRIPT@SECONDS] [--no-webs] [--no-volumes] [--retail-portals] [--tunnel SECONDS] [--retail-beacons] [--retail-falls] [--no-wind] [--stride VX,VY]
             [--turn DEG] [--orbit DEG] [--save-every N] [--set-time FRAME:TIME] [--moon-phase REZ,ALB]";
 
@@ -676,6 +682,7 @@ fn parse() -> Result<Args, String> {
             "--render-scale" => a.render_scale = num(&val()?)?,
             "--budget" => a.budget = Some(f64::from(num(&val()?)?)),
             "--ui" => a.ui = Some(PathBuf::from(val()?)),
+            "--ui-grounds" => a.ui_grounds = Some(PathBuf::from(val()?)),
             "--select" => a.select = Some(pixel(&val()?)?),
             "--hover" => a.hover = Some(pixel(&val()?)?),
             other => return Err(format!("unknown argument {other}")),
@@ -1134,6 +1141,9 @@ fn report(engine: &mut Engine, timings: &[(String, Vec<f64>)], spans: &[f64]) {
         if vis.outside() { "seen" } else { "not seen" }
     );
     println!("pass timings (GPU, median ms):");
+    if std::env::var(pyreal_machine_lock::ENV).as_deref() == Ok("heavy") {
+        println!("  (shared with other heavy work: `cargo xtask lock --quiet -- ...` times alone)");
+    }
     let mut total = 0.0;
     for (name, v) in timings {
         let mut s = v.clone();
@@ -1262,8 +1272,9 @@ fn mib(b: u64) -> f64 {
 }
 
 fn headless(a: &Args) -> Result<(), String> {
-    // Its pass timings are only worth reading with the GPU to itself.
-    let _lock = pyreal_machine_lock::acquire("engine-view").map_err(|e| e.to_string())?;
+    // A render is heavy work; a timing run is wrapped in a quiet hold, which this one then skips.
+    let _lock = pyreal_machine_lock::acquire(pyreal_machine_lock::Mode::Heavy, "engine-view")
+        .map_err(|e| e.to_string())?;
     let v = view(a)?;
     let gpu = Gpu::headless().map_err(|e| e.to_string())?;
     println!("adapter: {}", gpu.adapter.get_info().name);
@@ -1306,7 +1317,10 @@ fn headless(a: &Args) -> Result<(), String> {
         engine.renderer.ui = Some(pyreal_engine::temporal::Ui {
             view,
             gamma: false,
-            backdrops: Vec::new(),
+            backdrops: match &a.ui_grounds {
+                Some(g) => load_grounds(g)?,
+                None => Vec::new(),
+            },
         });
     }
     let mut timings: Vec<(String, Vec<f64>)> = Vec::new();
@@ -1650,6 +1664,18 @@ fn preview(
             }
         }
     }
+    // Their particles after the parts, as the client's preview spaces draw them.
+    let (mut fire, mut lamps) = (Vec::new(), Vec::new());
+    for b in bodies {
+        for g in engine.particles.missing_sprites(&b.driver) {
+            pyreal_engine::particles::prepare_sprite(engine, loader, store, g);
+        }
+        let made =
+            pyreal_engine::preview::particles(&mut engine.particles, &b.driver, camera.position);
+        draws.extend(made.draws);
+        fire.extend(made.fire);
+        lamps.extend(made.lamps);
+    }
     let _ = engine.upload();
     #[allow(clippy::cast_precision_loss)]
     let aspect = size.0 as f32 / size.1 as f32;
@@ -1660,6 +1686,9 @@ fn preview(
         light_dir,
         light: Vec3::splat(1.0),
         ambient: Vec3::splat(0.35),
+        // As far into the clock as the bodies' scripts were run.
+        time: 3.0,
+        lamps,
     };
     let target = engine.gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("preview"),
@@ -1682,9 +1711,10 @@ fn preview(
         &engine.materials,
         &view,
         &draws,
+        &fire,
         &target,
     );
-    println!("preview: {} parts", draws.len());
+    println!("preview: {} parts, {} flames", draws.len(), fire.len());
     pyreal_engine::read_texture(&engine.gpu, &target, 4)
 }
 
@@ -1758,6 +1788,27 @@ fn select(engine: &mut Engine, a: &Args, bodies: &[Body]) {
         ring,
         colour: 0,
     };
+}
+
+/// The UI's see-through grounds from a file of `x y w h strength` lines, in output pixels.
+fn load_grounds(path: &std::path::Path) -> Result<Vec<pyreal_engine::frost::Backdrop>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: Vec<f32> = l
+                .split_whitespace()
+                .map(|n| n.parse::<f32>().map_err(|e| format!("{l}: {e}")))
+                .collect::<Result<_, _>>()?;
+            let [x, y, w, h, strength] = v[..] else {
+                return Err(format!("{l}: not x y w h strength"));
+            };
+            Ok(pyreal_engine::frost::Backdrop {
+                rect: [x, y, x + w, y + h],
+                strength,
+            })
+        })
+        .collect()
 }
 
 /// A PNG as the UI's picture, the output's size, premultiplied as it is laid over.

@@ -100,6 +100,7 @@ pub mod shore;
 pub mod skin;
 pub mod sky;
 pub mod snow;
+pub mod sparks;
 pub mod stream;
 pub mod temporal;
 pub mod terrain;
@@ -585,6 +586,7 @@ impl Engine {
             seen,
             self.renderer.clock,
         );
+        self.particles.body_jets.clear();
         // Walls hold a lamp's light: each lights only the rooms its light reaches through
         // openings, and one that reaches no room seen is left out.
         let mut room_boxes: Vec<(glam::Vec3, glam::Vec3)> = Vec::new();

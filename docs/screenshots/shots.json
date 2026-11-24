@@ -42,9 +42,9 @@
       "weather": "clear",
       "exposure": 0.64,
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -127,9 +127,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "d194fb62",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -169,9 +169,9 @@
       "weather": "clear",
       "exposure": 0.86,
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -211,9 +211,9 @@
       "weather": "clear",
       "exposure": 0.4,
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -253,9 +253,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -295,9 +295,9 @@
       "weather": "clear",
       "exposure": 0.165,
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -374,9 +374,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -430,9 +430,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "d194fb62",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -521,9 +521,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "a314f447",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     },
     {
@@ -625,9 +625,9 @@
         ]
       },
       "captured": {
-        "date": "2026-11-22",
-        "commit": "d194fb62",
-        "base_pack": "0.5.3"
+        "date": "2026-11-24",
+        "commit": "b09ed8ed",
+        "base_pack": "0.5.4.0"
       }
     }
   ]

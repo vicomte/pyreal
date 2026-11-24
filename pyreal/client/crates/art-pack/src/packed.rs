@@ -33,6 +33,7 @@
 //!   how damp it is and the path of its damp map where it names one;
 //! - a grit picture: `grit` and its path;
 //! - a material's metal map: `metal` and its path;
+//! - a material's clear map: `clear` and its path;
 //! - a ground's detail grain: `detail` and its path;
 //! - a moon's picture: `moon` and its path;
 //! - a model's card's two, colour and normal: `card`, the cards' make ([`super::cards::MAKE`]) and
@@ -343,6 +344,12 @@ pub fn material_key(entry: &ManifestMaterial) -> String {
 #[must_use]
 pub fn metal_key(path: &str) -> String {
     format!("metal:{path}")
+}
+
+/// What a packed pack keeps a material's clear map under, whichever materials share it.
+#[must_use]
+pub fn clear_key(path: &str) -> String {
+    format!("clear:{path}")
 }
 
 /// What a packed pack keeps a grit picture under, whichever materials share it.

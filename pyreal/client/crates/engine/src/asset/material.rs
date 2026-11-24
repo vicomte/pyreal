@@ -66,6 +66,9 @@ pub mod flags {
     /// axes, one repeat over as many metres of the object at its own size as the record's
     /// cut-out word says, so it grows with the object.
     pub const PROJECTED: u32 = 1 << 23;
+    /// A clear material's clear map (a pack material's `clear_map`), in the metal map's slot: it is
+    /// clear only where the map is white, a bottle's cork and a flask's bands not.
+    pub const HAS_CLEAR: u32 = 1 << 24;
 }
 
 /// How much darker a surface under a film of water is drawn, and the film's roughness.
@@ -293,6 +296,8 @@ pub struct PackMaps {
     pub occlusion: Option<TextureKey>,
     /// Where the surface is a metal, in red; the whole of it where there is none.
     pub metal: Option<TextureKey>,
+    /// Where a clear surface is clear, in red; the whole of it where there is none.
+    pub clear: Option<TextureKey>,
     /// A kind for the surface, in place of the table's.
     pub kind: Option<SurfaceKind>,
     /// The roughness, occlusion and height maps are one picture holding them in red, green and
@@ -319,12 +324,14 @@ pub trait MaterialOverrides {
     }
 
     /// [`Self::maps`] for a world whose pictures' fingerprints `record` gives, so the pack's
-    /// entry for that era's picture is drawn (`docs/ERAS.md`), the picture drawn in `palettes`.
+    /// entry for that era's picture is drawn (`docs/ERAS.md`), the picture drawn in `palettes`,
+    /// which an object's look lays over it where `laid`.
     fn maps_for(
         &self,
         surface: DataId,
         texture: Option<DataId>,
         _palettes: &[DataId],
+        _laid: bool,
         _record: &dyn Fn(DataId) -> Option<pyreal_assets::fingerprint::Fingerprint>,
     ) -> PackMaps {
         self.maps(surface, texture)
@@ -358,6 +365,8 @@ pub struct MaterialDesc {
     pub roughness_metal: Option<TextureKey>,
     pub occlusion: Option<TextureKey>,
     pub metal_map: Option<TextureKey>,
+    /// Where it is clear ([`flags::HAS_CLEAR`]).
+    pub clear_map: Option<TextureKey>,
     /// Clear ice in its own colour ([`flags::TINTED_ICE`]): the share of the world behind seen
     /// through it, and its index of refraction.
     pub clear: [f32; 2],
@@ -459,6 +468,12 @@ pub fn describe_surface(
     if clear.is_some() {
         flags |= flags::TINTED_ICE;
     }
+    let clear_map = pack
+        .clear
+        .filter(|_| clear.is_some() && pack.metal.is_none());
+    if clear_map.is_some() {
+        flags |= flags::HAS_CLEAR;
+    }
     if !ice && !additive && is_pool(surface) {
         flags |= flags::POOL;
     }
@@ -520,6 +535,7 @@ pub fn describe_surface(
         roughness_metal: pack.roughness_metal,
         occlusion: pack.occlusion,
         metal_map: pack.metal,
+        clear_map,
         clear: [clear.unwrap_or(0.0), pack.matter.refraction],
         brighten: if flags & flags::HAS_METAL != 0 {
             brighten
@@ -574,7 +590,12 @@ impl MaterialRecord {
             take(&desc.height, flags::HAS_HEIGHT),
             take(&desc.roughness_metal, flags::HAS_ROUGH_METAL),
             take(&desc.occlusion, flags::HAS_OCCLUSION),
-            take(&desc.metal_map, flags::HAS_METAL),
+            // A clear map takes the metal map's slot, which a clear material has none for.
+            if desc.metal_map.is_some() {
+                take(&desc.metal_map, flags::HAS_METAL)
+            } else {
+                take(&desc.clear_map, flags::HAS_CLEAR)
+            },
         ];
         // A face's two slots share the views word, which only an impostor reads otherwise.
         // The shared tile takes the metal map's slot, which a face has none for.

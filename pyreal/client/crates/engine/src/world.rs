@@ -79,19 +79,22 @@ impl Dress {
 }
 
 /// The palettes a picture is drawn in, which a pack material may be for alone: those a palette
-/// swap's ranges lay over it, else the swap's base, else the picture's own.
+/// swap's ranges lay over it (a look's, so `true`), else the swap's base, else the picture's own.
 fn drawn_in(
     store: &RetailDatStore,
     swap: Option<&PaletteSwap>,
     texture: Option<DataId>,
-) -> Vec<DataId> {
+) -> (Vec<DataId>, bool) {
     match swap {
-        Some(s) if !s.ranges.is_empty() => s.ranges.iter().map(|r| r.0).collect(),
-        Some(s) => vec![s.base],
-        None => texture
-            .and_then(|t| TextureSource::new(store).own_palette(t))
-            .into_iter()
-            .collect(),
+        Some(s) if !s.ranges.is_empty() => (s.ranges.iter().map(|r| r.0).collect(), true),
+        Some(s) => (vec![s.base], false),
+        None => (
+            texture
+                .and_then(|t| TextureSource::new(store).own_palette(t))
+                .into_iter()
+                .collect(),
+            false,
+        ),
     }
 }
 
@@ -242,16 +245,10 @@ pub struct AssetLoader {
     pack_cards: HashMap<u32, Option<MeshId>>,
     /// Each terrain type's pack ground (picture slot, metres a repeat), when the pack has one.
     pack_grounds: HashMap<u32, Option<(u32, f32)>>,
-    /// Each placed setup's basin water faces ([`crate::fountains::pool_faces`]) and where its
-    /// streams meet them ([`crate::fountains::spills`]), read once.
+    /// Each placed or server object's setup's basin water faces ([`crate::fountains::pool_faces`])
+    /// and where its streams meet them ([`crate::fountains::spills`]), read once.
     // ORDER-OK: looked up by setup, never iterated.
-    pool_faces: HashMap<
-        u32,
-        (
-            Vec<crate::fountains::PoolFace>,
-            Vec<crate::fountains::Spill>,
-        ),
-    >,
+    pool_faces: HashMap<u32, crate::fountains::Pools>,
     /// The forges and fire pits of the room whose objects are being placed, each where
     /// ([`crate::flames::firebox_of`]); none outdoors, where a body of fire shows faintly by day
     /// and darkens the night round it as the eye adjusts to it.
@@ -972,12 +969,12 @@ impl AssetLoader {
             if texture.is_some() {
                 s.orig_texture_id = texture;
             }
-            let palettes = drawn_in(store, key.2.as_ref(), s.orig_texture_id);
-            let mut pack = self
-                .overrides
-                .maps_for(surface, s.orig_texture_id, &palettes, &|t| {
-                    self.print_of(Some(store), t)
-                });
+            let (palettes, laid) = drawn_in(store, key.2.as_ref(), s.orig_texture_id);
+            let mut pack =
+                self.overrides
+                    .maps_for(surface, s.orig_texture_id, &palettes, laid, &|t| {
+                        self.print_of(Some(store), t)
+                    });
             if self.unmatched(s.orig_texture_id, &pack) {
                 self.stats.pack_unmatched += 1;
             }
@@ -1273,10 +1270,10 @@ impl AssetLoader {
             return *m;
         }
         let made = decode::<Surface>(store, DbType::Surface, surface).and_then(|s| {
-            let palettes = drawn_in(store, None, s.orig_texture_id);
+            let (palettes, laid) = drawn_in(store, None, s.orig_texture_id);
             let pack = self
                 .overrides
-                .maps_for(surface, s.orig_texture_id, &palettes, &|t| {
+                .maps_for(surface, s.orig_texture_id, &palettes, laid, &|t| {
                     self.print_of(Some(store), t)
                 });
             let mut desc = describe_surface(&s, two_sided, None, &self.kinds, pack);
@@ -1986,15 +1983,7 @@ impl AssetLoader {
             && assets
                 .setup(id)
                 .is_some_and(|s| s.default_animation.is_some());
-        let (pools, spills) = self
-            .pool_faces
-            .entry(id.0)
-            .or_insert_with(|| {
-                let faces = crate::fountains::pool_faces(store, id);
-                let spills = crate::fountains::spills(store, id, &faces);
-                (faces, spills)
-            })
-            .clone();
+        let (pools, spills) = self.pools_of(store, id).clone();
         let still = sprites.is_empty() && !animated;
         if still && spills.is_empty() {
             return None;
@@ -2035,6 +2024,15 @@ impl AssetLoader {
         engine.particles.hosts[k].spills = spills;
         engine.particles.hosts[k].hearth = hearth || wreath;
         engine.particles.hosts[k].animated.then_some(k)
+    }
+
+    /// Setup `id`'s basin water and where its own streams meet it, read once.
+    pub fn pools_of(&mut self, store: &RetailDatStore, id: DataId) -> &crate::fountains::Pools {
+        self.pool_faces.entry(id.0).or_insert_with(|| {
+            let faces = crate::fountains::pool_faces(store, id);
+            let spills = crate::fountains::spills(store, id, &faces);
+            (faces, spills)
+        })
     }
 
     /// A new object number, for selection.
@@ -2604,7 +2602,7 @@ impl AssetLoader {
                     self.kinds.insert(t, SurfaceKind::Foliage);
                 }
             }
-            let mut pack = self.overrides.maps_for(surface, picture, &[], &|t| {
+            let mut pack = self.overrides.maps_for(surface, picture, &[], false, &|t| {
                 self.print_in(Some(later), t, true)
             });
             if let Some(c) = crate::asset::material::untextured_colour(&s) {
@@ -2663,11 +2661,11 @@ impl AssetLoader {
         }
         let later_store = self.later_rooms.as_ref()?.as_ref()?.store().clone();
         let made = decode::<Surface>(store, DbType::Surface, surface).and_then(|s| {
-            let mut pack = self
-                .overrides
-                .maps_for(later.surface, Some(later.picture), &[], &|t| {
-                    self.print_in(Some(&later_store), t, true)
-                });
+            let mut pack =
+                self.overrides
+                    .maps_for(later.surface, Some(later.picture), &[], false, &|t| {
+                        self.print_in(Some(&later_store), t, true)
+                    });
             // The picture is End of Retail's, tinted; the pack's own would lose the tint.
             pack.base = None;
             if pack != PackMaps::default() {
@@ -3334,10 +3332,13 @@ impl Ground<'_> {
         let Some(pack) = self.loader.pack.as_ref().map(Arc::clone) else {
             return;
         };
-        let maps =
-            PackOverrides(Arc::clone(&pack.pack)).maps_for(texture, Some(texture), &[], &|t| {
-                self.loader.print_in(Some(store), t, later)
-            });
+        let maps = PackOverrides(Arc::clone(&pack.pack)).maps_for(
+            texture,
+            Some(texture),
+            &[],
+            false,
+            &|t| self.loader.print_in(Some(store), t, later),
+        );
         if maps.normal.is_none() && maps.height.is_none() {
             return;
         }

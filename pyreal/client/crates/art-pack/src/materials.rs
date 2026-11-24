@@ -31,6 +31,9 @@ pub struct TextureMaterial {
     /// Where it is a metal, in red (white metal, black not), with its levels, in BC4: its metal
     /// map ([`ManifestMaterial::metal_map`]), if it names one.
     pub metal: Option<Image>,
+    /// Where a clear material is clear, in red (white clear, black not), with its levels, in BC4:
+    /// its clear map ([`ManifestMaterial::clear_map`]), if it names one.
+    pub clear: Option<Image>,
     /// How many times the grit repeats across one repeat of the retail picture.
     pub grit_repeat: [f32; 2],
     /// Whether it is wet on floors too, not only on walls.
@@ -50,6 +53,8 @@ pub struct TextureMaterial {
     pub draws_on: DrawsOn,
     /// The palettes it is drawn in alone; any, where it names none.
     pub palettes: Vec<DataId>,
+    /// The palettes it is drawn in where an object's look lays them, ahead of the others.
+    pub laid_palettes: Vec<DataId>,
     /// For a `[[solid]]` entry, the untextured surfaces it is laid on, in place of [`Self::textures`].
     pub solid: Option<Solid>,
     /// Who made it, with what, and under which license.
@@ -125,6 +130,7 @@ pub(super) fn with_pictures(
         surface,
         grit: None,
         metal: None,
+        clear: None,
         grit_repeat: entry.grit_repeat,
         damp_floors: entry.damp_floors,
         slime: entry.slime,
@@ -134,6 +140,7 @@ pub(super) fn with_pictures(
         fingerprints: entry.fingerprints.clone(),
         draws_on: entry.draws_on,
         palettes: entry.palettes.clone(),
+        laid_palettes: entry.laid_palettes.clone(),
         solid: entry.solid.clone(),
         credit: entry.credit.clone(),
     }
@@ -153,7 +160,7 @@ pub(super) fn grit(bytes: &[u8], path: &str) -> Result<Image, String> {
     ))
 }
 
-/// A material's metal map from its file, its red with its levels, in BC4.
+/// A material's metal or clear map from its file, its red with its levels, in BC4.
 pub(super) fn metal(bytes: &[u8], path: &str) -> Result<Image, String> {
     let (w, h, mut rgba) = images::decode_png(bytes).map_err(|e| format!("{path}: {e}"))?;
     if w == 0 || h == 0 {
@@ -166,6 +173,23 @@ pub(super) fn metal(bytes: &[u8], path: &str) -> Result<Image, String> {
     Ok(images::compressed(
         images::with_levels(w, h, rgba, false, None),
         BlockFormat::Bc4,
+    ))
+}
+
+/// A clear map from its file: where it is clear in red and where what is not clear is a metal in
+/// green, with its levels, in BC5.
+pub(super) fn clear(bytes: &[u8], path: &str) -> Result<Image, String> {
+    let (w, h, mut rgba) = images::decode_png(bytes).map_err(|e| format!("{path}: {e}"))?;
+    if w == 0 || h == 0 {
+        return Err(format!("{path}: an empty picture"));
+    }
+    for px in rgba.as_chunks_mut::<4>().0 {
+        *px = [px[0], px[1], 0, 255];
+    }
+    let (w, h, rgba) = images::to_whole_blocks(w, h, rgba);
+    Ok(images::compressed(
+        images::with_levels(w, h, rgba, false, None),
+        BlockFormat::Bc5,
     ))
 }
 

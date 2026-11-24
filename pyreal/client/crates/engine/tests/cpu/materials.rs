@@ -291,6 +291,7 @@ fn pack() -> std::sync::Arc<pyreal_art_pack::ArtPack> {
         surface: picture(surface, Bc7),
         grit: None,
         metal: None,
+        clear: None,
         grit_repeat: [1.0, 1.0],
         damp_floors: false,
         slime: false,
@@ -299,6 +300,7 @@ fn pack() -> std::sync::Arc<pyreal_art_pack::ArtPack> {
         matter: Default::default(),
         fingerprints: Vec::new(),
         palettes: Vec::new(),
+        laid_palettes: Vec::new(),
         draws_on: Default::default(),
         solid: None,
         credit: Default::default(),
@@ -409,6 +411,45 @@ fn the_lava_cells_are_molten_in_every_era() {
             "{id:#010X}"
         );
     }
+}
+
+/// A clear map makes a clear surface clear only where it says: the record carries it in the metal
+/// map's slot for the clear-ice shader, and a surface that is not clear ignores it.
+#[test]
+fn a_clear_map_rides_in_the_metal_maps_slot() {
+    let matter = pyreal_assets::art_pack::Matter {
+        clear: Some(0.6),
+        refraction: 1.5,
+        ..Default::default()
+    };
+    let bottle = PackMaps {
+        clear: Some(TextureKey::Pack("material:0:clear".into())),
+        matter,
+        ..PackMaps::default()
+    };
+    let d = describe_surface(
+        &surface(IMAGE),
+        false,
+        None,
+        &KindTable::default(),
+        bottle.clone(),
+    );
+    assert_ne!(d.flags & flags::TINTED_ICE, 0);
+    assert_ne!(d.flags & flags::HAS_CLEAR, 0);
+    let r = MaterialRecord::new(&d, |k| match k {
+        TextureKey::Pack(_) => Some(9),
+        _ => Some(7),
+    });
+    assert_eq!((r.textures[5], r.emissive[1]), (9, 0.6));
+    assert_eq!(r.flags & flags::HAS_METAL, 0);
+    // Not clear, the map is not laid.
+    let plain = PackMaps {
+        matter: pyreal_assets::art_pack::Matter::default(),
+        ..bottle
+    };
+    let d = describe_surface(&surface(IMAGE), false, None, &KindTable::default(), plain);
+    assert_eq!(d.flags & flags::HAS_CLEAR, 0);
+    assert_eq!(MaterialRecord::new(&d, |_| Some(7)).textures[5], NO_TEXTURE);
 }
 
 /// A metal map makes a surface a metal only where it says: its picture is not brightened whole,

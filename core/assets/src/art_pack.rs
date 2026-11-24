@@ -125,9 +125,15 @@
 //! clear = 0.5                # 0 to 1: clear as ice or a gem in its picture's own colour, this
 //!                            # much of the world behind it seen through it, bent
 //! refraction = 1.31          # how strongly a clear material bends light (its index, 1 to 3)
+//! clear_map = "materials/0x050026DB_clear.png"     # red: white as clear as `clear` says, black
+//!                            # not clear (a bottle's cork, a flask's band); green: of what is not
+//!                            # clear, white a metal (a foil, a gold band); with `clear`
 //! wet = 0.8                  # 0 to 1: a film of water lies on it, darker and as smooth as a puddle
 //! palettes = ["0x04000BA1"]  # drawn only where the picture is drawn in one of these palettes:
 //!                            # one picture several creatures wear, told apart by palette
+//! laid_palettes = ["0x04000BEF"] # drawn where an object's look lays one of these over the
+//!                            # picture (a creature's palette template), not where the picture
+//!                            # shows it as its own; before the picture's other materials there
 //! author = "..."
 //! tool = "..."
 //! license = "..."
@@ -530,6 +536,9 @@ pub struct ManifestMaterial {
     /// A picture of where it is a metal, in its red: white metal, black not. A material that names
     /// one is a metal ([`Matter::metal`]) only where the picture says.
     pub metal_map: Option<String>,
+    /// A picture of where a clear material ([`Matter::clear`]) is clear, in its red: white as clear as
+    /// it says, black not clear at all; and in its green, where what is not clear is a metal.
+    pub clear_map: Option<String>,
     /// Whether it is wet on floors too, not only on walls.
     pub damp_floors: bool,
     /// Whether a film of slime lies on it where it is damp.
@@ -553,6 +562,9 @@ pub struct ManifestMaterial {
     pub draws_on: DrawsOn,
     /// The palettes (`0x04...`) it is drawn in alone; any, where it names none.
     pub palettes: Vec<DataId>,
+    /// The palettes it is drawn in where an object's look lays them over the picture, ahead of
+    /// the picture's other materials: a creature that wears its picture's own palette.
+    pub laid_palettes: Vec<DataId>,
     /// For a `[[solid]]` entry: the untextured surfaces it is laid on, in place of [`Self::textures`].
     pub solid: Option<Solid>,
     /// Who made it, with what, and under which license.
@@ -844,10 +856,16 @@ impl ArtPackManifest {
                 material(m).map_err(|e| ManifestError(format!("material {}: {}", i + 1, e.0)))?;
             for (t, print) in material.textures.iter().zip(&material.fingerprints) {
                 let same = material_at.get(t).map_or(&[][..], Vec::as_slice);
+                let names =
+                    |m: &ManifestMaterial| !m.palettes.is_empty() || !m.laid_palettes.is_empty();
                 if same.iter().map(|&j| &materials[j]).any(|o| {
-                    let apart = !o.palettes.is_empty()
-                        && !material.palettes.is_empty()
-                        && !o.palettes.iter().any(|p| material.palettes.contains(p));
+                    let apart = names(o)
+                        && names(&material)
+                        && !o.palettes.iter().any(|p| material.palettes.contains(p))
+                        && !o
+                            .laid_palettes
+                            .iter()
+                            .any(|p| material.laid_palettes.contains(p));
                     !apart
                         && o.textures
                             .iter()
@@ -1447,6 +1465,7 @@ fn material_with(
     let fingerprints = fingerprints_of(t.get("fingerprint"), textures.len())?;
     let draws_on = draws_on(t)?;
     let palettes = palettes_of(t.get("palettes"))?;
+    let laid_palettes = palettes_of(t.get("laid_palettes"))?;
     let matter = Matter {
         metal: (flag("metal")? || t.contains_key("metal_map"))
             .then_some(number("brighten", 0.1, 20.0)?.unwrap_or(1.0)),
@@ -1467,6 +1486,7 @@ fn material_with(
         damp,
         damp_map: picture("damp_map")?,
         metal_map: picture("metal_map")?,
+        clear_map: picture("clear_map")?,
         damp_floors: flag("damp_floors")?,
         slime: flag("slime")?,
         ice: flag("ice")?,
@@ -1477,6 +1497,7 @@ fn material_with(
         fingerprints,
         draws_on,
         palettes,
+        laid_palettes,
         solid,
         credit: Credit {
             author: text(t, "author")?.to_owned(),
@@ -2735,6 +2756,21 @@ license = \"CC0-1.0\"
     }
 
     #[test]
+    fn a_clear_map_names_where_a_clear_material_is_clear() {
+        let pack = ArtPackManifest::parse(&wall_with("clear = 0.6\nclear_map = \"c.png\""))
+            .expect("reads");
+        let m = pack.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!(
+            (m.clear_map.as_deref(), m.matter.clear),
+            (Some("c.png"), Some(0.6))
+        );
+        let plain = ArtPackManifest::parse(&wall_with("clear = 0.6")).expect("reads");
+        let m = plain.material(DataId(0x0500_0001)).expect("named");
+        assert_eq!(m.clear_map, None);
+        assert!(ArtPackManifest::parse(&wall_with("clear_map = \"../c.png\"")).is_err());
+    }
+
+    #[test]
     fn a_metal_map_makes_a_metal_where_it_says() {
         let pack = ArtPackManifest::parse(&wall_with("metal_map = \"m.png\"\nbrighten = 3"))
             .expect("reads");
@@ -2986,6 +3022,21 @@ license = "CC0-1.0"
             assert!(e.0.contains("has a material already"), "{}", e.0);
         }
         assert!(ArtPackManifest::parse(&wall_with("palettes = \"0x05000001\"")).is_err());
+    }
+
+    /// A material laid where a look lays the picture's own palette stands beside the one for that
+    /// palette as the picture's own; two laid for one palette do not.
+    #[test]
+    fn a_palette_a_look_lays_is_apart_from_the_pictures_own() {
+        let own = "palettes = \"0x04000BEF\"";
+        let laid = "palettes = \"0x04000BF3\"\nlaid_palettes = \"0x04000BEF\"";
+        let m = ArtPackManifest::parse(&two_walls(own, laid)).expect("reads");
+        assert_eq!(m.materials[1].laid_palettes, [DataId(0x0400_0BEF)]);
+        assert!(m.materials[0].laid_palettes.is_empty());
+        let only_laid = "laid_palettes = \"0x04000BEF\"";
+        assert!(ArtPackManifest::parse(&two_walls(own, only_laid)).is_ok());
+        let e = ArtPackManifest::parse(&two_walls(laid, only_laid)).expect_err("two laid");
+        assert!(e.0.contains("has a material already"), "{}", e.0);
     }
 
     /// A `[[skin]]` names its setup, file, palettes and clips; a setup has one body naming no

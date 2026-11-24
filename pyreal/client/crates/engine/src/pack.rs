@@ -105,6 +105,7 @@ impl EnginePack {
             ("material", "normal") => Some((MaterialPart::Normal, false)),
             ("material", "surface") => Some((MaterialPart::Surface, false)),
             ("material", "metal") => Some((MaterialPart::Metal, false)),
+            ("material", "clear") => Some((MaterialPart::Clear, false)),
             _ => None,
         };
         if let Some((part, srgb)) = material {
@@ -354,7 +355,7 @@ pub struct PackOverrides(pub Arc<ArtPack>);
 
 impl MaterialOverrides for PackOverrides {
     fn maps(&self, surface: DataId, texture: Option<DataId>) -> PackMaps {
-        self.maps_for(surface, texture, &[], &|_| None)
+        self.maps_for(surface, texture, &[], false, &|_| None)
     }
 
     fn maps_for(
@@ -362,9 +363,11 @@ impl MaterialOverrides for PackOverrides {
         _surface: DataId,
         texture: Option<DataId>,
         palettes: &[DataId],
+        laid: bool,
         record: &dyn Fn(DataId) -> Option<Fingerprint>,
     ) -> PackMaps {
-        let Some(i) = texture.and_then(|t| self.0.material_for(t, palettes, || record(t))) else {
+        let Some(i) = texture.and_then(|t| self.0.material_for(t, palettes, laid, || record(t)))
+        else {
             return PackMaps::default();
         };
         let m = &self.0.materials[i];
@@ -377,6 +380,7 @@ impl MaterialOverrides for PackOverrides {
             roughness_metal: surface.clone(),
             occlusion: surface.clone(),
             metal: m.metal.as_ref().and_then(|_| key("metal")),
+            clear: m.clear.as_ref().and_then(|_| key("clear")),
             kind: material_kind(&self.0, i),
             packed_surface: surface.is_some(),
             ice: m.ice,
@@ -400,6 +404,7 @@ impl MaterialOverrides for PackOverrides {
             roughness_metal: surface.clone(),
             occlusion: surface.clone(),
             metal: None,
+            clear: None,
             kind: material_kind(&self.0, i),
             packed_surface: surface.is_some(),
             ice: false,

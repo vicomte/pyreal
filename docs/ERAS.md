@@ -50,6 +50,9 @@ names no eras.
   them. The engine passes the palette a swap lays over the picture, else the picture's own. The
   1999 golems share one model and one picture told apart by palette, and the pack gives each kind
   its own material this way.
+- A material may also name `laid_palettes`, drawn where an object's look lays one of them over the
+  picture, ahead of the picture's other materials. The crystal shards wear their picture's own blue
+  palette, which the world's crystals show as their own, and this tells the two apart.
 - A record no pack entry matches draws the era's own model or picture with every engine effect.
   The engine's load report counts `pack_unmatched`, the entries left out because none was made
   from the world's record.

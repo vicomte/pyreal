@@ -407,6 +407,8 @@ const ICE_GLOW_PALE: vec3<f32> = vec3<f32>(0.0014, 0.237, 0.547);
 // (emissive y and z): the rest of its light is its own lit colour, clouded.
 const TINTED_DEEPEST: f32 = 0.9;
 const TINTED_HUE_DEPTH: f32 = 0.6;
+// How rough a clear material's metal parts are (its clear map's green): a foil's or a band's glint.
+const METAL_PART_ROUGH: f32 = 0.25;
 // How far the colours part through a gem, of its bend past ice's.
 const TINTED_FIRE: f32 = 0.07;
 
@@ -466,9 +468,20 @@ fn fs_ice(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     var deepest = ICE_DEEPEST;
     var index = 1.31;
     var milk = 0.0;
+    var solid = 0.0;
+    var metal = 0.0;
     if (tinted) {
         index = max(m.emissive.z, 1.0);
-        milk = 1.0 - saturate(m.emissive.y);
+        var clearness = saturate(m.emissive.y);
+        // Its clear map: clear only where red, a cork or a band as its own lit picture, and of
+        // that, a metal where green (a foil, a gold band).
+        if ((m.flags & M_HAS_CLEAR) != 0u) {
+            let map = textureSampleGrad(textures[m.tex_metal], samp_repeat, in.uv, dx, dy).rg;
+            solid = 1.0 - map.r;
+            metal = solid * map.g;
+            clearness *= 1.0 - solid;
+        }
+        milk = 1.0 - clearness;
         let hue = clamp(pic_rgb / max(max(pic_rgb.r, max(pic_rgb.g, pic_rgb.b)), 1e-3), vec3<f32>(0.03), vec3<f32>(1.0));
         extinction = -log(mix(vec3<f32>(1.0), hue, 0.75)) / TINTED_HUE_DEPTH;
         scatter = hue * 0.12;
@@ -534,7 +547,7 @@ fn fs_ice(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     if (has(F_LAMPS)) {
         let lamp = lamp_light(in.world, n, v, 0.05, vec3<f32>(ICE_F0), select(0u, G_INDOOR, indoor),
                               depth, px, false);
-        light_in += lamp.diffuse;
+        light_in += select(lamps_held(lamp.diffuse, light_in), lamp.diffuse, indoor);
         lamp_spec = lamp.specular;
     }
     var inner = scatter * light_in * (1.0 - exp(-0.9 * thick)) * pre;
@@ -572,14 +585,23 @@ fn fs_ice(in: VsOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f3
     // Its reflectance by how strongly it bends light: a diamond's faces mirror far more than ice's.
     let f0 = select(ICE_F0, pow((index - 1.0) / (index + 1.0), 2.0), tinted);
     let f90 = select(ICE_F90, max(ICE_F90, 0.6), tinted);
-    let fresnel = f0 + (f90 - f0) * pow(1.0 - cos_v, 5.0);
+    // A clear map's solid parts (a cork, a band) mirror little and do not glint.
+    let fresnel = mix(f0 + (f90 - f0) * pow(1.0 - cos_v, 5.0), 0.02, solid);
     var c = mix(body, mirrored * pre, fresnel);
     let ndl = dot(n, frame.sun_dir.xyz);
     if (ndl > 0.0) {
         let shine = select(0.06, mix(0.06, 0.025, saturate(index - 1.31)), tinted);
-        c += ggx(n, v, frame.sun_dir.xyz, shine, vec3<f32>(f0)) * ndl * sun * sun_vis * pre;
+        c += ggx(n, v, frame.sun_dir.xyz, shine, vec3<f32>(f0)) * ndl * sun * sun_vis * pre * (1.0 - solid);
     }
-    c += lamp_spec * pre;
+    c += lamp_spec * pre * (1.0 - solid);
+    // A metal part mirrors the sky and glints in its own colour.
+    if (metal > 0.0) {
+        var shone = mirrored * pic_rgb * pre + pic_rgb * light_in * 0.08 * pre + lamp_spec * pic_rgb * pre;
+        if (ndl > 0.0) {
+            shone += ggx(n, v, frame.sun_dir.xyz, METAL_PART_ROUGH, pic_rgb) * ndl * sun * sun_vis * pre;
+        }
+        c = mix(c, shone, metal);
+    }
     // The world behind came through the air already; the ice's own light is seen through it.
     if (!indoor) {
         let own = c - behind;

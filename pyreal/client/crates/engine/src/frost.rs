@@ -54,9 +54,9 @@ pub const PASSES: [&str; 3] = ["ui blur down", "ui blur across", "ui blur up and
 /// The target's format.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// At most [`MOST`] of `backdrops`, the largest, as the shaders' uniform.
+/// The grounds blurred under: at most [`MOST`] of `backdrops`, the largest.
 #[must_use]
-pub fn uniform(backdrops: &[Backdrop]) -> Vec<u8> {
+pub fn kept(backdrops: &[Backdrop]) -> Vec<Backdrop> {
     let mut kept: Vec<Backdrop> = backdrops
         .iter()
         .filter(|b| b.strength > 0.0 && b.rect[2] > b.rect[0] && b.rect[3] > b.rect[1])
@@ -67,6 +67,13 @@ pub fn uniform(backdrops: &[Backdrop]) -> Vec<u8> {
         kept.sort_by(|a, b| area(b).total_cmp(&area(a)));
         kept.truncate(MOST);
     }
+    kept
+}
+
+/// [`kept`] of `backdrops`, as the shaders' uniform.
+#[must_use]
+pub fn uniform(backdrops: &[Backdrop]) -> Vec<u8> {
+    let kept = kept(backdrops);
     let mut bytes = Vec::with_capacity(usize::try_from(UNIFORM_SIZE).unwrap_or(0));
     let n = u32::try_from(kept.len()).unwrap_or(0);
     for v in [n, 0, 0, 0] {
@@ -211,10 +218,9 @@ impl Frost {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         // LINT-OK: a rectangle on a quarter-size target, a thousand texels or so.
         let texel = |v: f32, top: u32| (v.max(0.0) as u32).min(top);
-        let scissors: Vec<(u32, u32, u32, u32)> = backdrops
+        // The grounds the composite lays the blur under, and no others.
+        let scissors: Vec<(u32, u32, u32, u32)> = kept(backdrops)
             .iter()
-            .filter(|b| b.strength > 0.0)
-            .take(MOST)
             .filter_map(|b| {
                 let r = b.rect;
                 #[allow(clippy::cast_precision_loss)]
@@ -341,5 +347,30 @@ impl Frost {
             }
         }
         Some(a.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn past_the_most_the_largest_grounds_are_kept_whatever_their_order() {
+        // Many small grounds first, then a window, as the HUD comes before the windows.
+        #[allow(clippy::cast_precision_loss)]
+        let mut grounds: Vec<Backdrop> = (0..MOST + 4)
+            .map(|i| Backdrop {
+                rect: [i as f32 * 50.0, 0.0, i as f32 * 50.0 + 40.0, 40.0],
+                strength: 1.0,
+            })
+            .collect();
+        let window = Backdrop {
+            rect: [100.0, 100.0, 700.0, 600.0],
+            strength: 1.0,
+        };
+        grounds.push(window);
+        let kept = kept(&grounds);
+        assert_eq!(kept.len(), MOST);
+        assert!(kept.contains(&window));
     }
 }

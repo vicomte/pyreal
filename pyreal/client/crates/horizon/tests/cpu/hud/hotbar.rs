@@ -458,3 +458,104 @@ fn entering_the_world_as_another_character_leaves_the_last_ones_spell_bar_file_a
     assert_eq!(h.ui.hud.spell_slots.get(0, 0), Some(9));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Whether a ground the world is blurred under spans slots `a` to `b`, through their middles.
+fn frosted(h: &Harness, a: Rect, b: Rect) -> bool {
+    let y = a.y + a.h / 2.0;
+    h.list.backdrops.iter().any(|(r, s)| {
+        *s > 0.0
+            && r.x <= a.x + a.w / 2.0
+            && r.right() >= b.x + b.w / 2.0
+            && r.y <= y
+            && r.bottom() >= y
+    })
+}
+
+#[test]
+fn the_shortcut_bar_blurs_the_world_behind_its_slots() {
+    let state = player_with_a_shortcut_in_slot(2);
+    let mut h = Harness::new(Default::default());
+    h.frame(&state);
+    assert!(frosted(&h, slot_rect(&h, 0), slot_rect(&h, 11)));
+}
+
+#[test]
+fn the_shortcut_bar_s_blur_reaches_the_frames_round_its_slots() {
+    let state = player_with_a_shortcut_in_slot(2);
+    // With the art, whose frames are soft on the inside of their rims.
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    let (a, b) = (slot_rect(&h, 0), slot_rect(&h, 11));
+    assert!(h.list.backdrops.iter().any(|(r, _)| {
+        r.x <= a.x && r.y <= a.y && r.right() >= b.right() && r.bottom() >= b.bottom()
+    }));
+}
+
+#[test]
+fn each_spell_bar_row_blurs_the_world_behind_it_as_one_ground() {
+    let mut state = player_with_a_shortcut_in_slot(2);
+    state.combat_mode = pyreal_client_contract::combat_mode::MAGIC;
+    let mut h = Harness::new(pyreal_horizon::options::HorizonOptions {
+        spell_rows: 3,
+        ..Default::default()
+    });
+    // The rows chosen reach the HUD after the first frame.
+    h.frame(&state);
+    h.frame(&state);
+    let (a, b) = (slot_rect(&h, 0), slot_rect(&h, 11));
+    let row = h
+        .list
+        .backdrops
+        .iter()
+        .find(|(r, _)| r.x <= a.x + a.w / 2.0 && r.right() >= b.x + b.w / 2.0)
+        .map(|(r, _)| *r)
+        .expect("the shortcut bar's ground");
+    let rows = h
+        .list
+        .backdrops
+        .iter()
+        .filter(|(r, _)| (r.x - row.x).abs() < 0.5 && (r.w - row.w).abs() < 0.5)
+        .count();
+    assert_eq!(rows, 4, "the shortcut bar and three spell rows");
+}
+
+#[test]
+fn the_hotbars_moved_in_hud_layout_blur_the_world_where_they_were_moved_to() {
+    let state = player_with_a_shortcut_in_slot(2);
+    let dir = std::env::temp_dir().join(format!(
+        "pyreal-horizon-hotbar-frost-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the folder");
+    let file = dir.join("horizon-hud-Tester.txt");
+    std::fs::write(&file, "hotbars 0.0 -300.0 1.00\n").expect("the layout");
+    // Drawn with the art, so the element has quads for the layout to move.
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    let before = slot_rect(&h, 0);
+    h.ui.hud.layout = pyreal_horizon::ui::layout::HudLayout::load(file);
+    h.frame(&state);
+    let (a, b) = (slot_rect(&h, 0), slot_rect(&h, 11));
+    assert!(a.y < before.y - 100.0, "the slots moved up");
+    assert!(frosted(&h, a, b));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_slot_s_dark_recess_reaches_the_frame_round_it() {
+    let state = player_with_a_shortcut_in_slot(2);
+    let mut h = Harness::with_built_in_art();
+    h.frame(&state);
+    let r = slot_rect(&h, 5);
+    // The frame's opening, a unit past the icon's left, right and top.
+    let icon = pyreal_horizon::ui::kit::icon_rect(r);
+    let want = Rect::new(icon.x - 1.0, icon.y - 1.0, icon.w + 2.0, icon.h + 1.0);
+    assert!(
+        h.list
+            .quads
+            .iter()
+            .any(|q| q.colour == 0x9608_0A0C && q.dst == want),
+        "the recess over {want:?}"
+    );
+}

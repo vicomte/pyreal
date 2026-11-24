@@ -214,6 +214,7 @@ pub fn plain_ground(p: &mut Painter<'_>, r: Rect) {
 /// The own art's plain ground over `r`: dark, a fine bronze rim and a shadow inside it.
 fn rimmed_ground(p: &mut Painter<'_>, r: Rect) {
     let line = 1.0_f32.max(p.scale);
+    p.backdrop(r);
     p.fill(r, 0xEC12_161C);
     p.outline(r, line, 0xC0A0_7C48);
     p.outline(r.inset(line), line, 0x6000_0000);
@@ -1007,6 +1008,19 @@ pub fn icon_slot(
     over && ctx.input.clicked(&r)
 }
 
+/// The own slot's recess round icon `ir`, `u` pixels a frame unit: the frame's opening.
+#[must_use]
+pub fn well_rect(ir: Rect, u: f32) -> Rect {
+    Rect::new(ir.x - u, ir.y - u, ir.w + 2.0 * u, ir.h + u)
+}
+
+/// What a slot over `r` covers, its frame included: the own frame's place, else `r`.
+#[must_use]
+pub fn slot_bounds(p: &Painter<'_>, r: Rect) -> Rect {
+    p.piece("slot.empty")
+        .map_or(r, |frame| own_slot_rect(p, r, &frame))
+}
+
 /// Where the own slot's frame goes for a slot over `r`: placed so its well is where the icon
 /// sits.
 fn own_slot_rect(p: &Painter<'_>, r: Rect, frame: &Sprite) -> Rect {
@@ -1032,7 +1046,9 @@ fn own_slot(p: &mut Painter<'_>, r: Rect, icon: Option<&Sprite>, tint: Argb, sta
         return false;
     };
     let ir = icon_rect(r);
-    p.fill(ir, 0x9608_0A0C);
+    // The recess fills the frame's opening, a unit wider each side and taller than the icon.
+    let u = ir.w / 40.0;
+    p.fill(well_rect(ir, u), 0x9608_0A0C);
     if let Some(i) = icon {
         p.sprite(i, ir, tint);
     }
@@ -1088,23 +1104,28 @@ pub fn tooltip(p: &mut Painter<'_>, ctx: &Ctx<'_>, title: &str, lines: &[String]
     }
     let x = x.clamp(0.0, (sw - w).max(0.0));
     let y = y.clamp(0.0, (sh - h).max(0.0));
-    let r = Rect::new(x, y, w, h);
+    tooltip_plate(p, Rect::new(x, y, w, h));
+    p.text(&head, x + 14.0 * k, y + 9.0 * k, title);
+    let mut ly = y + 9.0 * k + hh;
+    for l in &lines {
+        p.text(&body, x + 14.0 * k, ly, l);
+        ly += lh;
+    }
+}
+
+/// The ground a tooltip is drawn on over `r`: the skin's own plate, or a dark ground with a fine
+/// bronze rule round it.
+pub fn tooltip_plate(p: &mut Painter<'_>, r: Rect) {
+    let k = p.scale;
     if own_plate(p, r, 1.0, 1) {
         // The skin's own plate, as the game's tooltips are drawn.
     } else if p.art.has_piece("window.tl") {
-        // With the own art: no frame, a dark ground with a fine bronze rule round it.
         p.backdrop(r);
         p.fill(r, 0xEC12_161C);
         p.outline(r, 1.0_f32.max(k), 0xC0A0_7C48);
         p.outline(r.inset(1.0_f32.max(k)), 1.0_f32.max(k), 0x6000_0000);
     } else {
         panel(p, r, 0.97);
-    }
-    p.text(&head, x + 14.0 * k, y + 9.0 * k, title);
-    let mut ly = y + 9.0 * k + hh;
-    for l in &lines {
-        p.text(&body, x + 14.0 * k, ly, l);
-        ly += lh;
     }
 }
 

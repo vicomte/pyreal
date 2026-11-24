@@ -440,6 +440,7 @@ fn a_scripted_entry_with_no_interface_waits_for_the_data_files_to_be_updated() {
 
 mod bulk_patch;
 mod explore;
+mod patch_rebuild;
 mod world_refusal;
 
 /// A minimized window, which the host reports as having no extent, rests a frame at full rate, and

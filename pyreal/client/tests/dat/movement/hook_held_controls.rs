@@ -1,9 +1,9 @@
 //! A frame hook's held movement controls, what a plugin's jumps and held motions press, carried
 //! out on a real body: the jump it holds charges as the jump key does and leaps when let go, the
 //! charge it puts down ends without a leap, a sidestep it holds moves the body sideways until let
-//! go, and none of it is the player's own movement. Fixture: the jump key's (a real `App` on real
-//! terrain with a recorded player description), with a hook that hands the frame a queued list
-//! of requests each step.
+//! go, a forward key it holds runs on when the window loses focus, and none of it is the player's
+//! own movement. Fixture: the jump key's (a real `App` on real terrain with a recorded player
+//! description), with a hook that hands the frame a queued list of requests each step.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -158,4 +158,43 @@ fn a_hooks_held_sidestep_moves_the_body_sideways_until_let_go() {
     );
     assert!(seen.borrow().iter().all(|s| !*s), "{:?}", seen.borrow());
     app.shutdown();
+}
+
+/// The window losing focus mid-run, at sixty frames a second and at ten (the background's
+/// pace): the forward key a hook holds is pressed again with the keyboard's commands dropped, and
+/// the body runs on. It is still none of the player's movement.
+#[test]
+fn a_hooks_held_forward_key_runs_on_when_the_window_loses_focus() {
+    for fps in [60.0, 10.0] {
+        let mut app = setup();
+        player_description(&mut app, "early-inventory-and-casting");
+        app.clock = Box::new(pyreal_client_runtime::platform::clock::FixedStepClock::new(
+            1.0 / fps,
+        ));
+        let (queue, seen) = holder(&mut app);
+        frames(&mut app, 2);
+        seen.borrow_mut().clear();
+        queue
+            .borrow_mut()
+            .push_back(vec![NavRequest::Hold(NavKey::Forward, true)]);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let second = fps as usize;
+        frames(&mut app, second);
+        assert!(app.probe().char_input().forward, "{fps}: running");
+        super::focus_loss::lose_focus(&mut app, 9_000);
+        let at = body(&app).position().frame.origin;
+        frames(&mut app, 2 * second);
+        assert!(
+            app.probe().char_input().forward,
+            "{fps}: still held after the focus loss"
+        );
+        let later = body(&app).position().frame.origin;
+        let ran = math::hypotf(later.x - at.x, later.y - at.y);
+        assert!(
+            ran > 4.0,
+            "{fps} frames a second: ran {ran:.2} m in two seconds"
+        );
+        assert!(seen.borrow().iter().all(|s| !*s), "{:?}", seen.borrow());
+        app.shutdown();
+    }
 }

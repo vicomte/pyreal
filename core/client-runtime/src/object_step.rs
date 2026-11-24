@@ -874,13 +874,35 @@ pub fn server_object_reported_position<S: AsObjectSim>(
 /// `physics_bsp` says whether it is inside the masonry. Sampling is only how the two are
 /// asked; the answer is the client's.
 ///
+/// The body has to fit there too: none of its spheres, standing upright at the point, may touch
+/// the masonry. A body put down touching a wall is refused there and cannot move.
+///
 /// It lives here rather than in `pyreal_scene::world_scene` because it is a physics query over the
 /// body's own `LandSource` and names no render type.
 #[must_use]
 pub fn standable_point(character: &Character, cell: pyreal_primitives::CellId) -> Option<Vec3> {
+    use pyreal_physics::math::{globaltolocalvec, l2g, V3};
     let land = character.land();
     let g = pyreal_physics::LandSource::env_cell(land.as_ref(), cell)?;
     let bsp = g.cell_bsp.as_ref()?;
+    // The body's spheres, upright, turned into the cell's own frame.
+    let to_cell = l2g(g.frame.rotation);
+    let spheres: Vec<pyreal_physics::Sphere> = character
+        .world
+        .get(character.handle)
+        .map(|o| {
+            o.geometry
+                .path_spheres()
+                .iter()
+                .map(|s| {
+                    pyreal_physics::Sphere::new(
+                        globaltolocalvec(to_cell, s.center.mul(o.scale)),
+                        s.radius * o.scale,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     for &z in &[0.5f32, 1.0, 1.5, 2.0] {
         for i in -12i8..=12 {
             for j in -12i8..=12 {
@@ -888,10 +910,13 @@ pub fn standable_point(character: &Character, cell: pyreal_primitives::CellId) -
                 if !bsp.point_inside_cell_bsp(local) {
                     continue;
                 }
-                if g.physics_bsp
-                    .as_ref()
-                    .is_some_and(|b| b.point_intersects_solid(local))
-                {
+                if g.physics_bsp.as_ref().is_some_and(|b| {
+                    b.point_intersects_solid(local)
+                        || spheres.iter().any(|s| {
+                            let at = pyreal_physics::Sphere::new(local.add(s.center), s.radius);
+                            b.sphere_intersects_solid(&at, true)
+                        })
+                }) {
                     continue;
                 }
                 return Some(pyreal_physics::math::localtoglobal(&g.frame, local));

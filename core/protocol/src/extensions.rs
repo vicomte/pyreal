@@ -27,7 +27,7 @@ pub const QUEST_TIMERS: &str = "quest_timers";
 /// The extensions this client knows, in the order it names them.
 pub const KNOWN: [&str; 3] = [AI_FELLOWS, ADVOCATE_OFFERS, QUEST_TIMERS];
 
-/// `0xF7EF Dereth_Extensions` (both directions): extensions by name. From the client, those it
+/// `0xF7F8 Dereth_Extensions` (both directions): extensions by name. From the client, those it
 /// knows; from the server, those of them it has.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DerethExtensions {
@@ -59,7 +59,7 @@ pub struct AiFellow {
     pub in_fellowship: bool,
 }
 
-/// `0xF7F0 Dereth_AiFellows` (server to client): the AI Players in the player's company and their
+/// `0xF7F9 Dereth_AiFellows` (server to client): the AI Players in the player's company and their
 /// modes, all of them each time; an empty list when none is left.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AiFellows {
@@ -93,7 +93,7 @@ impl Message for AiFellows {
     }
 }
 
-/// `0xF7F1 Dereth_Waypoint` (server to client): a waypoint an Advocate offered and the player
+/// `0xF7FA Dereth_Waypoint` (server to client): a waypoint an Advocate offered and the player
 /// accepted: who offered it, a label, and the spot (a cell and the place in its landblock).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Waypoint {
@@ -133,7 +133,7 @@ impl Message for Waypoint {
     }
 }
 
-/// `0xF7F2 Dereth_JournalEntry` (server to client): a note an Advocate offered and the player
+/// `0xF7FB Dereth_JournalEntry` (server to client): a note an Advocate offered and the player
 /// accepted, for the client's journal: who offered it, a title and the text, and perhaps a place.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct JournalEntry {
@@ -196,7 +196,7 @@ pub struct QuestTimer {
     pub ready_at: u32,
 }
 
-/// `0xF7F3 Dereth_QuestTimers` (server to client): the character's quest timers, the whole list
+/// `0xF7FC Dereth_QuestTimers` (server to client): the character's quest timers, the whole list
 /// or the changes, with the server's Unix seconds when sent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuestTimers {
@@ -264,7 +264,7 @@ mod tests {
             &DerethExtensions {
                 names: vec![AI_FELLOWS.to_owned(), ADVOCATE_OFFERS.to_owned()],
             },
-            0xF7EF,
+            0xF7F8,
         );
         round_trip(
             &AiFellows {
@@ -275,7 +275,7 @@ mod tests {
                     in_fellowship: true,
                 }],
             },
-            0xF7F0,
+            0xF7F9,
         );
         round_trip(
             &Waypoint {
@@ -287,7 +287,7 @@ mod tests {
                 y: 7.5,
                 z: 94.0,
             },
-            0xF7F1,
+            0xF7FA,
         );
         round_trip(
             &JournalEntry {
@@ -297,7 +297,7 @@ mod tests {
                 text: "South of town.".to_owned(),
                 location: None,
             },
-            0xF7F2,
+            0xF7FB,
         );
         round_trip(
             &QuestTimers {
@@ -314,7 +314,7 @@ mod tests {
                 }],
                 removed: Vec::new(),
             },
-            0xF7F3,
+            0xF7FC,
         );
         round_trip(
             &QuestTimers {
@@ -323,7 +323,7 @@ mod tests {
                 timers: Vec::new(),
                 removed: vec!["aerbaxdefeat".to_owned()],
             },
-            0xF7F3,
+            0xF7FC,
         );
     }
 
@@ -340,7 +340,7 @@ mod tests {
             location: Some((42.3, -33.3)),
             ..plain.clone()
         };
-        round_trip(&placed, 0xF7F2);
+        round_trip(&placed, 0xF7FB);
         // Without a location it is the old message; with one, the old message and then more.
         let (old, new) = (write_blob(&plain).unwrap(), write_blob(&placed).unwrap());
         assert_eq!(&new[..old.len()], &old[..]);

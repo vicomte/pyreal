@@ -335,6 +335,11 @@ impl<'a, S: Shell> AppProbeMut<'a, S> {
         self.app.world.as_mut()
     }
 
+    /// Put the session in the world as its `Playable` state does, for a scene loaded offline.
+    pub fn mark_playable(self) {
+        self.app.playable_at = Some(self.app.timer.local_time);
+    }
+
     /// Have the presentation load a world, straight away and outside the frame:
     /// what the device tests did through the renderer, with the world state landing here.
     ///

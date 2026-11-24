@@ -201,10 +201,6 @@ impl<S: Shell> App<S> {
     /// frame. The `ask` flag on `UiRequest::EndCharacterSession` already carries the distinction;
     /// nothing reads it yet.
     pub fn log_off_character(&mut self) {
-        if let Some(effect) = self.resolution.cancel() {
-            self.apply_resolution_effect(effect);
-        }
-
         // The logoff request is sent and the log-off-requested flag is armed; that flag fades
         // the world out three seconds later,
         // plus twenty when the local player's `is_player_killer` predicate answers true — so
@@ -1190,6 +1186,7 @@ impl<S: Shell> App<S> {
         }
         self.adopt_store(std::sync::Arc::new(fresh));
         self.reload_store_tables();
+        self.rebuild_world_after_patch();
         tracing::info!(
             "DDD reopened the dat files; {} changed",
             summary
@@ -1199,6 +1196,16 @@ impl<S: Shell> App<S> {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
+    }
+
+    /// A world built while the patch was still arriving keeps what it read of the old files, so it
+    /// is torn down and built again around the player, as at world entry
+    /// ([`Self::reset_world_view`]). With no world built there is nothing to drop.
+    pub(super) fn rebuild_world_after_patch(&mut self) {
+        if self.world.is_some() {
+            self.reset_world_view();
+            tracing::info!("the world is built again from the patched files");
+        }
     }
 
     /// The data files opened again after a patch, with the world's overlay over them: the files

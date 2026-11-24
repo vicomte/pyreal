@@ -134,7 +134,7 @@ pub enum SessionEvent {
     TurbineChat(Vec<u8>),
     /// A DDD exchange step.
     Ddd(DddEvent),
-    /// `0xF7EF` answered: the Dereth extensions the world agreed to.
+    /// `0xF7F8` answered: the Dereth extensions the world agreed to.
     Extensions(Vec<String>),
     /// A UI-queue message with its ordering resolved: the blob **without** any `OrderedEventHeader`, so it
     /// begins with its own type dword.
@@ -194,7 +194,7 @@ pub struct Session<T: Transport> {
     stampers: std::collections::HashMap<ObjectId, PropertySequenceGate>,
     account: String,
     world_name: Option<String>,
-    /// Whether this connection names Dereth's extensions (`0xF7EF`); off, it sends what retail
+    /// Whether this connection names Dereth's extensions (`0xF7F8`); off, it sends what retail
     /// sends and nothing more.
     offer_extensions: bool,
     /// Whether the handshake has gone out on this connection.
@@ -1162,7 +1162,7 @@ impl<T: Transport> Session<T> {
         self.send_bare(&pyreal_protocol::admin::DddEndDdd);
     }
 
-    /// `0xF7EF`: the Dereth extensions this client knows, on queue 5. The message has no row in
+    /// `0xF7F8`: the Dereth extensions this client knows, on queue 5. The message has no row in
     /// the opcode table, so it is framed here rather than by [`outbound::build`].
     fn send_extensions_handshake(&mut self) {
         let hello = pyreal_protocol::extensions::DerethExtensions {

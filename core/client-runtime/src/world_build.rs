@@ -1140,6 +1140,86 @@ mod tests {
         }))
     }
 
+    /// In each room of a dungeon (`0x01D9`) the standable point is where the body fits: none of its
+    /// spheres, upright there, touches the room's walls or floor. In some rooms the first point
+    /// inside clear of the masonry is not, and a body started in one stands at the point that fits.
+    #[test]
+    #[cfg_attr(
+        not(feature = "retail-dats"),
+        ignore = "reads the retail dats: --features retail-dats"
+    )]
+    fn a_body_started_in_a_room_is_put_where_it_fits_clear_of_the_walls() {
+        use pyreal_physics::math::{globaltolocal, globaltolocalvec, l2g, V3};
+        const BLOCK: u16 = 0x01D9;
+        let store = retail_store();
+        let cells: Vec<CellId> = pyreal_world_data::env_cells::EnvCellLoader::new()
+            .load_block(&store, BLOCK)
+            .iter()
+            .map(|d| d.id)
+            .collect();
+        let world = |start_cell| {
+            let cfg = SceneConfig {
+                landblock: BLOCK,
+                character: true,
+                start_cell,
+                ..SceneConfig::default()
+            };
+            load(&store, &cfg).expect("the dungeon loads").0
+        };
+        let ws = world(None);
+        let c = ws.character.as_ref().expect("a body");
+        let o = c.world.get(c.handle).expect("the body's object");
+        let (mut placed, mut within_reach) = (0, None);
+        for &cell in &cells {
+            let Some(p) = ws.standable_point(cell) else {
+                continue;
+            };
+            let land = c.land();
+            let g = pyreal_physics::LandSource::env_cell(land.as_ref(), cell).expect("resident");
+            let Some(walls) = g.physics_bsp.as_ref() else {
+                continue;
+            };
+            let to_cell = l2g(g.frame.rotation);
+            let touches = |local: Vec3| {
+                o.geometry.path_spheres().iter().any(|s| {
+                    let centre = globaltolocalvec(to_cell, s.center.mul(o.scale));
+                    let at = pyreal_physics::Sphere::new(local.add(centre), s.radius * o.scale);
+                    walls.sphere_intersects_solid(&at, true)
+                })
+            };
+            assert!(
+                !touches(globaltolocal(&g.frame, p)),
+                "{:#010X}: the body at {p:?} touches the masonry",
+                cell.0
+            );
+            placed += 1;
+            // The first point inside the room clear of the masonry, as a point.
+            let bsp = g.cell_bsp.as_ref().expect("containment");
+            let first = [0.5f32, 1.0, 1.5, 2.0].iter().find_map(|&z| {
+                (-12i8..=12).find_map(|i| {
+                    (-12i8..=12).find_map(|j| {
+                        let l = Vec3::new(f32::from(i) * 0.5, f32::from(j) * 0.5, z);
+                        (bsp.point_inside_cell_bsp(l) && !walls.point_intersects_solid(l))
+                            .then_some(l)
+                    })
+                })
+            });
+            if within_reach.is_none() && first.is_some_and(touches) {
+                within_reach = Some((cell, p));
+            }
+        }
+        assert!(placed > 10, "rooms with a standable point: {placed}");
+        let (cell, p) = within_reach.expect("a room whose first point touches its walls");
+        let ws = world(Some(cell));
+        let at = ws.character.as_ref().expect("a body").position();
+        // Set down on the floor under it.
+        assert_eq!(
+            (at.cell, at.frame.origin.x, at.frame.origin.y),
+            (cell, p.x, p.y),
+            "started there, it stands at the point that fits"
+        );
+    }
+
     /// With no body there is no physics world to register into: nothing is marked registered,
     /// so the blocks are registered when a body arrives.
     #[test]

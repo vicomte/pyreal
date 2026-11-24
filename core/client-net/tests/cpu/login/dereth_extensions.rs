@@ -1,4 +1,4 @@
-//! Contracts for Dereth's extensions handshake (`0xF7EF`).
+//! Contracts for Dereth's extensions handshake (`0xF7F8`).
 //! Fixture: synthetic messages; the bytes are the server's own encoding (`pyreal_protocol::extensions`).
 
 use crate::common::session_fixture::*;
@@ -22,7 +22,7 @@ fn a_session_offering_extensions_names_them_once_on_queue_5_before_entering() {
     character_select(&mut s);
     assert_eq!(
         s.transport.sent_opcodes(),
-        vec![0xF7EF],
+        vec![0xF7F8],
         "once a connection"
     );
     assert_eq!(s.transport.sent[0].queue, NetQueue::ClientCache);

@@ -49,7 +49,25 @@ pub struct ActionQueue {
     injected: Vec<Action>,
     /// The client's own steering of the character since the movement stage last took it.
     steered: Vec<Action>,
+    /// The movement controls the client's own steering holds down now, in the order pressed.
+    steered_held: Vec<ActionId>,
     stats: ActionStats,
+}
+
+/// Whether `id` is a movement control held down for as long as it acts, not one that acts once or
+/// toggles (a jump, the run lock).
+fn held_control(id: ActionId) -> bool {
+    use pyreal_client_contract::actions::movement as m;
+    matches!(
+        id,
+        m::MOVE_FORWARD
+            | m::MOVE_BACKWARD
+            | m::STRAFE_RIGHT
+            | m::STRAFE_LEFT
+            | m::TURN_RIGHT
+            | m::TURN_LEFT
+            | m::TOGGLE_RUN_WALK
+    )
 }
 
 /// Whether `a` moves the character: a movement key or button pressed or released, the run lock, a
@@ -105,7 +123,22 @@ impl ActionQueue {
     /// It is kept apart from the player's: [`Self::player_movement`] never sees it.
     pub fn steer(&mut self, action: Action) {
         self.stats.submitted += 1;
+        if held_control(action.id) {
+            self.steered_held.retain(|id| *id != action.id);
+            if action.phase == ActionPhase::Begin {
+                self.steered_held.push(action.id);
+            }
+        }
         self.steered.push(action);
+    }
+
+    /// Press again each movement control the client's own steering holds, after the window's
+    /// focus loss dropped every keyboard command.
+    pub fn steer_held_again(&mut self) {
+        for id in self.steered_held.clone() {
+            self.stats.submitted += 1;
+            self.steered.push(Action::begin(id));
+        }
     }
 
     /// Take the client's own steering since the movement stage last took it.
@@ -152,6 +185,24 @@ mod tests {
 
     const FORWARD: ActionId = ActionId(0x29);
     const JUMP: ActionId = ActionId(0x31);
+
+    #[test]
+    fn the_controls_the_clients_steering_holds_are_pressed_again_and_no_others() {
+        use pyreal_client_contract::actions::movement as m;
+        let mut q = ActionQueue::default();
+        q.steer(Action::begin(FORWARD));
+        q.steer(Action::begin(m::TURN_LEFT));
+        q.steer(Action::end(m::TURN_LEFT));
+        q.steer(Action::begin(m::AUTORUN));
+        q.steer(Action::begin(JUMP));
+        let _ = q.take_steered();
+        q.steer_held_again();
+        assert_eq!(q.take_steered(), [Action::begin(FORWARD)]);
+        q.steer(Action::end(FORWARD));
+        let _ = q.take_steered();
+        q.steer_held_again();
+        assert!(q.take_steered().is_empty());
+    }
 
     #[test]
     fn a_movement_key_pressed_or_released_is_player_movement_and_a_camera_key_or_a_repeat_is_not() {

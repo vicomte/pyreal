@@ -44,6 +44,9 @@ impl<S: Shell> App<S> {
             // The returned `bool` controls the movement event, which is not sent —
             // named as a gap on that function rather than half-wired here.
             let _movement_changed = self.movement.lose_keyboard_focus(&mut self.char_input);
+            // The client's own steering (a journey's keys, a plugin's movement) still holds its
+            // controls: they are pressed again at this frame's movement stage.
+            self.actions.steer_held_again();
             // **The third thing the pressed-key release fires.**
             // Its last act, when mouse-look mode is on and a device exists, is a
             // synthetic button input event (activation `0x80`) on the
@@ -212,6 +215,13 @@ impl<S: Shell> App<S> {
     /// reads `char_input`, so a key pressed this frame moves the body this frame.
     pub(super) fn apply_input_actions(&mut self, shell: &mut S) {
         self.events.push(FrameEvent::JumpUseTime);
+        // A dead body is moved by nothing.
+        let dead = self
+            .world
+            .as_ref()
+            .and_then(|w| w.character.as_ref())
+            .is_some_and(crate::character::Character::is_dead);
+        self.movement.set_player_dead(dead);
         // **This must run before the two early returns below.**
         //
         // A typed pose plays through the command interpreter's motion entry point, the same one

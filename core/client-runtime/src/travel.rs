@@ -416,6 +416,8 @@ pub struct TravelInput<'a> {
     pub holds: &'a dyn Fn(&str) -> Option<ObjectId>,
     /// The player's answer to the travel's question, since the last step.
     pub answer: Option<bool>,
+    /// Whether the character is dead: its body's forward motion is `Dead`.
+    pub dead: bool,
 }
 
 impl std::fmt::Debug for TravelInput<'_> {
@@ -667,6 +669,9 @@ const MAX_REPLANS: u32 = 8;
 const CREATURE_REACH: f32 = 20.0;
 /// A creature moving faster than this (metres per second of game time) is not planned round.
 const CREATURE_SLOW: f32 = 1.5;
+/// How near the way ahead a new obstacle has to come, metres, for the walk to be planned again
+/// round it: a body's width and a little more.
+const IN_THE_WAY: f32 = 1.0;
 /// Wall seconds a portal has to land before it counts as refused.
 pub const PORTAL_WAIT: f64 = 15.0;
 /// Wall seconds a recall has to land: its animation plays out before the trip, a lifestone
@@ -1316,6 +1321,14 @@ impl Travel {
                     .flatten()
                     .map(global)
                     .collect();
+                // The way the body walks on from the corner it passed last, corner to corner.
+                let way: Vec<Position> = f
+                    .path()
+                    .waypoints
+                    .iter()
+                    .skip(next)
+                    .map(|w| w.position)
+                    .collect();
                 for (o, off) in kept.iter().zip(&kept_off) {
                     let blocks = o.obstacle.kind != ObstacleKind::Door(DoorState::Open) && *off;
                     let known = self.obstacles.iter().any(|k| {
@@ -1324,16 +1337,17 @@ impl Travel {
                     if !blocks || known {
                         continue;
                     }
-                    let q = global(&o.obstacle.position);
-                    let reach = if o.obstacle.kind == ObstacleKind::Creature {
-                        2.0
+                    // A creature by where it stands; anything else by its own shapes, wherever they
+                    // reach.
+                    let in_the_way = if o.obstacle.kind == ObstacleKind::Creature {
+                        let q = global(&o.obstacle.position);
+                        route
+                            .iter()
+                            .any(|r| hypotf(r.x - q.x, r.y - q.y) < 2.0 && (r.z - q.z).abs() < 3.0)
                     } else {
-                        3.0
+                        o.obstacle.near_way(&way, IN_THE_WAY)
                     };
-                    if route
-                        .iter()
-                        .any(|r| hypotf(r.x - q.x, r.y - q.y) < reach && (r.z - q.z).abs() < 3.0)
-                    {
+                    if in_the_way {
                         t.route_dirty = Some(format!("{} {:08X}", o.name, o.obstacle.id.0));
                         break;
                     }
@@ -2389,6 +2403,11 @@ impl Travel {
         if input.player_input && self.trip.is_some() {
             // The player has the controls.
             self.end(&mut out, input.at.as_ref(), Some("interrupted"));
+            return out;
+        }
+        if input.dead && self.trip.is_some() {
+            // The character died: the journey ends there.
+            self.end(&mut out, input.at.as_ref(), Some("dead"));
             return out;
         }
         let Some(p) = input.at else {
@@ -3853,6 +3872,7 @@ mod tests {
                     hand_backs: Vec::new(),
                     holds: &holds,
                     answer: None,
+                    dead: false,
                 };
                 let t = std::time::Instant::now();
                 let _ = travel.use_time(&input);
@@ -3945,6 +3965,91 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A large object that comes in sight across the way ahead (a fence of posts 8 m long, its
+    /// middle 3.5 m off the way, the way crossing it near its end) sends the walk round it by a new
+    /// route before the body walks into it; the same fence standing 3 m clear of the way does not.
+    #[test]
+    fn a_large_object_whose_shapes_cross_the_way_ahead_sends_the_walk_round_it() {
+        use at_a_door::at;
+        // Nine posts a metre apart, 4 m either side of where it stands, across the way at x = 10.
+        let fence = |id: u32, off: f32| {
+            let posts = (0..9)
+                .map(|i| pyreal_primitives::shape::CylSphere {
+                    low_pt: Vec3::new(0.0, i as f32 - 4.0, 0.0),
+                    radius: 0.3,
+                    height: 2.0,
+                })
+                .collect();
+            let setup = SetupGeometry {
+                cyl_spheres: posts,
+                ..SetupGeometry::default()
+            };
+            let mut p = at(10.0);
+            p.frame.origin.y = off;
+            WorldObstacle {
+                obstacle: Obstacle {
+                    id: ObjectId(id),
+                    position: p,
+                    setup: Arc::new(setup),
+                    scale: 1.0,
+                    kind: ObstacleKind::Solid,
+                },
+                name: String::from("Fence"),
+            }
+        };
+        let walking = || {
+            let mut travel = Travel::new(StoreFiles::default());
+            travel.planning = Some(Planning::held());
+            let mut trip = Trip::new(
+                1,
+                Purpose::Go,
+                TravelTarget::Place(at(30.0)),
+                TravelAllow::default(),
+                0.0,
+                0.0,
+            );
+            trip.step = Some(Step::Walk {
+                target: at(30.0),
+                last: true,
+            });
+            travel.trip = Some(trip);
+            let straight = NavPath {
+                waypoints: [0.0, 30.0]
+                    .into_iter()
+                    .map(|x| pyreal_navigation::Waypoint {
+                        position: at(x),
+                        action: None,
+                    })
+                    .collect(),
+                legs: Vec::new(),
+                goal_offset: 0.0,
+                cuts: Vec::new(),
+            };
+            travel.follow_route(straight, true);
+            travel
+        };
+        // Its middle 3.5 m off the way: two posts stand half a metre either side of it, though
+        // where it stands is not within 3 m of anything the way passes through.
+        let mut crossing = walking();
+        crossing.set_obstacles(vec![fence(7, 3.5)], Some(&at(0.0)));
+        assert_eq!(
+            crossing
+                .trip
+                .as_ref()
+                .and_then(|t| t.route_dirty.clone())
+                .as_deref(),
+            Some("Fence 00000007"),
+            "planned again round it"
+        );
+        // Its nearest post 3 m off the way: left be.
+        let mut clear = walking();
+        clear.set_obstacles(vec![fence(8, 7.0)], Some(&at(0.0)));
+        assert_eq!(
+            clear.trip.as_ref().and_then(|t| t.route_dirty.clone()),
+            None
+        );
     }
 
     /// A walk keeps off the portals it is not taking: of three in sight, the one beside its way is

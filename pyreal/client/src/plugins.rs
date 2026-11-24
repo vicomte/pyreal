@@ -320,14 +320,34 @@ impl LoopbackPeers {
         socket.set_nonblocking(true)?;
         let port = socket.local_addr()?.port();
         let dir = settings_dir.join(PEERS_DIR_NAME);
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(format!("{port}.peer")), b"")?;
-        Ok(Self {
+        let peers = Self {
             socket,
             dir,
             port,
             refreshed: std::time::Instant::now(),
-        })
+        };
+        peers.list()?;
+        Ok(peers)
+    }
+
+    /// Write this client's listing, making it again if another client removed it. It holds the
+    /// time it was written and its modified time is set to now: on some file systems rewriting a
+    /// file with the same bytes leaves its modified time where it was.
+    fn list(&self) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let now = SystemTime::now();
+        let stamp = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        std::fs::create_dir_all(&self.dir)?;
+        let mut f = std::fs::File::create(self.listing())?;
+        f.write_all(stamp.to_string().as_bytes())?;
+        f.set_modified(now)
+    }
+
+    /// This client's listing.
+    fn listing(&self) -> PathBuf {
+        self.dir.join(format!("{}.peer", self.port))
     }
 
     /// The other clients' ports, dropping listings nobody has refreshed for a minute.
@@ -335,6 +355,7 @@ impl LoopbackPeers {
         let Ok(entries) = std::fs::read_dir(&self.dir) else {
             return Vec::new();
         };
+        let now = SystemTime::now();
         let mut out = Vec::new();
         for e in entries.filter_map(Result::ok) {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -347,25 +368,30 @@ impl LoopbackPeers {
             if port == self.port {
                 continue;
             }
-            let stale = e
+            let fresh = e
                 .metadata()
                 .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_none_or(|age| age.as_secs() > PEER_STALE_SECS);
-            if stale {
-                let _ = std::fs::remove_file(e.path());
-            } else {
+                .is_ok_and(|t| listed_recently(t, now));
+            if fresh {
                 out.push(port);
+            } else {
+                let _ = std::fs::remove_file(e.path());
             }
         }
         out
     }
 }
 
+/// Whether a listing last written at `modified` is still a live client's at `now`. A time ahead
+/// of now, as after the clock was set back, counts as fresh.
+fn listed_recently(modified: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(modified)
+        .map_or(true, |age| age.as_secs() <= PEER_STALE_SECS)
+}
+
 impl Drop for LoopbackPeers {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(self.dir.join(format!("{}.peer", self.port)));
+        let _ = std::fs::remove_file(self.listing());
     }
 }
 
@@ -387,7 +413,7 @@ impl PluginPeers for LoopbackPeers {
     fn receive(&mut self) -> Vec<PeerMessage> {
         if self.refreshed.elapsed().as_secs() >= 10 {
             self.refreshed = std::time::Instant::now();
-            let _ = std::fs::write(self.dir.join(format!("{}.peer", self.port)), b"");
+            let _ = self.list();
         }
         let mut out = Vec::new();
         let mut buf = vec![0_u8; 65_536];
@@ -867,6 +893,108 @@ mod tests {
             0,
             "each client takes its listing down"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Set a listing's modified time, as the clock would have left it.
+    fn date_listing(path: &std::path::Path, at: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_modified(at))
+            .expect("dated");
+    }
+
+    /// Let the next poll refresh the listing, as if its interval had passed.
+    fn refresh_due(p: &mut super::LoopbackPeers) {
+        p.refreshed = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(11))
+            .expect("the clock has run eleven seconds");
+    }
+
+    /// A running client's listing keeps being found: a refresh moves its time and makes it again.
+    #[test]
+    fn a_refresh_moves_a_listing_back_past_the_stale_limit_and_makes_a_removed_one_again() {
+        use pyreal_plugin_host::PluginPeers;
+        let root = scratch("peers-refresh");
+        let mut a = super::LoopbackPeers::open(&root).expect("a");
+        let b = super::LoopbackPeers::open(&root).expect("b");
+        let limit = std::time::Duration::from_secs(super::PEER_STALE_SECS);
+        let long_ago = std::time::SystemTime::now() - 2 * limit;
+        date_listing(&a.listing(), long_ago);
+        refresh_due(&mut a);
+        let _ = a.receive();
+        let refreshed = std::fs::metadata(a.listing())
+            .and_then(|m| m.modified())
+            .expect("listed");
+        assert!(
+            refreshed > long_ago + limit,
+            "the refresh moved the listing's time: {long_ago:?} -> {refreshed:?}"
+        );
+        assert_eq!(b.others(), vec![a.port], "the other client still finds it");
+        std::fs::remove_file(a.listing()).expect("removed");
+        refresh_due(&mut a);
+        let _ = a.receive();
+        assert_eq!(b.others(), vec![a.port], "a removed listing is made again");
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A clock set back does not drop running clients.
+    #[test]
+    fn a_listing_dated_ahead_of_the_clock_is_kept() {
+        let root = scratch("peers-ahead");
+        let a = super::LoopbackPeers::open(&root).expect("a");
+        let b = super::LoopbackPeers::open(&root).expect("b");
+        let ahead = std::time::SystemTime::now() + std::time::Duration::from_secs(3_600);
+        date_listing(&a.listing(), ahead);
+        assert_eq!(b.others(), vec![a.port]);
+        assert!(a.listing().is_file(), "the listing is not removed");
+        drop((a, b));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Earlier clients list themselves with an empty file and read only a listing's name and time.
+    #[test]
+    fn an_earlier_clients_empty_listing_is_sent_to_and_ours_reads_as_its_did() {
+        use pyreal_plugin_host::{PeerMessage, PluginPeers};
+        let root = scratch("peers-earlier");
+        let mut a = super::LoopbackPeers::open(&root).expect("a");
+        let earlier = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bound");
+        // The bound only ends a hang.
+        earlier
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .expect("timeout");
+        let port = earlier.local_addr().expect("addr").port();
+        let dir = root.join(super::PEERS_DIR_NAME);
+        std::fs::write(dir.join(format!("{port}.peer")), b"").expect("listed");
+        let m = PeerMessage {
+            from: "Leader".into(),
+            plugin: "test.follow".into(),
+            channel: "where".into(),
+            data: "{\"n\":1}".into(),
+            client: String::new(),
+        };
+        a.send(&m);
+        let mut buf = vec![0_u8; 65_536];
+        let (n, _) = earlier.recv_from(&mut buf).expect("heard");
+        let v = pyreal_plugin_api::Value::from_json(std::str::from_utf8(&buf[..n]).expect("text"))
+            .expect("json");
+        assert_eq!(v.get("channel").as_str(), Some("where"));
+        let name = a
+            .listing()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        assert_eq!(name, Some(format!("{}.peer", a.port)));
+        let age = std::fs::metadata(a.listing())
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok());
+        assert!(
+            age.is_some_and(|age| age.as_secs() <= super::PEER_STALE_SECS),
+            "{age:?}"
+        );
+        drop(a);
         let _ = std::fs::remove_dir_all(&root);
     }
 

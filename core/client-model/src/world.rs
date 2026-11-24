@@ -185,7 +185,7 @@ pub struct World {
     pub player_initialized: bool,
     /// The current fellowship, or `None` when not in one.
     pub fellowship: Option<pyreal_rules::fellowship::Fellowship>,
-    /// The AI Players in the player's company and their modes, from the world's `0xF7F0`; empty
+    /// The AI Players in the player's company and their modes, from the world's `0xF7F9`; empty
     /// from a world without the extension.
     pub ai_fellows: Vec<crate::dereth_extensions::AiFellow>,
     /// The secure-trade mirror and the ids needed to reject a second partner and defer an

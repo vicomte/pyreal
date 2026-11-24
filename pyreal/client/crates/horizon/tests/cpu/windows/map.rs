@@ -775,3 +775,64 @@ fn the_player_s_own_coordinates_open_an_arrow_with_no_create_waypoint() {
     assert!(h.ui.windows.map_view.offer.is_none());
     assert!(h.ui.windows.map_view.offer_button.is_none());
 }
+
+#[test]
+fn the_corpse_stands_on_the_map_a_click_on_it_sets_the_waypoint_and_a_right_click_forgets_it() {
+    let dead = |deaths| GameState {
+        here: Some((40.4, 34.5)),
+        deaths: Some(deaths),
+        address: "127.0.0.1:9000".into(),
+        ..player()
+    };
+    let mut h = Harness::with_built_in_art();
+    h.frame(&dead(0));
+    h.frame(&dead(1));
+    // Marked once the game says the death cost something.
+    h.frame(&GameState {
+        new_chat: vec![pyreal_horizon::ui::game::ChatLine {
+            chat_type: 0,
+            text: "You've lost your Short Sword!".into(),
+            window: 0,
+        }],
+        ..dead(1)
+    });
+    h.ui.windows.open(WindowId::Map, 0.0);
+    let risen = GameState {
+        here: Some((40.4, 34.0)),
+        ..dead(1)
+    };
+    h.frame(&risen);
+    h.ui.windows.map_view.zoom = 12.0;
+    h.ui.windows.map_view.centre = map_pixel(40.4, 34.5);
+    h.frame(&risen);
+    let mark =
+        h.ui.windows
+            .map_view
+            .corpse_mark
+            .expect("the corpse's stone");
+    // Its foot stands on the place.
+    let area = h.ui.windows.map_picture.expect("the picture");
+    let (_, y) = h.ui.windows.map_view.on_screen(area, map_pixel(40.4, 34.5));
+    assert!(
+        (mark.bottom() - y).abs() < mark.h * 0.1,
+        "{mark:?} over {y}"
+    );
+    let asked = click(&mut h, &risen, middle(mark));
+    assert!(asked.is_empty(), "{asked:?}");
+    let w = h.ui.windows.waypoints.active.clone().expect("the waypoint");
+    assert_eq!(w.label(), "Corpse of Tester");
+    assert!(
+        h.ui.windows.map_view.offer.is_none(),
+        "no Create Waypoint as well"
+    );
+    // A right click on it forgets it.
+    h.frame(&risen);
+    let mark = h.ui.windows.map_view.corpse_mark.expect("still marked");
+    h.move_to(middle(mark).0, middle(mark).1);
+    h.frame(&risen);
+    h.input.pressed[1] = true;
+    h.frame(&risen);
+    h.frame(&risen);
+    assert_eq!(h.ui.windows.waypoints.corpse.active, None);
+    assert!(h.ui.windows.map_view.corpse_mark.is_none());
+}

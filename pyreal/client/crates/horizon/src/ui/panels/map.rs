@@ -93,6 +93,9 @@ const CLICK_SLOP: f32 = 4.0;
 const GO_AFTER: f64 = 0.5;
 /// What a click on the picture offers at the place clicked, and a click on a link's arrow there.
 pub const CREATE_WAYPOINT: &str = "Create Waypoint";
+/// What puts the waypoint's place on the chat line.
+pub const SHARE_WAYPOINT: &str = "Share Waypoint";
+
 /// The zoom the map opens at to show a journal page's place.
 const JOURNAL_ZOOM: f32 = 2.5;
 /// A journal page's mark's side, in layout units, and its colour.
@@ -100,6 +103,10 @@ const JOURNAL_MARK: f32 = 9.0;
 const JOURNAL_COLOUR: u32 = 0xFFD9_C27A;
 /// The waypoint's marker, on the screen at this many layout units a side.
 const WAYPOINT_UNITS: f32 = 26.0;
+/// The corpse's marker, on the screen at this many layout units a side.
+const CORPSE_UNITS: f32 = 22.0;
+/// What sets the waypoint to the corpse, here and under the radar.
+pub const SET_WAYPOINT_TO_CORPSE: &str = "Set Waypoint to Corpse";
 
 /// An administrator's arrow, on the screen at this many layout units tall.
 const ARROW_UNITS: f32 = 30.0;
@@ -340,9 +347,15 @@ impl PlaceKind {
 /// The game's coordinates `(ns, ew)` of `at`: its landblock and its spot in it.
 #[must_use]
 pub fn spot(at: &Position) -> (f64, f64) {
+    spot_in(at.cell.0, at.frame.origin.x, at.frame.origin.y)
+}
+
+/// The game's coordinates `(ns, ew)` of `x`, `y` metres into the landblock of `cell`.
+#[must_use]
+pub fn spot_in(cell: u32, x: f32, y: f32) -> (f64, f64) {
     let unit = |block: u32, m: f32| (f64::from(block) * 192.0 + f64::from(m)) / 240.0 - 101.95;
-    let (bx, by) = (at.cell.0 >> 24, (at.cell.0 >> 16) & 0xFF);
-    (unit(by, at.frame.origin.y), unit(bx, at.frame.origin.x))
+    let (bx, by) = (cell >> 24, (cell >> 16) & 0xFF);
+    (unit(by, y), unit(bx, x))
 }
 
 /// A place store's map marks as places; none from text that is no place store. The built-in
@@ -606,6 +619,8 @@ pub struct MapView {
     waypoint_tip: Option<(String, Vec<String>)>,
     /// Where the waypoint's marker was drawn this frame.
     waypoint_mark: Option<Rect>,
+    /// Where the corpse's marker was drawn this frame.
+    pub corpse_mark: Option<Rect>,
     /// The arrow a coordinate link stood on the map: its place, and the name a waypoint there takes.
     pub pin: Option<((f64, f64), Option<String>)>,
     /// Where the link's arrow was drawn this frame.
@@ -640,6 +655,7 @@ impl Default for MapView {
             go_waiting: None,
             waypoint_tip: None,
             waypoint_mark: None,
+            corpse_mark: None,
             pin: None,
             pin_mark: None,
             offer: None,
@@ -1030,6 +1046,7 @@ impl Windows {
         self.tell_map_presses(ctx, area, p.scale);
         self.map_places(p, ctx, state, area);
         self.map_journal(p, ctx, state, area, out);
+        self.map_corpse(p, ctx, state, area);
         self.map_waypoint(p, ctx, state, area);
         self.map_kinds(p, ctx, state, area);
         let clicked = self.map_click(ctx, area, k);
@@ -1079,8 +1096,17 @@ impl Windows {
         {
             self.map_journal_hidden = !on;
         }
+        // From the right: the waypoint made a page, and shared in chat.
+        let mut right = body.right() - 8.0 * k;
+        let mut next = |p: &Painter<'_>, label: &str| {
+            let w = kit::button_label_width(p, label) + 24.0 * k;
+            right -= w;
+            let r = Rect::new(right, second, w, 26.0 * k);
+            right -= 8.0 * k;
+            r
+        };
         if let Some(w) = self.waypoints.active.clone() {
-            let r = Rect::new(body.right() - 208.0 * k, second, 200.0 * k, 26.0 * k);
+            let r = next(p, "Add Waypoint to Journal");
             self.map_view.bar.push(("Add Waypoint to Journal", r));
             if kit::button(p, ctx, r, "Add Waypoint to Journal", true) {
                 out.requests
@@ -1093,6 +1119,20 @@ impl Windows {
                     ));
                 self.open(super::WindowId::Journal, ctx.time);
                 self.show_journal_tab(super::JournalTab::Notebook);
+            }
+            // Explore mode has no chat to share it in.
+            if state.explore.is_none() {
+                let r = next(p, SHARE_WAYPOINT);
+                self.map_view.bar.push((SHARE_WAYPOINT, r));
+                if ctx.over(&r) {
+                    self.map_view.waypoint_tip = Some((
+                        SHARE_WAYPOINT.to_owned(),
+                        vec!["Puts the waypoint's place on the chat line.".to_owned()],
+                    ));
+                }
+                if kit::button(p, ctx, r, SHARE_WAYPOINT, true) {
+                    out.chat_paste = Some(crate::ui::waypoint::share_text(&w));
+                }
             }
         }
         self.map_teleport(p, ctx, state, (body, area), out);
@@ -1267,7 +1307,11 @@ impl Windows {
             let on_list = view.kinds_open && kinds_rect(area, k).contains(at.0, at.1);
             if on(view.pin_mark) {
                 view.offer.clone_from(&view.pin);
-            } else if state.explore.is_none() && !on(view.waypoint_mark) && !on_list {
+            } else if state.explore.is_none()
+                && !on(view.waypoint_mark)
+                && !on(view.corpse_mark)
+                && !on_list
+            {
                 let (x, y) = view.on_picture(area, at);
                 view.offer = match view.pointed {
                     Some(at) => Some((at, view.pointed_name.clone())),
@@ -1359,6 +1403,67 @@ impl Windows {
             self.map_view.press = None;
             self.map_view.drag = None;
             self.open_notebook_page(page, ctx.time, out);
+        }
+    }
+
+    /// The corpse on the map, its stone's foot on the place the player died: a click on it sets
+    /// the waypoint there, and a right click forgets it.
+    fn map_corpse(
+        &mut self,
+        p: &mut Painter<'_>,
+        ctx: &mut Ctx<'_>,
+        state: &GameState,
+        area: Rect,
+    ) {
+        use crate::ui::corpse as cp;
+        let k = p.scale;
+        self.map_view.corpse_mark = None;
+        let Some(c) = self.waypoints.corpse.active.filter(|c| !c.in_dungeon) else {
+            return;
+        };
+        let (px, py) = self.map_view.on_screen(area, map_pixel(c.ns, c.ew));
+        if !area.contains(px, py) {
+            return;
+        }
+        let Some(mark) = p.art.cached(cp::MARK_KEY, || Some(cp::mark_image())) else {
+            return;
+        };
+        let side = CORPSE_UNITS * k;
+        let dst = Rect::new(px - side / 2.0, py - side * cp::MARK_FOOT, side, side);
+        p.list.push_clip(area);
+        p.sprite(&mark, dst, WHITE);
+        p.list.pop_clip();
+        self.map_view.corpse_mark = Some(dst);
+        if !ctx.over(&dst) {
+            return;
+        }
+        let mut lines = vec![coords_text_f64((c.ns, c.ew))];
+        if let Some(here) = state.here.filter(|_| !state.in_dungeon) {
+            if let Some((_, metres)) = self.waypoints.corpse.way(here, false, None) {
+                lines.push(format!(
+                    "{} away.",
+                    crate::ui::waypoint::distance_text(metres)
+                ));
+            }
+        }
+        let followed = self
+            .waypoints
+            .corpse
+            .is_followed(self.waypoints.active.as_ref());
+        if !followed {
+            lines.push("Click to set a waypoint to it.".to_owned());
+        }
+        lines.push(crate::ui::corpse::FORGET_TIP.to_owned());
+        self.map_view.waypoint_tip = Some(("Your corpse".to_owned(), lines));
+        if ctx.input.right_clicked(&dst) {
+            self.waypoints.corpse.forget();
+            self.map_view.corpse_mark = None;
+        } else if !followed && ctx.input.clicked(&dst) {
+            if let Some(w) = self.waypoints.corpse.waypoint(&state.name) {
+                self.waypoints.set(w);
+            }
+            self.map_view.press = None;
+            self.map_view.drag = None;
         }
     }
 

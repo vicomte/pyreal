@@ -1,8 +1,9 @@
 //! The waypoint: a place the player follows. A double click on the map sets it, as do `@way` in
-//! chat and a Journal page's Set Waypoint. While one is set the radar's rim carries an arrow the way
-//! to it, the ground round the character a ring with an arrow on it (as the Waypoints setting
-//! chooses) and how far it is beside the radar's arrow, and a Clear Waypoint button stands under
-//! the radar. It clears itself once the player stands within [`ARRIVED_METRES`] of it.
+//! chat, a place clicked in a chat line and a Journal page's Set Waypoint. While one is set the
+//! radar's rim carries an arrow the way to it, the ground round the character a ring with an arrow
+//! on it (as the Waypoints setting chooses) and how far it is beside the radar's arrow, and a Clear
+//! Waypoint button stands under the radar. It clears itself once the player stands within
+//! [`ARRIVED_METRES`] of it.
 //!
 //! The way is worked out from the game's coordinates, in a building's rooms too. A dungeon's
 //! coordinates are not where it lies, so in a dungeon neither the radar's arrow nor the ring is
@@ -173,6 +174,8 @@ pub fn compass_word(bearing: f32) -> &'static str {
 pub struct Waypoints {
     /// The waypoint followed, if any.
     pub active: Option<Waypoint>,
+    /// Where the player last died, kept beside the waypoint.
+    pub corpse: crate::ui::corpse::CorpseMarker,
     /// Who it was read for, and its file.
     kept_for: Option<String>,
     path: Option<PathBuf>,
@@ -191,6 +194,7 @@ impl Waypoints {
             .as_ref()
             .and_then(|p| pyreal_client_runtime::platform::files::read_to_string(p).ok())
             .and_then(|t| parse(&t));
+        self.corpse.load_for(dir, who);
         self.kept_for = Some(who.to_owned());
     }
 
@@ -272,6 +276,17 @@ pub fn set_text(w: &Waypoint) -> String {
     }
 }
 
+/// The waypoint as Share Waypoint puts it on the chat line: plain text any client reads, its
+/// place written as the game writes one so it is a link in this one.
+#[must_use]
+pub fn share_text(w: &Waypoint) -> String {
+    let place = place_text(w.ns, w.ew).replacen(' ', ", ", 1);
+    match &w.name {
+        Some(name) => format!("{name} at {place}"),
+        None => place,
+    }
+}
+
 /// The file, in the settings folder, the waypoint kept for `who` is in.
 #[must_use]
 pub fn file_name(who: &str) -> String {
@@ -350,7 +365,7 @@ pub fn arrow_image() -> Image {
 pub const ARROW_TIP: f32 = 3.0 / 64.0;
 
 /// How far `(x, y)` stands from the edge of the polygon `shape`, negative inside.
-fn edge_distance(shape: &[(f32, f32)], x: f32, y: f32) -> f32 {
+pub(crate) fn edge_distance(shape: &[(f32, f32)], x: f32, y: f32) -> f32 {
     let mut nearest = f32::MAX;
     let mut inside = false;
     for (i, &(ax, ay)) in shape.iter().enumerate() {

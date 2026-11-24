@@ -650,6 +650,27 @@ impl ChatLog {
         self.typing = Some(text);
     }
 
+    /// Put `text` on the input line after what is typed, opening the line on the game's `draft`
+    /// if it is closed.
+    pub fn paste(&mut self, text: &str, draft: &str) {
+        let after = |typed: &mut String| {
+            if !typed.is_empty() && !typed.ends_with(' ') {
+                typed.push(' ');
+            }
+            typed.push_str(text);
+        };
+        match &mut self.typing {
+            Some(typed) => after(typed),
+            None => {
+                let mut line = draft.to_owned();
+                after(&mut line);
+                self.open(line);
+                // The game is told the new line as a draft next frame.
+                self.told.clear();
+            }
+        }
+    }
+
     /// Whether the input line is open.
     #[must_use]
     pub fn typing(&self) -> bool {
@@ -1617,6 +1638,10 @@ impl ChatLog {
                         p.fill(Rect::new(x, ly + lh - 2.0 * k, w, k.max(1.0)), lit);
                         self.controls.push((url.clone(), r));
                     }
+                    if let LinkTarget::Place(place) = target {
+                        p.fill(Rect::new(x, ly + lh - 2.0 * k, w, k.max(1.0)), lit);
+                        self.controls.push((format!("Place: {place}"), r));
+                    }
                     if let LinkTarget::QuestTimer(_) = target {
                         p.fill(Rect::new(x, ly + lh - 2.0 * k, w, k.max(1.0)), lit);
                         self.controls
@@ -1635,19 +1660,26 @@ impl ChatLog {
                         }
                     }
                     if over && ctx.input.clicked(&r) {
-                        out.requests.push(match target {
-                            LinkTarget::Name(name) => UiRequest::ChatEntry {
+                        out.requests.extend(match target {
+                            LinkTarget::Name(name) => Some(UiRequest::ChatEntry {
                                 window: window::MAIN,
                                 text: self.typing.clone().unwrap_or_default(),
                                 action: EntryAction::StartTell { name: name.clone() },
-                            },
-                            LinkTarget::Web(url) => UiRequest::ChatLinkClicked(url.clone()),
-                            LinkTarget::QuestTimer(seconds) => UiRequest::Journal(
+                            }),
+                            LinkTarget::Web(url) => Some(UiRequest::ChatLinkClicked(url.clone())),
+                            LinkTarget::QuestTimer(seconds) => Some(UiRequest::Journal(
                                 pyreal_client_contract::journal::JournalAction::TrackTimer {
                                     title: String::new(),
                                     seconds: *seconds,
                                 },
-                            ),
+                            )),
+                            // A place sets the waypoint there.
+                            LinkTarget::Place(place) => {
+                                out.waypoint_to =
+                                    pyreal_client_model::cmd::waypoint::read_place(place)
+                                        .map(|(to, _)| to);
+                                None
+                            }
                         });
                     }
                     x += w;

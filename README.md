@@ -171,9 +171,9 @@ walk you through it.
 
 ### Updates
 
-When Pyreal opens, it checks GitHub for a newer release, at most once a day, and the world list
-tells you when one is out. The check is a plain request to this repository's latest release and
-sends nothing about you or your computer. Turn off **Check for Updates** in Settings to stop it.
+When Pyreal opens, it checks pyrealclient.app for a newer release, and GitHub when the site does not
+answer, at most once a day. The world list tells you when one is out. The check is a plain request
+that sends only Pyreal's name and version, and nothing about you or your computer.
 
 ## License
 

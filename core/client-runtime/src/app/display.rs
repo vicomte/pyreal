@@ -312,11 +312,9 @@ impl<S: Shell> App<S> {
         if (width, height) != self.present.size() && width > 0 && height > 0 {
             if let Err(e) = self.present.resize(width, height) {
                 tracing::warn!("presentation change: {e}");
-                self.resolution_host_result(true, (width, height));
                 return;
             }
         }
-        self.resolution_host_result(false, (width, height));
         let (w, h) = self.present.size();
         // Broadcast the global refresh message, which re-lays the UI out at the new extent and
         // pushes UI global message `0x0E` at every registered listener.
@@ -326,47 +324,10 @@ impl<S: Shell> App<S> {
         ));
     }
 
-    pub(super) fn apply_resolution_effect(&mut self, effect: crate::resolution::ResolutionEffect) {
-        let packed = ((effect.size.0 << 16) | effect.size.1) as i32;
-        if effect.store {
-            pyreal_client_contract::options::store::set_value(
-                pyreal_client_contract::options::names::DISPLAY_RESOLUTION,
-                pyreal_client_contract::PrefValue::Int(packed),
-            );
-        }
-        self.set_display_resolution(packed);
-        if !effect.resize {
-            // A host failure reconciles the requested shadow without another native resize.
-            self.applied_resolution = self.window_size();
-        }
-    }
-
-    pub(super) fn tick_resolution(&mut self, shell: &mut S, now: f64) {
-        if let Some(size) = self.resolution.tick(now, self.window_size()) {
-            self.apply_resolution_effect(size);
-        }
-        let prompt = self.resolution.prompt();
-        shell.resolution_prompt(&mut UiContext::new(self), prompt);
-    }
-
     /// The window's size as a resolution names it: the picture's, in what the window is counted
     /// in, which on a Mac is points while Horizon draws at pixels.
-    fn window_size(&self) -> (u32, u32) {
+    pub(crate) fn window_size(&self) -> (u32, u32) {
         self.window.window_size_of(self.present.size())
-    }
-
-    pub(super) fn resolution_host_result(&mut self, failed: bool, attempted: (u32, u32)) {
-        if let Some((token, expected)) = self.resolution.awaited() {
-            if failed && self.window.window_size_of(attempted) != expected {
-                return;
-            }
-            if let Some(size) =
-                self.resolution
-                    .host_result(token, self.window_size(), failed, self.timer.cur_time)
-            {
-                self.apply_resolution_effect(size);
-            }
-        }
     }
 
     /// Apply display-preference requests to the window state.
@@ -391,34 +352,6 @@ impl<S: Shell> App<S> {
             .into_iter()
             .filter(|r| {
                 match r {
-                    UiRequest::Resolution(action) => {
-                        if let pyreal_client_contract::resolution::ResolutionAction::Begin {
-                            size,
-                            ..
-                        } = action
-                        {
-                            if !self.resolution.pending()
-                                && (self.use_forced_resolution
-                                    || self.pump.state.full_screen
-                                    || size.0 < 800
-                                    || size.1 < 600)
-                            {
-                                self.apply_resolution_effect(crate::resolution::ResolutionEffect {
-                                    size: *size,
-                                    resize: true,
-                                    store: true,
-                                });
-                                return false;
-                            }
-                        }
-                        if let Some(size) =
-                            self.resolution
-                                .action(*action, self.window_size(), self.timer.cur_time)
-                        {
-                            self.apply_resolution_effect(size);
-                        }
-                        return false;
-                    }
                     UiRequest::SetPreference(name, PrefValue::Bool(v)) => {
                         if name.eq_ignore_ascii_case(
                             pyreal_client_contract::options::names::DISPLAY_FULL_SCREEN,
@@ -454,7 +387,6 @@ impl<S: Shell> App<S> {
                             pyreal_client_contract::options::store::DISPLAY_RESOLUTION,
                         ) =>
                     {
-                        self.resolution.cancel();
                         resolution = Some(*v);
                         return false;
                     }

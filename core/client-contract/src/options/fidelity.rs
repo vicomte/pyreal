@@ -5,7 +5,7 @@
 //! ([`super::landscape_smoothing`]), the Ground Cover menu ([`super::draw_distance`]), the Grass
 //! Height menu ([`super::grass_height`]), the Light
 //! Draw Distance menu ([`super::light_distance`]) and the Shadow Distance menu
-//! ([`super::shadow_distance`]) on the Horizon interface's Display page, among its topics'
+//! ([`super::shadow_distance`]) on the Horizon interface's Graphics page, among its topics'
 //! headings.
 //!
 //! The presentation always draws the better lighting. The
@@ -36,7 +36,7 @@
 //!
 //! The effects start on. The quality presets set several of them at once, and the terrain's draw
 //! distance, the portal style and Detailed Faces with them ([`PRESET_VALUES`]); the defaults of the boxes and the
-//! menus are the Medium preset's. The Display tab's other options are the player's own
+//! menus are the Medium preset's. The Graphics tab's other options are the player's own
 //! ([`LEFT_TO_THE_PLAYER`]).
 //!
 //! The options are registered with the value store ([`register`]), so the page reads and writes
@@ -216,7 +216,7 @@ pub const SCALE_NOTE: &str =
 #[allow(clippy::cast_possible_wrap)] // a small constant
 const DYNAMIC: i32 = super::render_scale::DYNAMIC as i32;
 
-/// The heading over the quality presets, first on the Display tab.
+/// The heading over the quality presets, after the screen's on the Graphics tab.
 pub const QUALITY_HEADING: &str = "Quality";
 
 /// The caption of the quality presets.
@@ -326,7 +326,7 @@ pub const PRESET_VALUES: &[(&str, [PrefValue; PRESET_NAMES.len()])] = &[
     ),
 ];
 
-/// The Display tab's options no preset sets: looks, comfort and the display's own settings.
+/// The Graphics tab's options no preset sets: looks, comfort and the display's own settings.
 pub const LEFT_TO_THE_PLAYER: &[&str] = &[
     fidelity::VSYNC,
     fidelity::HDR,
@@ -337,7 +337,6 @@ pub const LEFT_TO_THE_PLAYER: &[&str] = &[
     super::names::SCREEN_BRIGHTNESS,
     super::names::FIELD_OF_VIEW,
     super::names::DISPLAY_FULL_SCREEN,
-    super::names::UI_BLUR,
 ];
 
 /// One quality preset, by its place in [`PRESET_NAMES`].
@@ -847,22 +846,17 @@ mod tests {
         assert!(!left_out_of_save(fidelity::DEPTH_MAPPING, &medium, &named));
     }
 
-    /// Every option on the Display tab's graphics headings is set by every preset or left to the
+    /// Every option on the Graphics tab's headings is set by every preset or left to the
     /// player, never both, and each preset value is one of its menu's choices.
     #[test]
     fn every_display_option_is_in_the_presets_or_left_to_the_player() {
         use super::super::sheet::{self, PageId};
         super::super::store::init();
-        let graphics = [
-            sheet::SCREEN_HEADING,
-            sheet::LIGHTING_HEADING,
-            sheet::SKY_HEADING,
-            sheet::SURFACES_HEADING,
-        ];
         let shown: Vec<&str> = sheet::page(PageId::Client)
             .headings
             .iter()
-            .filter(|h| graphics.contains(&h.title))
+            .filter(|h| sheet::topic(h.title) == sheet::Topic::Graphics)
+            .filter(|h| h.title != sheet::INFORMATION_HEADING)
             .flat_map(|h| h.rows.iter())
             .filter_map(sheet::Row::preference)
             .collect();

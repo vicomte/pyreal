@@ -16,7 +16,7 @@ publish = false
 #
 # The precedents are `pyreal-primitives`' `text` module (kernel32 NLS conversion) and `pyreal-clipboard` (user32 clipboard).
 # On Windows this crate takes **no dependencies at all**: a few `extern "system"` declarations are
-# smaller than a `windows` crate feature set. On the Mac, `objc2` sends the open-URL handler's messages.
+# smaller than a `windows` crate feature set. On the Mac, `objc2` sends the open-URL handler's and the screen query's messages.
 [lints.rust]
 unsafe_code = "deny"
 missing_debug_implementations = "warn"

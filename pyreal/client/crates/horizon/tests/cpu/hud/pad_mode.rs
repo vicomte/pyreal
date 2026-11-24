@@ -50,7 +50,8 @@ fn a_shoulder_button_turns_the_tab_of_the_window_the_focus_is_in() {
     h.input.pad.tab_step = Some((bar, -1));
     h.frame(&state);
     assert_eq!(
-        h.ui.windows.options_page.tab, 5,
+        h.ui.windows.options_page.tab,
+        pyreal_horizon::ui::panels::options::tab::KEYS,
         "round from the first tab to the last"
     );
 }
@@ -62,7 +63,7 @@ fn the_focus_reaches_a_slider_and_knows_where_its_knob_is() {
     h.ui.windows.open(WindowId::Options, -1.0);
     h.frame(&state);
     // The Controls tab, where the camera's sliders are.
-    h.ui.windows.options_page.tab = 4;
+    h.ui.windows.options_page.tab = pyreal_horizon::ui::panels::options::tab::CONTROLS;
     h.frame(&state);
     h.frame(&state);
     let snap = h.input.nav.last.clone();
@@ -341,8 +342,9 @@ fn x_on_an_item_in_gamepad_mode_opens_its_options_and_split_opens_the_split_box(
         .collect();
     entries.sort_by(|a, b| a.y.total_cmp(&b.y));
     // Use, Give (greyed: nobody selected, but still a place to rest), Drop, Split, Examine,
-    // Set as Target, Set to Hotbar; no Equip, as nothing says the thing can be worn.
-    assert_eq!(entries.len(), 7);
+    // Set as Target, Set to Hotbar, Mark as Keep, Mark as Junk; no Equip, as nothing says the
+    // thing can be worn.
+    assert_eq!(entries.len(), 9);
     assert_eq!(
         snap.home_in(top).map(|t| t.rect),
         Some(entries[0]),
@@ -358,7 +360,7 @@ fn x_on_an_item_in_gamepad_mode_opens_its_options_and_split_opens_the_split_box(
     );
     assert_eq!(
         cursor.focus.map(|t| t.rect),
-        Some(entries[6]),
+        Some(entries[8]),
         "to the last"
     );
     // Give, greyed, does nothing.

@@ -843,8 +843,6 @@ pub struct App<S: Shell> {
     pub interaction: crate::interaction::Interaction,
     /// The questions the game has asked the player and not had answered. See [`crate::dialogs`].
     pub dialogs: crate::dialogs::DialogService,
-    /// The screen-size choice, independent of the active interface.
-    pub resolution: crate::resolution::ResolutionTransaction,
     /// This frame's actions, from the front end's device input or injected by a script, on
     /// their way through the frame's handler stages. See [`crate::actions`].
     pub actions: crate::actions::ActionQueue,

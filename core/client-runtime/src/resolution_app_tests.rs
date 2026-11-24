@@ -1,8 +1,6 @@
-//! The real display-request consumer and host resize callback, without a graphics device.
+//! The real display-request consumer and host resize callback, without a graphics device: the
+//! Resolution list's pick, a drag over it, and full screen.
 use super::*;
-use pyreal_client_contract::resolution::{
-    ResolutionAction, ResolutionPolicy, ResolutionPromptKind,
-};
 use pyreal_client_contract::{options::store, PrefValue, UiRequest};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -67,19 +65,17 @@ fn app() -> App<NullShell> {
     store::set_value("Display.Resolution", PrefValue::Int((800 << 16) | 600));
     a
 }
-fn dispatch(a: &mut App<NullShell>, r: ResolutionAction, now: f64) {
-    a.timer.cur_time = now;
+/// The Resolution row's pick of `size`, as the options page makes it: kept, then asked for.
+fn pick(a: &mut App<NullShell>, size: (u32, u32)) {
+    let packed = PrefValue::Int(store::mode_desc(size.0, size.1));
+    store::set_value(store::DISPLAY_RESOLUTION, packed.clone());
     assert!(a
-        .apply_display_preference_requests(&NullShell, vec![UiRequest::Resolution(r)])
+        .apply_display_preference_requests(
+            &NullShell,
+            vec![UiRequest::SetPreference(store::DISPLAY_RESOLUTION, packed)],
+        )
         .is_empty());
     a.apply_changed_display_presentation(&mut NullShell);
-}
-fn begin(policy: ResolutionPolicy) -> ResolutionAction {
-    ResolutionAction::Begin {
-        size: (1024, 768),
-        policy,
-        persist: true,
-    }
 }
 fn pref() -> Option<PrefValue> {
     store::inq_value("Display.Resolution")
@@ -207,39 +203,16 @@ fn a_dragged_size_survives_full_screen_and_the_saved_resolution_can_still_be_cho
         player_sizes: true,
         full_screen_of_its_own: Rc::default(),
     });
-    a.handle_window_event(
-        &mut NullShell,
-        &HostEvent::Resized {
-            width: 1000,
-            height: 700,
-        },
-        0,
-    );
+    resized(&mut a, 1000, 700);
     a.apply_changed_display_presentation(&mut NullShell);
     assert_eq!(a.present.size(), (1000, 700));
     assert_eq!(requests.get(), 0, "the drag is not undone");
 
     // The saved resolution is still 800x600: choosing it asks the window for it.
-    dispatch(
-        &mut a,
-        ResolutionAction::Begin {
-            size: (800, 600),
-            policy: ResolutionPolicy::Modern,
-            persist: false,
-        },
-        1.0,
-    );
+    pick(&mut a, (800, 600));
     assert_eq!(requests.get(), 1, "the size the window left is asked for");
-    a.resolution.cancel();
 
-    a.handle_window_event(
-        &mut NullShell,
-        &HostEvent::Resized {
-            width: 1000,
-            height: 700,
-        },
-        0,
-    );
+    resized(&mut a, 1000, 700);
     a.pump.state.full_screen = true;
     granted.set((1920, 1080));
     a.apply_changed_display_presentation(&mut NullShell);
@@ -256,143 +229,101 @@ fn a_dragged_size_survives_full_screen_and_the_saved_resolution_can_still_be_cho
     );
 }
 
+/// A size from the Resolution list resizes the window at once, with no question, and is kept; a
+/// drag after it overrides it, and the window reopens at the dragged size.
+///
+/// Behaviour: presentation.window.the-resolution-list-sets-the-size-and-a-drag-overrides-it
 #[test]
 #[cfg_attr(
     not(feature = "retail-dats"),
     ignore = "reads retail data: --features retail-dats"
 )]
-fn display_requests_wait_for_actual_host_size_and_rearm_each_revert() {
+fn a_size_picked_from_the_list_is_applied_and_kept_and_a_drag_overrides_it() {
     let mut a = app();
-    let granted = Rc::new(Cell::new((800, 600)));
+    let granted = Rc::new(Cell::new((1000, 700)));
     let requests = Rc::new(Cell::new(0));
     a.window = Box::new(Window {
         granted: granted.clone(),
         requests: requests.clone(),
-        player_sizes: false,
+        player_sizes: true,
         full_screen_of_its_own: Rc::default(),
     });
-    store::set_value("Render.ScreenBrightness", PrefValue::Float(0.4));
-    dispatch(&mut a, begin(ResolutionPolicy::Modern), 1.0);
+    resized(&mut a, 1000, 700);
+    granted.set((1280, 720));
+    pick(&mut a, (1280, 720));
     assert_eq!(requests.get(), 1);
-    assert_eq!(a.present.size(), (800, 600));
-    assert!(
-        a.resolution.prompt().is_none(),
-        "queueing and the old host extent are not success"
-    );
-    a.resolution_host_result(true, (900, 700));
-    assert!(
-        a.resolution.pending(),
-        "an unrelated failed size report cannot fail the awaited request"
-    );
-    a.timer.cur_time = 1.5;
-    a.handle_window_event(
-        &mut NullShell,
-        &HostEvent::Resized {
-            width: 1024,
-            height: 768,
-        },
-        0,
-    );
-    assert_eq!(a.present.size(), (1024, 768));
-    a.tick_resolution(&mut NullShell, 1.6);
-    assert!(a.resolution.prompt().is_none());
-    a.tick_resolution(&mut NullShell, 1.7);
-    let p = a.resolution.prompt().unwrap();
-    assert_eq!(p.deadline, Some(11.7));
-    a.tick_resolution(&mut NullShell, 2.0);
-    assert_eq!(a.resolution.prompt().unwrap().deadline, Some(11.7));
-    // The host refuses the restore by continuing to report the tested size.
-    granted.set((1024, 768));
-    dispatch(
-        &mut a,
-        ResolutionAction::Answer {
-            token: p.token,
-            yes: false,
-        },
-        3.0,
-    );
-    assert_eq!(requests.get(), 2);
-    a.tick_resolution(&mut NullShell, 4.999);
-    assert!(a.resolution.prompt().is_none());
-    a.tick_resolution(&mut NullShell, 5.0);
+    assert_eq!(a.present.size(), (1280, 720));
+    assert_eq!(pref(), Some(PrefValue::Int(store::mode_desc(1280, 720))));
+    let sizes = crate::ui_context::UiContext::new(&mut a).window_sizes();
+    assert_eq!(sizes.size, (1280, 720));
+    assert!(!sizes.full_screen);
     assert_eq!(
-        a.resolution.prompt().unwrap().kind,
-        ResolutionPromptKind::RevertFailed
+        pyreal_client_contract::resolution::choices(&sizes).2,
+        pyreal_client_contract::resolution::offered(sizes.usable)
+            .iter()
+            .position(|s| *s == (1280, 720))
+            .unwrap(),
+        "the row shows the size picked"
     );
-    assert_eq!(pref(), Some(PrefValue::Int((1024 << 16) | 768)));
+
+    // The edges dragged: the row shows the dragged size, and the next start opens at it.
+    granted.set((1300, 811));
+    resized(&mut a, 1300, 811);
+    let sizes = crate::ui_context::UiContext::new(&mut a).window_sizes();
+    assert_eq!(sizes.size, (1300, 811));
+    let (names, _, at) = pyreal_client_contract::resolution::choices(&sizes);
+    assert_eq!(names[at], "Custom (1300 \u{d7} 811)");
+    let mut ini = pyreal_client_contract::persist::preferences::UserPreferences::default();
+    a.save_window_size(&mut ini);
     assert_eq!(
-        store::inq_value("Render.ScreenBrightness"),
-        Some(PrefValue::Float(0.4))
+        ini.get(crate::config::DISPLAY_WINDOW_SIZE),
+        Some("1300x811")
     );
-    a.apply_changed_display_presentation(&mut NullShell);
-    assert_eq!(
-        requests.get(),
-        2,
-        "failure reconciliation does not issue another resize"
-    );
+    assert_eq!(pref(), Some(PrefValue::Int(store::mode_desc(1280, 720))));
 }
 
+/// Full screen is the screen's own size, which the Resolution row shows and cannot change; leaving
+/// it goes back to the size picked.
 #[test]
 #[cfg_attr(
     not(feature = "retail-dats"),
     ignore = "reads retail data: --features retail-dats"
 )]
-fn classic_acceptance_and_noninteractive_display_paths_keep_their_save_policy() {
+fn full_screen_shows_the_screens_size_and_leaving_it_goes_back_to_the_size_picked() {
     let mut a = app();
-    dispatch(&mut a, begin(ResolutionPolicy::Classic), 10.0);
-    assert_eq!(a.present.size(), (800, 600));
-    let token = a.resolution.prompt().unwrap().token;
-    dispatch(&mut a, ResolutionAction::Answer { token, yes: true }, 11.0);
-    assert_eq!(a.present.size(), (1024, 768));
-    assert_eq!(
-        pref(),
-        Some(PrefValue::Int((800 << 16) | 600)),
-        "Classic test not yet saved"
-    );
-    assert_eq!(a.resolution.prompt().unwrap().deadline, Some(26.0));
-    let token = a.resolution.prompt().unwrap().token;
-    dispatch(&mut a, ResolutionAction::Answer { token, yes: true }, 12.0);
-    assert_eq!(pref(), Some(PrefValue::Int((1024 << 16) | 768)));
-    let r = UiRequest::SetPreference("Display.Resolution", PrefValue::Int((800 << 16) | 600));
-    store::set_value("Display.Resolution", PrefValue::Int((800 << 16) | 600));
-    a.apply_display_preference_requests(&NullShell, vec![r]);
-    a.apply_changed_display_presentation(&mut NullShell);
-    assert!(!a.resolution.pending());
-    assert_eq!(a.present.size(), (800, 600));
+    let granted = Rc::new(Cell::new((800, 600)));
+    a.window = Box::new(Window {
+        granted: granted.clone(),
+        requests: Rc::default(),
+        player_sizes: true,
+        full_screen_of_its_own: Rc::default(),
+    });
+    granted.set((1600, 900));
+    pick(&mut a, (1600, 900));
     a.pump.state.full_screen = true;
-    dispatch(&mut a, begin(ResolutionPolicy::Modern), 20.0);
-    assert!(
-        !a.resolution.pending(),
-        "fullscreen stores the later windowed size without a test"
+    granted.set((1920, 1080));
+    a.apply_changed_display_presentation(&mut NullShell);
+    let sizes = crate::ui_context::UiContext::new(&mut a).window_sizes();
+    assert!(sizes.full_screen);
+    assert_eq!(
+        pyreal_client_contract::resolution::choices(&sizes),
+        (vec!["1920 \u{d7} 1080".to_owned()], vec![(1920, 1080)], 0)
     );
     a.pump.state.full_screen = false;
-    a.use_forced_resolution = true;
-    a.forced_resolution = (800, 600);
-    dispatch(&mut a, begin(ResolutionPolicy::Modern), 21.0);
-    assert!(!a.resolution.pending());
-    assert_eq!(a.present.size(), (800, 600));
-    dispatch(
-        &mut a,
-        ResolutionAction::Begin {
-            size: (640, 480),
-            policy: ResolutionPolicy::Modern,
-            persist: false,
-        },
-        22.0,
-    );
-    assert_eq!(pref(), Some(PrefValue::Int((640 << 16) | 480)));
-    assert_eq!(a.present.size(), (800, 600));
+    granted.set((1600, 900));
+    a.apply_changed_display_presentation(&mut NullShell);
+    assert_eq!((a.cfg.width, a.cfg.height), (1600, 900));
+    assert_eq!(a.present.size(), (1600, 900));
 }
 
-/// A size chosen for a window that goes by points, and is drawn at twice as many pixels: the
-/// window comes to the points chosen, so the choice is offered to keep, and the pixels are never
-/// taken for the size to ask the window for.
+/// A size picked for a window that goes by points, and is drawn at twice as many pixels: the
+/// window is asked for the points picked, never the pixels, and the row reads it in points.
 #[test]
 #[cfg_attr(
     not(feature = "retail-dats"),
     ignore = "reads the retail dats: --features retail-dats"
 )]
-fn a_size_chosen_in_points_is_offered_to_keep_once_the_window_has_it() {
+fn a_size_picked_in_points_is_asked_for_in_points() {
     struct TwicePoints {
         drawn: Rc<Cell<(u32, u32)>>,
         asked: Rc<Cell<Vec<(u32, u32)>>>,
@@ -424,6 +355,9 @@ fn a_size_chosen_in_points_is_offered_to_keep_once_the_window_has_it() {
         fn window_size_of(&self, (width, height): (u32, u32)) -> (u32, u32) {
             (width / 2, height / 2)
         }
+        fn usable_window_size(&self) -> Option<(u32, u32)> {
+            Some((1470, 840))
+        }
     }
     let mut a = app();
     let asked = Rc::new(Cell::new(Vec::new()));
@@ -432,33 +366,21 @@ fn a_size_chosen_in_points_is_offered_to_keep_once_the_window_has_it() {
         asked: asked.clone(),
     });
     resized(&mut a, 1600, 1200);
-    dispatch(&mut a, begin(ResolutionPolicy::Modern), 1.0);
+    pick(&mut a, (1280, 720));
     assert_eq!(
         a.present.size(),
-        (2048, 1536),
+        (2560, 1440),
         "the picture follows the pixels"
     );
-    for now in [1.1, 1.2, 3.5, 3.6] {
-        a.tick_resolution(&mut NullShell, now);
-    }
-    let prompt = a.resolution.prompt().expect("the size is offered to keep");
-    assert_eq!(prompt.kind, ResolutionPromptKind::Accept);
-    dispatch(
-        &mut a,
-        ResolutionAction::Answer {
-            token: prompt.token,
-            yes: true,
-        },
-        4.0,
-    );
-    a.apply_changed_display_presentation(&mut NullShell);
-    assert_eq!(pref(), Some(PrefValue::Int((1024 << 16) | 768)));
+    assert_eq!(pref(), Some(PrefValue::Int(store::mode_desc(1280, 720))));
     assert_eq!(
         asked.take(),
-        vec![(1024, 768)],
-        "the window is asked for the points chosen, and only for them"
+        vec![(1280, 720)],
+        "the window is asked for the points picked, and only for them"
     );
-    assert_eq!(a.present.size(), (2048, 1536));
+    let sizes = crate::ui_context::UiContext::new(&mut a).window_sizes();
+    assert_eq!(sizes.size, (1280, 720));
+    assert_eq!(sizes.usable, Some((1470, 840)));
 }
 
 /// A saved resolution larger than the screen the window opens on, as a client that took pixels

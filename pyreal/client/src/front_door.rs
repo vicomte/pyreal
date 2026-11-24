@@ -8,6 +8,10 @@
 //!
 //! On the first run (no `worlds.json`) the old launcher's worlds, accounts and data folders are
 //! imported from its folder, which is only read ([`pyreal_launch::state::import_launcher`]).
+//!
+//! A world whose wire is not known yet is probed on Play ([`pyreal_wire1999::probe`]), and the
+//! answer is kept with it: a 1999 world signs in with `--wire 1999`, which picks the client's 1999
+//! driver.
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +25,7 @@ use pyreal_launch::state::{Account, LauncherState, Loaded};
 use pyreal_launch::vault::Vault;
 use pyreal_launch::LaunchPlan;
 use pyreal_transport::status_ping::StatusReply;
+use pyreal_wire1999::probe::Answer;
 
 /// Seconds since the epoch.
 fn now() -> u64 {
@@ -44,13 +49,12 @@ pub struct FrontDoor {
     /// The plan the session up was started from, and the password typed for it, kept once the
     /// server takes the login.
     session: Option<(LaunchPlan, Option<Typed>)>,
-    /// Each address's status ping this run: its era and systems, `None` when it did not answer
-    /// (asked again at the next sign-in).
-    pings: std::collections::BTreeMap<(String, u16), Option<StatusReply>>,
-    /// The status pings being asked, each on a thread of its own.
-    asking:
-        std::collections::BTreeMap<(String, u16), std::sync::mpsc::Receiver<Option<StatusReply>>>,
-    /// A sign-in waiting for its world's status ping: slug, account, password, remember.
+    /// Each address's check this run: its status ping and its wire. An unanswered ping is asked
+    /// again at the next sign-in.
+    pings: std::collections::BTreeMap<(String, u16), Checked>,
+    /// The checks being asked, each on a thread of its own.
+    asking: std::collections::BTreeMap<(String, u16), std::sync::mpsc::Receiver<Checked>>,
+    /// A sign-in waiting for its world's check: slug, account, password, remember.
     waiting: Option<(String, String, String, bool)>,
     /// The later data files' folder as [`Self::view`] last read it, which it reads again only
     /// where a file changed in size or time: the view is made every frame.
@@ -63,7 +67,16 @@ pub struct FrontDoor {
     preparing: bool,
     /// Whether a newer Pyreal is out, and whether the player lets the client check.
     updates: crate::update_check::UpdateCheck,
-    check_updates: bool,
+}
+
+/// What one check of a world's address found.
+#[derive(Debug, Clone, Default)]
+struct Checked {
+    /// Its status ping's answer: its era and systems.
+    status: Option<StatusReply>,
+    /// The wire it speaks, when that was asked: a world that answers the status ping speaks the
+    /// later one.
+    wire: Option<Answer>,
 }
 
 /// What the screens say while the device is still preparing its shaders (a driver whose cache is
@@ -165,7 +178,6 @@ impl FrontDoor {
                 crate::update_check::SOURCE_URL,
                 crate::update_check::VERSION,
             ),
-            check_updates: false,
         };
         if save {
             me.save();
@@ -288,7 +300,7 @@ impl FrontDoor {
                 .or_else(|| self.preparing.then(|| PREPARING_SHADERS.to_owned())),
             can_browse: cfg!(any(target_os = "macos", windows)),
             directory: self.directory.view(&self.state.worlds, now()),
-            update: self.updates.notice(self.check_updates),
+            update: self.updates.notice(),
         }
     }
 
@@ -304,8 +316,7 @@ impl FrontDoor {
         let taken = app.host_state().received_set;
         self.follow_session(ended, up, taken);
         self.directory.poll();
-        self.check_updates = pyreal_client_contract::options::update_check::enabled();
-        self.updates.start(self.check_updates, now());
+        self.updates.start(now());
         self.updates.poll();
         self.collect_pings();
         self.preparing = app.preparing_shaders();
@@ -558,14 +569,14 @@ impl FrontDoor {
         Ok(())
     }
 
-    /// The status pings answered since the last frame.
+    /// The checks answered since the last frame.
     fn collect_pings(&mut self) {
         let mut answered = Vec::new();
         for (at, reply) in &self.asking {
             match reply.try_recv() {
                 Ok(r) => answered.push((at.clone(), r)),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    answered.push((at.clone(), None))
+                    answered.push((at.clone(), Checked::default()))
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
@@ -576,30 +587,40 @@ impl FrontDoor {
         }
     }
 
-    /// A world nobody named an era for: the era and systems its status ping names, asked once a
-    /// run on a thread of its own and remembered for the world. A ping that goes unanswered (a
-    /// server still starting) is asked again at the next sign-in, and the era remembered stands in
-    /// for it: without one the world would be played with the later files. `false` while the
+    /// A world nobody named an era or a wire for: the era and systems its status ping names, and
+    /// the wire it answers the tracker login in ([`check_world`]), asked once a run on a thread of
+    /// its own and remembered for the world. A ping that goes unanswered (a server still starting)
+    /// is asked again at the next sign-in, and the era remembered stands in for it: without one the
+    /// world would be played with the later files. A world that answers neither form of the
+    /// tracker login is played as a later world and asked again next time. `false` while the
     /// answer is still to come.
-    fn learn_era(&mut self, world: &mut pyreal_launch::World) -> bool {
+    fn learn_world(&mut self, world: &mut pyreal_launch::World) -> bool {
         let Some(at) = world.endpoint.as_ref().map(|e| (e.address.clone(), e.port)) else {
             return true;
         };
-        if world.era.is_some() || !world.may_answer_status_ping() {
+        let ask_era = world.era.is_none() && world.may_answer_status_ping();
+        let ask_wire = world.wire.is_none();
+        if !ask_era && !ask_wire {
             return true;
         }
-        let Some(reply) = self.pings.get(&at) else {
+        let Some(checked) = self.pings.get(&at).cloned() else {
             if let std::collections::btree_map::Entry::Vacant(asking) = self.asking.entry(at) {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let (host, port) = asking.key().clone();
                 std::thread::spawn(move || {
-                    let _ = tx.send(ping_status(&host, port));
+                    let _ = tx.send(check_world(&host, port, ask_era, ask_wire));
                 });
                 asking.insert(rx);
             }
             return false;
         };
-        let Some(r) = reply else {
+        if ask_wire {
+            self.learn_wire(world, &at, checked.wire);
+        }
+        if !ask_era || world.era.is_some() {
+            return true;
+        }
+        let Some(r) = checked.status else {
             self.pings.remove(&at);
             let remembered = self.state.remembered_era(&world.slug).map(str::to_owned);
             tracing::warn!(
@@ -624,6 +645,39 @@ impl FrontDoor {
             self.save();
         }
         true
+    }
+
+    /// The wire a check found `world` speaks, kept with it; an unanswered probe is asked again at
+    /// the next sign-in.
+    fn learn_wire(
+        &mut self,
+        world: &mut pyreal_launch::World,
+        at: &(String, u16),
+        wire: Option<Answer>,
+    ) {
+        let word = match wire {
+            Some(Answer::Wire1999) => pyreal_launch::world::WIRE_1999,
+            Some(Answer::Later) => pyreal_launch::world::WIRE_LATER,
+            Some(Answer::Silent) | None => {
+                self.pings.remove(at);
+                tracing::warn!(
+                    "{}:{} answered neither form of the tracker login; it is played as a later world",
+                    at.0,
+                    at.1
+                );
+                return;
+            }
+        };
+        world.wire = Some(word.to_owned());
+        pyreal_launch::known::apply(world);
+        tracing::info!(
+            "{}:{} speaks the {word} wire (its tracker login)",
+            at.0,
+            at.1
+        );
+        if self.state.remember_wire(&world.slug, word) {
+            self.save();
+        }
     }
 
     /// The folders a session on `world` starts with: the Modern set, and the pair its era takes
@@ -665,7 +719,7 @@ impl FrontDoor {
             .world(slug)
             .ok_or_else(|| "That world is no longer on the list.".to_owned())?
             .to_world();
-        if !self.learn_era(&mut world) {
+        if !self.learn_world(&mut world) {
             self.waiting = Some((
                 slug.to_owned(),
                 account.to_owned(),
@@ -793,6 +847,69 @@ fn give_the_1999_set_its_id(state: &mut LauncherState) -> bool {
             true
         }
         None => false,
+    }
+}
+
+/// One check of a world's address: its status ping when `ask_era`, and when `ask_wire` the wire it
+/// speaks, probed only when the ping went unanswered (an answer is the later wire's).
+fn check_world(host: &str, port: u16, ask_era: bool, ask_wire: bool) -> Checked {
+    let status = if ask_era {
+        ping_status(host, port)
+    } else {
+        None
+    };
+    let wire = match (&status, ask_wire) {
+        (Some(_), _) => Some(Answer::Later),
+        (None, true) => Some(probe_wire(host, port)),
+        (None, false) => None,
+    };
+    Checked { status, wire }
+}
+
+/// The tracker-login probe ([`pyreal_wire1999::probe::Probe`]) against `host`, from a socket of its
+/// own: the later form, then the 1999 one, about 2.4 seconds at most.
+fn probe_wire(host: &str, port: u16) -> Answer {
+    use std::net::{ToSocketAddrs, UdpSocket};
+    use std::time::{Duration, Instant};
+    let Some(addr) = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut a| a.find(std::net::SocketAddr::is_ipv4))
+    else {
+        return Answer::Silent;
+    };
+    let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else {
+        return Answer::Silent;
+    };
+    if sock
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .is_err()
+    {
+        return Answer::Silent;
+    }
+    let start = Instant::now();
+    let mut probe = pyreal_wire1999::probe::Probe::new();
+    let mut buf = [0u8; 1500];
+    loop {
+        if let Some(a) = probe.answer() {
+            return a;
+        }
+        if let Some(d) = probe.poll(start.elapsed().as_secs_f64()) {
+            if sock.send_to(&d, addr).is_err() {
+                return Answer::Silent;
+            }
+        }
+        match sock.recv_from(&mut buf) {
+            Ok((n, from)) if from.ip() == addr.ip() => probe.receive(&buf[..n]),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            // The system reporting that nothing listens there: wait out the probe's own timing.
+            Err(_) => std::thread::sleep(Duration::from_millis(50)),
+        }
     }
 }
 
@@ -1103,7 +1220,7 @@ mod tests {
             .unwrap();
         let mut world = door.state.world(&slug).unwrap().to_world();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while !door.learn_era(&mut world) {
+        while !door.learn_world(&mut world) {
             assert!(std::time::Instant::now() < deadline, "no answer");
             std::thread::sleep(std::time::Duration::from_millis(10));
             door.collect_pings();
@@ -1114,7 +1231,7 @@ mod tests {
         assert!(features.contains("ratings=false"), "{features}");
         // Asked once a run: the second sign-in takes the answer kept.
         let mut again = door.state.world(&slug).unwrap().to_world();
-        assert!(door.learn_era(&mut again));
+        assert!(door.learn_world(&mut again));
         assert_eq!(again.era, world.era);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1167,7 +1284,7 @@ mod tests {
         let (port, answering) = answer_one_ping("launch");
         let learn = |door: &mut FrontDoor, world: &mut pyreal_launch::World| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while !door.learn_era(world) {
+            while !door.learn_world(world) {
                 assert!(std::time::Instant::now() < deadline, "no answer");
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 door.collect_pings();
@@ -1239,11 +1356,163 @@ mod tests {
             .unwrap();
         let mut world = door.state.world(&slug).unwrap().to_world();
         let started = std::time::Instant::now();
-        let _ = door.learn_era(&mut world);
+        let _ = door.learn_world(&mut world);
         assert!(
             started.elapsed() < std::time::Duration::from_millis(300),
             "{:?}",
             started.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stand-in server on loopback that answers each datagram `answer` returns something for,
+    /// until `count` datagrams have come.
+    fn stand_in(
+        count: usize,
+        answer: impl Fn(&[u8]) -> Option<Vec<u8>> + Send + 'static,
+    ) -> (u16, std::thread::JoinHandle<Vec<Vec<u8>>>) {
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        server
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let port = server.local_addr().unwrap().port();
+        let serving = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1500];
+            while seen.len() < count {
+                let Ok((n, from)) = server.recv_from(&mut buf) else {
+                    break;
+                };
+                if let Some(reply) = answer(&buf[..n]) {
+                    server.send_to(&reply, from).unwrap();
+                }
+                seen.push(buf[..n].to_vec());
+            }
+            seen
+        });
+        (port, serving)
+    }
+
+    /// Learns `slug`'s world as a sign-in does, waiting for the check.
+    fn learned(door: &mut FrontDoor, slug: &str) -> pyreal_launch::World {
+        let mut world = door.state.world(slug).unwrap().to_world();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !door.learn_world(&mut world) {
+            assert!(std::time::Instant::now() < deadline, "no answer");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            door.collect_pings();
+        }
+        world
+    }
+
+    fn hand_added(door: &mut FrontDoor, port: u16) -> String {
+        door.state
+            .add_custom_world(
+                "Hand",
+                "127.0.0.1",
+                &port.to_string(),
+                None,
+                pyreal_launch::Emulator::Unknown,
+            )
+            .unwrap()
+    }
+
+    /// A world added by hand that ignores the status ping and the later tracker login and refuses
+    /// the 1999 one, as the AC1999 server does, is a 1999 world: it is remembered, plays Launch,
+    /// and signs in with `--wire 1999`. The next run asks nothing.
+    #[test]
+    fn a_world_that_answers_only_the_1999_tracker_login_signs_in_over_the_1999_wire() {
+        use pyreal_wire1999::packet::{flags, unkeyed, Datagram};
+        let (port, serving) = stand_in(5, |d| {
+            // The 1999 login: sequence 1, a 96-byte body.
+            Datagram::parse(d)
+                .filter(|d| d.header.seq == 1 && d.body.len() == 96)
+                .map(|_| {
+                    unkeyed(
+                        0,
+                        flags::NET_ERROR,
+                        0,
+                        0,
+                        0,
+                        &[0x54, 0x9C, 0xDF, 0x04, 0, 0, 0, 0, 0, 0, 0, 0],
+                    )
+                })
+        });
+        let root = tmp("probe-1999");
+        let [m, c, o] = three_sets(&root);
+        let dir = root.join("Pyreal");
+        let slug = {
+            let mut door = FrontDoor::open(&dir, None, Box::new(MemoryVault::default()), None);
+            door.set_dats(&m, &c, &o).unwrap();
+            let slug = hand_added(&mut door, port);
+            door.save();
+            let world = learned(&mut door, &slug);
+            assert!(world.speaks_1999());
+            assert_eq!(world.era.as_deref(), Some("launch"));
+            let dirs = door.dat_dirs_for(&world).unwrap();
+            assert_eq!(
+                dirs.classic_dat_dir,
+                Some(o.clone().into()),
+                "the 1999 pair"
+            );
+            let plan = pyreal_launch::plan(&pyreal_launch::LaunchRequest {
+                world: &world,
+                account: "ethangar",
+                dat_dir: Some(dirs.dat_dir),
+                classic_dat_dir: dirs.classic_dat_dir,
+                plugin_policy_file: None,
+                plugins: Vec::new(),
+            })
+            .unwrap();
+            let start = session_start(&plan, "pw");
+            assert!(start
+                .world
+                .contains(&("wire".to_owned(), "1999".to_owned())));
+            slug
+        };
+        let seen = serving.join().unwrap();
+        let tracker = seen
+            .iter()
+            .filter(|d| pyreal_wire1999::probe::is_later_reply(d))
+            .count();
+        assert_eq!(tracker, 2, "the later form twice, after two status hellos");
+        let mut door = FrontDoor::open(&dir, None, Box::new(MemoryVault::default()), None);
+        let mut world = door.state.world(&slug).unwrap().to_world();
+        assert!(world.speaks_1999(), "kept in worlds.json");
+        assert!(door.learn_world(&mut world), "nothing to ask");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A world that answers the later tracker login is a later world, kept so, and signs in with no
+    /// wire switch.
+    #[test]
+    fn a_world_that_answers_the_later_tracker_login_is_a_later_world() {
+        use pyreal_transport::{OutPacket, PacketFlags, ProtoHeader};
+        let (port, serving) = stand_in(3, |d| {
+            pyreal_wire1999::probe::is_later_reply(d)
+                .then(|| {
+                    // What ACE answers: the connect request, unencrypted.
+                    let mut p = OutPacket::new(ProtoHeader::default());
+                    p.add_optional_header(PacketFlags::CONNECT_REQUEST, vec![0; 32])
+                        .ok()?;
+                    p.serialize(None).ok()
+                })
+                .flatten()
+        });
+        let dir = tmp("probe-later");
+        let mut door = FrontDoor::open(&dir, None, Box::new(MemoryVault::default()), None);
+        let slug = hand_added(&mut door, port);
+        let world = learned(&mut door, &slug);
+        assert_eq!(world.wire.as_deref(), Some("later"));
+        assert!(!world.speaks_1999());
+        assert_eq!(
+            door.state.world(&slug).unwrap().wire.as_deref(),
+            Some("later")
+        );
+        let seen = serving.join().unwrap();
+        assert!(
+            !seen.iter().any(|d| d.len() == 20 + 96),
+            "no 1999 login is sent to a later world"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

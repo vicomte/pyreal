@@ -14,6 +14,7 @@ impl<S: Shell> App<S> {
         self.actions.begin_frame();
         // The world's systems, as the requests the interaction layer runs this frame see them.
         self.interaction.era_features = self.hud.era.features();
+        self.interaction.wire_1999 = self.hud.era.wire_1999;
         self.objects
             .world
             .set_era_features(self.interaction.era_features);
@@ -25,7 +26,6 @@ impl<S: Shell> App<S> {
         if std::mem::take(&mut self.duties.quit_owed) {
             self.pump.done();
         }
-        self.tick_resolution(shell, now.0);
         self.objects.world.refresh_stack_split();
         shell.service_dialogs(&mut UiContext::new(self), now);
         for request in self.objects.world.take_book_requests() {
@@ -159,6 +159,7 @@ impl<S: Shell> App<S> {
     ) -> Vec<pyreal_client_contract::UiRequest> {
         use pyreal_client_contract::UiRequest;
         self.interaction.era_features = self.hud.era.features();
+        self.interaction.wire_1999 = self.hud.era.wire_1999;
         self.objects
             .world
             .set_era_features(self.interaction.era_features);

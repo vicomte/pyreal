@@ -61,19 +61,18 @@ impl UpdateCheck {
         }
     }
 
-    /// Check once this run when `enabled`, unless the last check is less than a day old.
-    pub fn start(&mut self, enabled: bool, now: u64) {
-        self.start_using(enabled, now, download);
+    /// Check once this run, unless the last check is less than a day old.
+    pub fn start(&mut self, now: u64) {
+        self.start_using(now, download);
     }
 
     /// [`Self::start`], with `fetch` reading an address on the reading thread.
     pub fn start_using(
         &mut self,
-        enabled: bool,
         now: u64,
         mut fetch: impl FnMut(&str) -> Result<Vec<u8>, String> + Send + 'static,
     ) {
-        if self.feeds.is_empty() || self.asked || !enabled {
+        if self.feeds.is_empty() || self.asked {
             return;
         }
         self.asked = true;
@@ -129,10 +128,10 @@ impl UpdateCheck {
         }
     }
 
-    /// The newer release to tell the player about, when checking is `enabled`.
+    /// The newer release to tell the player about.
     #[must_use]
-    pub fn notice(&self, enabled: bool) -> Option<UpdateNotice> {
-        if !enabled || self.feeds.is_empty() {
+    pub fn notice(&self) -> Option<UpdateNotice> {
+        if self.feeds.is_empty() {
             return None;
         }
         self.cache.notice(&self.current).map(|r| UpdateNotice {
@@ -240,25 +239,25 @@ mod tests {
         let d = tmp("daily");
         let reads = Arc::new(AtomicUsize::new(0));
         let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        check.start_using(true, 1000, answer("0.1.3", &reads));
+        check.start_using(1000, answer("0.1.3", &reads));
         check.wait();
-        assert_eq!(check.notice(true).unwrap().version, "0.1.3");
+        assert_eq!(check.notice().unwrap().version, "0.1.3");
         assert_eq!(check.page(), Some(SITE_PAGE));
         // Once a run.
-        check.start_using(true, 1001, |_| panic!("checked twice in a run"));
+        check.start_using(1001, |_| panic!("checked twice in a run"));
         assert!(check.reading.is_none());
         // A later run within the day reads nothing, and keeps the answer.
         let mut later = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        later.start_using(true, 1000 + update::MAX_AGE_SECS - 1, |_| {
+        later.start_using(1000 + update::MAX_AGE_SECS - 1, |_| {
             panic!("checked twice in a day")
         });
         assert!(later.reading.is_none());
-        assert_eq!(later.notice(true).unwrap().version, "0.1.3");
+        assert_eq!(later.notice().unwrap().version, "0.1.3");
         // A day on, it reads again.
         let mut next = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        next.start_using(true, 1000 + update::MAX_AGE_SECS, answer("0.1.4", &reads));
+        next.start_using(1000 + update::MAX_AGE_SECS, answer("0.1.4", &reads));
         next.wait();
-        assert_eq!(next.notice(true).unwrap().version, "0.1.4");
+        assert_eq!(next.notice().unwrap().version, "0.1.4");
         assert_eq!(reads.load(Ordering::SeqCst), 2);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -268,19 +267,19 @@ mod tests {
         let d = tmp("same");
         let reads = Arc::new(AtomicUsize::new(0));
         let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.3");
-        check.start_using(true, 10, answer("0.1.3", &reads));
+        check.start_using(10, answer("0.1.3", &reads));
         check.wait();
-        assert!(check.notice(true).is_none());
+        assert!(check.notice().is_none());
         let mut offline = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        offline.start_using(true, 10 + update::MAX_AGE_SECS, |_| Err("offline".into()));
+        offline.start_using(10 + update::MAX_AGE_SECS, |_| Err("offline".into()));
         offline.wait();
-        assert_eq!(offline.notice(true).unwrap().version, "0.1.3");
+        assert_eq!(offline.notice().unwrap().version, "0.1.3");
         let mut garbage = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        garbage.start_using(true, 10 + 2 * update::MAX_AGE_SECS, |_| {
+        garbage.start_using(10 + 2 * update::MAX_AGE_SECS, |_| {
             Ok(b"<html>rate limited</html>".to_vec())
         });
         garbage.wait();
-        assert_eq!(garbage.notice(true).unwrap().version, "0.1.3");
+        assert_eq!(garbage.notice().unwrap().version, "0.1.3");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -291,9 +290,9 @@ mod tests {
             let d = tmp(&format!("fallback-{name}"));
             let read = Arc::new(std::sync::Mutex::new(Vec::new()));
             let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.2.0");
-            check.start_using(true, 1, network(site, "0.2.1", &read));
+            check.start_using(1, network(site, "0.2.1", &read));
             check.wait();
-            assert_eq!(check.notice(true).unwrap().version, "0.2.1", "{name}");
+            assert_eq!(check.notice().unwrap().version, "0.2.1", "{name}");
             assert_eq!(
                 check.page(),
                 Some(&*format!("{REPO}/releases/tag/v0.2.1")),
@@ -310,9 +309,9 @@ mod tests {
         let read = Arc::new(std::sync::Mutex::new(Vec::new()));
         let same: &[u8] = br#"{"product":"pyreal","version":"0.2.0","tag":"v0.2.0"}"#;
         let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.2.0");
-        check.start_using(true, 1, network(Ok(same), "0.2.1", &read));
+        check.start_using(1, network(Ok(same), "0.2.1", &read));
         check.wait();
-        assert!(check.notice(true).is_none());
+        assert!(check.notice().is_none());
         assert_eq!(*read.lock().unwrap(), [SITE]);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -323,9 +322,9 @@ mod tests {
         let read = Arc::new(std::sync::Mutex::new(Vec::new()));
         let pre: &[u8] = br#"{"product":"pyreal","version":"0.3.0-rc.1","prerelease":true}"#;
         let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.2.0");
-        check.start_using(true, 1, network(Ok(pre), "0.2.0", &read));
+        check.start_using(1, network(Ok(pre), "0.2.0", &read));
         check.wait();
-        assert!(check.notice(true).is_none());
+        assert!(check.notice().is_none());
         assert!(check.page().is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -336,35 +335,19 @@ mod tests {
         let d = tmp("repo-only");
         let read = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut check = UpdateCheck::open(&d, None, Some(REPO), "0.2.0");
-        check.start_using(true, 1, network(Err("unused"), "0.2.1", &read));
+        check.start_using(1, network(Err("unused"), "0.2.1", &read));
         check.wait();
-        assert_eq!(check.notice(true).unwrap().version, "0.2.1");
+        assert_eq!(check.notice().unwrap().version, "0.2.1");
         assert_eq!(read.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&d);
         // A build naming only the site has nothing to fall back on.
         let d = tmp("site-alone");
         let read = Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut check = UpdateCheck::open(&d, Some(SITE), None, "0.2.0");
-        check.start_using(true, 1, network(Err("offline"), "0.2.1", &read));
+        check.start_using(1, network(Err("offline"), "0.2.1", &read));
         check.wait();
-        assert!(check.notice(true).is_none());
+        assert!(check.notice().is_none());
         assert_eq!(*read.lock().unwrap(), [SITE]);
-        let _ = std::fs::remove_dir_all(&d);
-    }
-
-    #[test]
-    fn the_setting_turned_off_neither_checks_nor_shows() {
-        let d = tmp("off");
-        let reads = Arc::new(AtomicUsize::new(0));
-        let mut check = UpdateCheck::open(&d, Some(SITE), Some(REPO), "0.1.2");
-        check.start_using(false, 1, |_| panic!("checked while off"));
-        assert!(check.reading.is_none());
-        assert!(!d.join(update::CACHE_FILE).exists());
-        // Turned on later in the run, it checks then; turned off, the notice goes.
-        check.start_using(true, 2, answer("0.1.3", &reads));
-        check.wait();
-        assert!(check.notice(true).is_some());
-        assert!(check.notice(false).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -404,9 +387,9 @@ mod tests {
         let site = format!("{base}/release.json");
         let repo = format!("{base}/repo");
         let mut check = UpdateCheck::open(&d, Some(&site), Some(&repo), "0.2.0");
-        check.start_using(true, 1, download);
+        check.start_using(1, download);
         check.wait();
-        assert_eq!(check.notice(true).unwrap().version, "0.2.1");
+        assert_eq!(check.notice().unwrap().version, "0.2.1");
         assert_eq!(check.page(), Some(&*format!("{repo}/releases/tag/v0.2.1")));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -421,9 +404,9 @@ mod tests {
         let d = tmp("http-site");
         let site = format!("{base}/release.json");
         let mut check = UpdateCheck::open(&d, Some(&site), None, "0.2.0");
-        check.start_using(true, 1, download);
+        check.start_using(1, download);
         check.wait();
-        assert_eq!(check.notice(true).unwrap().version, "0.2.1");
+        assert_eq!(check.notice().unwrap().version, "0.2.1");
         assert_eq!(check.page(), Some(&*format!("{base}/")));
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -432,9 +415,9 @@ mod tests {
     fn a_build_with_no_source_url_never_checks() {
         let d = tmp("local");
         let mut check = UpdateCheck::open(&d, None, None, "0.1.2");
-        check.start_using(true, 1, |_| panic!("a local build checked"));
+        check.start_using(1, |_| panic!("a local build checked"));
         assert!(check.reading.is_none());
-        assert!(check.notice(true).is_none());
+        assert!(check.notice().is_none());
         assert!(!d.join(update::CACHE_FILE).exists());
         let _ = std::fs::remove_dir_all(&d);
     }

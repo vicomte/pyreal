@@ -2,6 +2,7 @@
 //! other interfaces' pages ask for, from the shared options sheet's rows.
 
 use pyreal_client_contract::options::{sheet, store};
+use pyreal_client_contract::resolution::WindowSizes;
 use pyreal_client_contract::view::PrefValue;
 use pyreal_client_contract::UiRequest;
 use pyreal_horizon::draw::Rect;
@@ -11,6 +12,7 @@ use pyreal_horizon::ui::game::{
     ChatWindow, GameState, KeyBindingsView, KeyCapture, KeyRequest, KeyRow,
 };
 use pyreal_horizon::ui::input::vk;
+use pyreal_horizon::ui::panels::options::RESOLUTION_CAPTION;
 use pyreal_horizon::ui::panels::WindowId;
 use pyreal_horizon::ui::Outcome;
 
@@ -41,8 +43,11 @@ fn control(h: &Harness, label: &str) -> Rect {
         .unwrap_or_else(|| panic!("no control {label:?}"))
 }
 
-/// Scroll the page's list until `label` is wholly in it.
+/// Scroll the page's list from its top until `label` is wholly in it.
 fn scroll_to(h: &mut Harness, state: &GameState, label: &str) {
+    let page = h.ui.windows.options_page.tab;
+    h.ui.windows.options_page.scroll[page] = 0.0;
+    h.frame(state);
     for _ in 0..200 {
         let list = control(h, "list");
         if let Some(r) = h.ui.windows.options_page.control(label) {
@@ -329,10 +334,10 @@ fn a_tab_renamed_on_the_chat_page_is_kept_in_the_settings_and_named_so_on_the_lo
 }
 
 #[test]
-fn the_client_page_sets_the_shared_preferences_and_shows_the_window_size_read_only() {
+fn the_client_page_sets_the_shared_preferences() {
     store::init();
     let state = in_world();
-    let mut h = options_on("Display", &state);
+    let mut h = options_on("Graphics", &state);
     // A check box: the shared store, at once, and the game's preference chain.
     let row = sheet::rows_for(sheet::PageId::Client)
         .find(|r| r.caption == "Performance Panel")
@@ -351,19 +356,141 @@ fn the_client_page_sets_the_shared_preferences_and_shows_the_window_size_read_on
         [UiRequest::SetPreference(name, PrefValue::Bool(!was))]
     );
     assert_eq!(store::inq_value(name), Some(PrefValue::Bool(!was)));
-    // The window's own edges set its size: the page says it and offers no other.
-    assert!(sheet::rows_for(sheet::PageId::Client).all(|r| r.caption != "Resolution"));
-    h.ui.windows.options_page.scroll[pyreal_horizon::ui::panels::options::tab::DISPLAY] = 0.0;
-    h.frame(&state);
-    let size = control(&h, pyreal_horizon::ui::panels::options::WINDOW_SIZE_CAPTION);
-    let out = click_at(&mut h, &state, size.x + 10.0, size.y + size.h / 2.0);
-    assert!(out.requests.is_empty(), "{:?}", out.requests);
-    assert!(h.ui.windows.options_page.menu.is_none());
-    // On a Mac the window's own button makes it full screen; elsewhere the page offers it, below.
+    // On a Mac the window's own button makes it full screen; elsewhere the page offers it.
     if cfg!(target_os = "macos") {
         assert!(h.ui.windows.options_page.control("Full Screen").is_none());
     } else {
         scroll_to(&mut h, &state, "Full Screen");
+    }
+}
+
+/// In the world with the window at `size` on a screen whose usable area holds `usable`.
+fn sized(size: (u32, u32), usable: (u32, u32), full_screen: bool) -> GameState {
+    GameState {
+        window_sizes: Some(WindowSizes {
+            size,
+            usable: Some(usable),
+            full_screen,
+        }),
+        ..in_world()
+    }
+}
+
+/// The Resolution row's box, with the page scrolled to it.
+fn resolution_box(h: &mut Harness, state: &GameState) -> Rect {
+    h.frame(state);
+    scroll_to(h, state, RESOLUTION_CAPTION);
+    control(h, RESOLUTION_CAPTION)
+}
+
+/// The Resolution list offers the common sizes a 1920x1080 screen less its taskbar holds, shows
+/// the window's own, and a pick asks for that size at once.
+#[test]
+fn the_resolution_list_offers_the_sizes_the_screen_holds_and_a_pick_sets_the_window_size() {
+    store::init();
+    let state = sized((1280, 720), (1904, 1001), false);
+    let mut h = options_on("Graphics", &state);
+    let r = resolution_box(&mut h, &state);
+    click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
+    let menu =
+        h.ui.windows
+            .options_page
+            .menu
+            .clone()
+            .expect("the list opens");
+    assert_eq!(
+        menu.names,
+        [
+            "1024 \u{d7} 768",
+            "1280 \u{d7} 720",
+            "1280 \u{d7} 800",
+            "1366 \u{d7} 768",
+            "1440 \u{d7} 900",
+            "1600 \u{d7} 900"
+        ]
+    );
+    assert_eq!(menu.at, 1, "the window's own size is the one shown");
+    click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
+    let out = choose(&mut h, &state, RESOLUTION_CAPTION, 5);
+    assert_eq!(
+        out.requests,
+        [UiRequest::SetPreference(
+            store::DISPLAY_RESOLUTION,
+            PrefValue::Int(store::mode_desc(1600, 900))
+        )]
+    );
+}
+
+/// A window whose edges were dragged shows its own size as Custom, last; picking it changes
+/// nothing.
+#[test]
+fn a_dragged_size_shows_as_custom_and_picking_it_again_changes_nothing() {
+    store::init();
+    let state = sized((1503, 877), (2544, 1381), false);
+    let mut h = options_on("Graphics", &state);
+    let r = resolution_box(&mut h, &state);
+    click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
+    let menu =
+        h.ui.windows
+            .options_page
+            .menu
+            .clone()
+            .expect("the list opens");
+    assert_eq!(
+        menu.names.len(),
+        10,
+        "the nine sizes up to 1920x1200, and the dragged one"
+    );
+    assert_eq!(menu.at, 9);
+    assert_eq!(menu.names[9], "Custom (1503 \u{d7} 877)");
+    h.ui.windows.options_page.choose_in_open_list(9);
+    let out = h.frame(&state);
+    assert!(out.requests.is_empty(), "{:?}", out.requests);
+}
+
+/// Full screen is the screen's own size: the row shows it and its box does not open.
+#[test]
+fn full_screen_shows_the_screens_size_and_the_box_does_not_open() {
+    store::init();
+    let state = sized((2560, 1440), (2544, 1381), true);
+    let mut h = options_on("Graphics", &state);
+    let r = resolution_box(&mut h, &state);
+    let out = click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
+    assert!(out.requests.is_empty(), "{:?}", out.requests);
+    assert!(h.ui.windows.options_page.menu.is_none());
+}
+
+/// The pad's focus rests on the Resolution box as on the other choices, and its press (a press
+/// where the focus is) opens the list while the window is a window. In full screen the focus
+/// still stops there, as on every control shown disabled, and the press does nothing.
+#[test]
+fn the_pad_reaches_the_resolution_box_and_opens_it_only_while_it_can_be_changed() {
+    store::init();
+    for full_screen in [false, true] {
+        let state = sized((1280, 720), (1904, 1001), full_screen);
+        let mut h = options_on("Graphics", &state);
+        let r = resolution_box(&mut h, &state);
+        h.frame(&state);
+        let focus = h
+            .input
+            .nav
+            .last
+            .targets
+            .iter()
+            .find(|t| t.rect == r)
+            .map(|t| t.rect)
+            .expect("the focus can rest on the box");
+        click_at(
+            &mut h,
+            &state,
+            focus.x + focus.w / 2.0,
+            focus.y + focus.h / 2.0,
+        );
+        assert_eq!(
+            h.ui.windows.options_page.menu.is_some(),
+            !full_screen,
+            "full screen: {full_screen}"
+        );
     }
 }
 
@@ -454,7 +581,7 @@ fn while_a_key_is_awaited_enter_and_escape_reach_the_game_and_its_question_is_an
 }
 
 #[test]
-fn the_pages_are_character_chat_display_sound_controls_and_key_bindings() {
+fn the_pages_are_character_chat_interface_graphics_sound_controls_and_key_bindings() {
     let state = in_world();
     let h = options_on("Character", &state);
     for gone in ["Game / Support", "Style"] {
@@ -463,13 +590,15 @@ fn the_pages_are_character_chat_display_sound_controls_and_key_bindings() {
     for tab in [
         "Character",
         "Chat",
-        "Display",
+        "Interface",
+        "Graphics",
         "Sound",
         "Controls",
         "Key Bindings",
     ] {
         assert!(h.ui.windows.options_page.control(tab).is_some(), "{tab}");
     }
+    assert!(h.ui.windows.options_page.control("Display").is_none());
 }
 
 /// The interface with Settings open on `tab`, on a window of `screen` pixels, with `options`.
@@ -495,7 +624,7 @@ fn the_interface_scale_offers_auto_and_the_steps_the_window_holds_and_says_what_
     // A 4K window: Auto, 100%, 150% and 200%, four marks across the row, each at the left of its
     // quarter; 300% is left out and the note under the row says what it needs.
     let uhd = (3840.0, 2160.0);
-    let mut h = options_at("Display", &state, uhd, HorizonOptions::default());
+    let mut h = options_at("Interface", &state, uhd, HorizonOptions::default());
     scroll_to(&mut h, &state, "Interface Scale");
     let r = control(&h, "Interface Scale");
     let note = "300% needs a window of 4320 \u{d7} 2592 or larger.";
@@ -514,7 +643,7 @@ fn the_interface_scale_offers_auto_and_the_steps_the_window_holds_and_says_what_
         scale: Some(1.5),
         ..HorizonOptions::default()
     };
-    let mut h = options_at("Display", &state, uhd, chose);
+    let mut h = options_at("Interface", &state, uhd, chose);
     scroll_to(&mut h, &state, "Interface Scale");
     let r = control(&h, "Interface Scale");
     let out = click_at(&mut h, &state, r.x + 9.0, r.y + r.h / 2.0);
@@ -522,7 +651,7 @@ fn the_interface_scale_offers_auto_and_the_steps_the_window_holds_and_says_what_
 
     // A 1080p window: Auto and 100% alone, half the row each, and the note says what 150% needs.
     let fhd = (1920.0, 1080.0);
-    let mut h = options_at("Display", &state, fhd, HorizonOptions::default());
+    let mut h = options_at("Interface", &state, fhd, HorizonOptions::default());
     scroll_to(&mut h, &state, "Interface Scale");
     let r = control(&h, "Interface Scale");
     let note = "150% and larger need a window of 2160 \u{d7} 1296 or larger.";
@@ -537,7 +666,7 @@ fn the_interface_scale_offers_auto_and_the_steps_the_window_holds_and_says_what_
         scale: Some(2.0),
         ..HorizonOptions::default()
     };
-    let mut h = options_at("Display", &state, fhd, chose);
+    let mut h = options_at("Interface", &state, fhd, chose);
     scroll_to(
         &mut h,
         &state,
@@ -612,6 +741,33 @@ fn the_controls_page_sets_the_movement_scheme_and_the_turning_directions() {
     let r = control(&h, "Reverse Horizontal Turning");
     let out = click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
     assert_eq!(out.settings, [("reverse-x".to_owned(), "true".to_owned())]);
+}
+
+/// Gamepad Mode ticked with no pad connected says so beside the box; a pad, or the box unticked,
+/// takes the line away.
+#[test]
+fn gamepad_mode_ticked_with_no_pad_says_no_controller_is_connected() {
+    use pyreal_horizon::ui::panels::options::NO_PAD;
+    let state = in_world();
+    let mut h = options_on("Controls", &state);
+    let shown = |h: &Harness| h.ui.windows.options_page.control(NO_PAD).is_some();
+    assert!(!shown(&h), "not while the box is unticked");
+    h.ui.options.pad.enabled = true;
+    h.frame(&state);
+    assert!(shown(&h), "ticked with no pad");
+    let line = control(&h, NO_PAD);
+    let tick = control(&h, "Gamepad Mode");
+    assert!(
+        line.x > tick.x && (line.y - tick.y).abs() < 0.5,
+        "beside the box: {line:?} {tick:?}"
+    );
+    h.input.pad.connected = true;
+    h.frame(&state);
+    assert!(!shown(&h), "a pad connected");
+    h.input.pad.connected = false;
+    h.ui.options.pad.enabled = false;
+    h.frame(&state);
+    assert!(!shown(&h), "unticked again");
 }
 
 #[test]
@@ -735,7 +891,11 @@ fn an_open_dropdown_list_takes_the_presses_over_it_and_a_press_elsewhere_only_cl
     let chat = control(&h, "Chat");
     click_at(&mut h, &state, chat.x + chat.w / 2.0, chat.y + chat.h / 2.0);
     assert!(h.ui.windows.options_page.menu.is_none());
-    assert_eq!(h.ui.windows.options_page.tab, 4, "still on Controls");
+    assert_eq!(
+        h.ui.windows.options_page.tab,
+        pyreal_horizon::ui::panels::options::tab::CONTROLS,
+        "still on Controls"
+    );
     // Escape closes the list, not the window.
     click_at(&mut h, &state, r.x + 10.0, r.y + r.h / 2.0);
     assert!(h.ui.windows.options_page.menu.is_some());
@@ -1384,7 +1544,7 @@ fn the_quality_preset_s_open_list_is_drawn_over_every_row_of_the_page() {
     use pyreal_client_contract::options::fidelity::PRESET_CAPTION;
     store::init();
     let state = in_world();
-    let mut h = options_on("Display", &state);
+    let mut h = options_on("Graphics", &state);
     scroll_to(&mut h, &state, PRESET_CAPTION);
     let list = control(&h, "list");
     let anchor = control(&h, PRESET_CAPTION);

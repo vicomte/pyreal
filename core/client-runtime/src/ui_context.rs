@@ -244,6 +244,25 @@ impl<'a, S: Shell> UiContext<'a, S> {
         self.app.applied_full_screen
     }
 
+    /// The window's size, the screen's usable area and whether it is full screen, in the window's
+    /// units, for the Resolution list. A headless run's usable area is its virtual desktop.
+    #[must_use]
+    pub fn window_sizes(&self) -> pyreal_client_contract::resolution::WindowSizes {
+        let window = &self.app.window;
+        let usable = window.usable_window_size().or_else(|| {
+            let m = window.screen_metrics((0, 0, 0));
+            Some((
+                u32::try_from(m.cx_screen).ok()?,
+                u32::try_from(m.cy_screen).ok()?,
+            ))
+        });
+        pyreal_client_contract::resolution::WindowSizes {
+            size: self.app.window_size(),
+            usable,
+            full_screen: self.app.applied_full_screen || window.full_screen_of_its_own(),
+        }
+    }
+
     /// Whether the host can make the window full screen, so an interface may offer the switch.
     #[must_use]
     pub fn full_screen_offered(&self) -> bool {

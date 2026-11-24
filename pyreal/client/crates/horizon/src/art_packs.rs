@@ -1,4 +1,4 @@
-//! The art packs in the player's library, as the Data Files panel and the Display page show them
+//! The art packs in the player's library, as the Data Files panel and the Graphics page show them
 //! ([`ArtPacksView`]), and what the player asked of them ([`ArtPackRequest`]), for the host to
 //! carry out. The host keeps, opens and remembers the packs; the interface only shows them.
 
@@ -50,7 +50,7 @@ pub struct ArtPacksView {
 }
 
 impl ArtPacksView {
-    /// Whether the Display page offers a choice: once the library holds a pack, which is drawn
+    /// Whether the Graphics page offers a choice: once the library holds a pack, which is drawn
     /// over the built-in pack or left out.
     #[must_use]
     pub fn offers_choice(&self) -> bool {

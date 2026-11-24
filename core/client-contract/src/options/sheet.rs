@@ -2,8 +2,8 @@
 //! heading a list of rows.
 //!
 //! The Character Options page (the character's own options,
-//! kept by the server), the Chat Options page and the Client Options page (sound, display,
-//! graphics and camera, kept in the profile). A row names where its value is kept ([`Value`]);
+//! kept by the server), the Chat Options page and the Client Options page (sound, the interface,
+//! graphics and camera, kept in the profile, each heading of it under a [`Topic`]). A row names where its value is kept ([`Value`]);
 //! nothing here keeps a value of its own. A row for something the world's era does not have is
 //! left out ([`Needs`]).
 //! So is a row for something only some hosts do, where the host does not ([`Row::hosted`]): the
@@ -781,41 +781,83 @@ const CAMERA: Heading = Heading {
     ],
 };
 
-/// The Display tab's headings' titles, in order. The Quality heading over the preset is the
-/// interface's own ([`super::fidelity::QUALITY_HEADING`]).
-pub const SCREEN_HEADING: &str = "Screen & Window";
+/// The Client page's headings' titles, but the sound's and the camera's. The Quality heading is
+/// the presets' ([`super::fidelity::QUALITY_HEADING`]).
+pub const WINDOWS_HEADING: &str = "Windows";
+pub const SCREEN_HEADING: &str = "Screen";
+pub const QUALITY_HEADING: &str = super::fidelity::QUALITY_HEADING;
 pub const LIGHTING_HEADING: &str = "Lighting & Shadows";
 pub const SKY_HEADING: &str = "Sky & Weather";
 pub const SURFACES_HEADING: &str = "Surfaces & Detail";
 pub const INFORMATION_HEADING: &str = "Information";
 
-/// The Client Options page: the sound, the display's five topics (each most important first), then
-/// the game camera's.
-const CLIENT: [Heading; 7] = [
+/// Which tab a Client page heading is shown under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Topic {
+    Sound,
+    /// The windows, text and HUD.
+    Interface,
+    /// The screen and the world's drawing.
+    Graphics,
+    /// The game camera's.
+    Camera,
+}
+
+/// The topic of the Client page heading titled `title`.
+#[must_use]
+pub fn topic(title: &str) -> Topic {
+    match title {
+        t if t == SOUND.title => Topic::Sound,
+        t if t == CAMERA.title => Topic::Camera,
+        WINDOWS_HEADING => Topic::Interface,
+        _ => Topic::Graphics,
+    }
+}
+
+/// The topic of the Client page row that edits `preference`.
+#[must_use]
+pub fn topic_of_preference(preference: &str) -> Option<Topic> {
+    page(PageId::Client).headings.iter().find_map(|h| {
+        h.rows
+            .iter()
+            .any(|r| {
+                r.preference() == Some(preference)
+                    || matches!(r.value, Value::Sound { volume, .. } if volume == preference)
+            })
+            .then(|| topic(h.title))
+    })
+}
+
+/// The Client Options page: the sound, the interface's windows, the graphics' six topics (each
+/// most important first), then the game camera's.
+const CLIENT: [Heading; 9] = [
     SOUND,
+    Heading {
+        title: WINDOWS_HEADING,
+        text: Text::literal(WINDOWS_HEADING),
+        rows: &[tip(
+            super::ui_effects::BLUR_NOTE,
+            Impact::Low,
+            pref(
+                super::ui_effects::BLUR_CAPTION,
+                Value::Check(crate::options::names::UI_BLUR),
+                Bool(true),
+            ),
+        )],
+    },
     Heading {
         title: SCREEN_HEADING,
         text: Text::literal(SCREEN_HEADING),
         rows: &[
             tip(
-                super::fidelity::SCALE_NOTE,
-                Impact::High,
+                "Fills the screen with the game.",
+                Impact::None,
                 pref(
-                    super::fidelity::SCALE_CAPTION,
-                    Value::Menu(crate::options::names::fidelity::RENDER_SCALE),
-                    Int(super::fidelity::SCALE_DEFAULT as i32),
+                    "Full Screen",
+                    Value::Check(crate::options::names::DISPLAY_FULL_SCREEN),
+                    Bool(false),
                 ),
             ),
-            tip(
-                super::dynamic_resolution::NOTE,
-                Impact::High,
-                pref(
-                    super::dynamic_resolution::CAPTION,
-                    Value::Menu(crate::options::names::fidelity::DYNAMIC_RESOLUTION),
-                    Int(super::dynamic_resolution::DEFAULT),
-                ),
-            ),
-            fidelity_box(4, Impact::Low),
             fidelity_box(5, Impact::None),
             fidelity_box(6, Impact::Low),
             tip(
@@ -845,24 +887,31 @@ const CLIENT: [Heading; 7] = [
                     ),
                 ),
             ),
+        ],
+    },
+    Heading {
+        title: QUALITY_HEADING,
+        text: Text::literal(QUALITY_HEADING),
+        rows: &[
             tip(
-                "Fills the screen with the game.",
-                Impact::None,
+                super::fidelity::SCALE_NOTE,
+                Impact::High,
                 pref(
-                    "Full Screen",
-                    Value::Check(crate::options::names::DISPLAY_FULL_SCREEN),
-                    Bool(false),
+                    super::fidelity::SCALE_CAPTION,
+                    Value::Menu(crate::options::names::fidelity::RENDER_SCALE),
+                    Int(super::fidelity::SCALE_DEFAULT as i32),
                 ),
             ),
             tip(
-                super::ui_effects::BLUR_NOTE,
-                Impact::Low,
+                super::dynamic_resolution::NOTE,
+                Impact::High,
                 pref(
-                    super::ui_effects::BLUR_CAPTION,
-                    Value::Check(crate::options::names::UI_BLUR),
-                    Bool(true),
+                    super::dynamic_resolution::CAPTION,
+                    Value::Menu(crate::options::names::fidelity::DYNAMIC_RESOLUTION),
+                    Int(super::dynamic_resolution::DEFAULT),
                 ),
             ),
+            fidelity_box(4, Impact::Low),
         ],
     },
     Heading {
@@ -1030,26 +1079,15 @@ const CLIENT: [Heading; 7] = [
     Heading {
         title: INFORMATION_HEADING,
         text: Text::literal(INFORMATION_HEADING),
-        rows: &[
-            tip(
-                "Shows the frame rate and frame times in a small panel on screen.",
-                Impact::Information,
-                pref(
-                    "Performance Panel",
-                    Value::Check(crate::options::performance::PERFORMANCE_PANEL),
-                    Bool(false),
-                ),
+        rows: &[tip(
+            "Shows the frame rate and frame times in a small panel on screen.",
+            Impact::Information,
+            pref(
+                "Performance Panel",
+                Value::Check(crate::options::performance::PERFORMANCE_PANEL),
+                Bool(false),
             ),
-            tip(
-                super::update_check::NOTE,
-                Impact::Information,
-                pref(
-                    super::update_check::CAPTION,
-                    Value::Check(crate::options::update_check::CHECK_FOR_UPDATES),
-                    Bool(true),
-                ),
-            ),
-        ],
+        )],
     },
     CAMERA,
 ];
@@ -1263,10 +1301,10 @@ mod tests {
         }
     }
 
-    /// The Display tab's five topics follow the sound, each effect box and menu under one of them
-    /// once, at its default, and every display row has a tooltip with its cost.
+    /// The graphics' six headings follow the sound and the windows, each effect box and menu under
+    /// one of them once, at its default, and every row of theirs has a tooltip with its cost.
     #[test]
-    fn the_display_topics_hold_every_effect_once_at_its_default_each_with_a_tooltip() {
+    fn the_graphics_headings_hold_every_effect_once_at_its_default_each_with_a_tooltip() {
         use crate::options::fidelity;
         let titles: Vec<&str> = page(PageId::Client)
             .headings
@@ -1277,7 +1315,9 @@ mod tests {
             titles,
             [
                 "Sound",
+                WINDOWS_HEADING,
                 SCREEN_HEADING,
+                QUALITY_HEADING,
                 LIGHTING_HEADING,
                 SKY_HEADING,
                 SURFACES_HEADING,
@@ -1285,7 +1325,7 @@ mod tests {
                 "Camera and Mouse"
             ]
         );
-        let display: Vec<&Row> = page(PageId::Client).headings[1..6]
+        let display: Vec<&Row> = page(PageId::Client).headings[2..8]
             .iter()
             .flat_map(|h| h.rows.iter())
             .collect();
@@ -1354,6 +1394,45 @@ mod tests {
         ] {
             assert!(row_of_preference(PageId::Client, gone).is_none(), "{gone}");
         }
+    }
+
+    /// UI Blur is the interface's, the screen and quality rows the graphics', and every Client page
+    /// row's preference has the topic of its heading.
+    #[test]
+    fn each_client_heading_has_its_topic_and_its_rows_follow_it() {
+        use crate::options::names;
+        assert_eq!(topic("Sound"), Topic::Sound);
+        assert_eq!(topic(WINDOWS_HEADING), Topic::Interface);
+        for graphics in [
+            SCREEN_HEADING,
+            QUALITY_HEADING,
+            LIGHTING_HEADING,
+            SKY_HEADING,
+            SURFACES_HEADING,
+            INFORMATION_HEADING,
+        ] {
+            assert_eq!(topic(graphics), Topic::Graphics, "{graphics}");
+        }
+        assert_eq!(topic("Camera and Mouse"), Topic::Camera);
+        assert_eq!(topic_of_preference(names::UI_BLUR), Some(Topic::Interface));
+        for graphics in [
+            names::DISPLAY_FULL_SCREEN,
+            names::fidelity::VSYNC,
+            names::fidelity::RENDER_SCALE,
+            names::fidelity::NO_ANTI_ALIASING,
+            names::PERFORMANCE_PANEL,
+        ] {
+            assert_eq!(
+                topic_of_preference(graphics),
+                Some(Topic::Graphics),
+                "{graphics}"
+            );
+        }
+        assert_eq!(
+            topic_of_preference(names::AMBIENT_SOUND_VOLUME),
+            Some(Topic::Sound)
+        );
+        assert_eq!(topic_of_preference("Nothing.ByThisName"), None);
     }
 
     #[test]

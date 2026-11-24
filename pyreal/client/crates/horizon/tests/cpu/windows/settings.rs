@@ -1,5 +1,5 @@
-//! The Display page of the settings ends with the experimental rendering effects' boxes and their
-//! Depth Mapping menu under a heading of their own: a box another box's choice rules out leaves the
+//! The Graphics page of the settings holds the experimental rendering effects' boxes and their
+//! menus under its topics' headings: a box another box's choice rules out leaves the
 //! page, one the device rules out is greyed and cannot be ticked, and the rest tick as any other.
 
 use pyreal_client_contract::options::fidelity::{self, Availability};
@@ -13,7 +13,7 @@ use pyreal_horizon::ui::panels::WindowId;
 
 use crate::Harness;
 
-/// The Display page, scrolled to its end, with the device `hifi` reports, an art pack open and
+/// The Graphics page, scrolled to its end, with the device `hifi` reports, an art pack open and
 /// every box off.
 fn client_page(hifi: Availability) -> (Harness, GameState) {
     store::init();
@@ -29,9 +29,9 @@ fn client_page(hifi: Availability) -> (Harness, GameState) {
     let mut h = Harness::new(Default::default());
     h.frame(&state);
     h.ui.windows.open(WindowId::Options, 0.0);
-    h.ui.windows.options_page.tab = tab::DISPLAY;
+    h.ui.windows.options_page.tab = tab::GRAPHICS;
     h.frame(&state);
-    h.ui.windows.options_page.scroll[tab::DISPLAY] = 1.0e6;
+    h.ui.windows.options_page.scroll[tab::GRAPHICS] = 1.0e6;
     h.frame(&state);
     h.frame(&state);
     (h, state)
@@ -51,13 +51,13 @@ fn show(h: &mut Harness, state: &GameState, caption: &str) -> bool {
     if whole(h) {
         return true;
     }
-    h.ui.windows.options_page.scroll[tab::DISPLAY] = 0.0;
+    h.ui.windows.options_page.scroll[tab::GRAPHICS] = 0.0;
     h.frame(state);
     for _ in 0..2000 {
         if whole(h) {
             return true;
         }
-        h.ui.windows.options_page.scroll[tab::DISPLAY] += 6.0;
+        h.ui.windows.options_page.scroll[tab::GRAPHICS] += 6.0;
         h.frame(state);
     }
     false
@@ -327,7 +327,7 @@ fn started_without_the_effects_a_tick_says_the_restart_applies_it() {
         if !status(&h).is_empty() {
             break;
         }
-        h.ui.windows.options_page.scroll[tab::DISPLAY] -= 10.0;
+        h.ui.windows.options_page.scroll[tab::GRAPHICS] -= 10.0;
         h.frame(&state);
     }
     assert_eq!(status(&h), ["Status: Restart to apply"]);
@@ -392,14 +392,15 @@ fn an_effect_s_note_shows_only_over_the_part_of_its_row_the_list_shows() {
         active: true,
         failed: None,
     });
-    let o = &fidelity::OPTIONS[0];
-    assert!(show(&mut h, &state, o.caption), "the first effect's box");
+    // The last effect's box: far enough down the page to scroll back under its foot.
+    let o = &fidelity::OPTIONS[fidelity::OPTIONS.len() - 1];
+    assert!(show(&mut h, &state, o.caption), "the last effect's box");
     let page = &h.ui.windows.options_page;
     let list = page.control("list").expect("the page's list");
-    let r = page.control(o.caption).expect("the first effect's box");
+    let r = page.control(o.caption).expect("the last effect's box");
     // Scrolled back until the row's top is ten pixels above the list's foot.
     let row_top = r.y - 3.0;
-    h.ui.windows.options_page.scroll[tab::DISPLAY] -= list.bottom() - 10.0 - row_top;
+    h.ui.windows.options_page.scroll[tab::GRAPHICS] -= list.bottom() - 10.0 - row_top;
     h.frame(&state);
     let r =
         h.ui.windows
@@ -435,30 +436,62 @@ fn sound_tab() -> (Harness, GameState) {
     (h, state)
 }
 
-/// The Sound tab has the Client page's sounds and nothing of the Display tab's, and the Display tab
-/// none of its sounds.
-#[test]
-fn the_client_page_is_a_display_tab_and_a_sound_tab() {
-    let (mut h, state) = sound_tab();
-    let page = &h.ui.windows.options_page;
-    for row in ["Ambient Sounds", "Interface Sounds"] {
-        assert!(page.control(row).is_some(), "{row}");
-    }
-    for row in ["Full Screen", "Interface Scale"] {
-        assert!(page.control(row).is_none(), "{row}");
-    }
-    h.ui.windows.options_page.tab = tab::DISPLAY;
-    h.frame(&state);
-    h.frame(&state);
-    let page = &h.ui.windows.options_page;
-    assert!(page.control("Interface Scale").is_some());
-    assert!(page.control("Ambient Sounds").is_none());
+/// The rows `tab` shows once drawn from its top.
+fn rows_on(h: &mut Harness, state: &GameState, at: usize) -> Vec<String> {
+    h.ui.windows.options_page.tab = at;
+    h.ui.windows.options_page.scroll[at] = 0.0;
+    h.frame(state);
+    h.frame(state);
+    h.ui.windows
+        .options_page
+        .controls
+        .iter()
+        .map(|(c, _)| c.clone())
+        .collect()
 }
 
-/// Defaults on the Sound tab puts back its sounds alone, and on the Display tab everything else.
+/// The Client page is three tabs: the interface's settings, the graphics' with the screen first,
+/// and the sounds, none of them showing another's rows.
 #[test]
-fn each_tab_s_defaults_put_back_its_own_rows() {
+fn the_client_page_is_an_interface_tab_a_graphics_tab_and_a_sound_tab() {
+    use pyreal_client_contract::options::ui_effects::BLUR_CAPTION;
+    use pyreal_horizon::ui::panels::options::RESOLUTION_CAPTION;
     let (mut h, state) = sound_tab();
+    let has = |rows: &[String], c: &str| rows.iter().any(|r| r == c);
+    let sound = rows_on(&mut h, &state, tab::SOUND);
+    let interface = rows_on(&mut h, &state, tab::INTERFACE);
+    let graphics = rows_on(&mut h, &state, tab::GRAPHICS);
+    for row in ["Ambient Sounds", "Interface Sounds"] {
+        assert!(has(&sound, row), "{row}");
+        assert!(!has(&interface, row) && !has(&graphics, row), "{row}");
+    }
+    for row in [
+        "Interface Scale",
+        BLUR_CAPTION,
+        "Status Bar Style",
+        "Waypoints",
+    ] {
+        assert!(has(&interface, row), "{row}");
+        assert!(!has(&sound, row) && !has(&graphics, row), "{row}");
+    }
+    for row in [RESOLUTION_CAPTION, "VSync", fidelity::PRESET_CAPTION] {
+        assert!(has(&graphics, row), "{row}");
+        assert!(!has(&sound, row) && !has(&interface, row), "{row}");
+    }
+    // The screen opens the Graphics tab, the presets under it.
+    let at = |c: &str| graphics.iter().position(|r| r == c).unwrap();
+    assert!(at(RESOLUTION_CAPTION) < at("VSync"));
+    assert!(at("VSync") < at(fidelity::PRESET_CAPTION));
+}
+
+/// What a press of the Defaults button on `tab` asks for: profile preferences, and this interface's
+/// own settings.
+fn defaults_on(
+    h: &mut Harness,
+    state: &GameState,
+    at: usize,
+) -> (Vec<&'static str>, Vec<(String, String)>) {
+    rows_on(h, state, at);
     let r =
         h.ui.windows
             .options_page
@@ -466,18 +499,66 @@ fn each_tab_s_defaults_put_back_its_own_rows() {
             .expect("Defaults");
     h.move_to(r.x + 10.0, r.y + r.h / 2.0);
     h.press();
-    let mut out = h.frame(&state).requests;
+    let mut out = h.frame(state);
     h.release();
-    out.extend(h.frame(&state).requests);
-    let named: Vec<&str> = out
+    let after = h.frame(state);
+    out.requests.extend(after.requests);
+    out.settings.extend(after.settings);
+    let named = out
+        .requests
         .iter()
         .filter_map(|r| match r {
             UiRequest::SetPreference(n, _) => Some(*n),
             _ => None,
         })
         .collect();
+    (named, out.settings)
+}
+
+/// Defaults puts back each tab's own rows alone: the sounds, the interface's settings with UI Blur,
+/// or the graphics' without the hidden game camera's.
+#[test]
+fn each_tab_s_defaults_put_back_its_own_rows() {
+    use pyreal_client_contract::options::names as all;
+    let (mut h, state) = sound_tab();
+    let (named, own) = defaults_on(&mut h, &state, tab::SOUND);
     assert!(named.iter().all(|n| n.starts_with("Sound.")), "{named:?}");
     assert!(!named.is_empty());
+    assert!(own.is_empty(), "{own:?}");
+
+    let (named, own) = defaults_on(&mut h, &state, tab::INTERFACE);
+    assert_eq!(named, [all::UI_BLUR]);
+    let keys: Vec<&str> = own.iter().map(|(k, _)| k.as_str()).collect();
+    for key in [
+        "scale",
+        "status-bar-style",
+        "waypoints",
+        "assess-on-hover",
+        "compare-worn",
+        "effects-ending",
+        "low-health",
+        "death-recap-opens",
+        "combat-numbers",
+        "combat-numbers-healing",
+    ] {
+        assert!(keys.contains(&key), "{key} in {keys:?}");
+    }
+    assert!(own.contains(&("scale".to_owned(), "auto".to_owned())));
+    for kept in ["movement", "chat-input", "gamepad", "minimap-rotates"] {
+        assert!(!keys.contains(&kept), "{kept}");
+    }
+
+    let (named, own) = defaults_on(&mut h, &state, tab::GRAPHICS);
+    assert!(named.contains(&names::SHADOWS) && named.contains(&all::DISPLAY_FULL_SCREEN));
+    for kept in [
+        all::UI_BLUR,
+        all::CAMERA_STIFFNESS,
+        all::CAMERA_ALIGN_TO_SLOPE,
+    ] {
+        assert!(!named.contains(&kept), "{kept}");
+    }
+    assert!(!named.iter().any(|n| n.starts_with("Sound.")), "{named:?}");
+    assert!(own.is_empty(), "{own:?}");
 }
 
 /// Weather Sounds is a row of the Sound tab, after Ambient Sounds, and its box turns
@@ -572,11 +653,11 @@ fn draw_the_effects_section_for_a_person_to_look_at() {
         };
         h.frame(&state);
         h.ui.windows.open(WindowId::Options, 0.0);
-        h.ui.windows.options_page.tab = tab::DISPLAY;
+        h.ui.windows.options_page.tab = tab::GRAPHICS;
         for _ in 0..3 {
             h.frame(&state);
         }
-        h.ui.windows.options_page.scroll[tab::DISPLAY] = 1.0e6;
+        h.ui.windows.options_page.scroll[tab::GRAPHICS] = 1.0e6;
         for _ in 0..30 {
             h.frame(&state);
         }

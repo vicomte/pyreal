@@ -330,8 +330,6 @@ pub enum UiRequest {
         value: String,
     },
     SetPreference(&'static str, PrefValue),
-    /// A player-initiated screen-size change or a tagged prompt answer.
-    Resolution(crate::resolution::ResolutionAction),
     /// Set one chat-window property — the per-window position,
     /// filter and opacity blob.
     SetChatWindowOption {

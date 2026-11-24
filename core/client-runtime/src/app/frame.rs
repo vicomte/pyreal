@@ -12,12 +12,8 @@ impl<S: Shell> App<S> {
         self.finish_run()
     }
 
-    /// The end of [`Self::run`]'s loop, for a host that runs the loop itself: a screen size on
-    /// trial put back, and the frames drawn.
+    /// The end of [`Self::run`]'s loop, for a host that runs the loop itself: the frames drawn.
     pub fn finish_run(&mut self) -> u64 {
-        if let Some(effect) = self.resolution.cancel() {
-            self.apply_resolution_effect(effect);
-        }
         self.state = AppState::ShuttingDown;
         self.frames_drawn()
     }
@@ -76,9 +72,6 @@ impl<S: Shell> App<S> {
         if self.do_event_loop(shell) {
             // "If true, the per-frame step returns false immediately -- the network is not pumped
             // and no frame is drawn."
-            if let Some(effect) = self.resolution.cancel() {
-                self.apply_resolution_effect(effect);
-            }
             self.state = AppState::ShuttingDown;
             return false;
         }
@@ -114,7 +107,7 @@ impl<S: Shell> App<S> {
             // frame's datagrams have been parsed and before subsequent frame consumers read the
             // clock. Draining it
             // a step later would put the first `cur_time` reader of the frame on the stale clock.
-            link.net.session.transport.take_time_sync()
+            link.net.take_time_sync()
         } else {
             None
         };
@@ -134,9 +127,6 @@ impl<S: Shell> App<S> {
         // it the process exits. Nothing else runs this frame and no frame is drawn.
         if self.connect_failure_use_time() {
             self.pump.done();
-            if let Some(effect) = self.resolution.cancel() {
-                self.apply_resolution_effect(effect);
-            }
             self.state = AppState::ShuttingDown;
             return false;
         }
@@ -438,9 +428,6 @@ impl<S: Shell> App<S> {
             self.events.push(FrameEvent::Step(FrameStep::BeginFrame));
             if let Err(e) = self.present.start_frame() {
                 tracing::error!("starting a frame failed: {e}");
-                if let Some(effect) = self.resolution.cancel() {
-                    self.apply_resolution_effect(effect);
-                }
                 self.state = AppState::ShuttingDown;
                 return false;
             }
@@ -492,9 +479,6 @@ impl<S: Shell> App<S> {
             }
             if let Err(e) = self.present.end_frame() {
                 tracing::error!("finishing a frame failed: {e}");
-                if let Some(effect) = self.resolution.cancel() {
-                    self.apply_resolution_effect(effect);
-                }
                 self.state = AppState::ShuttingDown;
                 return false;
             }
@@ -516,9 +500,6 @@ impl<S: Shell> App<S> {
         // Shift+Escape -> EXIT -> Yes, so the account is not left logged in until the server's own timeout.
         if self.script == EnterWorldScript::Done {
             self.pump.done();
-            if let Some(effect) = self.resolution.cancel() {
-                self.apply_resolution_effect(effect);
-            }
             self.state = AppState::ShuttingDown;
             return false;
         }
@@ -528,9 +509,6 @@ impl<S: Shell> App<S> {
         // `--frames n` is this rebuild's test limit; the ordinary client runs until shutdown.
         if self.cfg.frames.is_some_and(|n| self.frames_drawn() >= n) {
             self.pump.done();
-            if let Some(effect) = self.resolution.cancel() {
-                self.apply_resolution_effect(effect);
-            }
             self.state = AppState::ShuttingDown;
             return false;
         }

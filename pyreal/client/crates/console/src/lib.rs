@@ -6,7 +6,7 @@
 //!
 //! **Must never** own or close a native handle, retain a caller's buffer or reach the client
 //! runtime. Unsafe calls are confined to console attachment, the modal error box, the
-//! read-only caret/monitor queries, one picture painted on a window with GDI and the Mac's
+//! read-only caret/monitor/screen queries, one picture painted on a window with GDI and the Mac's
 //! open-URL handler. Each call returns plain values and keeps its buffers local.
 //!
 //! Under the windows subsystem Windows creates no console, and this crate never makes one: a player
@@ -43,6 +43,25 @@ mod window_paint;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod open_url;
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod screen_area;
+
+/// The usable width and height of the screen whose display id is `display`, less its menu bar
+/// and Dock, in points. `None` off the Mac.
+#[must_use]
+pub fn usable_screen_points(display: u32) -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    {
+        screen_area::usable_points(display)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = display;
+        None
+    }
+}
 
 /// A picture as GDI takes it: rows from the top, four bytes a texel in the order blue, green,
 /// red and one unused.

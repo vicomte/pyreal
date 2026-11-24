@@ -243,7 +243,6 @@ pub fn init() -> usize {
         n += usize::from(register_preference(p.name, v, t));
     }
     super::performance::register();
-    super::update_check::register();
     super::portal_style::register();
     super::face_detail::register();
     super::ui_effects::register();
@@ -451,13 +450,9 @@ fn custom_enum(name: &str) -> Option<&'static CustomEnum> {
 /// makes a saved profile look like the one a player already has, and `True`/`False` and not `1`/`0`
 /// is what [`parse_bool`] has always had to accept.
 ///
-/// **Named divergence, and it is the same one [`display_choice`] carries.**
-/// `Display.Resolution` and `Display.RefreshRate` have choice lists in retail — built at run time
-/// out of the adapter's modes — and this build has enumerated no adapter, so they take the numeric
-/// arm and are written as `%i` (`67109632`) rather than as `1280x1024`. The value round-trips
-/// exactly, because `set_from_string_uint`'s empty-choice-list arm is a plain integer parse;
-/// what it costs is a line a human would recognise. It resolves itself the day an adapter is
-/// enumerated.
+/// `Display.Resolution` is written `1280x1024` whether or not the adapter lists the size, since a
+/// window may be any size; [`display_choice`] reads it back. `Display.RefreshRate` takes the numeric
+/// arm until an adapter is enumerated.
 #[must_use]
 pub fn convert_to_string(name: &str, v: &PrefValue) -> String {
     if let Some(text) = custom_enum(name).and_then(|row| (row.format)(name, v)) {
@@ -465,11 +460,15 @@ pub fn convert_to_string(name: &str, v: &PrefValue) -> String {
     }
     // The two run-time lists are choice lists too, so once the device has
     // enumerated its modes this arm is reached for `Display.Resolution` and the file holds
-    // `1280x720` rather than `83886800`. Before enumeration the list is empty and the numeric arm
-    // below stands, which is the divergence this doc-comment's last paragraph describes.
+    // `1280x720` rather than `83886800`.
     if let PrefValue::Int(x) = v {
         if let Some(row) = display_choices(name).into_iter().find(|c| c.value == *x) {
             return row.label;
+        }
+        // A window size the adapter does not list is written in the same form.
+        if name.eq_ignore_ascii_case(DISPLAY_RESOLUTION) {
+            let (w, h) = mode_size(*x);
+            return format!("{w}x{h}");
         }
     }
     if let (Some(c), PrefValue::Int(x)) = (enum_choices(name), v) {
@@ -1132,12 +1131,12 @@ mod tests {
     #[test]
     fn loading_a_preferences_file_overwrites_only_the_registered_names() {
         assert_eq!(init(), 27, "the 27 attached preferences all register");
-        // ...beside this client's performance panel, update check, portal style, detailed faces,
+        // ...beside this client's performance panel, portal style, detailed faces,
         // UI Blur, ground coloring and sound style, the quality chosen for this machine's two, the
         // high-fidelity presentation's boxes and menus, and the weather sound's two.
         assert_eq!(
             len(),
-            33 + 2
+            32 + 2
                 + 1
                 + super::super::fidelity::OPTIONS.len()
                 + super::super::fidelity::MENUS.len()
@@ -1158,13 +1157,15 @@ mod tests {
                     [Display]\r\nResolution=52429400\r\n\
                     [UI]\r\nChatFontSize=3\r\n\
                     [Net]\r\nBindInterface=\r\n[Input]\r\nKeymapFile=\r\n\
-                    [Render]\r\nRenderer=vulkan\r\nTextureFiltering=Sharp\r\n";
+                    [Render]\r\nRenderer=vulkan\r\nTextureFiltering=Sharp\r\n\
+                    [Misc]\r\nCheckForUpdates=False\r\n";
         let ini = UserPreferences::parse(text).expect("the ini parses");
         let (applied, ignored) = load(&ini);
         assert_eq!(applied, 4, "four keys name a registered variable");
         assert_eq!(
-            ignored, 5,
-            "Net.BindInterface, Input.KeymapFile, the typo'd name and two retired Render keys"
+            ignored, 6,
+            "Net.BindInterface, Input.KeymapFile, the typo'd name, two retired Render keys and the \
+             retired Misc.CheckForUpdates"
         );
         assert_eq!(inq_value("Sound.SoundVolume"), Some(PrefValue::Float(0.5)));
         assert_eq!(

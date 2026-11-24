@@ -214,6 +214,12 @@ pub trait WindowHost {
         None
     }
 
+    /// The largest window size, in the window's units, that fits the monitor's usable area (less
+    /// the taskbar, or the menu bar and Dock) where that is known, else the whole monitor.
+    fn usable_window_size(&self) -> Option<(u32, u32)> {
+        self.largest_client_size()
+    }
+
     /// drain the queue completely.
     ///
     /// `requested` and `full_screen` are inputs because the DPI negotiation happens *inside* the

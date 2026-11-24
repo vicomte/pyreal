@@ -133,18 +133,30 @@ impl<S: Shell> App<S> {
             let (port, client_port) = cfg
                 .connect_ports()
                 .map_err(|e| StartupError::CommandLine(e.detail))?;
-            let mut link = NetLink::connect(
-                &cfg.host,
-                port,
-                client_port,
-                &cfg.account,
-                &cfg.vg_password,
-                seq,
-            )?;
-            // Before the first login request goes: a world whose server wants another logon
-            // version is sent that one.
-            link.net.set_logon_version(&cfg.logon_version);
-            Some(link)
+            if cfg.wire_1999 {
+                Some(NetLink::connect_1999(
+                    &cfg.host,
+                    port,
+                    client_port,
+                    &cfg.account,
+                    &cfg.vg_password,
+                    crate::net::login_iterations(&store),
+                    &crate::net::world_name_1999(&cfg),
+                )?)
+            } else {
+                let mut link = NetLink::connect(
+                    &cfg.host,
+                    port,
+                    client_port,
+                    &cfg.account,
+                    &cfg.vg_password,
+                    seq,
+                )?;
+                // Before the first login request goes: a world whose server wants another logon
+                // version is sent that one.
+                link.net.set_logon_version(&cfg.logon_version);
+                Some(link)
+            }
         } else {
             None
         };
@@ -363,7 +375,6 @@ impl<S: Shell> App<S> {
             last_jump_request: None,
             interaction: crate::interaction::Interaction::new(),
             dialogs: crate::dialogs::DialogService::default(),
-            resolution: crate::resolution::ResolutionTransaction::default(),
             actions: crate::actions::ActionQueue::default(),
             audio: None,
             host_state: HostState::default(),
@@ -734,7 +745,7 @@ pub(super) fn restore_window_place(
     let unforced = if from_preference {
         crate::config::fit_window_size(
             display.window_size.unwrap_or(unforced),
-            window.largest_client_size(),
+            window.usable_window_size(),
         )
     } else {
         unforced

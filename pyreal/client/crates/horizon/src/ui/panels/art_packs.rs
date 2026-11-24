@@ -1,4 +1,4 @@
-//! The Display page's art pack: which of the library's packs is drawn over the built-in pack, or
+//! The Graphics page's art pack: which of the library's packs is drawn over the built-in pack, or
 //! none, first under Surfaces & Detail and shown only while the library holds one (the Data Files
 //! panel keeps the library).
 

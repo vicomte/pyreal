@@ -4,7 +4,8 @@
 //! **Depends on** the shared data and engine crates (`pyreal-primitives`, `pyreal-dat`,
 //! `pyreal-assets`, `pyreal-world-data`, `pyreal-landscape`, `pyreal-terrain`, `pyreal-physics`,
 //! `pyreal-animation`, `pyreal-navigation`),
-//! the wire (`pyreal-transport`, `pyreal-protocol`, `pyreal-client-net`), the object model and
+//! the wire (`pyreal-transport`, `pyreal-protocol`, `pyreal-client-net`, and `pyreal-wire1999` for
+//! 1999 worlds), the object model and
 //! contract (`pyreal-client-model`, `pyreal-client-contract`), shared rules (`pyreal-rules`),
 //! display formatting (`pyreal-presentation`) and the sound engine
 //! (`pyreal-audio`). **Used by** the client (`pyreal-client`) and
@@ -234,5 +235,3 @@ pub mod actions;
 
 /// The application state machine and the frame loop.
 pub mod app;
-
-pub mod resolution;

@@ -339,6 +339,7 @@ fn frost_cover() -> f32 {
             at,
             false,
             false,
+            &pyreal_engine::fountains::Pools::default(),
         );
         if frame >= 90 {
             drawn = engine

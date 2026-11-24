@@ -567,9 +567,19 @@ pub fn gather(
             for g in engine.particles.missing_sprites(&b.driver) {
                 pyreal_engine::particles::prepare_sprite(engine, loader, store, g);
             }
-            engine
-                .particles
-                .gather(&b.driver, b.cell, glam::Vec3::ZERO, eye, b.shadow, false);
+            if let Some(p) = engine.particles.missing_tint(&b.driver) {
+                pyreal_engine::particles::prepare_tint(engine, store, p);
+            }
+            let pools = loader.pools_of(store, b.setup);
+            engine.particles.gather(
+                &b.driver,
+                b.cell,
+                glam::Vec3::ZERO,
+                eye,
+                b.shadow,
+                false,
+                pools,
+            );
         }
         if b.setup.0 != 0 {
             let at = pyreal_engine::asset::object::frame_affine(&b.frame);

@@ -96,3 +96,106 @@ fn a_body_of_clear_crystal_carries_no_glow() {
     assert!(!lamps(&mut AssetLoader::new(Box::new(NoOverrides))).is_empty());
     assert!(lamps(&mut AssetLoader::new(Box::new(ClearIce))).is_empty());
 }
+
+/// A room open to the sky (the swamp hut 0xBB630100, seen from outdoors at noon) lights its lamps at
+/// the outdoors' own scale: lit to retail's clamp (its green light of intensity 100) it keeps
+/// retail's ratio to a sunlit face beside it, in every day group at every hour, where the sky's
+/// scale lit it about twice that. Its fill keeps the sky's.
+#[test]
+fn a_room_open_to_the_sky_keeps_retails_ratio_to_a_sunlit_face() {
+    use pyreal_engine::renderer::{indoor_physical, room_lamp_scale, ROOM_LUX};
+    use pyreal_engine::sky::{sky_lux, SkyLight, SCENE_LUX};
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let groups = region.sky_info.as_ref().map_or(0, |s| s.day_groups.len());
+    assert!(groups > 9, "the region has its day groups");
+    let luma = |c: glam::Vec3| c.dot(glam::Vec3::new(0.2126, 0.7152, 0.0722));
+    let linear = |c: glam::Vec3| c.min(glam::Vec3::ONE).powf(2.2);
+    for group in 0..groups {
+        for k in 0..48 {
+            let light = SkyLight::at(&region, group, k as f32 / 48.0);
+            let whole = room_lamp_scale(&light, true);
+            // A sunlit face as retail sums it, and as the outdoors lights it.
+            let summed = luma(linear(light.ambient + light.sun));
+            let sunlit = luma(light.sun_light + light.sky_light);
+            assert!(whole > 0.0, "group {group} hour {k}");
+            assert!(
+                whole * summed <= sunlit * 1.001,
+                "group {group} hour {k}: {whole} times {summed} over {sunlit}"
+            );
+            assert!(whole <= sky_lux(light.daylight) / SCENE_LUX * 1.001);
+            assert!((room_lamp_scale(&light, false) - ROOM_LUX / SCENE_LUX).abs() < 1e-6);
+        }
+    }
+    let hut = SkyLight::at(&region, 9, 0.515);
+    let sky = sky_lux(hut.daylight) / SCENE_LUX;
+    let whole = room_lamp_scale(&hut, true);
+    assert!(whole < sky * 0.6, "{whole} of {sky}");
+    // The room's fill stays over the open sky's light, as retail's does.
+    assert!(luma(indoor_physical(&hut, true, true)) > luma(hut.sky_light));
+}
+
+/// An outdoor lamp by day sits on the sunlit ground as retail's did: retail sums a lamp with the
+/// sun and sky and clamps, so a sunlit face takes little more and a shaded one is lifted toward
+/// it. By night the brightest lamp keeps its light. Every day group at every hour; the brightest
+/// outdoor lamp (`outdoor_lamp` and `outdoor_lamp_scale` in lamp_types.wgsl) a metre and two off.
+#[test]
+fn an_outdoor_lamp_by_day_keeps_retails_clamp_and_its_night_light() {
+    use pyreal_engine::renderer::{lamp_ceiling, lamps_held, DAY_GLOW};
+    use pyreal_engine::sky::{sky_lux, SkyLight, SCENE_LUX};
+    let lamp_types = include_str!("../../src/shaders/lamp_types.wgsl");
+    assert!(lamp_types.contains("const OUTDOOR_GAIN: f32 = 12.0;"));
+    assert!(lamp_types.contains("const OUTDOOR_CORE: f32 = 0.6;"));
+    let store = pyreal_dat::testing::open_store_or_fail();
+    let region = pyreal_world_data::landblock::load_region(&store).expect("the region");
+    let groups = region.sky_info.as_ref().map_or(0, |s| s.day_groups.len());
+    assert!(groups > 9, "the region has its day groups");
+    let luma = |c: glam::Vec3| c.dot(glam::Vec3::new(0.2126, 0.7152, 0.0722));
+    let (mut nights, mut noons) = (0, 0);
+    for group in 0..groups {
+        for k in 0..48 {
+            let light = SkyLight::at(&region, group, k as f32 / 48.0);
+            let ceiling = lamp_ceiling(&light, light.sun_light, light.sky_light);
+            let scale = 12.0 * sky_lux(light.daylight) / SCENE_LUX;
+            let (near, off) = (scale / (1.0 + 0.36), scale / (4.0 + 0.36));
+            let sunlit = luma(light.sun_light + light.sky_light);
+            let shade = luma(light.sky_light);
+            let at = format!("group {group} hour {k}");
+            for lamp in [near, off] {
+                for own in [shade, sunlit] {
+                    let held = lamps_held(lamp, own, ceiling);
+                    assert!(
+                        held <= lamp && own + held <= own.max(ceiling) * 1.001,
+                        "{at}"
+                    );
+                }
+            }
+            if light.daylight < 0.05 {
+                nights += 1;
+                assert!(
+                    lamps_held(near, sunlit, ceiling) >= near * 0.99,
+                    "{at}: {near}"
+                );
+            }
+            if light.daylight > 0.9999 {
+                noons += 1;
+                // Retail's white, a sunlit face's light over retail's clamped sum of it.
+                let summed = luma((light.ambient + light.sun).min(glam::Vec3::ONE).powf(2.2));
+                assert!(
+                    ceiling <= sunlit / summed * DAY_GLOW * 1.001,
+                    "{at}: {ceiling}"
+                );
+                // A lamp two metres off lit the sunlit ground past twice over; now it keeps under
+                // a fifth of that, and lifts the shade a metre off most of the way to the sun.
+                assert!(off > sunlit, "{at}: {off} on {sunlit}");
+                assert!(
+                    lamps_held(off, sunlit, ceiling) < off * 0.2,
+                    "{at}: {off} on {sunlit}"
+                );
+                let lifted = shade + lamps_held(near, shade, ceiling);
+                assert!(lifted >= sunlit * 0.8, "{at}: {near} on {shade}");
+            }
+        }
+    }
+    assert!(nights > 0 && noons > 0, "{nights} nights, {noons} noons");
+}

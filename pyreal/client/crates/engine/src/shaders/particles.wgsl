@@ -539,7 +539,7 @@ fn particle_seen(in: PartOut) -> Seen {
                 // A magic lamp's halo: its own colour at retail's strength, never raised by the night.
                 light = c.rgb * (1.0 + m.emissive.x) * (1.0 - fog_amount(distance(in.world.xy, frame.camera.xy)));
                 if (has(F_PHYSICAL)) {
-                    light *= MAGIC_HALO;
+                    light *= MAGIC_HALO * select(lamp_day_share(), 1.0, indoor);
                 } else {
                     light = min(light * pre_exposure(), vec3<f32>(HDR_MOST));
                 }
@@ -549,6 +549,8 @@ fn particle_seen(in: PartOut) -> Seen {
             // Warm and dim, the whole sprite flickering with its flame.
             let seed = bitcast<u32>(floor(in.center.x * 4.0)) ^ (bitcast<u32>(floor(in.center.y * 4.0)) * 7919u);
             light = luma(c.rgb) * LIGHT_SPRITE * LIGHT_SPRITE_GAIN * flicker(1u, seed, 6.0);
+            // By day it fades as its lamp's light does.
+            light *= select(lamp_day_share(), 1.0, indoor);
         }
         out.colour = vec4<f32>(additive_light(light * glow, m.emissive.x, in.world), a);
         return out;

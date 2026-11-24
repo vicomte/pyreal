@@ -494,6 +494,7 @@ impl Bridge {
                 engine,
                 loader,
                 &driver,
+                setup,
                 cell,
                 offset,
                 eye,
@@ -581,7 +582,10 @@ impl Bridge {
                 Self::draw_skin(
                     engine, loader, &mut drawn, &driver, &frame, offset, cell, dt,
                 );
-                self.gather(engine, loader, &driver, cell, offset, eye, false, false);
+                let own = Some(c.setup_id());
+                self.gather(
+                    engine, loader, &driver, own, cell, offset, eye, false, false,
+                );
                 drop(driver);
                 self.player = Some(drawn);
                 engine.bodies.push(frame_point(&c.render_frame()) + offset);
@@ -851,13 +855,15 @@ impl Bridge {
     }
 
     /// `driver`'s live particles into the next frame's, their pictures made ready first; a
-    /// `shadow`'s eyes glow, and a `held` thing's light lights as a held thing's.
+    /// `shadow`'s eyes glow, and a `held` thing's light lights as a held thing's. A fountain's
+    /// jets (`setup`'s basin water) are drawn as water.
     #[allow(clippy::too_many_arguments)]
     fn gather(
         &mut self,
         engine: &mut Engine,
         loader: &mut AssetLoader,
         driver: &pyreal_animation::MotionDriver,
+        setup: Option<DataId>,
         cell: u32,
         offset: Vec3,
         eye: Vec3,
@@ -870,9 +876,17 @@ impl Bridge {
         for g in engine.particles.missing_sprites(driver) {
             pyreal_engine::particles::prepare_sprite(engine, loader, &self.store, g);
         }
+        if let Some(p) = engine.particles.missing_tint(driver) {
+            pyreal_engine::particles::prepare_tint(engine, &self.store, p);
+        }
+        let none = pyreal_engine::fountains::Pools::default();
+        let pools = match setup {
+            Some(s) => loader.pools_of(&self.store, s),
+            None => &none,
+        };
         engine
             .particles
-            .gather(driver, cell, offset, eye, shadow, held);
+            .gather(driver, cell, offset, eye, shadow, held, pools);
     }
 }
 

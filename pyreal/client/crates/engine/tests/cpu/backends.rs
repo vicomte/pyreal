@@ -38,6 +38,7 @@ fn modules() -> Vec<(&'static str, String)> {
         ("overlay", overlay.to_owned()),
         ("whole picture", whole.to_owned()),
         ("preview", pyreal_engine::preview::source()),
+        ("preview fire", pyreal_engine::preview::fire_source()),
         ("air froxels", source::air_froxels()),
         ("air apply", source::air_apply()),
         ("precipitation", source::precipitation()),

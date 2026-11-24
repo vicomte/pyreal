@@ -88,3 +88,69 @@ fn a_wall_fountains_stream_and_a_tubs_water_are_water() {
     );
     assert!(spills(&store, DataId(0x0200_016C), &tub).is_empty());
 }
+
+/// A server's fountain, stood as the client stands its objects (setup 0x0200027F, the towns' and
+/// Ayan Baqur's), throws its jet as water into its basin as a placed one does: a column and a crown
+/// landing on its water where the client draws it. A crystal throwing a fountain's bubbles with no
+/// basin (0x02001023) is left as retail draws it.
+#[test]
+fn a_server_fountains_jet_falls_into_its_basin() {
+    use pyreal_animation::MotionDriver;
+    use pyreal_engine::particles::Particles;
+    use pyreal_primitives::{CellId, Frame, Position, Quat, ServerTime, Vec3};
+
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let assets: Arc<dyn AnimAssets> = Arc::new(DatAnimAssets::new(Arc::clone(&store)));
+    let stood = |setup: u32| {
+        let frame = Frame::new(Vec3::new(108.0, 108.0, 42.0), Quat::IDENTITY);
+        let mut d = MotionDriver::new(Arc::clone(&assets));
+        assert!(d.set_setup(assets.setup(DataId(setup)).expect("the setup")));
+        d.env.in_cell = true;
+        d.env.position = Position::new(CellId(0x1134_0025), frame);
+        for k in 0..30 {
+            d.cur_time = ServerTime(1000.0 + f64::from(k) / 30.0);
+            d.update_parts(&frame);
+            d.update_scripts();
+            d.update_particles(true);
+        }
+        d
+    };
+    let offset = glam::Vec3::new(-100.0, -100.0, 0.0);
+    let eye = glam::Vec3::new(5.0, 5.0, 44.0);
+    let word = |b: &[u8], k: usize| f32::from_le_bytes(b[k * 4..k * 4 + 4].try_into().unwrap());
+
+    let fountain = stood(0x0200_027F);
+    let faces = pool_faces(&store, DataId(0x0200_027F));
+    let pools = (faces.clone(), spills(&store, DataId(0x0200_027F), &faces));
+    assert_eq!(pools.0.len(), 1, "{:?}", pools.0);
+    let mut particles = Particles {
+        fountains: true,
+        ..Particles::default()
+    };
+    particles.gather(&fountain, 0, offset, eye, false, false, &pools);
+    let bytes = pyreal_engine::fountains::frame_jets(&particles, eye, &[], |_| true, 0.0);
+    let n = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+    assert_eq!(n, 15, "a column and its crown of fourteen");
+    let landed = (0..n)
+        .map(|k| &bytes[16 + k * 64..16 + (k + 1) * 64])
+        .filter(|p| word(p, 15) > 0.5)
+        .map(|p| glam::Vec3::new(word(p, 12), word(p, 13), word(p, 14)))
+        .collect::<Vec<_>>();
+    assert_eq!(landed.len(), 14, "each crown stream lands on the water");
+    // On the water where the client draws the basin: its part placed by the driver, moved.
+    let part = fountain.part_array.parts[0].pos.origin;
+    let level = part.z + offset.z + pools.0[0].z;
+    for l in landed {
+        assert!((l.z - level).abs() < 0.05, "{l} {level}");
+        assert!(l.truncate().distance(glam::Vec2::splat(8.0)) < 0.7, "{l}");
+    }
+
+    let crystal = stood(0x0200_1023);
+    let none = (pool_faces(&store, DataId(0x0200_1023)), Vec::new());
+    let mut particles = Particles {
+        fountains: true,
+        ..Particles::default()
+    };
+    particles.gather(&crystal, 0, offset, eye, false, false, &none);
+    assert!(particles.body_jets.is_empty());
+}

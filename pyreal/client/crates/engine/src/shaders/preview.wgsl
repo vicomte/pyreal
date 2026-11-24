@@ -25,6 +25,9 @@ struct VsOut {
     @location(7) @interpolate(flat) hold: u32,
     // A model's baked shade inside what it wears, 0 to 1.
     @location(8) inside: f32,
+    // A creature's light's word and flags (`preview::PreviewDraw::glow`); nought for none.
+    @location(9) @interpolate(flat) glow_word: u32,
+    @location(10) @interpolate(flat) glow_flags: u32,
 }
 
 struct PreviewFrame {
@@ -37,6 +40,8 @@ struct PreviewFrame {
     ambient: vec4<f32>,
     // xyz: the eye; w unused.
     eye: vec4<f32>,
+    // x: seconds on the space's clock; y: how many lamps.
+    time: vec4<f32>,
 }
 
 // One drawn sub-mesh: its transform's rows and its material.
@@ -49,6 +54,8 @@ struct Record {
 
 @group(0) @binding(0) var<uniform> pf: PreviewFrame;
 @group(0) @binding(1) var<storage, read> records: array<Record>;
+// The lamps its bodies carry, the world's records (`lamps::lamp_bytes`).
+@group(0) @binding(2) var<storage, read> lamps: array<Lamp>;
 
 fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     var n = vec3<f32>(e, 1.0 - abs(e.x) - abs(e.y));
@@ -81,6 +88,8 @@ fn vs(v: VsIn, @builtin(instance_index) k: u32) -> VsOut {
         out.hold = 3u;
     }
     out.inside = f32(v.extra2 & 255u) / 255.0;
+    out.glow_word = r.material.z;
+    out.glow_flags = r.material.w;
     return out;
 }
 
@@ -99,6 +108,76 @@ fn preview_bend(n: vec3<f32>, t: vec3<f32>, wdx: vec3<f32>, wdy: vec3<f32>, dx: 
     let tv = p2 * dx.y + p1 * dy.y;
     let s = inverseSqrt(max(max(dot(tu, tu), dot(tv, tv)), 1e-20));
     return normalize(tu * s * t.x - tv * s * t.y + n * t.z);
+}
+
+// The bodies' lamps' outdoor light against the directional light's.
+const PREVIEW_LAMP_SHARE: f32 = 0.25;
+// How brightly a lamp's glowing part shows (`lamp_light.wgsl`'s `LAMP_GLOW`).
+const PREVIEW_LAMP_GLOW: f32 = 1.5;
+
+// The light of the bodies' lamps on a point at `world` facing `n`, as the world's outdoor lamps
+// light it (`lamp_light.wgsl`), flickering: x the light it takes, y the glow round a lamp's flame
+// that shows over its colour.
+fn preview_lamps(world: vec3<f32>, n: vec3<f32>) -> array<vec3<f32>, 2> {
+    var lit = vec3<f32>(0.0);
+    var glow = vec3<f32>(0.0);
+    for (var k = 0u; k < u32(pf.time.y); k++) {
+        let l = lamps[k];
+        let to = l.position - world;
+        let d = max(length(to), 1e-2);
+        if (d >= l.range) {
+            continue;
+        }
+        let flame = flicker(l.flags & 255u, l.slot >> 8u, l.range);
+        let took = clamp((dot(n, to / d) + 0.1) / 1.1, 0.0, 1.0);
+        lit += outdoor_lamp(l, d) * flame * took;
+        // Its glass and flame, a hand round it.
+        let part = select(0.5, 0.35, (l.flags & 2048u) != 0u) * select(1.0, 0.0, (l.flags & 255u) == 2u);
+        if (d < part) {
+            let g = 1.0 - d / part;
+            glow = max(glow, outdoor_colour(l) * flame * g * g * (3.0 - 2.0 * g) * outdoor_share(l));
+        }
+    }
+    return array<vec3<f32>, 2>(lit * PREVIEW_LAMP_SHARE, glow * PREVIEW_LAMP_GLOW);
+}
+
+// The particle pass's names for a creature's light (`particles.wgsl`'s `glow_seen`).
+struct PartOut {
+    uv: vec2<f32>,
+    material: u32,
+    glow: vec4<f32>,
+    flags: u32,
+    alpha: f32,
+    world: vec3<f32>,
+}
+
+struct Seen {
+    colour: vec4<f32>,
+    additive: bool,
+}
+
+// An additive picture's light, as the world shows it on screen: never dimmer than its picture.
+fn additive_light(c: vec3<f32>, emissive: f32, world: vec3<f32>) -> vec3<f32> {
+    return c * (1.0 + emissive);
+}
+
+// A creature's light seen from `in`, from its word as `particles.wgsl`'s `vs_particle` reads it.
+fn preview_glow(in: VsOut) -> vec4<f32> {
+    let w = in.glow_word;
+    var p: PartOut;
+    p.uv = in.uv;
+    p.material = in.material;
+    p.flags = in.glow_flags;
+    p.alpha = f32(w & 255u) / 255.0;
+    p.world = in.world;
+    let g = vec3<f32>(f32(w >> 28u), f32((w >> 24u) & 15u), f32((w >> 20u) & 15u)) / 15.0;
+    p.glow = vec4<f32>(pow(g, vec3<f32>(2.2)),
+                       floor(f32((w >> 8u) & 255u) / 255.0 * 254.0) + f32((w >> 16u) & 15u) / 15.0 * 0.999);
+    let s = glow_seen(p, 1.0);
+    let light = s.colour.rgb * s.colour.a;
+    // Its hue kept where its heart passes white, as the world's bloom would carry it.
+    let shown = light / max(max(light.r, max(light.g, light.b)), 1.0);
+    return vec4<f32>(encode(shown), 0.0);
 }
 
 // A face's light through skin, as the lighting pass's.
@@ -133,7 +212,8 @@ fn shade(in: VsOut) -> vec4<f32> {
         }
         let ndl = dot(n, pf.light_dir.xyz);
         let d = max(ndl, 0.0);
-        lit = c.rgb * (pf.ambient.rgb + pf.light.rgb * d);
+        let lamp = preview_lamps(in.world, n);
+        lit = c.rgb * (pf.ambient.rgb + pf.light.rgb * d + lamp[0] + lamp[1]);
         if (is_face) {
             // Light through skin past the shadow edge, reddened; and the sheen of skin, hair and
             // wet eyes from the one light.
@@ -152,9 +232,11 @@ fn shade(in: VsOut) -> vec4<f32> {
     if ((m.flags & (M_TRANSLUCENT | M_ADDITIVE)) == 0u) {
         a = 1.0;
     }
-    if ((m.flags & M_ADDITIVE) != 0u && (m.flags & M_ALPHA) == 0u) {
-        // Added light: its whole picture, over nothing kept behind it.
-        return vec4<f32>(encode(clamp(lit * in.fade, vec3<f32>(0.0), vec3<f32>(1.0))), 0.0);
+    if ((m.flags & M_ADDITIVE) != 0u) {
+        // Added light, over nothing kept behind it: its whole picture, or weighed by its alpha
+        // where it has one (an Undead's flame, an Empyrean's eyes), as the world adds it.
+        let k = select(1.0, c.a, (m.flags & M_ALPHA) != 0u) * in.fade;
+        return vec4<f32>(encode(clamp(lit * k, vec3<f32>(0.0), vec3<f32>(1.0))), 0.0);
     }
     a *= in.fade;
     return vec4<f32>(encode(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0))) * a, a);
@@ -162,5 +244,8 @@ fn shade(in: VsOut) -> vec4<f32> {
 
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    if ((in.glow_flags & (1u << 30u)) != 0u) {
+        return preview_glow(in);
+    }
     return shade(in);
 }

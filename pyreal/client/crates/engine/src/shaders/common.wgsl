@@ -22,7 +22,8 @@ struct Frame {
     // z: the degrade scale's bits (a distance times it is in degrade metres); w: the F_ flags.
     switches: vec4<u32>,
     // The physical lights, scene units (1 = 10,000 lux): the sun's (w: the game clock, seconds
-    // wrapped), the sky's (w: the sky's radiance per unit of fog colour), the rooms' (w unused).
+    // wrapped), the sky's (w: the sky's radiance per unit of fog colour), the rooms' (w: their
+    // lamps' scale).
     sun_light: vec4<f32>,
     sky_light: vec4<f32>,
     indoor_light: vec4<f32>,
@@ -99,7 +100,8 @@ struct Frame {
     // repeats a metre.
     bed: vec4<f32>,
     // x: how far a storm leans the growth steadily downwind, 0 to 1 (0 in calm weather); yz: the
-    // way the rain is driven, east and north (zero with none).
+    // way the rain is driven, east and north (zero with none); w: the most a face outdoors takes
+    // from the sun, the sky and its lamps, scene units (`renderer::lamp_ceiling`).
     gale: vec4<f32>,
 }
 
@@ -240,6 +242,8 @@ const M_FACE: u32 = 4194304u;
 // An untextured surface's pack material (`flags::PROJECTED`): its maps laid along the world's
 // axes, one repeat over `alpha_cutoff` metres of the object at its own size.
 const M_PROJECTED: u32 = 8388608u;
+// A clear material's clear map, in the metal map's slot (`flags::HAS_CLEAR`).
+const M_HAS_CLEAR: u32 = 16777216u;
 const NO_TEXTURE: u32 = 0xFFFFFFFFu;
 
 // The G-buffer's shading bits, in the material target's alpha.
@@ -484,6 +488,25 @@ fn glow_of(albedo: vec3<f32>, emissive: f32) -> vec3<f32> {
     return albedo * emissive * clamp(EMISSIVE_UNITS * e, GLOW_SCREEN.x, GLOW_SCREEN.y) / e;
 }
 
+// The outdoor lamps' light `extra` on a face that has `own` from the sun and sky, eased under the
+// frame's ceiling as retail clamps their sum: by day a lamp shows in the shade, hardly in the sun
+// (`renderer::lamps_held`).
+fn lamps_held(extra: vec3<f32>, own: vec3<f32>) -> vec3<f32> {
+    if (!has(F_PHYSICAL)) {
+        return extra;
+    }
+    let room = max(frame.gale.w - luma(own), 1e-6);
+    return extra * (room / (luma(extra) + room));
+}
+
+// `lamps_held` for a volume outdoors, which takes the open sun and sky; a room's lamps whole.
+fn lamps_held_open(extra: vec3<f32>, indoor: bool) -> vec3<f32> {
+    if (indoor) {
+        return extra;
+    }
+    return lamps_held(extra, frame.sun_light.rgb * max(frame.sun_dir.z, 0.0) + frame.sky_light.rgb);
+}
+
 // The share of the sun a leaf lit from behind passes on (physical light).
 const FOLIAGE_THROUGH: f32 = 0.25;
 
@@ -536,8 +559,8 @@ fn shade_lit(albedo: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, metal: f
     let r = reflect(-v, n);
     let around = mix(frame.sky_light.rgb * mix(0.35, 1.0, smoothstep(-0.3, 0.5, r.z)), bounce.rgb,
                      bounce.a);
-    return diffuse * max(sun * wrap + ambient * sky_vis + extra, self_lit) + spec + mirror * around
-        + glow;
+    let own = sun * wrap + ambient * sky_vis;
+    return diffuse * max(own + lamps_held(extra, own), self_lit) + spec + mirror * around + glow;
 }
 
 // The retail calibration: the sun and the sky's light summed in the dats' own (gamma) colour

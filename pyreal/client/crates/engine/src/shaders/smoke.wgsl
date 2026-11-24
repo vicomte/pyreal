@@ -335,8 +335,9 @@ fn smokes_volume(in: PuffOut) -> vec4<f32> {
         lamp_at[k] = vec3<f32>(0.0);
         if (has(F_LAMPS)) {
             let x = eye + dir * mix(t0, t1, f32(k) * 0.5);
-            lamp_at[k] = lamp_light(x, -dir, -dir, 1.0, vec3<f32>(0.0), G_VOLUME_LIT | select(0u, G_INDOOR, indoor),
-                                    view_depth_at(x), px, false).diffuse * SMOKES_LAMPS;
+            lamp_at[k] = lamps_held_open(lamp_light(x, -dir, -dir, 1.0, vec3<f32>(0.0),
+                                    G_VOLUME_LIT | select(0u, G_INDOOR, indoor), view_depth_at(x), px,
+                                    false).diffuse * SMOKES_LAMPS, indoor);
         }
     }
     var lamp_taken = vec3<f32>(0.0);

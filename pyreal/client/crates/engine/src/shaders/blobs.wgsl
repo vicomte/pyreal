@@ -226,7 +226,7 @@ fn fs_blob(in: BlobOut) -> BlobLit {
     if (has(F_LAMPS)) {
         let lamp = lamp_light(x, n, v, BLOB_ROUGH, vec3<f32>(BLOB_F0), select(0u, G_INDOOR, indoor),
                               depth, px, false);
-        light_in += lamp.diffuse;
+        light_in += select(lamps_held(lamp.diffuse, light_in), lamp.diffuse, indoor);
         lamp_spec = lamp.specular;
     }
     var body = seen * through + blob_scatter(kind) * light_in * (1.0 - exp(-4.0 * thick)) * pre;

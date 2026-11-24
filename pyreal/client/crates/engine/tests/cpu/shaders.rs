@@ -46,6 +46,7 @@ fn every_module_validates() {
     validate("overlay", overlay);
     validate("whole picture", whole);
     validate("preview", &pyreal_engine::preview::source());
+    validate("preview fire", &pyreal_engine::preview::fire_source());
     validate("air froxels", &source::air_froxels());
     validate("air apply", &source::air_apply());
     validate("precipitation", &source::precipitation());

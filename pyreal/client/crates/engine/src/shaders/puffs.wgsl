@@ -90,6 +90,32 @@ const FUME_BILLOW: vec2<f32> = vec2<f32>(0.3, 1.7);
 const FUME_GLOW: f32 = 0.25;
 const FUME_GLOW_HUE: f32 = 0.6;
 const FUME_GLOW_HEIGHT: f32 = 0.25;
+// A swamp vent's wisps (`puffs::WISP`), marched with steam: threads of its picture's colour rising
+// through a column over the vent, glowing faintly as retail adds its pictures. How thick a ball is
+// at full strength, how much of what is behind a step hides, how much light it gives back, how
+// brightly it glows (a share of its colour on screen, day or night), how white its threads are and
+// the least saturation of their hue (a picture's mean is paler than its threads).
+const PUFF_WISP: u32 = 11u;
+const WISP_THICKNESS: f32 = 2.0;
+const WISP_HIDES: f32 = 0.35;
+const WISP_ALBEDO: f32 = 0.25;
+const WISP_GLOW: f32 = 0.3;
+const WISP_WHITE: f32 = 0.2;
+const WISP_SATURATION: f32 = 0.7;
+// How tall its column stands (`puffs::WISP_HEIGHT`), how fast its threads rise, how fine they are
+// across (a metre) and how much longer along the rise, how thin, how slowly they curl and how far
+// they sway at the vent and at the top, metres.
+const WISP_HEIGHT: f32 = 3.6;
+const WISP_RISE: f32 = 0.6;
+const WISP_CELLS: f32 = 2.8;
+const WISP_STRETCH: f32 = 0.4;
+const WISP_SHARP: f32 = 5.0;
+const WISP_BOOST: f32 = 14.0;
+const WISP_CURL: f32 = 0.8;
+const WISP_SWAY: vec2<f32> = vec2<f32>(0.25, 1.4);
+// How long (metres) a step through it may be, and its most steps: its threads are thin.
+const WISP_STEP: f32 = 0.08;
+const WISP_STEPS: i32 = 40;
 
 // Acid: how thick a ball is through its heart at full strength (optical depth), the light it
 // scatters of what falls on it, and its own glow: the colour at its edge and at its heart, and how
@@ -219,6 +245,10 @@ fn puff_weight(i: u32) -> f32 {
     if (kind == PUFF_FUME) {
         return clamp(particles[i].alpha, 0.0, 1.0) * smoothstep(0.0, FUME_SWELL, puff_ball(i).w);
     }
+    // Wisps are as strong as retail's faint pictures, thinning up the column.
+    if (kind == PUFF_WISP) {
+        return clamp(particles[i].alpha, 0.0, 1.0) * mix(1.0, 0.4, age);
+    }
     if (kind != 0u) {
         return sqrt(clamp(particles[i].alpha, 0.0, 1.0)) * smoothstep(0.0, STEAM_SWELL, puff_ball(i).w);
     }
@@ -257,6 +287,9 @@ fn puff_thickness(kind: u32) -> f32 {
     if (kind == PUFF_FUME) {
         return FUME_THICKNESS;
     }
+    if (kind == PUFF_WISP) {
+        return WISP_THICKNESS;
+    }
     return select(ACID_THICKNESS, STEAM_THICKNESS, kind != 0u);
 }
 
@@ -266,7 +299,7 @@ fn steam_tint(kind: u32, material: u32) -> vec4<f32> {
     if (kind == PUFF_SNOW) {
         return vec4<f32>(SNOW_RIME, SNOW_GLOW);
     }
-    if (kind != 2u && kind != PUFF_HAZE && kind != PUFF_GAS && kind != PUFF_FUME) {
+    if (kind != 2u && kind != PUFF_HAZE && kind != PUFF_GAS && kind != PUFF_FUME && kind != PUFF_WISP) {
         return vec4<f32>(0.97, 0.98, 1.0, 0.0);
     }
     let m = materials[material];
@@ -277,6 +310,9 @@ fn steam_tint(kind: u32, material: u32) -> vec4<f32> {
     // Fume keeps its picture's own colour, dark as it is: retail draws it unlit.
     if (kind == PUFF_FUME) {
         return vec4<f32>(c, FUME_GLOW);
+    }
+    if (kind == PUFF_WISP) {
+        return vec4<f32>(c, WISP_GLOW);
     }
     let top = max(max(c.r, max(c.g, c.b)), 1e-4);
     if (kind == PUFF_HAZE) {
@@ -298,6 +334,9 @@ fn steam_shape(at: vec3<f32>, rho: f32, kind: u32) -> vec3<f32> {
     let time = frame.wind.w;
     if (kind == PUFF_SNOW) {
         return snow_shape(at, rho, time);
+    }
+    if (kind == PUFF_WISP) {
+        return wisp_shape(at, time);
     }
     var rise = select(STEAM_RISE, -FROST_SINK, kind == 2u);
     var churn = STEAM_CHURN;
@@ -351,6 +390,27 @@ fn snow_shape(at: vec3<f32>, rho: f32, time: f32) -> vec3<f32> {
     let toward = clamp((puff_fbm3(q + frame.sun_dir.xyz * STEAM_LOBE * 2.0) - 0.5) * 2.6 + 0.5, 0.0, 1.0);
     let fold = clamp(1.0 + (n - toward) * STEAM_FOLD * min(rho, 1.5), 0.5, 1.5);
     return vec3<f32>(keep, fold, mix(1.0, fold, 0.5));
+}
+
+// A vent's wisps at `at`, as steam's churn: the share of its column kept (x) as threads rising
+// through it, swaying and curling more the higher they are, whole at the vent and broken into
+// pieces above.
+fn wisp_shape(at: vec3<f32>, time: f32) -> vec3<f32> {
+    let p = at - puff_from;
+    let h = clamp(p.z / WISP_HEIGHT, 0.0, 1.0);
+    let z = p.z - time * WISP_RISE;
+    let sway = vec2<f32>(smoke_value(vec3<f32>(p.xy * 0.7, z * WISP_CURL)),
+                         smoke_value(vec3<f32>(p.yx * 0.7 + 7.3, z * WISP_CURL + 3.1))) - 0.5;
+    let xy = p.xy + sway * mix(WISP_SWAY.x, WISP_SWAY.y, h);
+    // Where two of the noise's ridges cross, long along the rise and thin across it, are the
+    // threads.
+    let q = vec3<f32>(xy * WISP_CELLS, z * WISP_CELLS * WISP_STRETCH);
+    let r1 = 1.0 - abs(2.0 * smoke_value(q) - 1.0);
+    let r2 = 1.0 - abs(2.0 * smoke_value(q * vec3<f32>(1.0, 1.0, 1.3) + vec3<f32>(17.1, 5.3, 9.7)) - 1.0);
+    let thread = pow(r1 * r2, WISP_SHARP);
+    let gaps = smoke_value(vec3<f32>(xy * 0.8, z * 0.6) + 31.7);
+    let whole = smoothstep(mix(0.1, 0.5, h), mix(0.4, 0.8, h), gaps);
+    return vec3<f32>(thread * whole * WISP_BOOST, 1.0, 1.0);
 }
 
 // Ball `i`'s drop, if it drips: its centre and how far through its fall (w; -1: none).
@@ -619,7 +679,8 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
         return gate_volume(in);
     }
     // Smoke and dust march their own way (`smoke.wgsl`).
-    if (kind >= PUFF_SMOKE && kind != PUFF_SNOW && kind != PUFF_HAZE && kind != PUFF_GAS && kind != PUFF_FUME) {
+    if (kind >= PUFF_SMOKE && kind != PUFF_SNOW && kind != PUFF_HAZE && kind != PUFF_GAS && kind != PUFF_FUME
+        && kind != PUFF_WISP) {
         return smokes_volume(in);
     }
     let eye = frame.camera.xyz;
@@ -787,7 +848,8 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     let steam = kind != 0u;
     if (has(F_LAMPS) && !steam) {
         let bits = select(0u, G_INDOOR, indoor);
-        lamps = lamp_light(mid, -dir, -dir, 1.0, vec3<f32>(0.0), bits, depth, px, false).diffuse * ACID_LAMPS;
+        lamps = lamps_held_open(lamp_light(mid, -dir, -dir, 1.0, vec3<f32>(0.0), bits, depth, px, false).diffuse
+            * ACID_LAMPS, indoor);
     }
     // Steam takes the lamps at a few heights over where its body stands, alike over all its
     // pixels and from frame to frame, blended by nearness as it is marched.
@@ -795,7 +857,7 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     var lamp_of: array<vec3<f32>, STEAM_LAMP_POINTS>;
     // Gas, low over its vent, takes them at one, halfway up.
     var lamp_balls = select(0u, STEAM_LAMP_POINTS, steam && kind != PUFF_HAZE && has(F_LAMPS));
-    if (kind == PUFF_GAS || kind == PUFF_FUME) {
+    if (kind == PUFF_GAS || kind == PUFF_FUME || kind == PUFF_WISP) {
         lamp_balls = min(lamp_balls, 1u);
     }
     // As high as its balls stand over its body, no higher: a vent's steam takes no lamp from the
@@ -810,7 +872,7 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     let lamp_span = clamp(top * 0.5, 0.25, max(steam_reach, 0.5));
     let heights = array<f32, STEAM_LAMP_POINTS>(0.3, 1.0, 2.0);
     for (var k = 0u; k < lamp_balls; k++) {
-        let h = select(heights[k], 1.0, kind == PUFF_GAS || kind == PUFF_FUME);
+        let h = select(heights[k], 1.0, kind == PUFF_GAS || kind == PUFF_FUME || kind == PUFF_WISP);
         let b = vec4<f32>(puff_from + vec3<f32>(0.0, 0.0, h * lamp_span), lamp_span);
         lamp_at[k] = b;
         let c = frame.view_proj * vec4<f32>(b.xyz, 1.0);
@@ -819,8 +881,9 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
             at = clamp(vec2<f32>(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5) * frame.params.zw,
                        vec2<f32>(0.0), frame.params.zw - 1.0);
         }
-        lamp_of[k] = lamp_light(b.xyz, -dir, -dir, 1.0, vec3<f32>(0.0), G_VOLUME | select(0u, G_INDOOR, indoor),
-                                max(view_depth_at(b.xyz), 0.1), at, false).diffuse;
+        lamp_of[k] = lamps_held_open(lamp_light(b.xyz, -dir, -dir, 1.0, vec3<f32>(0.0),
+                                G_VOLUME | select(0u, G_INDOOR, indoor), max(view_depth_at(b.xyz), 0.1), at,
+                                false).diffuse, indoor);
     }
     var tint = vec4<f32>(1.0, 1.0, 1.0, 0.0);
     var steam_sun = sun * sun_vis * smoothstep(-0.05, 0.05, frame.sun_dir.z);
@@ -851,6 +914,9 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
     if (kind == PUFF_GAS && gas_sinks) {
         // Heavy gas's tongue is thin: a step no longer than it, to a most.
         steps = clamp(i32(ceil((t1 - t0) / GAS_POOL_STEP)), steps, GAS_POOL_STEPS);
+    }
+    if (kind == PUFF_WISP) {
+        steps = clamp(i32(ceil((t1 - t0) / WISP_STEP)), steps, WISP_STEPS);
     }
     let dt = (t1 - t0) / f32(steps);
     var t = t0 + dt * fract(ign(px) + frame.wind.w * 7.31);
@@ -911,6 +977,16 @@ fn puff_seen(in: PuffOut) -> vec4<f32> {
                 let foot = exp(-max(x.z - puff_from.z, 0.0) / FUME_GLOW_HEIGHT);
                 lit = max(world, colour / pre)
                     + mix(vec3<f32>(luma(hue)), hue, FUME_GLOW_HUE) * (tint.w / pre) * foot * shape.z;
+            }
+            if (kind == PUFF_WISP) {
+                // Wisps glow faintly of their colour as retail adds its pictures, day or night, and
+                // take a little of the light round them; they hide little of what is behind.
+                let hue = colour / max(max(colour.r, max(colour.g, colour.b)), 1e-4);
+                let sat = max(1.0 - min(hue.r, min(hue.g, hue.b)), 1e-4);
+                let deep = vec3<f32>(1.0) - (vec3<f32>(1.0) - hue) * max(WISP_SATURATION / sat, 1.0);
+                let pink = mix(deep, vec3<f32>(1.0), WISP_WHITE);
+                lit = (steam_sun * sunlit + sky * skylit + lamp) * pink * WISP_ALBEDO + pink * (tint.w / pre);
+                hides = WISP_HIDES;
             }
             if (kind == PUFF_HAZE) {
                 // Haze is its own glow, as retail adds its pictures, and hides little of what is

@@ -257,7 +257,7 @@ fn pool_light(world: vec3<f32>, n: vec3<f32>, v: vec3<f32>, px: vec2<f32>, indoo
     if (has(F_LAMPS)) {
         let lamp = lamp_light(world, n, v, shine, vec3<f32>(POOL_F0), select(0u, G_INDOOR, indoor),
                               depth, px, false);
-        out.falling += lamp.diffuse;
+        out.falling += select(lamps_held(lamp.diffuse, out.falling), lamp.diffuse, indoor);
         out.glints = lamp.specular * pre;
     }
     if (has(F_GI)) {

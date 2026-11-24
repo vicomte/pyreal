@@ -197,6 +197,18 @@ pub struct Spill {
     pub at: Vec3,
 }
 
+/// A setup's basin water ([`pool_faces`]) and where its own streams meet it ([`spills`]).
+pub type Pools = (Vec<PoolFace>, Vec<Spill>);
+
+/// A client's object's jets and rings gathered for the next frame ([`body_jets`]): where it
+/// stands, its cell slot and its pieces.
+#[derive(Debug, Clone)]
+pub struct BodyJets {
+    origin: Vec3,
+    cell: u32,
+    pieces: Vec<[u8; PIECE]>,
+}
+
 /// The feet of setup `setup`'s upright water faces that stand in its basins' water
 /// ([`pool_faces`]), one a stream.
 #[must_use]
@@ -460,6 +472,120 @@ fn sees(planes: &[Vec4], at: Vec3, r: f32) -> bool {
     planes.iter().all(|q| q.truncate().dot(at) + q.w >= -r)
 }
 
+/// The pieces of `driver`'s jets and of the rings where its model's own streams meet its basins
+/// (`pools`, `spills`), moved by `offset` into render space and seeded from `base`.
+fn driver_pieces(
+    driver: &pyreal_animation::MotionDriver,
+    pools: &[PoolFace],
+    spills: &[Spill],
+    cell: u32,
+    offset: Vec3,
+    base: u32,
+) -> Vec<[u8; PIECE]> {
+    let mut pieces = Vec::new();
+    let host = crate::asset::object::frame_affine(&driver.particle_parent_frame());
+    let moved = Affine3A::from_translation(offset);
+    let basins: Vec<Basin> = pools
+        .iter()
+        .filter_map(|f| {
+            let p = driver.part_array.parts.get(f.part)?;
+            Some(Basin::new(
+                moved * crate::body::part_affine(&p.pos, p.gfxobj_scale),
+                f,
+            ))
+        })
+        .collect();
+    let flags = if cell != 0 { INDOOR } else { 0 };
+    for (k, s) in spills.iter().enumerate() {
+        let Some(p) = driver.part_array.parts.get(s.part) else {
+            continue;
+        };
+        let at = (moved * crate::body::part_affine(&p.pos, p.gfxobj_scale)).transform_point3(s.at);
+        let path = Path {
+            at,
+            v: Vec3::ZERO,
+            pull: 0.0,
+        };
+        let seed = base.wrapping_add(u32::try_from(k).unwrap_or(0)) ^ 0x00C0_FFEE;
+        pieces.push(piece(
+            &path,
+            0.0,
+            0.0,
+            0.0,
+            hash(seed),
+            RING | flags,
+            at.extend(SPILL_RING),
+        ));
+    }
+    for (k, e) in driver.particles.iter().enumerate() {
+        let info = &e.info;
+        if !is_jet(info) {
+            continue;
+        }
+        let start = match driver.part_array.parts.get(e.part_index as usize) {
+            Some(p) if e.part_index != pyreal_animation::particles::NO_PART => {
+                crate::asset::object::frame_affine(&p.pos)
+            }
+            _ => host,
+        };
+        let local = matches!(
+            info.particle_type,
+            ParticleType::ParabolicLvga
+                | ParticleType::ParabolicLvgagr
+                | ParticleType::ParabolicLvla
+                | ParticleType::ParabolicLvlalr
+        );
+        let a = Vec3::new(info.a.x, info.a.y, info.a.z) * mid(info.min_a, info.max_a);
+        let v = if local { start.transform_vector3(a) } else { a };
+        let b = Vec3::new(info.b.x, info.b.y, info.b.z) * mid(info.min_b, info.max_b);
+        let b = if matches!(
+            info.particle_type,
+            ParticleType::ParabolicLvla | ParticleType::ParabolicLvlalr
+        ) {
+            start.transform_vector3(b)
+        } else {
+            b
+        };
+        let o = e.object_origin;
+        let at = Vec3::new(o.x, o.y, o.z)
+            + offset
+            + start.transform_vector3(
+                Vec3::new(info.offset_dir.x, info.offset_dir.y, info.offset_dir.z)
+                    * mid(info.min_offset, info.max_offset),
+            );
+        let seed = base.wrapping_add(u32::try_from(k).unwrap_or(0));
+        #[allow(clippy::cast_possible_truncation)] // seconds of a bubble's life
+        let life = info.lifespan as f32;
+        pieces.extend(jet_pieces(at, v, b.z, life, &basins, seed, flags));
+    }
+    pieces
+}
+
+/// The jets and rings of a client's object `driver` (seen through cell slot `cell`, moved by
+/// `offset` into render space) whose setup holds basin water (`pools`), for the next frame
+/// ([`crate::particles::Particles::body_jets`]); none for an object with no basin, such as a
+/// crystal that throws a fountain's bubbles.
+#[must_use]
+pub fn body_jets(
+    driver: &pyreal_animation::MotionDriver,
+    pools: &Pools,
+    cell: u32,
+    offset: Vec3,
+) -> Option<BodyJets> {
+    let (faces, spills) = pools;
+    if faces.is_empty() || spills.is_empty() && !driver.particles.iter().any(|e| is_jet(&e.info)) {
+        return None;
+    }
+    // Seeded by where it stands, the same every frame.
+    let o = driver.particle_parent_frame().origin;
+    let base = o.x.to_bits() ^ o.y.to_bits().rotate_left(11) ^ o.z.to_bits().rotate_left(22);
+    Some(BodyJets {
+        origin: Vec3::new(o.x, o.y, o.z) + offset,
+        cell,
+        pieces: driver_pieces(driver, faces, spills, cell, offset, base.wrapping_mul(16)),
+    })
+}
+
 /// The fountains' jets seen from `eye` inside `planes` (their cells' rectangles not empty, as
 /// `seen` says), as `fountains.wgsl` reads them: the header (how many, the clock) and the pieces.
 /// Nothing when jets are drawn as retail's bubbles.
@@ -472,91 +598,31 @@ pub fn frame_jets(
     clock: f64,
 ) -> Vec<u8> {
     let mut pieces: Vec<[u8; PIECE]> = Vec::new();
+    let near = |origin: Vec3, cell: u32| {
+        seen(cell) && origin.distance(eye) <= JET_REACH && sees(planes, origin, 4.0)
+    };
     if particles.fountains {
         for (n, h) in particles.hosts.iter().enumerate() {
             if h.spills.is_empty() && !h.driver.particles.iter().any(|e| is_jet(&e.info)) {
                 continue;
             }
-            if !seen(h.cell) {
+            let origin = h.driver.particle_parent_frame().origin;
+            if !near(Vec3::new(origin.x, origin.y, origin.z), h.cell) {
                 continue;
             }
-            let host = crate::asset::object::frame_affine(&h.driver.particle_parent_frame());
-            let origin = Vec3::from(host.translation);
-            if origin.distance(eye) > JET_REACH || !sees(planes, origin, 4.0) {
-                continue;
-            }
-            let basins: Vec<Basin> = h
-                .pools
-                .iter()
-                .filter_map(|f| {
-                    let p = h.driver.part_array.parts.get(f.part)?;
-                    Some(Basin::new(
-                        crate::body::part_affine(&p.pos, p.gfxobj_scale),
-                        f,
-                    ))
-                })
-                .collect();
-            let flags = if h.cell != 0 { INDOOR } else { 0 };
-            for (k, s) in h.spills.iter().enumerate() {
-                let Some(p) = h.driver.part_array.parts.get(s.part) else {
-                    continue;
-                };
-                let at = crate::body::part_affine(&p.pos, p.gfxobj_scale).transform_point3(s.at);
-                let path = Path {
-                    at,
-                    v: Vec3::ZERO,
-                    pull: 0.0,
-                };
-                let seed = u32::try_from(n * 16 + k).unwrap_or(0) ^ 0x00C0_FFEE;
-                pieces.push(piece(
-                    &path,
-                    0.0,
-                    0.0,
-                    0.0,
-                    hash(seed),
-                    RING | flags,
-                    at.extend(SPILL_RING),
-                ));
-            }
-            for (k, e) in h.driver.particles.iter().enumerate() {
-                let info = &e.info;
-                if !is_jet(info) {
-                    continue;
-                }
-                let start = match h.driver.part_array.parts.get(e.part_index as usize) {
-                    Some(p) if e.part_index != pyreal_animation::particles::NO_PART => {
-                        crate::asset::object::frame_affine(&p.pos)
-                    }
-                    _ => host,
-                };
-                let local = matches!(
-                    info.particle_type,
-                    ParticleType::ParabolicLvga
-                        | ParticleType::ParabolicLvgagr
-                        | ParticleType::ParabolicLvla
-                        | ParticleType::ParabolicLvlalr
-                );
-                let a = Vec3::new(info.a.x, info.a.y, info.a.z) * mid(info.min_a, info.max_a);
-                let v = if local { start.transform_vector3(a) } else { a };
-                let b = Vec3::new(info.b.x, info.b.y, info.b.z) * mid(info.min_b, info.max_b);
-                let b = if matches!(
-                    info.particle_type,
-                    ParticleType::ParabolicLvla | ParticleType::ParabolicLvlalr
-                ) {
-                    start.transform_vector3(b)
-                } else {
-                    b
-                };
-                let o = e.object_origin;
-                let at = Vec3::new(o.x, o.y, o.z)
-                    + start.transform_vector3(
-                        Vec3::new(info.offset_dir.x, info.offset_dir.y, info.offset_dir.z)
-                            * mid(info.min_offset, info.max_offset),
-                    );
-                let seed = u32::try_from(n * 16 + k).unwrap_or(0);
-                #[allow(clippy::cast_possible_truncation)] // seconds of a bubble's life
-                let life = info.lifespan as f32;
-                pieces.extend(jet_pieces(at, v, b.z, life, &basins, seed, flags));
+            let base = u32::try_from(n * 16).unwrap_or(0);
+            pieces.extend(driver_pieces(
+                &h.driver,
+                &h.pools,
+                &h.spills,
+                h.cell,
+                Vec3::ZERO,
+                base,
+            ));
+        }
+        for b in &particles.body_jets {
+            if near(b.origin, b.cell) {
+                pieces.extend_from_slice(&b.pieces);
             }
         }
     }

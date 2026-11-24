@@ -372,12 +372,13 @@ impl Previews {
             glam::Quat::IDENTITY
         };
         let eye = glam::Vec3::new(f.origin.x, f.origin.y, f.origin.z);
+        // Their particles as the world draws them: fire as fire, creatures' lights as light.
+        let (mut fire, mut lamps) = (Vec::new(), Vec::new());
         for o in &space.objects {
-            draws.extend(pyreal_engine::preview::particle_draws(
-                &engine.particles,
-                &o.body,
-                eye,
-            ));
+            let made = pyreal_engine::preview::particles(&mut engine.particles, &o.body, eye);
+            draws.extend(made.draws);
+            fire.extend(made.fire);
+            lamps.extend(made.lamps);
         }
         let view = glam::Mat4::look_to_rh(eye, q * glam::Vec3::Y, q * glam::Vec3::Z);
         let proj = glam::Mat4::perspective_rh(fov.clamp(0.01, 3.1), w / h, 0.05, 500.0);
@@ -394,6 +395,9 @@ impl Previews {
             light_dir,
             light: glam::Vec3::from(colour) * intensity * 0.5,
             ambient: glam::Vec3::new(a[0], a[1], a[2]).max(glam::Vec3::splat(0.25)),
+            #[allow(clippy::cast_possible_truncation)] // seconds the space has run
+            time: space.clock as f32,
+            lamps,
         };
         let fits = space
             .picture
@@ -423,6 +427,7 @@ impl Previews {
             &engine.materials,
             &pview,
             &draws,
+            &fire,
             picture,
         );
         Some(picture.create_view(&Default::default()))

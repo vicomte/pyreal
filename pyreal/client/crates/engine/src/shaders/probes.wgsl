@@ -133,7 +133,8 @@ fn hit_light(dir: vec3<f32>, hit: RayIntersection) -> vec4<f32> {
             }
         }
     }
-    // The lamps nearest the eye, wherever it looks, unshadowed.
+    // The lamps nearest the eye, wherever it looks, unshadowed; outdoors held under the sky's.
+    var outdoors = vec3<f32>(0.0);
     let count = u32(max(grid.base.w, 0));
     for (var k = 0u; k < count; k++) {
         let l = lamps[k];
@@ -144,13 +145,14 @@ fn hit_light(dir: vec3<f32>, hit: RayIntersection) -> vec4<f32> {
             let facing = max(dot(n, to / d), 0.0);
             if ((l.flags & 256u) == 0u && has(F_PHYSICAL)) {
                 // Outdoors, the same light the lamp throws directly.
-                e += outdoor_lamp(l, d) * outdoor_lamp_scale() * facing;
+                outdoors += outdoor_lamp(l, d) * outdoor_lamp_scale() * facing;
             } else {
                 // A room's lamp as it lights the room directly, held to its colour.
                 e += room_lamp(l, dot(to, to)) * facing;
             }
         }
     }
+    e += lamps_held(outdoors, e);
     var glow = vec3<f32>(0.0);
     if ((m.flags & M_LUMINOUS) != 0u) {
         glow = albedo * m.emissive.x * EMISSIVE_UNITS;

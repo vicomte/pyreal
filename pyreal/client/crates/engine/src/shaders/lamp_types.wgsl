@@ -9,7 +9,8 @@ struct Lamp {
     // the dats' own (its light held within a metre); bit 11 a flame found without a light; bit 12
     // magic, the dats' light of a colour no lamp burns (a portal's, a spell's); bit 13 an acid
     // body's glow; bit 14 a strike of lightning; bit 15 a portal's own light (`gates::lamp`); bit
-    // 16 a held thing's light (`glow::HELD_SHARE`); bit 17 a moving object's light, not burned in.
+    // 16 a held thing's light (`glow::HELD_SHARE`); bit 17 a moving object's light, not burned in;
+    // bit 18 a swamp vent's faint firelight (`lamps::LampKind::Vent`).
     flags: u32,
     // The client's light: colour times intensity.
     retail: vec3<f32>,
@@ -27,9 +28,9 @@ struct Lamp {
 // The most lamps a cluster holds.
 const CLUSTER_MOST: u32 = 48u;
 
-// A room's whole light (retail's one), scene units.
+// A room's whole light (retail's one) for its lamps, scene units (`renderer::room_lamp_scale`).
 fn room_whole() -> vec3<f32> {
-    return frame.indoor_light.rgb / max(pow(min(frame.indoor.rgb, vec3<f32>(1.0)), vec3<f32>(2.2)), vec3<f32>(1e-6));
+    return vec3<f32>(frame.indoor_light.w);
 }
 
 // A lamp's light in a room at `d2` metres squared, before the face it falls on: an inverse square
@@ -104,7 +105,7 @@ fn outdoor_lamp(l: Lamp, d: f32) -> vec3<f32> {
     var bright = clamp(top / 100.0, 0.3, 1.0);
     var reach = clamp(falloff * 2.0, 5.0, 16.0);
     if ((l.flags & 2048u) != 0u) {
-        bright = 0.9;
+        bright = 0.9 * outdoor_share(l);
         reach = clamp(falloff * 1.5, 4.0, 10.0);
     } else if ((l.flags & 255u) == 2u) {
         bright = 0.18;
@@ -136,8 +137,20 @@ fn outdoor_lamp(l: Lamp, d: f32) -> vec3<f32> {
     return colour * bright * (window * window / (d * d + OUTDOOR_CORE * OUTDOOR_CORE));
 }
 
+// How much of a lamp's outdoor light it gives: a vent's (`lamps::LampKind::Vent`) its intensity.
+fn outdoor_share(l: Lamp) -> f32 {
+    return select(1.0, l.intensity, (l.flags & 262144u) != 0u);
+}
+
 // The outdoor lamps' gain: the old renderer's units (the dats' linear ambient) at the sky's scale.
 fn outdoor_lamp_scale() -> f32 {
     let lin_base = pow(min(frame.ambient.rgb, vec3<f32>(1.0)), vec3<f32>(2.2));
     return OUTDOOR_GAIN * luma(frame.sky_light.rgb) / max(luma(lin_base), 1e-6);
+}
+
+// The share of the brightest outdoor lamp's light a metre off that the day leaves it over the
+// open sun and sky (`lamps_held`): a lamp's light sprite, its glow in the air, fades with it.
+fn lamp_day_share() -> f32 {
+    let near = outdoor_lamp_scale() / (1.0 + OUTDOOR_CORE * OUTDOOR_CORE);
+    return luma(lamps_held_open(vec3<f32>(near), false)) / max(near, 1e-12);
 }

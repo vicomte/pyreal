@@ -687,13 +687,66 @@ pub fn indoor_light(light: &SkyLight, open_to_sky: bool, lamps_lit: bool) -> gla
 #[must_use]
 pub fn indoor_physical(light: &SkyLight, open_to_sky: bool, lamps_lit: bool) -> glam::Vec3 {
     let retail = indoor_light(light, open_to_sky, lamps_lit);
-    let lin = |v: f32| pyreal_primitives::num::math::powf(v.clamp(0.0, 1.0), 2.2);
-    let lin = glam::Vec3::new(lin(retail.x), lin(retail.y), lin(retail.z));
+    let lin = glam::Vec3::new(linear(retail.x), linear(retail.y), linear(retail.z));
     if open_to_sky {
         lin * crate::sky::sky_lux(light.daylight) / crate::sky::SCENE_LUX
     } else {
         lin * ROOM_LUX / crate::sky::SCENE_LUX
     }
+}
+
+fn linear(v: f32) -> f32 {
+    pyreal_primitives::num::math::powf(v.clamp(0.0, 1.0), 2.2)
+}
+
+/// Scene units per unit of retail's linear light for a room's lamps: in a room open to the sky the
+/// outdoors' own, a sunlit face's sun and sky over retail's sum of them, so a lamp-lit room keeps
+/// retail's ratio to that face (never past the sky's scale); in any other [`ROOM_LUX`].
+#[must_use]
+pub fn room_lamp_scale(light: &SkyLight, open_to_sky: bool) -> f32 {
+    if !open_to_sky {
+        return ROOM_LUX / crate::sky::SCENE_LUX;
+    }
+    let luma = |c: glam::Vec3| c.dot(glam::Vec3::new(0.2126, 0.7152, 0.0722));
+    let sky = crate::sky::sky_lux(light.daylight) / crate::sky::SCENE_LUX;
+    let summed = (light.ambient + light.sun).min(glam::Vec3::ONE);
+    let summed = luma(glam::Vec3::new(
+        linear(summed.x),
+        linear(summed.y),
+        linear(summed.z),
+    ));
+    if summed <= 1e-6 {
+        return sky;
+    }
+    (luma(light.sun_light + light.sky_light) / summed).min(sky)
+}
+
+/// How far past retail's white the lamps may light a face outdoors at noon: 1 is retail's clamp.
+pub const DAY_GLOW: f32 = 1.25;
+
+/// The most a face outdoors takes from the sun, the sky and its lamps together, scene units: by day
+/// retail's white (a sunlit face's `sun_light` and `sky_light` over retail's clamped sum of them)
+/// times [`DAY_GLOW`], loosened as the sun goes, so the night's lamps keep their light.
+#[must_use]
+pub fn lamp_ceiling(light: &SkyLight, sun_light: glam::Vec3, sky_light: glam::Vec3) -> f32 {
+    let luma = |c: glam::Vec3| c.dot(glam::Vec3::new(0.2126, 0.7152, 0.0722));
+    let summed = (light.ambient + light.sun).min(glam::Vec3::ONE);
+    let summed = luma(glam::Vec3::new(
+        linear(summed.x),
+        linear(summed.y),
+        linear(summed.z),
+    ));
+    let white = luma(sun_light + sky_light) / summed.max(1e-6);
+    white * DAY_GLOW / crate::sky::sun_share(light.daylight).max(1e-6)
+}
+
+/// The outdoor lamps' light `lamps` (luma, scene units) on a face that has `own` from the sun and
+/// sky, eased under `ceiling` ([`lamp_ceiling`]) as retail clamps their sum (`lamps_held` in
+/// common.wgsl): by day a lamp shows in the shade and hardly on a sunlit face.
+#[must_use]
+pub fn lamps_held(lamps: f32, own: f32, ceiling: f32) -> f32 {
+    let room = (ceiling - own).max(1e-6);
+    lamps * room / (lamps + room)
 }
 
 /// The frame uniform's bytes.
@@ -4449,21 +4502,22 @@ impl Renderer {
         // Under the rain's closed sky the sun is mostly hidden; a storm's darkens the sky too.
         let storm = self.weather.storminess();
         let close = self.weather.rain.max(self.weather.snow);
+        // Falling snow's cloud is thicker still: the sun's shadows all but go.
+        let sun_light = light.sun_light
+            * (1.0 - 0.55 * close)
+            * (1.0 - 0.35 * storm)
+            * (1.0 - 0.35 * self.weather.snow);
+        let sky_light = light.sky_light
+            * (1.0 - 0.2 * close)
+            * (1.0 - 0.25 * storm)
+            * (1.0 + 12.0 * self.weather.flash);
+        let ceiling = lamp_ceiling(light, sun_light, sky_light);
         for v in [
-            // Falling snow's cloud is thicker still: the sun's shadows all but go.
-            (light.sun_light
-                * (1.0 - 0.55 * close)
-                * (1.0 - 0.35 * storm)
-                * (1.0 - 0.35 * self.weather.snow))
-                .extend(clock)
+            sun_light.extend(clock).to_array(),
+            sky_light.extend(light.sky_scale()).to_array(),
+            view.indoor_physical
+                .extend(room_lamp_scale(view.light, !view.sealed))
                 .to_array(),
-            (light.sky_light
-                * (1.0 - 0.2 * close)
-                * (1.0 - 0.25 * storm)
-                * (1.0 + 12.0 * self.weather.flash))
-                .extend(light.sky_scale())
-                .to_array(),
-            view.indoor_physical.extend(0.0).to_array(),
         ] {
             f32s(&mut frame, &v);
         }
@@ -4544,7 +4598,7 @@ impl Renderer {
             .blown_way()
             .filter(|_| storm > 0.0)
             .unwrap_or(glam::Vec2::ZERO);
-        let gale = [self.foliage_wind * storm, gale_way.x, gale_way.y, 0.0];
+        let gale = [self.foliage_wind * storm, gale_way.x, gale_way.y, ceiling];
         #[allow(clippy::cast_possible_truncation)]
         let last_clock = (self.last_clock.unwrap_or(self.clock) % 86_400.0) as f32;
         #[allow(clippy::cast_possible_truncation)]

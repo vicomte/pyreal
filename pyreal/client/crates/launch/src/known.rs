@@ -1,5 +1,6 @@
 //! The worlds whose servers want more than the end-of-retail client, which the launcher knows by
-//! their community-list id.
+//! their community-list id, and the worlds Pyreal lists itself ([`BUILT_IN_WORLDS`]), known by
+//! address.
 //!
 //! A few worlds run their own client: its own logon version, data files of their own over the
 //! end-of-retail ones, and a few rules of their own. Their servers say none of it, and the
@@ -11,7 +12,7 @@
 use pyreal_primitives::{EraFeatureOverrides, EraFeatures, EraId};
 
 use crate::datset::Iterations;
-use crate::world::{CustomDats, Emulator, Told, World};
+use crate::world::{CustomDats, Emulator, Endpoint, Told, World, WIRE_1999};
 
 /// One world the launcher knows more about than its list row says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,9 +147,77 @@ pub fn known(list_id: &str) -> Option<&'static KnownWorld> {
         .find(|k| k.list_id.eq_ignore_ascii_case(id))
 }
 
-/// Fill in what the table knows about `w`, if it knows `w`. The table speaks for the world: its
-/// era and systems are the world's, not a choice the player is asked to make.
+/// A world no list Pyreal reads carries, which Pyreal lists itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BuiltInWorld {
+    pub slug: &'static str,
+    pub name: &'static str,
+    pub host: &'static str,
+    pub port: u16,
+    pub emulator: Emulator,
+    pub era: EraId,
+    /// [`World::wire`].
+    pub wire: &'static str,
+    pub description: &'static str,
+}
+
+/// Every world Pyreal lists itself.
+pub const BUILT_IN_WORLDS: &[BuiltInWorld] = &[BuiltInWorld {
+    slug: "ac1999",
+    name: "AC1999",
+    host: "ac1999.cobradragon.com",
+    port: 9110,
+    // A GDLE fork.
+    emulator: Emulator::Gdle,
+    era: EraId::Launch,
+    wire: WIRE_1999,
+    description: "The AC1999 project's world, which plays the game as it was in November 1999 \
+                  and speaks that client's protocol.",
+}];
+
+impl BuiltInWorld {
+    /// The world record, as a list row would give it.
+    #[must_use]
+    pub fn world(&self) -> World {
+        let mut w = World::new(self.slug, self.name);
+        w.description = Some(self.description.to_owned());
+        w.endpoint = Some(Endpoint {
+            address: self.host.to_owned(),
+            port: self.port,
+            transport: None,
+        });
+        apply(&mut w);
+        w
+    }
+}
+
+/// The built-in world at `host` and `port`, the host compared without regard to case.
+#[must_use]
+pub fn built_in(host: &str, port: u16) -> Option<&'static BuiltInWorld> {
+    let host = host.trim();
+    BUILT_IN_WORLDS
+        .iter()
+        .find(|b| b.port == port && b.host.eq_ignore_ascii_case(host))
+}
+
+/// Fill in what the tables know about `w`, if they know `w`, and what its wire implies. The tables
+/// speak for the world: its era and systems are the world's, not a choice the player is asked to
+/// make. A 1999 world plays Launch, with the 1999 files.
 pub fn apply(w: &mut World) {
+    if let Some(b) = w
+        .endpoint
+        .as_ref()
+        .and_then(|e| built_in(&e.address, e.port))
+    {
+        w.emulator = b.emulator;
+        w.wire = Some(b.wire.to_owned());
+        w.era = Some(b.era.name().to_owned());
+        w.era_source = Some(Told::World);
+    }
+    if w.speaks_1999() && w.era.is_none() {
+        w.era = Some(EraId::Launch.name().to_owned());
+        w.era_source = Some(Told::World);
+    }
     let Some(k) = w.list_id.as_deref().and_then(known) else {
         return;
     };
@@ -231,6 +300,56 @@ mod tests {
             assert_eq!((k.era, k.world_base), (EraId::Infiltration, "modern"));
         }
         assert!(d.features.trinkets && d.features.cloaks && !d.features.ratings);
+    }
+
+    #[test]
+    fn ac1999_is_built_in_as_a_launch_world_of_the_1999_wire() {
+        let w = built_in("AC1999.cobradragon.com", 9110)
+            .expect("by address")
+            .world();
+        assert_eq!((w.slug.as_str(), w.name.as_str()), ("ac1999", "AC1999"));
+        let ep = w.endpoint.as_ref().unwrap();
+        assert_eq!(
+            (ep.address.as_str(), ep.port),
+            ("ac1999.cobradragon.com", 9110)
+        );
+        assert!(w.speaks_1999());
+        assert_eq!(w.era.as_deref(), Some("launch"));
+        assert_eq!(
+            crate::choices::required_set_for(&w),
+            crate::SetKind::Original,
+            "the 1999 files"
+        );
+        assert!(!w.may_answer_status_ping());
+        assert!(
+            built_in("ac1999.cobradragon.com", 9000).is_none(),
+            "another port"
+        );
+        let slugs: std::collections::HashSet<_> = BUILT_IN_WORLDS.iter().map(|b| b.slug).collect();
+        assert_eq!(slugs.len(), BUILT_IN_WORLDS.len());
+    }
+
+    /// The same address typed by hand is the built-in world; any world found to speak the 1999
+    /// wire plays Launch.
+    #[test]
+    fn a_world_at_a_built_in_address_or_of_the_1999_wire_plays_launch() {
+        let mut typed = World::new("custom-3", "My AC1999");
+        typed.endpoint = Some(Endpoint {
+            address: "ac1999.cobradragon.com".into(),
+            port: 9110,
+            transport: None,
+        });
+        apply(&mut typed);
+        assert!(typed.speaks_1999());
+        assert_eq!(typed.name, "My AC1999", "the player's name stands");
+        let mut found = World::new("custom-4", "Local AC1999");
+        found.wire = Some(WIRE_1999.into());
+        apply(&mut found);
+        assert_eq!(found.era.as_deref(), Some("launch"));
+        let mut later = World::new("custom-5", "Local");
+        later.wire = Some(crate::world::WIRE_LATER.into());
+        apply(&mut later);
+        assert_eq!(later.era, None);
     }
 
     #[test]

@@ -8,6 +8,9 @@
 //!
 //! A button sends the line a person would type. A command that acts on the selection first has
 //! the server appraise it afresh, since the server may otherwise act on an older target.
+//!
+//! On a world speaking the November 1999 client's protocol each line goes in that server's own
+//! form, and a control it has nothing for is left out.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,6 +20,7 @@ use pyreal_client_model::chat::text_type;
 use pyreal_client_model::cmd::admin::{
     admin_needs_selection, admin_uses_selection, AdminCommand, AdminGroup, ADMIN_COMMANDS,
 };
+use pyreal_client_model::cmd::admin_1999::{admin_on_1999, lines_on_1999, On1999, AC1999_HELP};
 use pyreal_client_model::cmd::weenies::{name_rank, Kind, Only, Weenie, WeenieList};
 use pyreal_client_runtime::weenie_list::WeenieListState;
 use pyreal_primitives::ObjectId;
@@ -189,6 +193,8 @@ pub struct AdminWindow {
     /// The powers as last sent: Cloak, Never Die, Vision and Run Boost. The client cannot see
     /// which is in force, so a toggle sends the other of what it last sent.
     powers: [bool; 4],
+    /// The world speaks the November 1999 client's protocol.
+    pub wire_1999: bool,
 }
 
 impl AdminWindow {
@@ -226,6 +232,12 @@ impl AdminWindow {
 
     /// Send `lines`, the appraisal first when they act on `target`.
     fn send(&mut self, lines: &[String], target: Option<ObjectId>, now: f64, out: &mut Outcome) {
+        let lines: Vec<String> = if self.wire_1999 {
+            lines.iter().flat_map(|l| lines_on_1999(l)).collect()
+        } else {
+            lines.to_vec()
+        };
+        let lines = lines.as_slice();
         if let Some(id) = target {
             out.requests.push(UiRequest::CancelAppraisal);
             out.requests.push(UiRequest::Appraise(id));
@@ -364,9 +376,28 @@ fn is_count(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The line a form builds, when all it needs is given.
-fn given(enough: bool, line: impl FnOnce() -> String) -> Option<String> {
-    enough.then(line)
+/// A control's command, and whether its boxes are filled in enough to send it.
+#[derive(Debug, Clone, Default)]
+struct Cmd {
+    line: String,
+    ready: bool,
+}
+
+impl From<Option<String>> for Cmd {
+    fn from(line: Option<String>) -> Self {
+        Self {
+            ready: line.is_some(),
+            line: line.unwrap_or_default(),
+        }
+    }
+}
+
+/// The line a form builds, ready when all it needs is given.
+fn given(enough: bool, line: impl FnOnce() -> String) -> Cmd {
+    Cmd {
+        line: line(),
+        ready: enough,
+    }
 }
 
 /// The window's drawing: everything a tab's rows need, and where the next one goes.
@@ -528,21 +559,35 @@ impl Form<'_, '_, '_> {
         true
     }
 
+    /// Whether this world's server has nothing for `line`, so its control is left out.
+    fn gone(&self, line: &str) -> bool {
+        self.a.wire_1999 && admin_on_1999(line) == On1999::Missing
+    }
+
+    /// A button sending `cmd`, left out where the server has nothing for it.
+    fn command(&mut self, label: &str, cmd: Cmd, danger: bool, target: Option<ObjectId>) -> bool {
+        if self.gone(&cmd.line) {
+            return false;
+        }
+        self.button(label, cmd.ready.then(|| vec![cmd.line]), danger, target)
+    }
+
     /// A button sending `line`.
-    fn act(&mut self, label: &str, line: Option<String>) -> bool {
-        self.button(label, line.map(|l| vec![l]), false, None)
+    fn act(&mut self, label: &str, line: impl Into<Cmd>) -> bool {
+        self.command(label, line.into(), false, None)
     }
 
     /// A button sending `line`, after a second press.
-    fn risky(&mut self, label: &str, line: Option<String>) -> bool {
-        self.button(label, line.map(|l| vec![l]), true, None)
+    fn risky(&mut self, label: &str, line: impl Into<Cmd>) -> bool {
+        self.command(label, line.into(), true, None)
     }
 
     /// A button sending `line`, about the selection, there being one.
-    fn on_target(&mut self, label: &str, line: Option<String>, danger: bool) {
+    fn on_target(&mut self, label: &str, line: impl Into<Cmd>, danger: bool) {
         let target = self.target;
-        let line = line.filter(|_| target.is_some()).map(|l| vec![l]);
-        self.button(label, line, danger, target);
+        let mut cmd = line.into();
+        cmd.ready &= target.is_some();
+        self.command(label, cmd, danger, target);
     }
 
     /// Power `n`'s button, lit while it was last turned on: a press sends `@<verb>` with the
@@ -550,6 +595,9 @@ impl Form<'_, '_, '_> {
     fn toggle(&mut self, label: &str, verb: &str, n: usize) {
         let on = self.a.powers[n];
         let line = format!("@{verb} {}", if on { "off" } else { "on" });
+        if self.gone(&line) {
+            return;
+        }
         let w = self.width(label);
         let r = self.slot(w);
         self.a.offered.push((line.clone(), r));
@@ -576,6 +624,7 @@ impl Windows {
             return;
         }
         self.admin.allowed = true;
+        self.admin.wire_1999 = state.wire_1999;
         if !self.is_open(WindowId::Map) {
             self.admin.map_armed = false;
         }
@@ -723,7 +772,11 @@ fn selection_strip(f: &mut Form<'_, '_, '_>, state: &GameState, strip: Rect) {
     ];
     let k = f.p.scale;
     f.p.fill(strip, 0x6010_0C08);
-    let buttons: f32 = ASKS
+    let asks: Vec<(&str, &str, bool)> = ASKS
+        .into_iter()
+        .filter(|(_, verb, _)| !f.gone(&format!("@{verb}")))
+        .collect();
+    let buttons: f32 = asks
         .iter()
         .map(|(label, _, danger)| {
             let w = if *danger {
@@ -767,7 +820,7 @@ fn selection_strip(f: &mut Form<'_, '_, '_>, state: &GameState, strip: Rect) {
         strip.right(),
         strip.y + 1.0 * k,
     );
-    for (label, verb, danger) in ASKS {
+    for (label, verb, danger) in asks {
         f.on_target(label, Some(format!("@{verb}")), danger);
     }
 }
@@ -1323,7 +1376,7 @@ fn players(f: &mut Form<'_, '_, '_>, state: &GameState, top: f32, foot: f32) {
     let k = f.p.scale;
     let (l0, l1, r0, r1) = columns(f);
     let (all_left, all_right) = (f.left, f.right);
-    if !f.a.online_asked {
+    if !f.a.online_asked && !f.gone("@listplayers") {
         f.a.online_asked = true;
         f.a.online_coming = Some(Vec::new());
         let now = f.ctx.time;
@@ -1415,27 +1468,35 @@ fn players(f: &mut Form<'_, '_, '_>, state: &GameState, top: f32, foot: f32) {
     f.act("Buff", given(named, || format!("@buff {name} 8")));
     f.act("Fellowship Buff", with("fellowbuff"));
     f.row();
-    let amount = f.field(field::AMOUNT, "Amount", 90.0);
-    let some = named && is_count(&amount);
-    f.act(
-        "Give XP",
-        given(some, || format!("@grantxp {name} {amount}")),
-    );
-    f.act(
-        "Give Luminance",
-        given(some, || format!("@grantluminance {name} {amount}")),
-    );
-    f.row();
-    f.heading("Set Access");
-    for level in LEVELS {
-        f.risky(
-            level,
-            given(named, || {
-                format!("@set-characteraccess {} {level}", one_word(&name))
-            }),
+    if !f.gone("@grantxp x 1") {
+        let amount = f.field(field::AMOUNT, "Amount", 90.0);
+        let some = named && is_count(&amount);
+        f.act(
+            "Give XP",
+            given(some, || format!("@grantxp {name} {amount}")),
         );
+        f.act(
+            "Give Luminance",
+            given(some, || format!("@grantluminance {name} {amount}")),
+        );
+        f.row();
     }
-    f.act("List Staff", Some("@watchmen".to_owned()));
+    if !f.gone("@set-characteraccess x 1") {
+        f.heading("Set Access");
+        for level in LEVELS {
+            f.risky(
+                level,
+                given(named, || {
+                    format!("@set-characteraccess {} {level}", one_word(&name))
+                }),
+            );
+        }
+        f.act("List Staff", Some("@watchmen".to_owned()));
+    }
+    // A 1999 world's server has none of the moderation commands.
+    if f.gone("@gag x") {
+        return;
+    }
 
     f.area(all_left, all_right, foot - 129.0 * k);
     f.heading("Moderation");
@@ -1526,20 +1587,24 @@ fn travel(f: &mut Form<'_, '_, '_>, top: f32) {
         "Go",
         given(!coords.is_empty(), || format!("@tele {coords}")),
     );
-    f.heading("Point of Interest");
-    let keep = f.width("Go") + f.width("List") + 10.0;
-    let w = f.rest(keep);
-    let poi = f.field(field::POI, "A place's name", w);
-    f.act("Go", given(!poi.is_empty(), || format!("@telepoi {poi}")));
-    f.act("List", Some("@telepoi list".to_owned()));
-    f.heading("Dungeon");
-    let keep = f.width("Go") + 5.0;
-    let w = f.rest(keep);
-    let dungeon = f.field(field::DUNGEON, "Name or landblock", w);
-    f.act(
-        "Go",
-        given(!dungeon.is_empty(), || format!("@teledungeon {dungeon}")),
-    );
+    if !f.gone("@telepoi list") {
+        f.heading("Point of Interest");
+        let keep = f.width("Go") + f.width("List") + 10.0;
+        let w = f.rest(keep);
+        let poi = f.field(field::POI, "A place's name", w);
+        f.act("Go", given(!poi.is_empty(), || format!("@telepoi {poi}")));
+        f.act("List", Some("@telepoi list".to_owned()));
+    }
+    if !f.gone("@teledungeon x") {
+        f.heading("Dungeon");
+        let keep = f.width("Go") + 5.0;
+        let w = f.rest(keep);
+        let dungeon = f.field(field::DUNGEON, "Name or landblock", w);
+        f.act(
+            "Go",
+            given(!dungeon.is_empty(), || format!("@teledungeon {dungeon}")),
+        );
+    }
 
     f.area(r0, r1, top);
     f.heading("Exact Location");
@@ -1554,9 +1619,14 @@ fn travel(f: &mut Form<'_, '_, '_>, top: f32) {
     if f.act("Fill From Where I Am", Some("@loc".to_owned())) {
         f.a.location_wanted = true;
     }
-    f.heading("Everyone");
-    f.risky("Bring All Players Here", Some("@teleallto".to_owned()));
+    if !f.gone("@teleallto") {
+        f.heading("Everyone");
+        f.risky("Bring All Players Here", Some("@teleallto".to_owned()));
+    }
 
+    if f.gone("@home") {
+        return;
+    }
     f.area(all_left, all_right, top + 220.0 * f.p.scale);
     f.heading("Recall");
     f.caption("Sanctuary", 84.0);
@@ -1610,6 +1680,9 @@ fn target_tab(f: &mut Form<'_, '_, '_>, top: f32) {
     f.on_target("Delete", Some("@delete".to_owned()), true);
 
     let lower = below + 150.0 * k;
+    if f.gone("@getproperty x") {
+        return;
+    }
     f.area(l0, l1, lower);
     f.heading("Property");
     let keep = f.width("Read") + 5.0;
@@ -1673,15 +1746,23 @@ fn myself(f: &mut Form<'_, '_, '_>, top: f32) {
         ("Vision", "adminvision", &[("On", "on"), ("Off", "off")]),
         ("Run Boost", "run", &[("On", "on"), ("Off", "off")]),
     ] {
+        if words
+            .iter()
+            .all(|(_, word)| f.gone(&format!("@{verb} {word}")))
+        {
+            continue;
+        }
         f.caption(caption, 84.0);
         for (label, word) in words {
             f.act(label, line(verb, word));
         }
         f.row();
     }
-    f.caption("Bypass", 84.0);
-    f.act("Portals", Some("@portal_bypass".to_owned()));
-    f.act("Housing", Some("@mrt".to_owned()));
+    if !f.gone("@portal_bypass") {
+        f.caption("Bypass", 84.0);
+        f.act("Portals", Some("@portal_bypass".to_owned()));
+        f.act("Housing", Some("@mrt".to_owned()));
+    }
     f.area(r0, r1, top);
     f.heading("Character");
     f.act("God", Some("@god".to_owned()));
@@ -1702,6 +1783,10 @@ fn myself(f: &mut Form<'_, '_, '_>, top: f32) {
         f.act(label, line("pk", word));
     }
     f.row();
+    if f.gone("@faction none") {
+        f.act("All Spells", Some("@addallspells".to_owned()));
+        return;
+    }
     f.caption("Faction", 64.0);
     let rank = f.field(field::FACTION_RANK, "Rank", 52.0);
     for (label, word) in [("None", "none"), ("CH", "ch"), ("EW", "ew"), ("RB", "rb")] {
@@ -1744,16 +1829,20 @@ fn loot_and_kits(f: &mut Form<'_, '_, '_>, top: f32) {
     };
     let in_world = f.act("In The World", line("create"));
     let in_pack = f.act("In My Pack", line("ci"));
-    let keep = f.width("Spawn Named") + 5.0;
-    let w = f.rest(keep);
-    let custom = f.field(field::CUSTOM_NAME, "Custom name", w);
-    let count = if amount.is_empty() { "1" } else { &amount };
-    let named = f.act(
-        "Spawn Named",
-        given(!weenie.is_empty() && !custom.is_empty(), || {
-            format!("@createnamed {weenie} {count} {custom}")
-        }),
-    );
+    let named = if f.gone("@createnamed x 1 y") {
+        false
+    } else {
+        let keep = f.width("Spawn Named") + 5.0;
+        let w = f.rest(keep);
+        let custom = f.field(field::CUSTOM_NAME, "Custom name", w);
+        let count = if amount.is_empty() { "1" } else { &amount };
+        f.act(
+            "Spawn Named",
+            given(!weenie.is_empty() && !custom.is_empty(), || {
+                format!("@createnamed {weenie} {count} {custom}")
+            }),
+        )
+    };
     if in_world || in_pack || named {
         f.a.remember_spawn(&weenie);
     }
@@ -1768,6 +1857,25 @@ fn loot_and_kits(f: &mut Form<'_, '_, '_>, top: f32) {
     f.row();
     let lower = f.y;
     f.area(l0, l1, lower);
+    if !f.gone("@ciloot 1") {
+        loot_and_salvage(f);
+    }
+    f.area(r0, r1, lower);
+    f.heading("Test Kits");
+    for (label, verb) in [
+        ("Weapons", "weapons"),
+        ("Sample Items", "inv"),
+        ("Stackables", "splits"),
+        ("Components", "comps"),
+        ("Food", "food"),
+        ("Currency", "currency"),
+    ] {
+        f.act(label, Some(format!("@{verb}")));
+    }
+}
+
+/// Rolling loot into the pack, and making a bag of salvage.
+fn loot_and_salvage(f: &mut Form<'_, '_, '_>) {
     f.heading("Loot");
     let tier = f.field(field::TIER, "Tier", 52.0);
     let items = f.field(field::LOOT_ITEMS, "Items", 52.0);
@@ -1787,18 +1895,6 @@ fn loot_and_kits(f: &mut Form<'_, '_, '_>, top: f32) {
         bag.filter(|_| !material.is_empty())
             .map(|b| format!("@cm {material} {b}").trim_end().to_owned()),
     );
-    f.area(r0, r1, lower);
-    f.heading("Test Kits");
-    for (label, verb) in [
-        ("Weapons", "weapons"),
-        ("Sample Items", "inv"),
-        ("Stackables", "splits"),
-        ("Components", "comps"),
-        ("Food", "food"),
-        ("Currency", "currency"),
-    ] {
-        f.act(label, Some(format!("@{verb}")));
-    }
 }
 
 /// The world: telling everyone, the server's state, and what it holds.
@@ -1820,6 +1916,54 @@ fn world(f: &mut Form<'_, '_, '_>, top: f32) {
     f.row();
     let upper = f.y;
     f.area(l0, l1, upper);
+    if !f.gone("@save-world") {
+        server_state(f);
+    }
+    f.area(r0, r1, upper);
+    f.heading("Status");
+    for (label, verb) in [
+        ("Server", "serverstatus"),
+        ("Performance", "serverperformance"),
+        ("Landblocks", "landblockperformance"),
+        ("Network", "netstats"),
+        ("Game Time", "time"),
+    ] {
+        f.act(label, Some(format!("@{verb}")));
+    }
+    f.row();
+    f.risky(
+        "Reload This Landblock",
+        Some("@reload-landblock".to_owned()),
+    );
+
+    let middle = upper + 140.0 * k;
+    if !f.gone("@setlbenviron list") {
+        f.area(l0, l1, middle);
+        environment(f);
+    }
+    f.area(r0, r1, middle);
+    f.heading("Event");
+    let w = f.rest(0.0);
+    let event = f.field(field::EVENT, "Event name", w);
+    f.row();
+    for (label, word) in [("Status", "status"), ("Start", "start"), ("Stop", "stop")] {
+        f.act(
+            label,
+            given(!event.is_empty(), || {
+                format!("@event {word} {}", one_word(&event))
+            }),
+        );
+    }
+
+    if f.gone("@showprops") {
+        return;
+    }
+    f.area(all_left, all_right, middle + 116.0 * k);
+    server_properties(f);
+}
+
+/// Saving, opening, closing and shutting down the world.
+fn server_state(f: &mut Form<'_, '_, '_>) {
     f.heading("Server");
     f.act("Save World", Some("@save-world".to_owned()));
     f.risky("Open", Some("@world open".to_owned()));
@@ -1844,25 +1988,10 @@ fn world(f: &mut Form<'_, '_, '_>, top: f32) {
         None,
     );
     f.act("Cancel Shutdown", Some("@cancel-shutdown".to_owned()));
-    f.area(r0, r1, upper);
-    f.heading("Status");
-    for (label, verb) in [
-        ("Server", "serverstatus"),
-        ("Performance", "serverperformance"),
-        ("Landblocks", "landblockperformance"),
-        ("Network", "netstats"),
-        ("Game Time", "time"),
-    ] {
-        f.act(label, Some(format!("@{verb}")));
-    }
-    f.row();
-    f.risky(
-        "Reload This Landblock",
-        Some("@reload-landblock".to_owned()),
-    );
+}
 
-    let middle = upper + 140.0 * k;
-    f.area(l0, l1, middle);
+/// The weather and light of this landblock or of every one.
+fn environment(f: &mut Form<'_, '_, '_>) {
     f.heading("Environment");
     let keep = f.width("List") + 5.0;
     let w = f.rest(keep);
@@ -1879,21 +2008,10 @@ fn world(f: &mut Form<'_, '_, '_>, top: f32) {
         given(!effect.is_empty(), || format!("@setglobalenviron {effect}")),
     );
     f.risky("Reset All", Some("@setglobalenviron".to_owned()));
-    f.area(r0, r1, middle);
-    f.heading("Event");
-    let w = f.rest(0.0);
-    let event = f.field(field::EVENT, "Event name", w);
-    f.row();
-    for (label, word) in [("Status", "status"), ("Start", "start"), ("Stop", "stop")] {
-        f.act(
-            label,
-            given(!event.is_empty(), || {
-                format!("@event {word} {}", one_word(&event))
-            }),
-        );
-    }
+}
 
-    f.area(all_left, all_right, middle + 116.0 * k);
+/// The server's properties: listed, read and written.
+fn server_properties(f: &mut Form<'_, '_, '_>) {
     f.heading("Server Properties");
     for (n, (label, _)) in PROPERTY_KINDS.iter().enumerate() {
         if f.choice(label, f.a.property_kind == n) {
@@ -1923,6 +2041,14 @@ fn world(f: &mut Form<'_, '_, '_>, top: f32) {
 fn all_commands(f: &mut Form<'_, '_, '_>, top: f32, foot: f32) {
     let k = f.p.scale;
     f.area(f.left, f.right, top);
+    if f.a.wire_1999 {
+        // The server has its own commands and lists them itself, a group at a time.
+        f.heading("This world's commands, as its server lists them");
+        for (label, line) in AC1999_HELP {
+            f.act(label, Some(line.to_owned()));
+        }
+        return;
+    }
     let label = format!("Group: {}", f.a.group.map_or("All", AdminGroup::name));
     let keep = f.width("Group: Properties") + 5.0;
     let w = f.rest(keep);

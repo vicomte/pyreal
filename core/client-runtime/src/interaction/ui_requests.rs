@@ -467,7 +467,7 @@ feedback,channel: 0x1A, text},
                     let focus =
                         pyreal_client_model::cmd::TalkFocus::from_raw(game.chat.talk_focus as u32)
                             .unwrap_or(pyreal_client_model::cmd::TalkFocus::Say);
-                    let outcome = self.chat.on_chat_command(&text, window, focus);
+                    let outcome = self.chat_command_outcome(&text, window, focus);
                     self.dispatch_chat_outcome(
                         outcome,
                         window,

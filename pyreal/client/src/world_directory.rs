@@ -1,6 +1,7 @@
 //! The list of known worlds on the desktop: the day's copy in the settings folder
 //! ([`pyreal_launch::serverlist`]), read again off the frame thread when it is old or the player
-//! asks. A read that fails leaves the copy as it was.
+//! asks. A read that fails leaves the copy as it was. The worlds Pyreal lists itself
+//! ([`pyreal_launch::known::BUILT_IN_WORLDS`]) are always on it.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -30,7 +31,7 @@ impl WorldDirectory {
         let mut me = Self {
             dir: dir.to_path_buf(),
             copy: None,
-            worlds: Vec::new(),
+            worlds: with_built_in(Vec::new()),
             reading: None,
             failed: false,
         };
@@ -41,12 +42,13 @@ impl WorldDirectory {
     }
 
     fn keep(&mut self, copy: ListCache) {
-        self.worlds = copy
-            .worlds()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|w| w.game == Game::Dereth && w.endpoint.is_some())
-            .collect();
+        self.worlds = with_built_in(
+            copy.worlds()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|w| w.game == Game::Dereth && w.endpoint.is_some())
+                .collect(),
+        );
         self.copy = Some(copy);
     }
 
@@ -171,6 +173,21 @@ impl WorldDirectory {
     }
 }
 
+/// `listed`, with each built-in world it does not already hold at that address after it.
+fn with_built_in(mut listed: Vec<World>) -> Vec<World> {
+    for b in pyreal_launch::known::BUILT_IN_WORLDS {
+        let there = listed.iter().any(|w| {
+            w.endpoint
+                .as_ref()
+                .is_some_and(|e| e.port == b.port && e.address.eq_ignore_ascii_case(b.host))
+        });
+        if !there {
+            listed.push(b.world());
+        }
+    }
+    listed
+}
+
 /// How long ago, in words, `secs` seconds is.
 fn ago(secs: u64) -> String {
     let (n, unit) = match secs {
@@ -236,12 +253,17 @@ mod tests {
     fn a_read_is_kept_and_a_failed_one_leaves_the_copy() {
         let d = tmp("keep");
         let mut dir = WorldDirectory::open(&d);
-        assert!(dir.view(&[], 100).worlds.is_empty());
+        let built_in = pyreal_launch::known::BUILT_IN_WORLDS.len();
+        assert_eq!(
+            dir.view(&[], 100).worlds.len(),
+            built_in,
+            "only the built-in worlds"
+        );
         dir.read_using(false, 100, community(&["Alpha", "Beta"]));
         assert!(dir.view(&[], 100).reading);
         dir.wait();
         let v = dir.view(&[], 160);
-        assert_eq!(v.worlds.len(), 2);
+        assert_eq!(v.worlds.len(), 2 + built_in);
         assert_eq!(v.worlds[0].name, "Alpha");
         assert_eq!(v.worlds[0].emulator, "ACE");
         assert_eq!(
@@ -255,11 +277,11 @@ mod tests {
         dir.read_using(true, 200, |_| Err("offline".into()));
         dir.wait();
         let v = dir.view(&[], 200);
-        assert_eq!(v.worlds.len(), 2);
+        assert_eq!(v.worlds.len(), 2 + built_in);
         assert!(v.note.unwrap().ends_with("The last refresh failed."));
         // The copy was saved, and a later run starts from it.
         let again = WorldDirectory::open(&d);
-        assert_eq!(again.view(&[], 200).worlds.len(), 2);
+        assert_eq!(again.view(&[], 200).worlds.len(), 2 + built_in);
         assert!(again.world("beta").is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -285,6 +307,7 @@ mod tests {
             emulator: pyreal_launch::Emulator::Unknown,
             status_url: None,
             imported: false,
+            wire: None,
         }];
         let v = dir.view(&mine, serverlist::MAX_AGE_SECS);
         let added: Vec<_> = v
@@ -292,7 +315,52 @@ mod tests {
             .iter()
             .map(|w| (w.name.as_str(), w.added))
             .collect();
-        assert_eq!(added, [("Alpha", false), ("Gamma", true)]);
+        assert_eq!(
+            added,
+            [("Alpha", false), ("Gamma", true), ("AC1999", false)]
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// AC1999 is on the list with no copy read, once, and adds as a 1999 world.
+    #[test]
+    fn the_built_in_worlds_are_listed_once_and_add_with_their_wire() {
+        let d = tmp("built-in");
+        let mut dir = WorldDirectory::open(&d);
+        let v = dir.view(&[], 0);
+        let row = v
+            .worlds
+            .iter()
+            .find(|w| w.slug == "ac1999")
+            .expect("listed");
+        assert_eq!(
+            (row.host.as_str(), row.port, row.emulator.as_str()),
+            ("ac1999.cobradragon.com", 9110, "GDLE")
+        );
+        let listed = dir.world("ac1999").expect("found by slug").clone();
+        let mut state = pyreal_launch::LauncherState::default();
+        let slug = state.add_listed_world(&listed).unwrap();
+        let w = state.world(&slug).unwrap().to_world();
+        assert!(w.speaks_1999());
+        assert_eq!(w.era.as_deref(), Some("launch"));
+        assert!(dir
+            .view(&state.worlds, 0)
+            .worlds
+            .iter()
+            .any(|w| w.slug == "ac1999" && w.added));
+        // A list that carries it already shows it once.
+        let list = b"<ArrayOfServerItem><ServerItem><name>AC1999</name><emu>GDL</emu>\
+            <server_host>AC1999.cobradragon.com</server_host><server_port>9110</server_port>\
+            </ServerItem></ArrayOfServerItem>";
+        dir.read_using(true, 0, |url| {
+            if url == serverlist::COMMUNITY_LIST_URL {
+                Ok(list.to_vec())
+            } else {
+                Err("no answer".into())
+            }
+        });
+        dir.wait();
+        assert_eq!(dir.view(&[], 0).worlds.len(), 1);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,0 +1,21 @@
+[package]
+name = "pyreal-wire1999"
+description = "The November 1999 client's wire (version 4.35752), spoken in process so Pyreal can play a server that speaks it, such as the AC1999 project's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+# A stray tests/*.rs cannot become a test target silently.
+autotests = false
+
+# Socket-free, with an injected clock: the caller owns the socket and the time.
+[dependencies]
+pyreal-dat.workspace = true
+pyreal-primitives.workspace = true
+pyreal-transport.workspace = true
+pyreal-protocol.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

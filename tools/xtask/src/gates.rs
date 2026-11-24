@@ -107,7 +107,7 @@ pub const GATES: &[Gate] = &[
     Gate {
         name: "transport",
         title: "Network transport",
-        crates: &["pyreal-client-net", "pyreal-transport"],
+        crates: &["pyreal-client-net", "pyreal-transport", "pyreal-wire1999"],
         harnesses: &[],
     },
     Gate {

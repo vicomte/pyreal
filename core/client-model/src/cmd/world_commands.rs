@@ -34,6 +34,52 @@ pub fn handler_available(features: &EraFeatures, handler: CommandHandler) -> boo
     }
 }
 
+/// Whether a world speaking the November 1999 client's protocol takes what a command handler
+/// sends. Its server takes only that client's actions: no AFK, no global squelch filters, no chat
+/// room options and no allegiance hometown recall.
+#[must_use]
+pub fn handler_on_1999_wire(handler: CommandHandler) -> bool {
+    use CommandHandler as H;
+    !matches!(
+        handler,
+        H::Afk
+            | H::Chat
+            | H::Notell
+            | H::Filter
+            | H::Unfilter
+            | H::Join
+            | H::Leave
+            | H::AllegianceHometown
+    )
+}
+
+/// The line `@help` adds on a world speaking the November 1999 client's protocol, whose server
+/// lists its own commands.
+pub const SERVER_HELP_1999: &str = "Type @emuhelp to see the commands this world's server has.";
+
+/// The general chat of the AC1999 project's server: `@g <text>` on a 1999 world, where Pyreal's
+/// own `@g` would speak to the fellowship. The text said, or `None` for any other line.
+#[must_use]
+pub fn general_chat_1999(line: &str) -> Option<&str> {
+    let body = line.trim_start();
+    let body = body.strip_prefix('@').or_else(|| body.strip_prefix('/'))?;
+    let rest = body
+        .strip_prefix('g')
+        .or_else(|| body.strip_prefix('G'))?
+        .strip_prefix(' ')?;
+    let rest = rest.trim();
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// Whether a world speaking the November 1999 client's protocol takes an `@allegiance`
+/// subcommand: its server has no allegiance information request and no hometown recall.
+#[must_use]
+pub fn allegiance_subcommand_on_1999_wire(sub: &str) -> bool {
+    !["info", "hometown", "ho"]
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(sub))
+}
+
 /// Whether the world has what an `@allegiance` subcommand (its first word) asks for.
 #[must_use]
 pub fn allegiance_subcommand_available(features: &EraFeatures, sub: &str) -> bool {
@@ -157,6 +203,24 @@ impl HelpScope {
         }
     }
 
+    /// The scope narrowed to a world speaking the November 1999 client's protocol: the commands
+    /// [`handler_on_1999_wire`] refuses are left out too.
+    #[must_use]
+    pub fn on_1999_wire(mut self, table: &[CommandEntry]) -> Self {
+        for e in table {
+            let name = e.name.to_ascii_lowercase();
+            if e.handler.is_some_and(|h| !handler_on_1999_wire(h)) && !self.hidden.contains(&name) {
+                self.hidden.push(name);
+            }
+        }
+        for sub in ["info", "hometown"] {
+            if !self.hidden_allegiance.contains(&sub) {
+                self.hidden_allegiance.push(sub);
+            }
+        }
+        self
+    }
+
     /// Whether help says nothing of the command `name` (typed without its `@`).
     #[must_use]
     pub fn hides(&self, name: &str) -> bool {
@@ -256,6 +320,32 @@ mod tests {
             },
             "the end of retail hides only the older name of the command that killed"
         );
+    }
+
+    #[test]
+    fn a_1999_world_also_hides_the_commands_its_server_does_not_take() {
+        let interp = CommandInterp::new();
+        let launch = HelpScope::of(&EraId::Launch.features(), interp.entries());
+        let wire = launch.clone().on_1999_wire(interp.entries());
+        for name in ["afk", "chat", "notell", "filter", "unfilter"] {
+            assert!(!launch.hides(name), "{name}");
+            assert!(wire.hides(name), "{name}");
+        }
+        for name in ["tell", "squelch", "friends", "lifestone", "help"] {
+            assert!(!wire.hides(name), "{name}");
+        }
+        assert!(launch.hidden.iter().all(|h| wire.hidden.contains(h)));
+        assert!(wire.hides_line("@allegiance info <name> - Requests information.\n"));
+        assert!(!launch.hides_line("@allegiance info <name> - Requests information.\n"));
+        assert!(!allegiance_subcommand_on_1999_wire("HOMETOWN"));
+        assert!(allegiance_subcommand_on_1999_wire("chat"));
+        assert!(handler_on_1999_wire(CommandHandler::Squelch));
+        assert_eq!(general_chat_1999("@g hello all"), Some("hello all"));
+        assert_eq!(general_chat_1999("/G  hi "), Some("hi"));
+        assert_eq!(general_chat_1999("@g"), None);
+        assert_eq!(general_chat_1999("@g_enable"), None);
+        assert_eq!(general_chat_1999("@guild hi"), None);
+        assert!(!handler_on_1999_wire(CommandHandler::Afk));
     }
 
     /// `@a`, `@guild` and `@gu` and the whole of `@allegiance chat` follow the chat room; kicking

@@ -348,6 +348,24 @@ impl Interaction {
         }
     }
 
+    /// What a typed line means. On a 1999 world `@g <text>` is the server's general chat, which
+    /// goes up as it is; everything else is the interpreter's.
+    pub(super) fn chat_command_outcome(
+        &mut self,
+        line: &str,
+        window: u32,
+        focus: pyreal_client_model::cmd::TalkFocus,
+    ) -> pyreal_client_model::cmd::CommandOutcome {
+        if self.wire_1999 {
+            if let Some(text) = pyreal_client_model::cmd::world_commands::general_chat_1999(line) {
+                return pyreal_client_model::cmd::CommandOutcome::ForwardVerbatim(format!(
+                    "@g {text}"
+                ));
+            }
+        }
+        self.chat.on_chat_command(line, window, focus)
+    }
+
     /// Finish one `on_chat_command` result. Physical chat input and `LoadFile` both enter
     /// this exact dispatcher; their only differences happen before it (history and file echo).
     /// It keeps the `UiRequest::ChatLine` routing intact: unknown-command Talk, `public_chat`,
@@ -367,6 +385,32 @@ impl Interaction {
     ) {
         use pyreal_client_model::cmd::CommandOutcome as O;
         match outcome {
+            // A 1999 world's server has its own admin commands: a line is sent in its form.
+            O::ForwardVerbatim(line) if self.wire_1999 => {
+                use pyreal_client_model::cmd::admin_1999::{admin_on_1999, On1999};
+                let lines = match admin_on_1999(&line) {
+                    On1999::Same => vec![line],
+                    On1999::Lines(lines) => lines,
+                    On1999::Missing => {
+                        game.scroll.add_feedback_to_scroll(
+                            "This command is not available in this world.",
+                            pyreal_client_model::chat::text_type::LOCAL_ERROR,
+                            true,
+                            window,
+                            pyreal_client_contract::feedback::Feedback::LOCAL,
+                        );
+                        self.stats.chat_command_lines += 1;
+                        self.stats.chat_commands_refused += 1;
+                        return;
+                    }
+                };
+                for message in lines {
+                    pyreal_client_model::RequestSink::send(
+                        req,
+                        Request::Talk(pyreal_protocol::comms::CommunicationTalk { message }),
+                    );
+                }
+            }
             O::ForwardVerbatim(line) => {
                 pyreal_client_model::RequestSink::send(
                     req,
@@ -468,6 +512,12 @@ impl Interaction {
         // world's announced systems decide, never its era's name.
         use pyreal_client_model::cmd::world_commands as wc;
         let available = wc::handler_available(&self.era_features, handler)
+            && (!self.wire_1999 || wc::handler_on_1999_wire(handler))
+            && (!self.wire_1999
+                || handler != H::Allegiance
+                || args
+                    .first()
+                    .is_none_or(|sub| wc::allegiance_subcommand_on_1999_wire(sub)))
             && (handler != H::Allegiance
                 || wc::allegiance_command_available(&self.era_features, args))
             && (handler != H::House
@@ -977,7 +1027,7 @@ impl Interaction {
                     let focus =
                         pyreal_client_model::cmd::TalkFocus::from_raw(game.chat.talk_focus as u32)
                             .unwrap_or(pyreal_client_model::cmd::TalkFocus::Say);
-                    let outcome = self.chat.on_chat_command(&line, source, focus);
+                    let outcome = self.chat_command_outcome(&line, source, focus);
                     self.dispatch_chat_outcome(
                         outcome,
                         source,
@@ -1139,7 +1189,20 @@ impl Interaction {
             // and re-splitting here would lose a name containing a run of spaces that `join_args_as_name`
             // preserves.
             H::Friends | H::FriendsAdd | H::FriendsRemove => {
+                // A 1999 server keeps the friends list itself and answers each command in chat.
+                let verb = |v: &str| {
+                    std::iter::once(v.to_owned())
+                        .chain(args.iter().cloned())
+                        .collect::<Vec<_>>()
+                };
                 if let Some(outcome) = match handler {
+                    H::Friends if self.wire_1999 => Some(game.do_friends_on_server(req, args)),
+                    H::FriendsAdd if self.wire_1999 => {
+                        Some(game.do_friends_on_server(req, &verb("add")))
+                    }
+                    H::FriendsRemove if self.wire_1999 => {
+                        Some(game.do_friends_on_server(req, &verb("remove")))
+                    }
                     H::Friends => Some(game.do_friends(req, args)),
                     H::FriendsAdd => Some(game.do_friends_add(req, args)),
                     H::FriendsRemove => Some(game.do_friends_remove(req, args)),
@@ -1148,7 +1211,11 @@ impl Interaction {
                     use pyreal_client_model::friends::FriendsOutcome as F;
                     match outcome {
                         // The three sending arms. The request is already in `req` -- these only count.
-                        F::Added(_) | F::RemovedById(_) | F::Cleared | F::OldList => {
+                        F::Added(_)
+                        | F::RemovedById(_)
+                        | F::RemovedByName(_)
+                        | F::Cleared
+                        | F::OldList => {
                             self.stats.friends_requests += 1;
                             // The remove-all-friends chat command prints its
                             // acknowledgement *before* any answer from the shard, on chat type 0.
@@ -1570,6 +1637,23 @@ impl Interaction {
                     self.stats.chat_command_lines += 1;
                     self.stats.chat_commands_refused += 1;
                 }
+                // A 1999 squelch covers one character and everything it says.
+                if self.wire_1999
+                    && (parsed.account
+                        || parsed.message_type
+                            != pyreal_client_model::chat::text_type::ALL_CHANNELS)
+                {
+                    game.scroll.add_feedback_to_scroll(
+                        SQUELCH_1999_REFUSAL,
+                        pyreal_client_model::chat::text_type::LOCAL_ERROR,
+                        true,
+                        self.chat.current_command_source,
+                        pyreal_client_contract::feedback::Feedback::LOCAL,
+                    );
+                    self.stats.chat_command_lines += 1;
+                    self.stats.chat_commands_refused += 1;
+                    return;
+                }
                 let add = handler == H::Squelch;
                 if parsed.account {
                     game.modify_account_squelch(req, add, &parsed.name);
@@ -1729,10 +1813,13 @@ impl Interaction {
             // The handler returns **true** on every path, including the `"Unknown command"` one, so
             // `do_command`'s failure event `0x26` never fires for it.
             H::Help => {
-                let scope = pyreal_client_model::cmd::world_commands::HelpScope::of(
+                let mut scope = pyreal_client_model::cmd::world_commands::HelpScope::of(
                     &self.era_features,
                     self.chat.entries(),
                 );
+                if self.wire_1999 {
+                    scope = scope.on_1999_wire(self.chat.entries());
+                }
                 for (text, ty) in self.chat.do_help_in(args, &scope) {
                     game.scroll.add_feedback_to_scroll(
                         &text,
@@ -1745,6 +1832,16 @@ impl Interaction {
                     if ty == pyreal_client_model::chat_cmd::REFUSAL_CHAT_TYPE {
                         self.stats.chat_commands_refused += 1;
                     }
+                }
+                if self.wire_1999 && args.is_empty() {
+                    game.scroll.add_feedback_to_scroll(
+                        pyreal_client_model::cmd::world_commands::SERVER_HELP_1999,
+                        0,
+                        true,
+                        self.chat.current_command_source,
+                        pyreal_client_contract::feedback::Feedback::LOCAL,
+                    );
+                    self.stats.chat_command_lines += 1;
                 }
             }
 
@@ -2062,6 +2159,9 @@ Format: Name : List of squelched message types.\n\
 const SQUELCH_REPLY_WITHOUT_TELLER: &str =
     "A player must @tell you before you can squelch them with this command.";
 const SQUELCH_TARGET_MISSING: &str = "You have not specified a squelch target.";
+/// A 1999 world squelches one character for everything it says, and nothing else.
+pub(crate) const SQUELCH_1999_REFUSAL: &str =
+    "In this world a squelch covers one character and everything they say.";
 
 #[derive(Debug, PartialEq, Eq)]
 struct SquelchCommandArgs {

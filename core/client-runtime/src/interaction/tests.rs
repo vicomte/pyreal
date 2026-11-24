@@ -53,6 +53,166 @@ fn launch_commands_are_refused_locally_and_later_eras_keep_their_actions() {
     }
 }
 
+/// A world speaking the 1999 protocol refuses the commands its server does not take, squelches
+/// only whole characters, and sends `@friends` to the server by name.
+#[test]
+fn a_1999_world_refuses_what_its_server_does_not_take() {
+    use pyreal_primitives::era::EraId;
+    let mut game = pyreal_client_model::World::new();
+    let mut inter = Interaction::new();
+    inter.era_features = EraId::Launch.features();
+    inter.wire_1999 = true;
+    let line = |inter: &mut Interaction, game: &mut pyreal_client_model::World, text: &str| {
+        inter.queue(
+            vec![],
+            vec![UiRequest::ChatLine {
+                window: 1,
+                text: text.into(),
+            }],
+        );
+        inter.run_ui_requests(game, false, ServerTime(1.0));
+    };
+    for command in ["@afk", "@notell off", "@filter -tell", "@chat off"] {
+        line(&mut inter, &mut game, command);
+        assert!(inter.take_pending_requests().is_empty(), "{command}");
+        assert_eq!(
+            game.scroll
+                .drain()
+                .last()
+                .map(|l| l.body.clone())
+                .as_deref(),
+            Some("This command is not available in this world."),
+            "{command}"
+        );
+    }
+    for command in ["@squelch -account Bravo", "@squelch -tell Bravo"] {
+        line(&mut inter, &mut game, command);
+        assert!(inter.take_pending_requests().is_empty(), "{command}");
+        assert_eq!(
+            game.scroll
+                .drain()
+                .last()
+                .map(|l| l.body.clone())
+                .as_deref(),
+            Some(chat::SQUELCH_1999_REFUSAL),
+            "{command}"
+        );
+    }
+    line(&mut inter, &mut game, "@squelch Bravo");
+    assert!(matches!(
+        inter.take_pending_requests().as_slice(),
+        [Request::ModifyCharacterSquelch(_)]
+    ));
+    line(&mut inter, &mut game, "@friends remove Bravo");
+    let requests = inter.take_pending_requests();
+    assert!(
+        matches!(requests.as_slice(), [Request::SocialSendFriendsCommand(m)] if m.cmd == 2 && m.player == "Bravo"),
+        "{requests:?}"
+    );
+
+    // The same lines on a Launch world over the later wire go out as before.
+    inter.wire_1999 = false;
+    line(&mut inter, &mut game, "@afk");
+    assert_eq!(inter.take_pending_requests().len(), 1);
+}
+
+/// A typed admin line goes to a 1999 world's server in its own form, and one it has nothing for
+/// is refused here.
+#[test]
+fn a_1999_world_takes_admin_lines_in_its_servers_form() {
+    use pyreal_primitives::era::EraId;
+    let mut game = pyreal_client_model::World::new();
+    let mut inter = Interaction::new();
+    inter.era_features = EraId::Launch.features();
+    inter.wire_1999 = true;
+    let mut say = |inter: &mut Interaction, text: &str| {
+        inter.queue(
+            vec![],
+            vec![UiRequest::ChatLine {
+                window: 1,
+                text: text.into(),
+            }],
+        );
+        inter.run_ui_requests(&mut game, false, ServerTime(1.0));
+        inter
+            .take_pending_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Talk(t) => Some(t.message),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        say(&mut inter, "@tele 37.3n,67.0w"),
+        ["@teleto 37.3N 67.0W"]
+    );
+    assert_eq!(
+        say(&mut inter, "@teleto Baron Lark"),
+        ["@tele \"Baron Lark\""]
+    );
+    assert_eq!(say(&mut inter, "@tele Bravo"), ["@tele Bravo"]);
+    assert_eq!(say(&mut inter, "@emuhelp"), ["@emuhelp"]);
+    assert!(
+        say(&mut inter, "@buff").is_empty(),
+        "nothing the server has"
+    );
+    inter.wire_1999 = false;
+    assert_eq!(say(&mut inter, "@tele 37.3n,67.0w"), ["@tele 37.3n,67.0w"]);
+}
+
+/// On a 1999 world `@g` is the server's general chat, the allegiance's information and hometown
+/// recall are refused, and `@help` points at the server's own lists.
+#[test]
+fn a_1999_world_has_its_servers_general_chat_and_help() {
+    use pyreal_primitives::era::EraId;
+    let mut game = pyreal_client_model::World::new();
+    let mut inter = Interaction::new();
+    inter.era_features = EraId::Launch.features();
+    inter.wire_1999 = true;
+    let say = |inter: &mut Interaction, game: &mut pyreal_client_model::World, text: &str| {
+        inter.queue(
+            vec![],
+            vec![UiRequest::ChatLine {
+                window: 1,
+                text: text.into(),
+            }],
+        );
+        inter.run_ui_requests(game, false, ServerTime(1.0));
+        let talk: Vec<String> = inter
+            .take_pending_requests()
+            .into_iter()
+            .filter_map(|r| match r {
+                Request::Talk(t) => Some(t.message),
+                _ => None,
+            })
+            .collect();
+        let last = game.scroll.drain().last().map(|l| l.body.clone());
+        (talk, last)
+    };
+    assert_eq!(
+        say(&mut inter, &mut game, "@g hello all").0,
+        ["@g hello all"]
+    );
+    assert_eq!(say(&mut inter, &mut game, "@g_enable").0, ["@g_enable"]);
+    for line in ["@allegiance info Bravo", "@allegiance hometown"] {
+        let (talk, last) = say(&mut inter, &mut game, line);
+        assert!(talk.is_empty(), "{line}");
+        assert_eq!(
+            last.as_deref(),
+            Some("This command is not available in this world."),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        say(&mut inter, &mut game, "@help").1.as_deref(),
+        Some(pyreal_client_model::cmd::world_commands::SERVER_HELP_1999)
+    );
+    inter.wire_1999 = false;
+    let (talk, _) = say(&mut inter, &mut game, "@g hello all");
+    assert!(talk.is_empty(), "the fellowship's channel on a later world");
+}
+
 /// The client reads the systems the server announces, not the era's name: a Launch world that
 /// announces the Marketplace recall has it, and an end-of-retail world that does not, has not.
 #[test]

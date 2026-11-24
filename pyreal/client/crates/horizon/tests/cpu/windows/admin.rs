@@ -741,3 +741,126 @@ fn a_search_s_results_stay_where_the_wheel_leaves_them_until_the_query_changes()
         "a new query starts at the top"
     );
 }
+
+fn admin_1999() -> GameState {
+    GameState {
+        wire_1999: true,
+        ..with_target(player(true))
+    }
+}
+
+/// On a world speaking the 1999 protocol, every button sends a command its server has, in the
+/// server's own form, and a section with nothing the server has is left out.
+#[test]
+fn on_a_1999_world_every_button_has_the_servers_form_and_the_rest_are_left_out() {
+    use pyreal_client_model::cmd::admin_1999::{admin_on_1999, lines_on_1999, On1999};
+    let state = admin_1999();
+    let mut seen = Vec::new();
+    for tab in 0..SECTIONS.len() {
+        let mut h = opened(&state, tab);
+        for id in [
+            field::NAME,
+            field::COORDS,
+            field::LOCATION,
+            field::WEENIE,
+            field::SPAWN_AMOUNT,
+            field::MESSAGE,
+            field::EVENT,
+        ] {
+            h.ui.windows.admin.set_field(id, "1");
+        }
+        h.frame(&state);
+        for (lines, _) in &h.ui.windows.admin.offered {
+            for line in lines.lines() {
+                assert_ne!(admin_on_1999(line), On1999::Missing, "{line} is offered");
+                seen.extend(lines_on_1999(line));
+            }
+        }
+    }
+    for wanted in [
+        "@teletome 1",
+        "@godly",
+        "@invis on",
+        "@spawnwcid 1 1 2",
+        "@spawnwcidinv 1 1",
+        "@global 1",
+        "@removethis",
+        "@getinfo",
+        "@explorehelp",
+    ] {
+        assert!(
+            seen.iter().any(|l| l == wanted),
+            "{wanted} not offered: {seen:?}"
+        );
+    }
+    for gone in [
+        "@boot",
+        "@ban",
+        "@buff",
+        "@home",
+        "@telepoi",
+        "@listplayers",
+        "@heal",
+    ] {
+        assert!(
+            !seen.iter().any(|l| l.starts_with(gone)),
+            "{gone} is offered: {seen:?}"
+        );
+    }
+}
+
+#[test]
+fn on_a_1999_world_the_map_teleport_goes_by_coordinates() {
+    let state = admin_1999();
+    let (mut h, middle) = map_open(&state);
+    let b = h.ui.windows.admin.map_button.expect("the button");
+    click_at(&mut h, &state, (b.x + b.w / 2.0, b.y + b.h / 2.0));
+    let sent = click_at(&mut h, &state, middle);
+    let lines = said(&sent);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let words: Vec<&str> = lines[0].split(' ').collect();
+    assert_eq!(words.len(), 3, "{lines:?}");
+    assert_eq!(words[0], "@teleto");
+    assert!(
+        words[1].ends_with('N') || words[1].ends_with('S'),
+        "{lines:?}"
+    );
+    assert!(
+        words[2].ends_with('E') || words[2].ends_with('W'),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn on_a_1999_world_a_players_name_goes_as_one_argument() {
+    let state = admin_1999();
+    let mut h = opened(&state, 1);
+    h.ui.windows.admin.set_field(field::NAME, "Baron Lark");
+    let out = press(&mut h, &state, "@teleto Baron Lark");
+    assert_eq!(said(&out), ["@tele \"Baron Lark\""]);
+}
+
+#[test]
+fn on_a_1999_world_nothing_on_a_tab_is_drawn_over_anything_else() {
+    let state = admin_1999();
+    for screen in [(1920.0, 1080.0), (800.0, 600.0)] {
+        for (tab, name) in SECTIONS.iter().enumerate() {
+            let mut h = Harness::with_built_in_art();
+            h.screen = screen;
+            h.frame(&state);
+            h.ui.windows.open(WindowId::Admin, 0.0);
+            h.ui.windows.admin.tab = tab;
+            h.frame(&state);
+            let laid_out = &h.ui.windows.admin.laid_out;
+            for (n, a) in laid_out.iter().enumerate() {
+                for b in &laid_out[n + 1..] {
+                    let apart = a.right() <= b.x
+                        || b.right() <= a.x
+                        || a.bottom() <= b.y
+                        || b.bottom() <= a.y;
+                    assert!(apart, "{name} at {screen:?}: {a:?} and {b:?} overlap");
+                }
+            }
+        }
+    }
+}

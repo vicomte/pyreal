@@ -99,6 +99,10 @@ pub struct CustomWorld {
     /// Carried over from the old launcher ([`import_launcher`]), whose passwords it may take.
     #[serde(default)]
     pub imported: bool,
+    /// The wire its server speaks ([`World::wire`]): from the list, or a probe's answer, kept so
+    /// it is asked once. Forgotten when the address changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<String>,
 }
 
 impl CustomWorld {
@@ -118,6 +122,7 @@ impl CustomWorld {
             port: self.port,
             transport: None,
         });
+        w.wire.clone_from(&self.wire);
         crate::known::apply(&mut w);
         w
     }
@@ -565,6 +570,7 @@ impl LauncherState {
             emulator,
             status_url: None,
             imported: false,
+            wire: None,
         });
         Ok(slug)
     }
@@ -590,6 +596,9 @@ impl LauncherState {
         } else {
             name.trim().to_owned()
         };
+        if !w.host.eq_ignore_ascii_case(&host) || w.port != port {
+            w.wire = None;
+        }
         w.host = host;
         w.port = port;
         Ok(true)
@@ -625,6 +634,7 @@ impl LauncherState {
             emulator: listed.emulator,
             status_url: listed.status_url.clone(),
             imported: false,
+            wire: listed.wire.clone(),
         });
         Ok(slug)
     }
@@ -687,6 +697,17 @@ impl LauncherState {
         true
     }
 
+    /// Keep the wire a probe found `slug`'s server speaks. Whether it changed.
+    pub fn remember_wire(&mut self, slug: &str, wire: &str) -> bool {
+        match self.worlds.iter_mut().find(|w| w.slug == slug) {
+            Some(w) if w.wire.as_deref() != Some(wire) => {
+                w.wire = Some(wire.to_owned());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The era `slug`'s status ping last named.
     #[must_use]
     pub fn remembered_era(&self, slug: &str) -> Option<&str> {
@@ -739,6 +760,7 @@ pub fn import_launcher(dir: &Path) -> Option<(LauncherState, Imported)> {
             .filter_map(|v| serde_json::from_value::<CustomWorld>(v.clone()).ok())
             .map(|w| CustomWorld {
                 imported: true,
+                wire: None,
                 ..w
             })
             .collect();
@@ -773,6 +795,7 @@ pub fn import_launcher(dir: &Path) -> Option<(LauncherState, Imported)> {
                     emulator: w.emulator,
                     status_url: w.status_url.clone(),
                     imported: true,
+                    wire: None,
                 })
             });
         match found {
@@ -919,6 +942,42 @@ mod tests {
         let (s, _) = LauncherState::load(&d);
         assert_eq!(s.worlds.len(), 1);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A probe's answer is kept with the world and read back as its wire; a new address asks again.
+    #[test]
+    fn a_world_keeps_the_wire_a_probe_found_until_its_address_changes() {
+        let mut s = LauncherState::default();
+        let slug = s
+            .add_custom_world("Local", "127.0.0.1", "9030", None, Emulator::Unknown)
+            .unwrap();
+        assert!(!s.world(&slug).unwrap().to_world().speaks_1999());
+        assert!(s.remember_wire(&slug, crate::world::WIRE_1999));
+        assert!(
+            !s.remember_wire(&slug, crate::world::WIRE_1999),
+            "no change"
+        );
+        let w = s.world(&slug).unwrap().to_world();
+        assert!(w.speaks_1999());
+        assert_eq!(w.era.as_deref(), Some("launch"));
+        let text = serde_json::to_string(&s).unwrap();
+        let back: LauncherState = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.world(&slug).unwrap().wire.as_deref(), Some("1999"));
+        assert!(s
+            .edit_custom_world(&slug, "Renamed", "127.0.0.1", "9030")
+            .unwrap());
+        assert!(
+            s.world(&slug).unwrap().wire.is_some(),
+            "a new name keeps it"
+        );
+        assert!(s
+            .edit_custom_world(&slug, "Renamed", "127.0.0.1", "9000")
+            .unwrap());
+        assert_eq!(s.world(&slug).unwrap().wire, None, "a new port asks again");
+        let listed = crate::known::BUILT_IN_WORLDS[0].world();
+        let added = s.add_listed_world(&listed).unwrap();
+        assert_eq!(added, "ac1999");
+        assert_eq!(s.world(&added).unwrap().wire.as_deref(), Some("1999"));
     }
 
     #[test]

@@ -11,6 +11,7 @@
 //! client has never heard of and getting the server's reply.
 
 pub mod admin;
+pub mod admin_1999;
 pub mod clouds;
 pub mod console;
 pub mod fog;

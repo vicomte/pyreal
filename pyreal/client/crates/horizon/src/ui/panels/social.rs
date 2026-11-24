@@ -294,8 +294,10 @@ impl Windows {
             ];
             let bw = (body.w - 5.0 * 6.0 * k) / 6.0;
             // A world without open fellowships has no such button.
+            // A 1999 server takes no new leader and no disbanding.
             let shown = buttons.into_iter().filter(|(label, ..)| {
-                state.era.is_none_or(|f| f.fellowship_open) || !matches!(*label, "Open" | "Close")
+                (state.era.is_none_or(|f| f.fellowship_open) || !matches!(*label, "Open" | "Close"))
+                    && !(state.wire_1999 && matches!(*label, "Make Leader" | "Disband"))
             });
             for (i, (label, enabled, request)) in shown.enumerate() {
                 #[allow(clippy::cast_precision_loss)]
@@ -365,7 +367,13 @@ impl Windows {
                 }
             }
             if friends.is_empty() {
-                p.text(&dim, list.x + 8.0 * k, list.y, "No friends yet.");
+                // A 1999 world's server keeps the list and tells it in chat.
+                let empty = if state.wire_1999 {
+                    "This world keeps the list. Show List asks for it."
+                } else {
+                    "No friends yet."
+                };
+                p.text(&dim, list.x + 8.0 * k, list.y, empty);
             }
             rows.end(p, ctx);
             let chosen = self
@@ -394,6 +402,31 @@ impl Windows {
                     name: self.friend_name.trim().to_owned(),
                 });
                 self.friend_name.clear();
+            }
+            if state.wire_1999 {
+                // The server answers by name, in chat: list, and remove whoever is typed.
+                let typed = self.friend_name.trim().to_owned();
+                let line = |text: String| UiRequest::ChatLineOnBehalf { text, window: 0 };
+                if kit::button(
+                    p,
+                    ctx,
+                    Rect::new(body.right() - 2.0 * bw - 8.0 * k, foot, bw, BUTTON_H * k),
+                    "Show List",
+                    true,
+                ) {
+                    out.requests.push(line("@friends".to_owned()));
+                }
+                if kit::button(
+                    p,
+                    ctx,
+                    Rect::new(body.right() - bw, foot, bw, BUTTON_H * k),
+                    "Remove",
+                    !typed.is_empty(),
+                ) {
+                    out.requests.push(line(format!("@friends remove {typed}")));
+                    self.friend_name.clear();
+                }
+                return;
             }
             let appear_offline = state.option(PlayerOption::AppearOffline);
             let cb = Rect::new(body.x, foot, body.w - 2.0 * bw - 16.0 * k, BUTTON_H * k);
@@ -685,13 +718,16 @@ impl Windows {
             });
             self.squelch_name.clear();
         }
-        if kit::button(
-            p,
-            ctx,
-            Rect::new(body.x + bw + 8.0 * k, foot, bw, BUTTON_H * k),
-            "Squelch Account",
-            !typed.is_empty(),
-        ) {
+        // A 1999 squelch covers one character.
+        if !state.wire_1999
+            && kit::button(
+                p,
+                ctx,
+                Rect::new(body.x + bw + 8.0 * k, foot, bw, BUTTON_H * k),
+                "Squelch Account",
+                !typed.is_empty(),
+            )
+        {
             out.requests.push(UiRequest::ModifyAccountSquelch {
                 add: true,
                 name: typed,
@@ -738,6 +774,7 @@ impl Windows {
         let shown = options.into_iter().filter(|(o, _)| {
             pyreal_client_contract::options::sheet::row_of_option(*o)
                 .is_none_or(|row| row.needs.met(state.era.as_ref()))
+                && (!state.wire_1999 || super::options::option_on_1999_wire(*o))
         });
         for (i, (o, label)) in shown.enumerate() {
             let (col, row) = (i % 2, i / 2);

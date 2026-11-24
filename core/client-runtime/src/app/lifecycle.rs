@@ -15,7 +15,7 @@ pub struct SessionStart {
     pub dat_dir: std::path::PathBuf,
     pub classic_dat_dir: Option<std::path::PathBuf>,
     /// The world's switches as the command line spells them, without the dashes: `world-base`,
-    /// `era`, `era-features`, `logon-version`, `world-profile` and `world-status`
+    /// `era`, `era-features`, `logon-version`, `world-profile`, `world-status` and `wire`
     /// ([`crate::config::Config::apply_world_switch`]).
     pub world: Vec<(String, String)>,
     /// The world's plugin policy, a URL or a file.
@@ -73,15 +73,28 @@ impl<S: Shell> App<S> {
             .cfg
             .connect_ports()
             .map_err(|e| StartupError::CommandLine(e.detail))?;
-        let mut link = NetLink::connect(
-            &self.cfg.host,
-            port,
-            client_port,
-            &self.cfg.account,
-            &self.cfg.vg_password,
-            seq,
-        )?;
-        link.net.set_logon_version(&self.cfg.logon_version);
+        let link = if self.cfg.wire_1999 {
+            NetLink::connect_1999(
+                &self.cfg.host,
+                port,
+                client_port,
+                &self.cfg.account,
+                &self.cfg.vg_password,
+                crate::net::login_iterations(&self.store),
+                &crate::net::world_name_1999(&self.cfg),
+            )?
+        } else {
+            let mut link = NetLink::connect(
+                &self.cfg.host,
+                port,
+                client_port,
+                &self.cfg.account,
+                &self.cfg.vg_password,
+                seq,
+            )?;
+            link.net.set_logon_version(&self.cfg.logon_version);
+            link
+        };
         self.interaction.set_extensions(Vec::new());
         self.link = Some(link);
         tracing::info!(
@@ -150,6 +163,7 @@ impl<S: Shell> App<S> {
         cfg.world_base = defaults.world_base;
         cfg.era_features = defaults.era_features;
         cfg.logon_version = defaults.logon_version;
+        cfg.wire_1999 = defaults.wire_1999;
         cfg.world_rules = defaults.world_rules;
         cfg.world_status = defaults.world_status;
         for (switch, value) in &start.world {
@@ -329,6 +343,7 @@ impl<S: Shell> App<S> {
             pyreal_client_contract::EraView::era_of_dats(self.hud.era.world_dats)
         });
         self.hud.era.announced_features = self.cfg.era_features;
+        self.hud.era.wire_1999 = self.cfg.wire_1999;
         self.hud.era.world_rules = self.cfg.world_rules.clone();
         self.objects.world.world_rules = self.cfg.world_rules.clone();
         self.host_state.world_rules = self.cfg.world_rules.clone();

@@ -94,6 +94,7 @@ the claim, and they are marked **(local)**.
 | [networking/02-reliability-and-flow.md](networking/02-reliability-and-flow.md) — sequencing, acknowledgement, retransmission, ordering, the interval clock, timeouts | wire format |
 | [networking/03-connection-state-machine.md](networking/03-connection-state-machine.md) — the handshake, the second port, connection states, every way a connection dies | wire format |
 | [networking/04-netblobs-and-queues.md](networking/04-netblobs-and-queues.md) — message blobs, blob ids, reassembly, the twelve queues, the send path | wire format |
+| [networking/07-1999-protocol.md](networking/07-1999-protocol.md) — the November 1999 client's wire, spoken in process: where the layer sits, how a world is known to speak it, the probe | mixed |
 
 #### Data formats
 

@@ -4,7 +4,8 @@
 //! **Depends on** the client shell (`pyreal-client-shell`), scene (`pyreal-scene`) and desktop
 //! host (`pyreal-desktop`), with host input replay
 //! (`pyreal-input`), shared types (`pyreal-primitives`) and
-//! console (`pyreal-console`) and shared application state (`pyreal-client-runtime`), and the plugin
+//! console (`pyreal-console`), shared application state (`pyreal-client-runtime`), the 1999
+//! wire's probe (`pyreal-wire1999`), and the plugin
 //! host and its engines (`pyreal-plugin-api`, `pyreal-plugin-host`, `pyreal-plugin-lua`,
 //! `pyreal-plugin-wasm`), the game data plugins read (`pyreal-dat`) and the player's settings the
 //! plugin host follows (`pyreal-client-contract`), what it knows before it connects

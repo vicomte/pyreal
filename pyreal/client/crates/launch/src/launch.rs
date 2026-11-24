@@ -114,6 +114,8 @@ pub struct WorldLaunch {
     pub logon_version: Option<String>,
     /// `--world-profile`: the rules the world's own client played by.
     pub world_profile: Option<String>,
+    /// `--wire`, for a world whose server speaks the 1999 wire.
+    pub wire: Option<String>,
 }
 
 /// The description of `world` for the client: [`WorldLaunch`].
@@ -127,6 +129,9 @@ pub fn describe(world: &World) -> WorldLaunch {
         era_features: era_feature_bits(world).map(|b| b.to_string()),
         logon_version: some(world.logon_version.as_deref()),
         world_profile: some(world.world_profile.as_deref()),
+        wire: world
+            .speaks_1999()
+            .then(|| crate::world::WIRE_1999.to_owned()),
     }
 }
 
@@ -141,6 +146,7 @@ impl WorldLaunch {
             ("era-features", &self.era_features),
             ("logon-version", &self.logon_version),
             ("world-profile", &self.world_profile),
+            ("wire", &self.wire),
         ]
         .into_iter()
         .filter_map(|(switch, v)| v.as_ref().map(|v| (switch, v.clone())))
@@ -362,6 +368,36 @@ mod tests {
         );
         let args = plan(&req(&w)).unwrap().args();
         assert_eq!(args[args.len() - words.len()..], words[..]);
+    }
+
+    #[test]
+    fn a_world_kept_by_hand_with_the_1999_wire_is_told_so() {
+        let row: crate::state::CustomWorld = serde_json::from_str(
+            r#"{"slug":"custom-1","name":"AC1999","host":"127.0.0.1","port":9030,"wire":"1999"}"#,
+        )
+        .expect("a hand-kept row reads");
+        let d = describe(&row.to_world());
+        assert_eq!(
+            d.args(),
+            ["--era", "launch", "--wire", "1999"],
+            "a 1999 world plays Launch"
+        );
+        let plain: crate::state::CustomWorld =
+            serde_json::from_str(r#"{"slug":"custom-2","name":"Other","host":"h","port":1}"#)
+                .expect("reads");
+        assert!(serde_json::to_string(&plain)
+            .unwrap()
+            .find("wire")
+            .is_none());
+        assert!(describe(&plain.to_world()).switches().is_empty());
+        let later = crate::state::CustomWorld {
+            wire: Some(crate::world::WIRE_LATER.into()),
+            ..plain
+        };
+        assert!(
+            describe(&later.to_world()).switches().is_empty(),
+            "the later wire is the default"
+        );
     }
 
     #[test]

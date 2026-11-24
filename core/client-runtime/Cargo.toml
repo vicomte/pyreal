@@ -32,6 +32,7 @@ pyreal-client-model.workspace = true
 # (`pyreal_client_net::client_session`) a socket and reads nothing else.
 pyreal-client-net = { workspace = true, default-features = true }
 pyreal-transport.workspace = true
+pyreal-wire1999.workspace = true
 pyreal-protocol.workspace = true
 pyreal-animation.workspace = true
 # The dat -> physics / animation adapters (`anim_assets`, `land_source`,

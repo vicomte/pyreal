@@ -294,6 +294,9 @@ pub enum FriendsOutcome {
     Added(String),
     /// `Request::SocialRemoveFriend(id)` — `0x0017`, after the typed name was resolved.
     RemovedById(ObjectId),
+    /// Friends command `0xF7CD` with action 2 and the typed name: a 1999 server removes one
+    /// friend by name.
+    RemovedByName(String),
     /// `Request::SocialClearFriends` — `0x0025`, `@friends remove -all`.
     Cleared,
     /// Send friends command `0xF7CD` with action 0 and an empty name for `@friends old`.
@@ -323,6 +326,15 @@ pub const MUST_NAME_THE_FRIEND_TO_REMOVE: &str =
 /// The client's last arm, for a sub-command that is none of
 /// `add` / `remove` / `online` / `old` / empty.
 pub const INVALID_FRIENDS_COMMAND: &str = "Invalid friends command specified.";
+
+/// The 1999 friends commands (`0xF7CD`): list, add, remove one by name, remove all.
+pub const SERVER_FRIENDS_LIST: u32 = 0;
+/// See [`SERVER_FRIENDS_LIST`].
+pub const SERVER_FRIENDS_ADD: u32 = 1;
+/// See [`SERVER_FRIENDS_LIST`].
+pub const SERVER_FRIENDS_REMOVE: u32 = 2;
+/// See [`SERVER_FRIENDS_LIST`].
+pub const SERVER_FRIENDS_REMOVE_ALL: u32 = 3;
 
 /// The client's three narrow literals. Their narrow-string construction distinguishes them from
 /// the three wide strings above. All four were verified against retail.
@@ -405,6 +417,53 @@ impl World {
         }
         if sub.is_empty() {
             return self.display_friends(false);
+        }
+        FriendsOutcome::Refused(INVALID_FRIENDS_COMMAND)
+    }
+
+    /// `@friends` on a world speaking the November 1999 client's protocol, whose server keeps the
+    /// list and answers in chat: each form is one friends command (`0xF7CD`). A bare `@friends`,
+    /// `online` and `old` list; `add`, `remove` and `remove -all` change the list by name.
+    pub fn do_friends_on_server(
+        &mut self,
+        req: &mut dyn RequestSink,
+        args: &[String],
+    ) -> FriendsOutcome {
+        let (sub, rest) = match args.split_first() {
+            Some((s, rest)) => (s.as_str(), rest),
+            None => ("", &[] as &[String]),
+        };
+        let mut command = |cmd: u32, player: &str| {
+            req.send(Request::SocialSendFriendsCommand(
+                pyreal_protocol::social::SocialSendFriendsCommand {
+                    cmd,
+                    player: player.to_owned(),
+                },
+            ));
+        };
+        let name = join_args_as_name(rest);
+        if sub.eq_ignore_ascii_case("add") {
+            if name.is_empty() {
+                return FriendsOutcome::Refused(MUST_NAME_THE_FRIEND_TO_ADD);
+            }
+            command(SERVER_FRIENDS_ADD, &name);
+            return FriendsOutcome::Added(name);
+        }
+        if sub.eq_ignore_ascii_case("remove") {
+            if name.is_empty() {
+                return FriendsOutcome::Refused(MUST_NAME_THE_FRIEND_TO_REMOVE);
+            }
+            if name.eq_ignore_ascii_case("-all") {
+                command(SERVER_FRIENDS_REMOVE_ALL, "");
+                self.player_system.social.friends.clear();
+                return FriendsOutcome::Cleared;
+            }
+            command(SERVER_FRIENDS_REMOVE, &name);
+            return FriendsOutcome::RemovedByName(name);
+        }
+        if sub.is_empty() || sub.eq_ignore_ascii_case("online") || sub.eq_ignore_ascii_case("old") {
+            command(SERVER_FRIENDS_LIST, "");
+            return FriendsOutcome::OldList;
         }
         FriendsOutcome::Refused(INVALID_FRIENDS_COMMAND)
     }
@@ -642,5 +701,50 @@ mod tests {
         assert_eq!(w.friend_id_by_name("baron lark"), Some(ObjectId(7)));
         assert_eq!(w.friend_id_by_name("+Baron Lark"), Some(ObjectId(7)));
         assert_eq!(w.friend_id_by_name("Aldric"), None, "0x563's arm");
+    }
+
+    #[test]
+    fn on_a_1999_world_each_friends_command_goes_to_the_server_by_name() {
+        let mut w = World::new();
+        let a = |words: &[&str]| words.iter().map(|&s| s.to_owned()).collect::<Vec<_>>();
+        let mut req = crate::RecordingRequests::default();
+        assert_eq!(
+            w.do_friends_on_server(&mut req, &a(&["add", "Baron", "Lark"])),
+            FriendsOutcome::Added("Baron Lark".to_owned())
+        );
+        assert_eq!(
+            w.do_friends_on_server(&mut req, &a(&["remove", "+Aldric"])),
+            FriendsOutcome::RemovedByName("Aldric".to_owned()),
+            "no list to find the name in: the server has it"
+        );
+        assert_eq!(
+            w.do_friends_on_server(&mut req, &a(&["remove", "-ALL"])),
+            FriendsOutcome::Cleared
+        );
+        assert_eq!(
+            w.do_friends_on_server(&mut req, &[]),
+            FriendsOutcome::OldList
+        );
+        assert_eq!(
+            w.do_friends_on_server(&mut req, &a(&["remove"])),
+            FriendsOutcome::Refused(MUST_NAME_THE_FRIEND_TO_REMOVE)
+        );
+        let sent: Vec<(u32, String)> = req
+            .0
+            .into_iter()
+            .map(|r| match r {
+                Request::SocialSendFriendsCommand(m) => (m.cmd, m.player),
+                other => panic!("only friends commands, not {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            vec![
+                (SERVER_FRIENDS_ADD, "Baron Lark".to_owned()),
+                (SERVER_FRIENDS_REMOVE, "Aldric".to_owned()),
+                (SERVER_FRIENDS_REMOVE_ALL, String::new()),
+                (SERVER_FRIENDS_LIST, String::new()),
+            ]
+        );
     }
 }

@@ -228,6 +228,9 @@ pub struct Interaction {
     /// The world's systems, stamped by the application each frame: a request for a system the
     /// world lacks is refused here.
     pub era_features: pyreal_primitives::era::EraFeatures,
+    /// The world speaks the November 1999 client's protocol: commands for actions its server does
+    /// not take are refused here.
+    pub wire_1999: bool,
     /// `WorldObjects`'s pick state and the geometry it sweeps.
     pub pick: WorldPicker,
     /// Search reason, reset at the end of every object-found notice.
@@ -934,6 +937,7 @@ impl Interaction {
         Self {
             client_build_id: CLIENT_BUILD_ID,
             era_features: pyreal_primitives::era::EraId::default().features(),
+            wire_1999: false,
             pick: WorldPicker::new(),
             ..Self::default()
         }

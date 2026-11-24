@@ -79,6 +79,7 @@ pub const ORDER_CONTRACT: &[&str] = &[
     "pyreal-rules",
     "pyreal-client-net",
     "pyreal-transport",
+    "pyreal-wire1999",
     "pyreal-audio",
     "pyreal-world-render",
     "pyreal-animation",

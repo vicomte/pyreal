@@ -1813,6 +1813,102 @@ mod tests {
         );
     }
 
+    /// A 1999 world's push reaches the patcher as an interrogation, its records as early saves,
+    /// then the begin naming them and the end, and lands in the overlay at the server's iteration.
+    #[test]
+    fn a_1999_push_lands_in_the_overlay_as_early_saves() {
+        use pyreal_wire1999::dats::{Begin, DatOut, DatPush, BEGIN, RECORD};
+        use pyreal_wire1999::strings::Writer;
+
+        let scratch = pyreal_dat::testing::ScratchDir::new("ddd-1999-push").expect("scratch");
+        let dir = scratch.path().to_path_buf();
+        std::fs::create_dir_all(dir.join("base")).expect("base folder");
+        let make = |target: DatTarget, set: u32, subset: u32, top: u32| {
+            let path = target.in_dir(&dir.join("base"));
+            let mut w = pyreal_dat::write::DatWriter::create(&path, 0x400, set, subset, 64 * 1024)
+                .expect("create");
+            let all: Vec<u32> = (1..=top).collect();
+            w.save(
+                pyreal_dat::ITERATION_LIST,
+                &pyreal_dat::iteration::encode(&all),
+                1,
+                0,
+                1,
+            )
+            .expect("iterations");
+            drop(w);
+            DatFile::open(&path).expect("the base")
+        };
+        let portal = make(DatTarget::Portal, 1, 0, 3);
+        let cell = make(DatTarget::Cell, 2, 1, 2);
+        let overlay = OverlayDir::new(&dir.join("overlay")).expect("an overlay folder");
+        let mut patcher = DddPatcher::new(Some(OverlayTarget::with_bases(
+            overlay.clone(),
+            [(DatTarget::Portal, portal), (DatTarget::Cell, cell)],
+            "127.0.0.1:9030",
+        )));
+
+        // A stored-block zlib stream, as the 1999 record carries.
+        let record = |id: u32, cache: u32, data: &[u8]| {
+            let len = u16::try_from(data.len()).unwrap();
+            let mut z = vec![0x78, 0x01, 0x01];
+            z.extend_from_slice(&len.to_le_bytes());
+            z.extend_from_slice(&(!len).to_le_bytes());
+            z.extend_from_slice(data);
+            z.extend_from_slice(&pyreal_dat::inflate::adler32(data).to_be_bytes());
+            let mut w = Writer::new(RECORD);
+            w.u32(id)
+                .u32(cache)
+                .u32(u32::try_from(z.len()).unwrap())
+                .u32(u32::from(len))
+                .bytes(&z)
+                .align();
+            w.into_inner()
+        };
+        let begin = Begin {
+            portal_iteration: 4,
+            portal_records: 1,
+            cell_iteration: 2,
+            cell_records: 1,
+            portal_bytes: 0,
+            cell_bytes: 0,
+        }
+        .write();
+        let mut push = DatPush::new((3, 2));
+        let mut out = Vec::new();
+        for (opcode, m) in [
+            (BEGIN, begin.clone()),
+            (BEGIN, begin),
+            (RECORD, record(0x0600_0002, 6, b"new texture")),
+            (RECORD, record(0xA9B4_FFFF, 0, b"new land")),
+        ] {
+            out.extend(push.on_message(opcode, &m).expect("reads"));
+        }
+        let mut ends = 0;
+        for o in out {
+            match o {
+                DatOut::Interrogation(_) => patcher.on_interrogation(),
+                DatOut::Begin(b) => assert!(patcher.on_begin(&b).1.send_end, "all early saves"),
+                DatOut::Data(d) => {
+                    let (outcome, _) = patcher.on_data(&d);
+                    assert!(outcome.wrote(), "{outcome:?}");
+                }
+                DatOut::End => {
+                    ends += 1;
+                    assert_eq!(patcher.on_end().applied, 2);
+                }
+            }
+        }
+        assert_eq!(ends, 1);
+        let portal = DatFile::open(&overlay.container(DatTarget::Portal)).expect("portal overlay");
+        assert_eq!(portal.iteration_list().expect("iterations"), [4]);
+        assert!(portal.entry(DataId(0x0600_0002)).is_some());
+        let cell = DatFile::open(&overlay.container(DatTarget::Cell)).expect("cell overlay");
+        assert!(cell.entry(DataId(0xA9B4_FFFF)).is_some());
+        drop(patcher);
+        drop(scratch);
+    }
+
     #[test]
     fn patch_records_and_completed_revisions_receive_wall_clock_dates() {
         let scratch =

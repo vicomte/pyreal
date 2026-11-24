@@ -154,6 +154,18 @@ fn the_logon_version_switch_replaces_1802_and_refuses_what_cannot_be_sent() {
 }
 
 #[test]
+fn the_wire_switch_picks_the_1999_wire_for_a_world() {
+    assert!(!parse(&[]).expect("parses").wire_1999);
+    assert!(parse(&["--wire", "1999"]).expect("parses").wire_1999);
+    assert!(!parse(&["--wire", "later"]).expect("parses").wire_1999);
+    assert!(parse(&["--wire", "2005"]).is_err());
+    let mut cfg = parse(&[]).expect("parses");
+    cfg.apply_world_switch("wire", "1999")
+        .expect("a world switch");
+    assert!(cfg.wire_1999);
+}
+
+#[test]
 fn the_world_profile_switch_takes_a_compiled_profile_and_refuses_any_other() {
     let none = parse(&[]).expect("parses");
     assert!(none.world_rules.is_end_of_retail());

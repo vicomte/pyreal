@@ -41,6 +41,78 @@ use pyreal_transport::flow::HANDSHAKE_RESEND;
 use pyreal_transport::wire::{PacketFlags, ParsedPacket, ProtoHeader, RECV_BUFFER_SIZE};
 use pyreal_transport::OutPacket;
 
+mod ac1999;
+pub use ac1999::{login_iterations, world_name_1999, Driver1999};
+
+/// The session's transport: the later wire, or the 1999 wire on a world that speaks it.
+///
+/// It reads as the later [`Net`], which a 1999 world leaves idle with no connection, so the
+/// later driver below and its tests reach it unchanged.
+#[derive(Debug)]
+pub struct LinkTransport {
+    later: Net,
+    ac1999: Option<Box<pyreal_wire1999::Link1999>>,
+}
+
+impl LinkTransport {
+    /// The later wire.
+    #[must_use]
+    pub fn later(net: Net) -> Self {
+        Self {
+            later: net,
+            ac1999: None,
+        }
+    }
+
+    /// The 1999 wire, with an idle later one beside it.
+    #[must_use]
+    pub fn ac1999(link: pyreal_wire1999::Link1999) -> Self {
+        Self {
+            later: Net::new(NetConfig::default()),
+            ac1999: Some(Box::new(link)),
+        }
+    }
+
+    /// The 1999 link, on a world that speaks it.
+    #[must_use]
+    pub fn link1999(&self) -> Option<&pyreal_wire1999::Link1999> {
+        self.ac1999.as_deref()
+    }
+
+    pub fn link1999_mut(&mut self) -> Option<&mut pyreal_wire1999::Link1999> {
+        self.ac1999.as_deref_mut()
+    }
+}
+
+impl std::ops::Deref for LinkTransport {
+    type Target = Net;
+    fn deref(&self) -> &Net {
+        &self.later
+    }
+}
+
+impl std::ops::DerefMut for LinkTransport {
+    fn deref_mut(&mut self) -> &mut Net {
+        &mut self.later
+    }
+}
+
+impl pyreal_primitives::Transport for LinkTransport {
+    fn send(&mut self, queue: pyreal_primitives::NetQueue, ordered: bool, payload: &[u8]) {
+        match self.ac1999.as_deref_mut() {
+            Some(link) => link.send(queue, ordered, payload),
+            None => self.later.send(queue, ordered, payload),
+        }
+    }
+
+    fn poll(&mut self) -> Option<pyreal_primitives::IncomingMessage> {
+        match self.ac1999.as_deref_mut() {
+            Some(link) => link.poll(),
+            None => self.later.poll(),
+        }
+    }
+}
+
 /// Anything that stops the network layer coming up.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientNetworkError {
@@ -54,6 +126,12 @@ pub enum ClientNetworkError {
     /// packed. The original client's narrow byte string cannot carry it either.
     #[error("Invalid or corrupted authentication")]
     BadCredential,
+    /// A 1999 world takes `account:password` in 20 characters at most.
+    #[error("The account name and password are too long for this world. Together they can have at most 19 characters.")]
+    CredentialTooLong,
+    /// A 1999 world takes neither a colon in the account name nor anything but plain characters.
+    #[error("This world takes only plain letters, numbers and punctuation in the account name and password, and no colon in the account name.")]
+    CredentialNotPlain,
 }
 
 /// The link state the client's connection spin loop waits on.
@@ -212,7 +290,7 @@ pub struct ClientNetwork {
     /// The session, holding the transport. Public because the frame loop reads its
     /// state and a test reads what it sent, matching the client's process-wide protocol facade.
     ///
-    pub session: Session<Net>,
+    pub session: Session<LinkTransport>,
     /// Client network authentication, filled during authentication initialization.
     auth: ConnectionAuthenticator,
     /// The client network's logon data.
@@ -253,6 +331,8 @@ pub struct ClientNetwork {
     /// failing, which the player is shown in a box before the process exits; one after it is a
     /// link that was up and went down.
     login_completed: bool,
+    /// The 1999 driver, on a world that speaks the 1999 wire.
+    ac1999: Option<Driver1999>,
 }
 
 impl ClientNetwork {
@@ -313,7 +393,7 @@ impl ClientNetwork {
             ..NetConfig::default()
         };
         Ok(Self {
-            session: Session::new(Net::new(config)),
+            session: Session::new(LinkTransport::later(Net::new(config))),
             auth,
             login: LoginState::new(),
             status: LinkStatus::Idle,
@@ -331,6 +411,7 @@ impl ClientNetwork {
             trace: crate::trace::net(),
             connected_pending: false,
             login_completed: false,
+            ac1999: None,
         })
     }
 
@@ -370,7 +451,18 @@ impl ClientNetwork {
     /// two-second snapshot; `None` otherwise. See [`pyreal_client_net::linkstatus`] for the arithmetic and
     /// for why the number is a ratio rather than a percentage.
     pub fn take_link_heartbeat(&mut self) -> Option<f64> {
+        if let Some(driver) = self.ac1999.as_mut() {
+            return driver.take_heartbeat();
+        }
         self.session.transport.take_heartbeat()
+    }
+
+    /// A time sync the transport took this frame. The 1999 wire's clock is not taken yet.
+    pub fn take_time_sync(&mut self) -> Option<f64> {
+        if self.ac1999.is_some() {
+            return None;
+        }
+        self.session.transport.take_time_sync()
     }
 
     /// The live packet-loss average, whether or not a
@@ -430,6 +522,9 @@ impl ClientNetwork {
     /// them: see `pyreal_client_net::net::Net::goodbye`.
     #[must_use]
     pub fn goodbye(&self) -> Vec<(Vec<u8>, SocketAddr)> {
+        if self.ac1999.is_some() {
+            return self.goodbye_1999();
+        }
         self.session
             .transport
             .goodbye()
@@ -444,6 +539,9 @@ impl ClientNetwork {
     /// per entry in the transport's connection list; a client that never connected queues none, and that is a
     /// number rather than a silence. `NetLink::log_off_server` is what puts them on the wire.
     pub fn log_off_server(&mut self) -> usize {
+        if self.ac1999.is_some() {
+            return self.log_off_1999();
+        }
         let n = self.session.transport.log_off_server();
         for (bytes, to) in self.session.transport.take_outgoing() {
             if let Some(to) = to.or(self.peer) {
@@ -460,6 +558,10 @@ impl ClientNetwork {
     /// (connect-request handling, step 1). Everything else goes to [`Net::feed`], whose rejections
     /// are silent — the client logs none of them and bumps its bad-packets-received counter.
     pub fn feed(&mut self, raw: &[u8], from: SocketAddr, now: LocalTime) {
+        if self.ac1999.is_some() {
+            self.feed_1999(raw, from, now);
+            return;
+        }
         let Ok(parsed) = ParsedPacket::parse(raw) else {
             return;
         };
@@ -705,6 +807,10 @@ impl ClientNetwork {
     /// Compatibility coarse adapter. App calls the split receive and packet-controller phases
     /// with `local_time`, not simulated `cur_time`; semantic queue delivery is separate.
     pub fn tick(&mut self, now: LocalTime) {
+        if self.ac1999.is_some() {
+            self.tick_1999(now);
+            return;
+        }
         if !self.login_use_time(now) && !self.transport_disconnect_pending() {
             return;
         }
@@ -716,6 +822,10 @@ impl ClientNetwork {
 
     /// Client-network receive/login phase without semantic queue delivery or packet sending.
     pub fn receive_use_time(&mut self, now: LocalTime) {
+        if self.ac1999.is_some() {
+            self.receive_1999(now);
+            return;
+        }
         if !self.login_use_time(now) && !self.transport_disconnect_pending() {
             return;
         }
@@ -803,6 +913,10 @@ impl ClientNetwork {
     /// Packet-controller phase. App calls this after queue4 and before database/UI-element
     /// work; actions queued by those later phases wait until the next invocation.
     pub fn packet_controller_use_time(&mut self, now: LocalTime) {
+        if self.ac1999.is_some() {
+            self.send_1999(now);
+            return;
+        }
         // **The player system's two calls on the transport singleton.**
         //
         // World-exit disconnect and world entry are
@@ -891,6 +1005,35 @@ impl NetLink {
         let mut net = net;
         // A live world is asked for Dereth's extensions; one that does not know them drops it.
         net.session.offer_extensions(true);
+        Ok(Self {
+            net,
+            socket: Some(socket),
+        })
+    }
+
+    /// Bind the socket and start a 1999 login: see [`ClientNetwork::new_1999`].
+    ///
+    /// # Errors
+    /// [`ClientNetworkError`] for a bad `-h`, a credential the 1999 login cannot carry, or a socket
+    /// that will not bind.
+    pub fn connect_1999(
+        host: &str,
+        default_port: u16,
+        client_port: u16,
+        account: &str,
+        password: &str,
+        iterations: (u32, u32),
+        world_name: &str,
+    ) -> Result<Self, ClientNetworkError> {
+        let net = ClientNetwork::new_1999(
+            host,
+            default_port,
+            account,
+            password,
+            iterations,
+            world_name,
+        )?;
+        let socket = NetSocket::bind(Ipv4Addr::UNSPECIFIED, PortMode::Fixed(client_port))?;
         Ok(Self {
             net,
             socket: Some(socket),

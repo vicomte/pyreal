@@ -267,10 +267,16 @@ pub struct World {
     /// itself, or the `https://` URL it is published at. Absent: the world publishes none, and the
     /// Dereth client applies its defaults.
     pub plugin_policy: Option<String>,
-    /// The old launcher reached this world through a relay on the player's computer.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub relayed: bool,
+    /// The wire its server speaks, as `--wire` names it: [`WIRE_1999`], or [`WIRE_LATER`] once a
+    /// probe found the later one. `None`: not asked yet, played as the later wire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<String>,
 }
+
+/// [`World::wire`] for a server of the November 1999 client's wire.
+pub const WIRE_1999: &str = "1999";
+/// [`World::wire`] for a server of the later wire.
+pub const WIRE_LATER: &str = "later";
 
 impl World {
     /// Whether the world's plugin policy is published at a URL (rather than written in the entry).
@@ -292,9 +298,16 @@ impl World {
         }
     }
 
-    /// Whether the world may answer the status ping: Empyrean's, or software nobody named.
+    /// Whether the world may answer the status ping: Empyrean's, or software nobody named, and
+    /// not a 1999 world.
     pub fn may_answer_status_ping(&self) -> bool {
-        matches!(self.emulator, Emulator::Empyrean | Emulator::Unknown)
+        matches!(self.emulator, Emulator::Empyrean | Emulator::Unknown) && !self.speaks_1999()
+    }
+
+    /// Whether its server speaks the November 1999 client's wire.
+    #[must_use]
+    pub fn speaks_1999(&self) -> bool {
+        self.wire.as_deref() == Some(WIRE_1999)
     }
 
     /// Take the era and systems the world's status ping names, where nothing has named them.

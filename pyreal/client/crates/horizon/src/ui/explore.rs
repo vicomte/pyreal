@@ -179,23 +179,32 @@ pub struct Corner {
 
 /// The Map and Settings buttons in the lower right, as the game's menu bar draws them, lit while
 /// their windows are open.
-pub fn corner(p: &mut Painter<'_>, ctx: &mut Ctx<'_>, open: Corner) -> Corner {
+pub fn corner(
+    p: &mut Painter<'_>,
+    ctx: &mut Ctx<'_>,
+    keys: Option<&crate::ui::game::KeyBindingsView>,
+    open: Corner,
+) -> Corner {
+    use crate::ui::panels::WindowId;
     let mut asked = Corner::default();
     let (_, places) = crate::ui::hud::menu_bar(p, 2);
     let buttons = [
-        ("menu.map", "Map", open.map, &mut asked.map),
+        ("menu.map", "Map", WindowId::Map, open.map, &mut asked.map),
         (
             "menu.settings",
             "Settings",
+            WindowId::Options,
             open.settings,
             &mut asked.settings,
         ),
     ];
-    for ((icon, name, lit, asked), r) in buttons.into_iter().zip(places) {
+    for ((icon, name, id, lit, asked), r) in buttons.into_iter().zip(places) {
         let over = ctx.over(&r);
         crate::ui::hud::menu_icon(p, r, icon, over || lit);
         if over {
-            kit::tooltip(p, ctx, name, &[]);
+            let title =
+                crate::ui::hud::with_shortcut(name, keys, [crate::ui::hud::window_key_action(id)]);
+            kit::tooltip(p, ctx, &title, &[]);
         }
         if ctx.input.clicked(&r) {
             *asked = true;

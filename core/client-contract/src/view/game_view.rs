@@ -527,6 +527,11 @@ pub trait GameView: std::fmt::Debug {
         false
     }
 
+    /// What decides whether the object is safe to sell unasked; nothing known by default.
+    fn sell_safety(&self, _id: ObjectId) -> SellSafety {
+        SellSafety::default()
+    }
+
     /// The object's `AppraisalProfile` projected for the examination panel.
     ///
     /// `None` means no `0x00C9 Item_SetAppraiseInfo` has arrived for that object — which is what

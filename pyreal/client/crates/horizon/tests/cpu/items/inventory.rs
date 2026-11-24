@@ -34,6 +34,7 @@ fn item(id: ObjectId, name: &str) -> Item {
         container: false,
         decoration: None,
         cooldown: None,
+        safety: Default::default(),
     }
 }
 

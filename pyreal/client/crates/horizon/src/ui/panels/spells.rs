@@ -116,6 +116,7 @@ impl Windows {
     /// Out of the world: the next character's spellbook is not spells learned.
     pub(crate) fn forget_character(&mut self) {
         self.known_spells = None;
+        self.tracker.forget_session();
     }
 
     /// A spell learned (from a scroll or by spell research) opens the Spellbook on its school's
@@ -549,7 +550,11 @@ impl Windows {
     /// skill): it takes every press and key until it is answered, as the game's own questions do.
     #[must_use]
     pub fn questions_open(&self) -> bool {
-        self.forget_asked.is_some() || self.abandon_asked.is_some() || self.train_asked.is_some()
+        self.forget_asked.is_some()
+            || self.abandon_asked.is_some()
+            || self.train_asked.is_some()
+            || !self.keep_asked.is_empty()
+            || !self.marks.junk_asked.is_empty()
     }
 
     /// The windows' questions, asked over everything else once the keys held back for them are

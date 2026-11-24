@@ -48,6 +48,39 @@ pub fn gauge(item: &Item) -> Option<f32> {
     structure(item).filter(|_| d.structure < d.max_structure)
 }
 
+/// The corner a Keep mark and a Junk mark colour on an item's tile.
+pub const KEEP_CORNER: u32 = 0xFFF0_C860;
+pub const JUNK_CORNER: u32 = 0xFF8C_8070;
+
+/// An item's mark: a small corner folded down at its tile's top right, gold for Keep and grey
+/// for Junk, edged in black along its fold.
+fn mark_badge(p: &mut Painter<'_>, r: Rect, mark: super::marks::Mark) {
+    let k = p.scale;
+    let colour = match mark {
+        super::marks::Mark::Keep => KEEP_CORNER,
+        super::marks::Mark::Junk => JUNK_CORNER,
+    };
+    // A corner of `size` as a staircase of rows, each a step narrower than the one above.
+    let mut corner = |size: f32, colour: u32| {
+        let steps = 8_u8;
+        let step = size / f32::from(steps);
+        for i in 0..steps {
+            let w = size - f32::from(i) * step;
+            p.fill(
+                Rect::new(
+                    r.right() - 2.0 * k - w,
+                    r.y + 2.0 * k + f32::from(i) * step,
+                    w,
+                    step,
+                ),
+                colour,
+            );
+        }
+    };
+    corner(18.0 * k, 0xFF00_0000);
+    corner(15.0 * k, colour);
+}
+
 impl Windows {
     /// One item tile: drawn as the game composes it, and answering the pointer as its lists do.
     pub(super) fn item_tile(
@@ -72,8 +105,9 @@ impl Windows {
                 return;
             }
             if ctx.input.right_clicked(&r) {
-                // In gamepad mode, X on an item opens what can be done with it.
-                if ctx.input.pad.mode.is_some() {
+                // In gamepad mode, X on an item opens what can be done with it; with the
+                // mouse, a right-click with Ctrl held does.
+                if ctx.input.pad.mode.is_some() || ctx.input.ctrl {
                     self.open_item_menu(it, r);
                 } else {
                     out.requests.push(UiRequest::Select(it.id));
@@ -82,6 +116,11 @@ impl Windows {
             }
         }
         let pressed = self.item_slot(p, ctx, r, item);
+        if let Some(it) = item.filter(|_| ctx.input.hover(&r)) {
+            // A carried thing may be appraised as the pointer rests on it; a worn one shows what
+            // is known.
+            self.hover_item(ctx, it, it.worn == 0);
+        }
         if let Some(it) = item {
             // A thing the game is still moving, dropping, giving or using is dimmed until it
             // answers, as its own tiles ghost one.
@@ -90,6 +129,9 @@ impl Windows {
             }
             if state.target.as_ref().is_some_and(|t| t.id == it.id) {
                 kit::selected_tile(p, Rect::new(r.x, r.y, r.w, r.w));
+            }
+            if let Some(mark) = self.marks.get(it) {
+                mark_badge(p, Rect::new(r.x, r.y, r.w, r.w), mark);
             }
             // How full a thing that fills is (a salvage bag), or how much is left of one that
             // is used up: a gauge along the tile's foot.

@@ -49,6 +49,10 @@ pub enum ItemAct {
     SellContents,
     /// Make it the selection (nothing else the pad does to an item selects it).
     SetAsTarget,
+    /// Mark it Keep or Junk, or take its mark off.
+    MarkKeep,
+    MarkJunk,
+    ClearMark,
 }
 
 impl ItemAct {
@@ -72,6 +76,9 @@ impl ItemAct {
             Self::Salvage => "Salvage",
             Self::Examine => "Examine",
             Self::SetToHotbar => "Set to Hotbar",
+            Self::MarkKeep => "Mark as Keep",
+            Self::MarkJunk => "Mark as Junk",
+            Self::ClearMark => "Clear Mark",
         }
     }
 }
@@ -322,6 +329,20 @@ pub fn acts(state: &GameState, item: &Item, at: Situation) -> Vec<(ItemAct, bool
     v
 }
 
+/// Whether `item` is one of the character's own: in a pack, or worn. Only these take a mark.
+#[must_use]
+pub fn carried(state: &GameState, item: ObjectId) -> bool {
+    state.main_pack.as_ref().is_none_or(|m| m.id != item)
+        && state.player_id != Some(item)
+        && state
+            .pack
+            .iter()
+            .chain(state.side_packs.iter().map(|(p, _)| p))
+            .chain(state.side_packs.iter().flat_map(|(_, items)| items.iter()))
+            .chain(state.equipped.iter())
+            .any(|i| i.id == item)
+}
+
 /// The name the pad's split box is known by.
 pub const SPLIT: &str = "Split";
 
@@ -439,11 +460,24 @@ impl Windows {
             shop: self.is_open(WindowId::Vendor),
             salvaging: self.is_open(WindowId::Salvage),
         };
-        let list = if menu.world {
+        let mut list = if menu.world {
             world_acts(state)
         } else {
             acts(state, &menu.item, at)
         };
+        if !menu.world && carried(state, menu.item.id) {
+            use super::marks::Mark;
+            let mark = self.marks.get(&menu.item);
+            if mark != Some(Mark::Keep) {
+                list.push((ItemAct::MarkKeep, true));
+            }
+            if mark != Some(Mark::Junk) {
+                list.push((ItemAct::MarkJunk, true));
+            }
+            if mark.is_some() {
+                list.push((ItemAct::ClearMark, true));
+            }
+        }
         // Drawn as a dropdown's open list hanging from the item: the same plain dark ground,
         // rows and highlight, under the item (over it where there is no room below); for the
         // selection in the world, a little right of the middle of the screen.
@@ -516,6 +550,13 @@ impl Windows {
         }
         if ctx.input.hover(&rect) && (ctx.input.pressed[0] || ctx.input.pressed[1]) {
             ctx.input.captured = true;
+        } else if ctx.input.pad.mode.is_none()
+            && (ctx.input.pressed[0] || (ctx.input.pressed[1] && !ctx.input.ctrl))
+        {
+            // Opened with the mouse, a press anywhere else closes it.
+            self.item_menu = None;
+            ctx.input.nav.end_layer();
+            return;
         }
         ctx.input.nav.end_layer();
         let Some(act) = chosen else {
@@ -583,6 +624,15 @@ impl Windows {
                 out.requests.push(UiRequest::Select(id));
                 out.requests.push(UiRequest::Examine(id));
             }
+            ItemAct::MarkKeep => {
+                let now = held_now(state, id).unwrap_or(it);
+                self.marks.set(now, Some(super::marks::Mark::Keep));
+            }
+            ItemAct::MarkJunk => {
+                let now = held_now(state, id).unwrap_or(it);
+                self.marks.set(now, Some(super::marks::Mark::Junk));
+            }
+            ItemAct::ClearMark => self.marks.set(it, None),
             // The main pack stands for the character: bound, it is what an armed use goes on.
             ItemAct::SetToHotbar => {
                 use crate::ui::hud::cross::CrossBind;

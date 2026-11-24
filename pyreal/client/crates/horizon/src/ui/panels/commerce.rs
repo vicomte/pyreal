@@ -63,6 +63,8 @@ struct Pressed {
     clicked: Option<usize>,
     doubled: Option<usize>,
     right: Option<usize>,
+    /// The row the pointer is on.
+    hovered: Option<usize>,
 }
 
 /// A scrolling list of rows, and what was done to them.
@@ -132,6 +134,9 @@ fn list(
         );
         if !row.right.is_empty() {
             p.text_in(&price, r.offset(-8.0 * k, 0.0), Align::Right, &row.right);
+        }
+        if ctx.input.hover(&visible) {
+            pressed.hovered = Some(i);
         }
         if ctx.input.double_clicked(&visible) {
             pressed.doubled = Some(i);
@@ -329,6 +334,7 @@ impl Windows {
                 clicked,
                 doubled,
                 right: examined,
+                hovered,
             } = list(
                 p,
                 ctx,
@@ -338,6 +344,12 @@ impl Windows {
                 self.vendor_selected,
                 &mut self.vendor_scroll,
             );
+            // The stock's details as the pointer rests on a row.
+            if let Some(look) =
+                hovered.and_then(|i| state.looks.iter().find(|l| l.id == rows[i].item))
+            {
+                self.hover_item(ctx, look, true);
+            }
             // A right-click examines the row's item, as it does an item in a pack.
             if let Some(i) = examined {
                 out.requests.push(UiRequest::Select(rows[i].item));
@@ -578,6 +590,16 @@ impl Windows {
                     sell: true,
                     item: None,
                 });
+            }
+            // Every item marked Junk onto the list, less those kept back.
+            let junk = self.junk_plan(state);
+            self.ask_junk_appraisals(state, ctx.time, out);
+            let add = Rect::new(body.right() - bw, by, bw, 28.0 * k);
+            if kit::button(p, ctx, add, "Add Junk", !junk.listed.is_empty()) {
+                out.requests.extend(junk.listed);
+            }
+            if ctx.input.hover(&add) {
+                self.tip = Some(("Add Junk".into(), super::marks::junk_tip(&junk.kept)));
             }
         }
         ctx.input.occluders.truncate(occluders);

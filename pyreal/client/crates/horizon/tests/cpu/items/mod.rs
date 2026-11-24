@@ -2,5 +2,7 @@
 //! vendor, trade and salvage windows.
 
 mod commerce;
+mod details;
 mod inventory;
+mod marks;
 mod packs;

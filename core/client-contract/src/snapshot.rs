@@ -51,9 +51,9 @@ use crate::view::{
     AllegianceRoster, AppraisalView, AttributeAdvancement, BarberView, BookView, CharacterInfo,
     CharacterTitles, CombatBar, ComponentCategory, ContractEntry, EffectEntry, EmptyGameView,
     EraView, FellowshipView, FriendEntry, GameView, HouseDataView, HousePurchaseView, MiniGameView,
-    PkStatus, PlayerOption, RadarEntry, SelectionQueryFacts, ShopView, SkillAdvancement,
-    SkillEntry, SlotDecoration, SlumlordView, SpellEntry, SpellExamineView, SquelchEntry,
-    TradeView, VitaeDisplay, Vital,
+    PkStatus, PlayerOption, RadarEntry, SelectionQueryFacts, SellSafety, ShopView,
+    SkillAdvancement, SkillEntry, SlotDecoration, SlumlordView, SpellEntry, SpellExamineView,
+    SquelchEntry, TradeView, VitaeDisplay, Vital,
 };
 
 /// `pyreal_client_model::player::SHORTCUT_SLOTS` — the toolbar's fixed slot count.
@@ -97,6 +97,8 @@ pub struct ObjectSnapshot {
     pub equip_locations: u32,
     /// [`GameView::item_attuned`].
     pub attuned: bool,
+    /// [`GameView::sell_safety`].
+    pub sell_safety: SellSafety,
     /// [`GameView::appraisal`].
     pub appraisal: Option<AppraisalView>,
     /// [`GameView::inscription_mouse_facts`].
@@ -372,6 +374,7 @@ impl GameSnapshot {
                     slot_decoration: view.slot_decoration(id),
                     equip_locations: view.equip_locations(id),
                     attuned: view.item_attuned(id),
+                    sell_safety: view.sell_safety(id),
                     appraisal: view.appraisal(id),
                     inscription_mouse_facts: view.inscription_mouse_facts(id),
                     item_wcid: view.item_wcid(id),
@@ -707,6 +710,9 @@ impl GameView for GameSnapshot {
     }
     fn item_attuned(&self, id: ObjectId) -> bool {
         self.object(id).is_some_and(|o| o.attuned)
+    }
+    fn sell_safety(&self, id: ObjectId) -> SellSafety {
+        self.object(id).map(|o| o.sell_safety).unwrap_or_default()
     }
     fn appraisal(&self, id: ObjectId) -> Option<AppraisalView> {
         self.object(id)?.appraisal.clone()

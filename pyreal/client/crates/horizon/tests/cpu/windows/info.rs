@@ -109,10 +109,12 @@ fn a_right_click_on_an_effect_in_its_list_examines_that_spell() {
     let mut state = caster();
     state.effects = vec![Effect {
         spell: STRENGTH_SELF,
+        layered: STRENGTH_SELF,
         name: "Strength Self I".into(),
         ac_icon: 0,
         harmful: false,
         remaining: Some(600.0),
+        superseded: false,
     }];
     let mut h = Harness::new(Default::default());
     h.frame(&state);
@@ -174,10 +176,12 @@ fn an_effect_with_no_end_shows_the_infinity_sign_for_its_time_left() {
     let mut state = caster();
     let effect = |remaining| Effect {
         spell: STRENGTH_SELF,
+        layered: STRENGTH_SELF,
         name: "Strength Self I".into(),
         ac_icon: 0,
         harmful: false,
         remaining,
+        superseded: false,
     };
     state.effects = vec![effect(None)];
     let mut h = Harness::with_built_in_art();
@@ -197,10 +201,12 @@ fn an_effect_s_name_cut_short_in_its_list_is_given_whole_under_the_pointer() {
     let mut state = caster();
     let effect = |name: &str| Effect {
         spell: STRENGTH_SELF,
+        layered: STRENGTH_SELF,
         name: name.into(),
         ac_icon: 0,
         harmful: false,
         remaining: Some(600.0),
+        superseded: false,
     };
     state.effects = vec![effect(LONG)];
     let mut h = Harness::with_built_in_art();

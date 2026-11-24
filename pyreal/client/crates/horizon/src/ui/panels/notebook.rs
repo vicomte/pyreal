@@ -725,7 +725,7 @@ impl Windows {
         p.list.pop_clip();
         // Turning and deleting.
         let last = j.pages.iter().map(|p| p.page_number).max().unwrap_or(0);
-        let bw = 92.0 * k;
+        let bw = 76.0 * k;
         if kit::button(
             p,
             ctx,
@@ -755,6 +755,8 @@ impl Windows {
         ) {
             ctx.input.copied = Some(page_text(d));
         }
+        let pin = Rect::new(x + 3.0 * (bw + 4.0 * k), foot, bw, 28.0 * k);
+        self.pin_button(p, ctx, pin, super::tracker::Pin::page(d), state);
         let del_w = 112.0 * k;
         if kit::button(
             p,

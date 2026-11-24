@@ -37,6 +37,7 @@ fn skill_of(s: &SkillEntry, adv: Option<SkillAdvancement>) -> Skill {
 mod int {
     pub const LEVEL: u32 = 25;
     pub const COIN_VALUE: u32 = 20;
+    pub const NUM_DEATHS: u32 = 43;
 }
 
 fn vital(v: &impl GameView, id: pyreal_primitives::ObjectId, which: ViewVital) -> Vital {
@@ -100,6 +101,30 @@ fn blip_kind(v: &impl GameView, r: &pyreal_client_contract::view::RadarEntry) ->
     } else {
         BlipKind::Item
     }
+}
+
+/// The player's corpses in the world and the last outside death the game keeps, for the corpse
+/// marker.
+fn corpse_state<S: Shell>(cx: &crate::runtime::Cx<'_, S>, v: &impl GameView, g: &mut GameState) {
+    use crate::ui::corpse::{corpse_name, Lying, Place, LAST_OUTSIDE_DEATH};
+    let name = corpse_name(&g.name);
+    g.own_corpses = cx
+        .objects()
+        .presences()
+        .filter(|(_, p)| p.parent.is_none())
+        .filter_map(|(id, p)| {
+            let at = p.position.as_ref()?;
+            (v.name(id)? == name).then(|| Lying {
+                id,
+                place: Place::at(at.cell.0, at.frame.origin.x, at.frame.origin.y),
+            })
+        })
+        .collect();
+    g.last_outside_death = cx
+        .hud()
+        .player_desc(cx.model())
+        .and_then(|q| q.positions.as_ref()?.get(&LAST_OUTSIDE_DEATH))
+        .map(|p| Place::at(p.objcell_id, p.frame.origin.x, p.frame.origin.y));
 }
 
 /// The chat entry's state: the talk focus, the windows' filters, and the draft.
@@ -264,6 +289,7 @@ pub fn snapshot<S: Shell>(
         .viewer_position()
         .map(|at| crate::ui::panels::map::spot(&at));
     g.in_dungeon = cx.viewer_in_dungeon();
+    g.cell = cx.viewer_position().map(|at| at.cell.0);
     // The map shows the explored era's places and the camera where the player would be.
     if let Some(e) = &g.explore {
         g.era_id = e.era;
@@ -283,6 +309,9 @@ pub fn snapshot<S: Shell>(
         .int_stat(me, int::LEVEL)
         .and_then(|l| u32::try_from(l).ok())
         .unwrap_or(0);
+    g.deaths = v.int_stat(me, int::NUM_DEATHS);
+    g.pk_lite = v.pk_status() == pyreal_client_contract::PkStatus::PkLite;
+    corpse_state(cx, &v, &mut g);
     g.health = vital(&v, me, ViewVital::Health);
     g.stamina = vital(&v, me, ViewVital::Stamina);
     g.mana = vital(&v, me, ViewVital::Mana);
@@ -311,10 +340,12 @@ pub fn snapshot<S: Shell>(
         .into_iter()
         .map(|e| Effect {
             spell: e.spell,
+            layered: e.id,
             name: e.name,
             ac_icon: e.icon.map_or(0, |d| d.0),
             harmful: !e.beneficial,
             remaining: (!e.permanent).then_some(e.remaining),
+            superseded: e.superseded,
         })
         .collect();
     // The radar shows what the game's radar shows: only objects whose radar setting lets them
@@ -581,6 +612,7 @@ pub fn snapshot<S: Shell>(
     }
     // The options pages' state: the world's era, the chat windows' filters and opacities.
     g.era = Some(v.era_features());
+    g.wire_1999 = v.era().is_some_and(|e| e.wire_1999);
     {
         use pyreal_client_contract::options::sheet::window;
         g.chat_filters = [
@@ -1068,6 +1100,7 @@ pub fn item_of(
         container: deco.as_ref().is_some_and(|d| d.is_container),
         cooldown: deco.as_ref().and_then(|d| item_cooldown(view, d)),
         decoration: deco,
+        safety: view.sell_safety(id),
     }
 }
 

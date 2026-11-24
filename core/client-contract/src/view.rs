@@ -486,6 +486,8 @@ pub struct SpellExamineView {
 pub struct EffectEntry {
     /// The enchantment id's low 16 bits, used as the effect region's spell id.
     pub spell: u32,
+    /// The full layered enchantment id: each caster's copy of a spell has a layer of its own.
+    pub id: u32,
     /// The effect row's label.
     pub name: String,
     /// The spell description used as the second half of the effects panel's
@@ -507,6 +509,9 @@ pub struct EffectEntry {
     pub category: u16,
     /// The enchantment's power level.
     pub power_level: i32,
+    /// Another enchantment of its category beats it (higher power, or as high and ahead on the
+    /// world's tie-break), so it changes nothing while that one lasts.
+    pub superseded: bool,
 }
 
 /// The vitae panel's inputs, gathered on the host side.
@@ -1139,6 +1144,9 @@ pub struct EraView {
     /// The rules the world plays by over the end of retail's, from the world profile the launcher
     /// names: what an appraisal or character creation shows, what selecting an item asks for.
     pub world_rules: pyreal_primitives::WorldRules,
+    /// The world speaks the November 1999 client's protocol, whose server takes only the 1999
+    /// client's actions: a front end leaves out what that client could not ask for.
+    pub wire_1999: bool,
 }
 
 impl EraView {
@@ -1318,6 +1326,36 @@ pub struct SlotDecoration {
     /// the dimming reaches every other tile showing that object on its next item-tile update.
     /// A per-player fact, therefore, not a per-tile one.
     pub shortcut_ghosted: bool,
+}
+
+/// What an item's public description and appraisal say about selling it, for Add Junk's checks.
+///
+/// Attuned, inscribed, imbued, tinkered and can't-be-sold come only from an appraisal, so they
+/// read `false` until [`Self::appraised`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SellSafety {
+    /// An appraisal of the item has come.
+    pub appraised: bool,
+    /// Its value (the whole stack's), from its public description.
+    pub value: Option<u32>,
+    /// It has a wielder or a worn location.
+    pub worn: bool,
+    /// The public description's retained flag (`0x01000000`), or Boolean `0x5B` in the appraisal.
+    pub retained: bool,
+    /// The rare underlay `0x06005B0C`, or a rare number (int `0x11`) in the appraisal.
+    pub rare: bool,
+    /// Int `0x72` above zero.
+    pub attuned: bool,
+    /// String `7` is not empty.
+    pub inscribed: bool,
+    /// Any of the five imbued-effect ints is not zero.
+    pub imbued: bool,
+    /// Int `0xAB` above zero.
+    pub tinkered: bool,
+    /// Boolean `0x45` `IsSellable` is present and false.
+    pub unsellable: bool,
+    /// The open vendor's acceptability code for it (`0` takes it); `None` with no vendor open.
+    pub vendor_refusal: Option<u32>,
 }
 
 /// One row of one of the vendor window's three item lists.

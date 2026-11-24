@@ -544,6 +544,43 @@ impl GameView for HudView<'_> {
             .is_some_and(|v| v > 0)
     }
 
+    fn sell_safety(&self, id: ObjectId) -> pyreal_client_contract::SellSafety {
+        use pyreal_client_model::appraisal_model as am;
+        /// Public-description flag for a retained item.
+        const BF_RETAINED: u32 = 0x0100_0000;
+        /// The underlay every rare carries.
+        const RARE_UNDERLAY: u32 = 0x0600_5B0C;
+        let Some(w) = self.world.weenie(id) else {
+            return pyreal_client_contract::SellSafety::default();
+        };
+        let pwd = &w.pwd;
+        let p = self.world.appraisal.get(id);
+        let int = |k: u32| p.and_then(|p| am::inq::int(p, k));
+        let boolean = |k: u32| p.and_then(|p| am::inq::boolean(p, k));
+        pyreal_client_contract::SellSafety {
+            appraised: p.is_some(),
+            value: pwd.value,
+            worn: pwd.wielder_id.is_some() || pwd.location.is_some_and(|l| l != 0),
+            retained: pwd.bitfield & BF_RETAINED != 0
+                || boolean(am::property::special::RETAINED) == Some(true),
+            rare: pwd.icon_underlay_id == Some(RARE_UNDERLAY) || int(0x11).is_some(),
+            attuned: int(am::property::special::ATTUNED).is_some_and(|v| v > 0),
+            inscribed: p
+                .and_then(|p| am::inq::string(p, am::property::string::INSCRIPTION))
+                .is_some_and(|t| !t.is_empty()),
+            imbued: am::property::special::IMBUED_EFFECT
+                .iter()
+                .any(|k| int(*k).is_some_and(|v| v != 0)),
+            tinkered: int(0xAB).is_some_and(|v| v > 0),
+            unsellable: boolean(0x45) == Some(false),
+            vendor_refusal: self
+                .world
+                .shop
+                .vendor_id
+                .map(|_| self.world.shop.profile.inq_acceptability(pwd)),
+        }
+    }
+
     fn equip_locations(&self, id: ObjectId) -> u32 {
         self.world
             .weenie(id)
@@ -1828,6 +1865,7 @@ impl GameView for HudView<'_> {
                             enchantment: raw & 0x8000_0000 != 0,
                             name: base.map(|b| b.name.clone()).unwrap_or_default(),
                             description: base.map(|b| b.description.clone()).unwrap_or_default(),
+                            category: base.map_or(0, |b| b.category),
                         }
                     })
                     .collect()
@@ -2350,14 +2388,23 @@ impl GameView for HudView<'_> {
         let (Some(q), Some(table)) = (self.player_desc(), self.hud.spell_table.as_ref()) else {
             return Vec::new();
         };
-        q.enchantments
-            .enchantments_in_effect()
-            .into_iter()
+        let all = q.enchantments.enchantments_in_effect();
+        let set_spells = self
+            .hud
+            .ace_world
+            .then(|| pyreal_rules::enchant::ace_set_spells(table));
+        let tie = set_spells
+            .as_ref()
+            .map_or(pyreal_rules::enchant::TieBreak::Retail, |set_spells| {
+                pyreal_rules::enchant::TieBreak::Ace { set_spells }
+            });
+        all.iter()
             .filter_map(|e| {
                 let spell = u32::from(e.spell_id());
                 let b = table.spells.get(&spell)?;
                 Some(pyreal_client_contract::EffectEntry {
                     spell,
+                    id: e.id,
                     name: b.name.clone(),
                     description: b.description.clone(),
                     icon: (b.icon != 0).then_some(DataId(b.icon)),
@@ -2369,6 +2416,10 @@ impl GameView for HudView<'_> {
                     permanent: e.is_permanent(),
                     category: e.spell_category,
                     power_level: e.power_level,
+                    // One enchantment per category counts, settled as the world settles it.
+                    superseded: all.iter().any(|o| {
+                        o.id != e.id && o.spell_category == e.spell_category && o.beats_on(e, tie)
+                    }),
                 })
             })
             .collect()

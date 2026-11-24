@@ -60,12 +60,15 @@ impl Placement {
     }
 }
 
-/// An element being drawn: where its quads begin in the list, and the pointer it was lent.
+/// An element being drawn: where its quads begin in the list, the pointer it was lent, and what
+/// was over the HUD before its frame lent that too.
 #[derive(Debug)]
 pub struct Open {
     name: String,
     first_quad: usize,
+    first_backdrop: usize,
     mouse: (f32, f32),
+    occluders: Option<Vec<Rect>>,
 }
 
 /// The layout and its editor.
@@ -207,13 +210,15 @@ impl HudLayout {
         }
     }
 
-    /// Start drawing element `name`: lend it the pointer in its own frame. While `editing`, the
-    /// element sees no pointer at all.
+    /// Start drawing element `name`: lend it the pointer and the windows over the HUD in its own
+    /// frame. While `editing`, the element sees no pointer at all.
     pub fn begin(&self, name: &str, p: &Painter<'_>, ctx: &mut Ctx<'_>, editing: bool) -> Open {
-        let open = Open {
+        let mut open = Open {
             name: name.to_owned(),
             first_quad: p.list.quads.len(),
+            first_backdrop: p.list.backdrops.len(),
             mouse: ctx.input.mouse,
+            occluders: None,
         };
         if editing {
             ctx.input.mouse = (-10_000.0, -10_000.0);
@@ -221,12 +226,25 @@ impl HudLayout {
             let k = p.scale;
             let pl = self.placement_at(name, pivot, k);
             let (nx, ny) = self.nudge(name);
+            let lent = |x: f32, y: f32| {
+                (
+                    pivot.0 + (x - nx - pivot.0 - pl.dx * k) / pl.scale,
+                    pivot.1 + (y - ny - pivot.1 - pl.dy * k) / pl.scale,
+                )
+            };
             let (mx, my) = ctx.input.mouse;
-            let (mx, my) = (mx - nx, my - ny);
-            ctx.input.mouse = (
-                pivot.0 + (mx - pivot.0 - pl.dx * k) / pl.scale,
-                pivot.1 + (my - pivot.1 - pl.dy * k) / pl.scale,
-            );
+            ctx.input.mouse = lent(mx, my);
+            // The windows over the HUD, in the element's frame, so one over it keeps the pointer.
+            let over: Vec<Rect> = ctx
+                .input
+                .occluders
+                .iter()
+                .map(|r| {
+                    let (x, y) = lent(r.x, r.y);
+                    Rect::new(x, y, r.w / pl.scale, r.h / pl.scale)
+                })
+                .collect();
+            open.occluders = Some(std::mem::replace(&mut ctx.input.occluders, over));
         }
         open
     }
@@ -235,6 +253,9 @@ impl HudLayout {
     /// pointer back.
     pub fn end(&mut self, open: Open, p: &mut Painter<'_>, ctx: &mut Ctx<'_>) {
         ctx.input.mouse = open.mouse;
+        if let Some(over) = open.occluders {
+            ctx.input.occluders = over;
+        }
         let quads = &mut p.list.quads[open.first_quad..];
         let Some(mut bounds) = quads.first().map(|q| q.dst) else {
             return;
@@ -269,6 +290,10 @@ impl HudLayout {
             for q in quads.iter_mut() {
                 q.dst = moved(q.dst);
                 q.clip = q.clip.map(moved);
+            }
+            // The world is blurred where the element's grounds went.
+            for (r, _) in &mut p.list.backdrops[open.first_backdrop..] {
+                *r = moved(*r);
             }
         }
         self.pivots.insert(open.name.clone(), pivot);
@@ -409,6 +434,7 @@ pub fn element_title(name: &str) -> String {
         "exp" => "EXP Bar",
         "target" => "Target Info",
         "status" => "Status Info",
+        "ending" => "Effects Ending Soon",
         "minimap" => "Minimap",
         "server" => "Server Info",
         "party" => "Party List",
@@ -416,6 +442,7 @@ pub fn element_title(name: &str) -> String {
         "chat" => "Log Window",
         "gil" => "Currency",
         "menu" => "Main Menu",
+        "tracker" => crate::ui::panels::tracker::TITLE,
         other => other,
     }
     .to_owned()

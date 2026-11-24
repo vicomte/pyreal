@@ -1368,3 +1368,255 @@ fn the_frame_sync_gives_salvage_its_material_name() {
     hud.sync(&objects, None);
     assert_eq!(hud.stats.display_names_composed, 1);
 }
+
+/// An enchantment of `spell` in `layer`, of `category` at `power`, cast at `start`.
+fn layered_enchantment(
+    spell: u32,
+    layer: u32,
+    category: u16,
+    power: i32,
+    start: f64,
+) -> pyreal_rules::enchant::Enchantment {
+    use pyreal_protocol::types::qualities::StatMod;
+    use pyreal_rules::enchant::{ench_type, Enchantment};
+    Enchantment {
+        id: (layer << 16) | spell,
+        spell_category: category,
+        power_level: power,
+        start_time: start,
+        duration: 1800.0,
+        caster: ObjectId(9),
+        degrade_modifier: 0.0,
+        degrade_limit: -666.0,
+        last_time_degraded: start,
+        smod: StatMod {
+            kind: ench_type::SKILL | ench_type::ADDITIVE,
+            key: u32::from(category),
+            value: 10.0,
+        },
+        spell_set_id: None,
+    }
+}
+
+/// The local player under `enchantments`, each spell in a spell table with `spellsets`.
+fn enchanted_player(
+    enchantments: &[pyreal_rules::enchant::Enchantment],
+    spellsets: std::collections::BTreeMap<u32, pyreal_assets::tables::SpellSet>,
+) -> (pyreal_client_model::World, Hud) {
+    use pyreal_client_model::{Weenie, World};
+    let player = ObjectId(1);
+    let mut world = World::new();
+    world.player = Some(player);
+    let mut qualities = pyreal_client_model::Qualities::new();
+    for e in enchantments {
+        assert!(qualities.enchantments.update_enchantment(*e));
+    }
+    let mut row = Weenie::new(player);
+    row.qualities = Some(qualities);
+    world.tables.weenies.insert(player, row);
+    let base = pyreal_assets::tables::SpellBase {
+        name: String::new(),
+        description: String::new(),
+        school: 0,
+        icon: 0,
+        category: 0,
+        bitfield: 4,
+        base_mana: 0,
+        base_range_constant: 0.0,
+        base_range_mod: 0.0,
+        power: 0,
+        spell_economy_mod: 0.0,
+        formula_version: 0,
+        component_loss: 0.0,
+        meta_spell_type: 0,
+        meta_spell_id: 0,
+        duration: None,
+        portal_lifetime: None,
+        raw_comps: [0; 8],
+        comp_key: 0,
+        comps: vec![],
+        caster_effect: 0,
+        target_effect: 0,
+        fizzle_effect: 0,
+        recovery_interval: 0.0,
+        recovery_amount: 0.0,
+        display_order: 0,
+        non_component_target_type: 0,
+        mana_mod: 0,
+    };
+    let mut hud = Hud::new();
+    hud.player_desc_received = true;
+    hud.spell_table = Some(pyreal_assets::tables::SpellTable {
+        id: pyreal_primitives::DataId(0x0e00_000e),
+        spell_buckets: 1,
+        spells: enchantments
+            .iter()
+            .map(|e| (u32::from(e.spell_id()), base.clone()))
+            .collect(),
+        spellset_bucket_index: 0,
+        spellsets,
+    });
+    (world, hud)
+}
+
+/// Whether the effect of `spell` is marked superseded.
+fn superseded_of(hud: &Hud, world: &pyreal_client_model::World, spell: u32) -> Option<bool> {
+    let view = HudView { hud, world };
+    view.active_effects()
+        .into_iter()
+        .find(|e| e.spell == spell)
+        .map(|e| e.superseded)
+}
+
+/// Oracle: retail's duel (`Enchantment::beats`). Of two enchantments of one category the higher
+/// power is in force, and of two as strong the one cast later; the other is marked superseded.
+#[test]
+fn an_effect_beaten_in_its_category_is_marked_superseded() {
+    // Armor V and VI share a category; two casts of equal power share another.
+    let (armor_v, armor_vi, early, late) = (0x10u32, 0x11u32, 0x12u32, 0x13u32);
+    let ench =
+        |spell, category, power, start| layered_enchantment(spell, 1, category, power, start);
+    let (world, hud) = enchanted_player(
+        &[
+            ench(armor_v, 7, 250, 300.0),
+            ench(armor_vi, 7, 300, 100.0),
+            ench(early, 8, 300, 100.0),
+            ench(late, 8, 300, 200.0),
+        ],
+        Default::default(),
+    );
+    let superseded = |spell| superseded_of(&hud, &world, spell);
+    assert_eq!(
+        superseded(armor_v),
+        Some(true),
+        "the lower power, cast later"
+    );
+    assert_eq!(superseded(armor_vi), Some(false));
+    assert_eq!(superseded(early), Some(true), "as strong, cast earlier");
+    assert_eq!(superseded(late), Some(false));
+}
+
+/// Each caster's copy of a spell is an effect of its own, told apart by its layered id.
+#[test]
+fn two_casters_copies_of_one_spell_are_two_effects_with_their_own_ids() {
+    let (world, hud) = enchanted_player(
+        &[
+            layered_enchantment(0x10, 1, 7, 300, 100.0),
+            layered_enchantment(0x10, 2, 7, 300, 200.0),
+        ],
+        Default::default(),
+    );
+    let view = HudView {
+        hud: &hud,
+        world: &world,
+    };
+    let mut copies: Vec<(u32, u32, bool)> = view
+        .active_effects()
+        .into_iter()
+        .map(|e| (e.spell, e.id, e.superseded))
+        .collect();
+    copies.sort_unstable();
+    assert_eq!(
+        copies,
+        [(0x10, 0x0001_0010, true), (0x10, 0x0002_0010, false)]
+    );
+}
+
+/// Oracle: ACE's `GetEnchantmentsTopLayer`, used once the world greets the player as ACE does. At
+/// equal power a level 8 Aura Self spell beats an item Other spell and set spells go by spell id;
+/// before that, and on Empyrean, the later cast wins.
+#[test]
+fn on_an_ace_world_ties_of_power_go_as_ace_settles_them() {
+    // Aura of Incantation of Blood Drinker Self against its Other spell cast later; two spells of
+    // one set, the lower id cast later.
+    let (aura, other, set_low, set_high) = (4395u32, 5997u32, 5000u32, 5001u32);
+    let tiers = [(2, vec![set_low, set_high])].into_iter().collect();
+    let (mut world, mut hud) = enchanted_player(
+        &[
+            layered_enchantment(aura, 1, 7, 8, 100.0),
+            layered_enchantment(other, 1, 7, 8, 200.0),
+            layered_enchantment(set_low, 1, 8, 3, 200.0),
+            layered_enchantment(set_high, 1, 8, 3, 100.0),
+        ],
+        [(1, pyreal_assets::tables::SpellSet { tiers })]
+            .into_iter()
+            .collect(),
+    );
+    let line = |text: &str| {
+        ui_event(&pyreal_protocol::comms::CommunicationTextboxString {
+            text: text.into(),
+            text_type: 0,
+        })
+    };
+    hud.apply_events(
+        &[line(
+            "Welcome to Dereth\n powered by Empyrean (a fork of ACEmulator)\n(https://example.org)\n",
+        )],
+        &mut world,
+    );
+    assert!(!hud.ace_world, "Empyrean keeps retail's tie-break");
+    assert_eq!(superseded_of(&hud, &world, aura), Some(true));
+    assert_eq!(superseded_of(&hud, &world, set_high), Some(true));
+    hud.apply_events(
+        &[line(
+            "Welcome to Asheron's Call\n  powered by ACEmulator\n\nFor more information on commands supported by this server, type @acehelp\n",
+        )],
+        &mut world,
+    );
+    assert!(hud.ace_world);
+    assert_eq!(superseded_of(&hud, &world, aura), Some(false));
+    assert_eq!(superseded_of(&hud, &world, other), Some(true));
+    assert_eq!(superseded_of(&hud, &world, set_high), Some(false));
+    assert_eq!(superseded_of(&hud, &world, set_low), Some(true));
+}
+
+/// Add Junk's facts read the lowest values as set: attuned 1, one tinker and the Critical
+/// Strike imbue (bit 1) all count, and the retained flag and rare underlay need no appraisal.
+#[test]
+fn sell_safety_counts_plain_attuned_one_tinker_and_critical_strike() {
+    use pyreal_client_model::{Weenie, World};
+    use pyreal_protocol::{archive::PackedHash, types::appraisal::AppraisalProfile};
+    let (plain, marked, flagged) = (ObjectId(7), ObjectId(8), ObjectId(9));
+    let mut world = World::new();
+    for id in [plain, marked, flagged] {
+        let mut w = Weenie::new(id);
+        w.pwd.value = Some(50);
+        w.pwd.obj_type = 1;
+        world.tables.weenies.insert(id, w);
+    }
+    let f = world.tables.weenies.get_mut(flagged).expect("the weenie");
+    f.pwd.bitfield |= 0x0100_0000;
+    f.pwd.icon_underlay_id = Some(0x0600_5B0C);
+    f.pwd.wielder_id = Some(ObjectId(0x5000_0001));
+    let mut profile = AppraisalProfile::default();
+    profile.tables.ints = Some(PackedHash {
+        table_size: 8,
+        entries: vec![(0x72, 1), (0xAB, 1), (0xB3, 1)],
+    });
+    profile.tables.strings = Some(PackedHash {
+        table_size: 8,
+        entries: vec![(7, "Mine".into())],
+    });
+    profile.tables.bools = Some(PackedHash {
+        table_size: 8,
+        entries: vec![(0x45, 0)],
+    });
+    world.appraisal.set(marked, profile);
+    world.appraisal.set(plain, AppraisalProfile::default());
+    world.shop.vendor_id = Some(ObjectId(0x8000_0100));
+    world.shop.profile.item_types = 2;
+    world.shop.profile.max_value = -1;
+    world.shop.profile.min_value = -1;
+    let hud = Hud::new();
+    let view = HudView {
+        hud: &hud,
+        world: &world,
+    };
+    let s = view.sell_safety(plain);
+    assert!(s.appraised && !s.attuned && !s.tinkered && !s.imbued && !s.inscribed);
+    assert_eq!((s.value, s.vendor_refusal), (Some(50), Some(1)));
+    let s = view.sell_safety(marked);
+    assert!(s.attuned && s.tinkered && s.imbued && s.inscribed && s.unsellable);
+    let s = view.sell_safety(flagged);
+    assert!(!s.appraised && s.retained && s.rare && s.worn);
+}

@@ -50,6 +50,41 @@ pub const ATTACK_SKILL_IDS: [u32; 9] = [0x21, 0x22, 0x29, 0x2B, 0x2C, 0x2D, 0x2E
 /// Skill keys affected by defense enchantments.
 pub const DEFENSE_SKILL_IDS: [u32; 4] = [6, 7, 0x0F, 0x30];
 
+/// The level 8 Aura Self spells ACE puts above an equally strong Other spell
+/// (`Level8AuraSelfSpells`): Blood Drinker, Defender, Heart Seeker, Spirit Drinker, Swift Killer
+/// and Hermetic Link.
+pub const LEVEL8_AURA_SELF: [u16; 6] = [4395, 4400, 4405, 4414, 4417, 4418];
+
+/// ACE counts a spell set's spells from this id on as set spells (`SetCoordination1`).
+pub const FIRST_ACE_SET_SPELL: u32 = 4730;
+
+/// How two equally strong enchantments of one category are settled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TieBreak<'a> {
+    /// Retail's, which Empyrean keeps: the later cast.
+    #[default]
+    Retail,
+    /// ACE's: a level 8 Aura Self spell, then a set spell (higher id first), then the later cast.
+    Ace {
+        /// The spells ACE ranks by id: [`ace_set_spells`].
+        set_spells: &'a std::collections::BTreeSet<u32>,
+    },
+}
+
+/// ACE's set spells: every spell of the table's spell sets from [`FIRST_ACE_SET_SPELL`] on.
+#[must_use]
+pub fn ace_set_spells(
+    table: &pyreal_assets::tables::SpellTable,
+) -> std::collections::BTreeSet<u32> {
+    table
+        .spellsets
+        .values()
+        .flat_map(|s| s.tiers.values().flatten())
+        .copied()
+        .filter(|s| *s >= FIRST_ACE_SET_SPELL)
+        .collect()
+}
+
 /// One entry of the registry, with its two times already rebased onto the local clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Enchantment {
@@ -133,6 +168,32 @@ impl Enchantment {
     pub fn beats(&self, other: &Self) -> bool {
         self.power_level > other.power_level
             || (self.power_level == other.power_level && self.start_time > other.start_time)
+    }
+
+    /// [`Self::beats`] with the world's tie-break at equal power: retail's later cast, or ACE's
+    /// keys (`GetEnchantmentsTopLayer`).
+    #[must_use]
+    pub fn beats_on(&self, other: &Self, tie: TieBreak<'_>) -> bool {
+        let TieBreak::Ace { set_spells } = tie else {
+            return self.beats(other);
+        };
+        if self.power_level != other.power_level {
+            return self.power_level > other.power_level;
+        }
+        let aura = |e: &Self| LEVEL8_AURA_SELF.contains(&e.spell_id());
+        if aura(self) != aura(other) {
+            return aura(self);
+        }
+        let set = |e: &Self| set_spells.contains(&u32::from(e.spell_id()));
+        match (set(self), set(other)) {
+            // A set spell's key is its id, which is above any other's start time (`<= 0` in ACE).
+            (true, false) => true,
+            (false, true) => false,
+            (true, true) if self.spell_id() != other.spell_id() => {
+                self.spell_id() > other.spell_id()
+            }
+            _ => self.start_time > other.start_time,
+        }
     }
 
     /// Return whether this enchantment affects attack skills.
@@ -701,6 +762,66 @@ mod tests {
             },
             spell_set_id: None,
         }
+    }
+
+    /// A spell of category 9 at `power`, cast at `start`.
+    fn spell(id: u32, power: i32, start: f64) -> Enchantment {
+        let mut e = ench(9, power, start, ench_type::MULTIPLICATIVE, 5, 1.0);
+        e.id = id;
+        e
+    }
+
+    /// Oracle: ACE's `GetEnchantmentsTopLayer`. At equal power a level 8 Aura Self spell beats an
+    /// item Other spell cast later; retail's rule takes the later cast. Power still comes first.
+    #[test]
+    fn on_ace_an_aura_self_beats_an_other_spell_as_strong() {
+        let sets = std::collections::BTreeSet::new();
+        let ace = TieBreak::Ace { set_spells: &sets };
+        // Aura of Incantation of Blood Drinker Self, then of Blood Drinker Other cast later.
+        let aura = spell(4395, 8, 10.0);
+        let other = spell(5997, 8, 20.0);
+        assert!(aura.beats_on(&other, ace) && !other.beats_on(&aura, ace));
+        assert!(other.beats_on(&aura, TieBreak::Retail) && !aura.beats(&other));
+        let stronger = spell(5997, 9, 0.0);
+        assert!(stronger.beats_on(&aura, ace));
+    }
+
+    /// Oracle: ACE ranks set spells by spell id, not by cast time, and above other spells as
+    /// strong; two plain spells as strong still go to the later cast.
+    #[test]
+    fn on_ace_set_spells_tie_by_spell_id() {
+        let sets: std::collections::BTreeSet<u32> = [5000, 5001].into_iter().collect();
+        let ace = TieBreak::Ace { set_spells: &sets };
+        let higher = spell(5001, 3, 10.0);
+        let lower_later = spell(5000, 3, 20.0);
+        assert!(higher.beats_on(&lower_later, ace) && !lower_later.beats_on(&higher, ace));
+        assert!(lower_later.beats_on(&higher, TieBreak::Retail));
+        let plain_later = spell(2, 3, 30.0);
+        assert!(lower_later.beats_on(&plain_later, ace));
+        let plain = spell(2, 3, 5.0);
+        assert!(plain_later.beats_on(&plain, ace) && !plain.beats_on(&plain_later, ace));
+    }
+
+    /// ACE's set spells are the table's set spells from `SetCoordination1` on.
+    #[test]
+    fn ace_set_spells_start_at_set_coordination() {
+        let mut table = pyreal_assets::tables::SpellTable {
+            id: pyreal_primitives::DataId(0x0E00_000E),
+            spell_buckets: 0,
+            spells: std::collections::BTreeMap::new(),
+            spellset_bucket_index: 0,
+            spellsets: std::collections::BTreeMap::new(),
+        };
+        let tiers = [(1, vec![1000, 4730]), (2, vec![4731])]
+            .into_iter()
+            .collect();
+        table
+            .spellsets
+            .insert(1, pyreal_assets::tables::SpellSet { tiers });
+        assert_eq!(
+            ace_set_spells(&table).into_iter().collect::<Vec<_>>(),
+            [4730, 4731]
+        );
     }
 
     /// One enchantment with an explicit id and duration, for the purge tests.

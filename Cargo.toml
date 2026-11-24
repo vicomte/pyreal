@@ -13,6 +13,8 @@ members = [
     "core/physics",
     "core/animation",
     "core/transport",
+    # The November 1999 client's wire, translated onto the later messages.
+    "core/wire1999",
     "core/protocol",
     "core/rules",
     "core/chargen",
@@ -68,7 +70,7 @@ members = [
 
 [workspace.package]
 # Pyreal's release version, which every crate carries (RELEASING.md).
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.98"
 license = "MIT"
@@ -115,6 +117,7 @@ pyreal-terrain = { path = "core/terrain" }
 pyreal-testkit = { path = "pyreal/testkit" }
 pyreal-text = { path = "core/text" }
 pyreal-transport = { path = "core/transport" }
+pyreal-wire1999 = { path = "core/wire1999" }
 pyreal-ui-kit = { path = "pyreal/client/crates/ui-kit" }
 pyreal-ui-logic = { path = "pyreal/client/crates/ui-logic" }
 pyreal-horizon = { path = "pyreal/client/crates/horizon" }

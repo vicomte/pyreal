@@ -7,6 +7,62 @@ and the versions follow [Semantic Versioning](https://semver.org/). While the ve
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+### Added
+
+- AC1999 is on the Known Worlds list. It plays the game as it was in November 1999 with the 1999 Retail CD files. Pyreal also checks a world you add by hand the first time you play it, and a world that speaks the November 1999 protocol is played that way. On AC1999, your account name and password can have at most 19 characters together. There, @g speaks in the server's general chat, friends are listed by the server, and commands and options the server does not take are left out.
+- The tooltips on the main menu show the key that does the same, such as "Character (C)" or "Map (M)". They follow your key bindings, and an item with no key shows only its name. A button that opens a menu names the key of its first item that has one.
+- Hide Interface hides the HUD and every window so you can take a clean picture, and brings them back as they were. Its key is Alt+Z. Escape or any window's key shows the interface again, and so does dying. Questions from the game still appear while the interface is hidden.
+- Resting the pointer on an item in your packs, a loot window or a vendor's stock shows its details in the tooltip: its value, burden, workmanship, armor or damage, requirements and spells, as Examine shows them. The tooltip says Assessing until the game answers. When you cannot assess the item or the game does not answer, the tooltip says so. After you write an inscription the tooltip shows the new one. The Assess on Hover setting on the Interface page turns this off, and the tooltip then shows details only for items you have already assessed.
+- Holding Shift while the details show puts what you wear in the same place beside the item, with each number that is better in green and each that is worse in red. The Compare With Worn Items setting on the Interface page shows it without Shift. Worn items are compared without the spells cast on them, and armor that covers several body parts is compared part by part with every piece it would replace. A weapon is compared with a wielded weapon of the same kind.
+- The inventory has a search box. Type part of a name, or a kind such as armor, weapon, gem or salvage, and items that do not match are dimmed in every pack. The packs that hold a match are marked in the pack column.
+- Hold Ctrl and right-click an item to mark it Keep or Junk. The mark shows as a gold or grey corner on the item. Pyreal asks before you sell, salvage, trade, give or drop a Keep item, and a vendor's Sell tab has an Add Junk button that puts your Junk items on the list. Add Junk keeps back anything attuned, retained, inscribed, imbued, tinkered, rare, worn, of no value or refused by that vendor, and its tooltip says why. Marks are kept for each character and stay with the item they were put on.
+- When you die and drop items, the place where the game laid your corpse is marked with a headstone on your map and on the edge of your radar. Nothing is marked when you keep all your items. If you died outdoors while playing on another computer, that place is marked when you next log in. Click the headstone, or the Set Waypoint to Corpse button under the radar, to set your waypoint there. The marker goes away when you empty your corpse, when you see it decay, when you come back and the corpse is gone, or when you right click the headstone.
+- Places written in chat, such as 12.3N, 45.6E, are links. Click one to set your waypoint there.
+- The map has a Share Waypoint button that puts your waypoint's name and place on the chat line as plain text, so players on any client can read it.
+- Beneficial effects in their last minute show as their spell icons with a countdown under the effect icons, and a notice at the top of the screen says which one is ending. Harmful effects show there while they last. An effect that a stronger spell of the same kind overrides, such as Armor Self V under Armor Self VI, is left out. The Effects Ending Soon setting on the Interface page turns this off or shows effects from 30 seconds to five minutes before they end. HUD Layout moves the icons.
+- The Journal has Pin buttons for notebook pages, contracts and quest timers. Pinned things show in the Quest Tracker under the radar with the time left on each timer. A notice says when a pinned timer is ready, and at login another says when your house's rent is due. Click a row to open it in the Journal, or right-click it to unpin it. The Quest Tracker can be moved in HUD Layout, and pins are kept for each character.
+- Damage you deal rises as a number over what you hit, and damage you take and healing rise over your character. The numbers are large and bold with a dark edge. Critical hits are larger and gold, evades and resists show as words, and the rest of your damage takes the colour of its type. A creature you kill shows Killed over it. Damage over time that lands on one body together shows as one smaller number with the ticks added up. The numbers fade with distance and hide behind walls. The Combat Numbers settings on the Interface page turn them off, or turn off the damage you deal, the damage you take or healing on their own. Melee and missile numbers still show when combat messages are squelched in chat, and health lost or gained to another's life transfer spell shows too.
+- When your health falls under a quarter, the edges of the screen turn red and the health bar glows. Both pulse like a heartbeat that quickens as your health falls, and they fade when you heal or die. The red edges stay when the interface is hidden. The Low Health Warning setting on the Interface page turns it off or sets it to a fifth, a quarter or a third of your health.
+- The Journal has a Deaths tab that names what killed you and lists the hits you took in the last 15 seconds: who dealt each one, how much, its type, whether it was critical, and how long before your death it came. It also shows your health over those seconds, and healing, drains, evades and resisted spells are listed with the hits. Under the list it says which items you lost, or that you kept them all, once the game has said, and your vitae penalty. The blow that killed you is listed with the health you had left and the damage type the death message names. The tab keeps your last 10 deaths until you log out, the newest at the top, and clicking one shows it. The tab's Set Waypoint to Corpse button sets your waypoint to your newest corpse outside dungeons. Bind the Death Journal key to open the Journal at Deaths with one press. Turn on Open Journal on Death on the Interface page to have the Journal open at Deaths when you die.
+- Gamepad Mode reads controllers on a Mac, such as a PS5 DualSense connected by USB.
+- With a PlayStation controller, Gamepad Mode shows its own buttons. The cross hotbars show the cross, circle, square and triangle in their colours, and the Set to Hotbar notice names L2 and R2. Other controllers show the Xbox buttons as before.
+- The Graphics page has a Resolution setting again. In a window it lists the common sizes that fit your screen, from 1024 × 768 to 3840 × 2160, and picking one resizes the window at once. Dragging the window's edges still sets any size, and the setting then shows it as Custom. Pyreal remembers the window's size, and leaving full screen goes back to it. In full screen the setting shows the screen's own size, and Render Scale sets how much detail the game draws there.
+
+### Changed
+
+- The Enhanced Environment pack is 0.5.4. More walls, floors and ceilings take relief that follows their pictures, with brick courses, stones and slabs traced again and top beams standing out. Crystals, gems, pottery, bottles, chests and keys look like what they are made of. The Life Stones, the crystal clusters, the Obsidian Plain, the crystal shards of every colour and the cistern pillars are clear crystal that bends what lies behind it. Bottles and flasks draw their corks, labels, bands and foil solid, and the Bottle of Crystal Champagne has a new Dom Pyrignon label. In End of Retail, the giant elm, the bare dead trees, the red clump trees and the copies of the pack's trees and plants draw with the pack's models. Banyans grow smooth trunks, limbs and roots, and the hay piles are lumpy straw heaps.
+- AI fellows, shared waypoints and journal notes need an Empyrean world from this release or later.
+- The Display page in Settings is split into an Interface page and a Graphics page. The Interface page holds Interface Scale, UI Blur and the settings for windows and the HUD, such as Status Bar Style, Low Health Warning and Combat Numbers. The Graphics page starts with the screen's settings, Resolution, Full Screen, VSync, HDR Output, Brightness and Field of View, then Quality Preset with Render Scale and Anti-Aliasing, then the lighting, sky and surface settings. Each page's Defaults button puts back only that page's settings, and on the Interface page it also puts back Interface Scale and the HUD settings. Your saved settings keep their values.
+- The crystal shards' sparkles are small motes of light in the shard's own colour that twinkle as they drift around it. The haze around a shard and its light on the ground take its colour too, so a green shard lights the grass green. A black shard's light is faint.
+- The vents on the cone-shaped mounds in the swamps put out thin wisps of smoke in their own colour, pink, brown or green. The wisps rise from the vent, curl and drift with the wind, and break apart as they climb. They glow faintly as before, so they show at night too. The brown vents no longer draw flames at their mouths, and their orange light on the ground and trees around them is a tenth as bright.
+
+### Removed
+
+- The Check for Updates setting under Settings' Information heading is gone. Pyreal always checks for a newer version when it opens, at most once a day. The check sends only Pyreal's name and version. A saved value for the old setting is ignored.
+
+### Fixed
+
+- On a Mac with MetalFX, the game no longer pauses for a moment each time Render Scale set to Dynamic changes the scale. In a smaller window it also stops using more memory with every change, which could use up all of the computer's memory within minutes. The picture keeps its detail when the render scale changes.
+- In character creation, the Undead's burning head and the Empyrean's glowing eyes look as they do in the world, and their light falls on the face. Both had shown as dark squares.
+- On the first run, your keys work as soon as you choose your data folder, and the Key Bindings page lists them. Moving and every other key used to wait until Pyreal was started again.
+- On a Mac, the settings you change are kept when you quit with Command-Q or from the Dock, as they are when you close the window.
+- Turning on Gamepad Mode no longer stops the mouse from clicking the interface. The pad takes the pointer when you press one of its buttons or push a stick, and moving or clicking the mouse gives it back. With no pad connected, the interface works as it does with Gamepad Mode off, and the Controls page says that no controller is connected.
+- With UI Blur on, the world behind the shortcut bar and spell bar slots, the stance button and the main menu is blurred as it is behind windows and the chat. A HUD element moved in HUD Layout keeps the blur behind it.
+- The dark ground inside each shortcut, spell and inventory slot reaches its frame, so no thin line of the world shows along its top and sides.
+- The fountains the game places in towns, such as the one in Ayan Baqur, throw a clear column of water into their basins, as the other fountains do. Their water no longer lights the ground around them blue.
+- By day, lamps in rooms that open to the outdoors, such as the huts in the swamps, light the room about as brightly beside the sunlit ground as the original game did. A hut with a strong green lamp had glowed brighter than the sunlit ground around it.
+- By day, lights outdoors, such as the flaming arrows Relic Bones carry, lit weapons, magic items and street lamps, show on the sunlit ground about as faintly as in the original game. They still brighten shaded ground nearby, and the glow round them fades in sunlight. At night they glow as before.
+- On a Mac, Pyreal no longer quits suddenly when the graphics processor reports an error while the MetalFX upscaler is in use. MetalFX is turned off until Pyreal is restarted, and the world is smoothed by Pyreal's own anti-aliasing.
+- A character who logs in or arrives inside a building stands clear of its walls.
+- A world you enter while its data files are still being updated is built again from the updated files when the update ends.
+- A character who dies on a plugin's journey stays down where it fell, and the journey ends. No key or plugin moves a dead character.
+- A plugin's movement and journeys keep going when you click to another window.
+- A plugin's journey walks round a large object that comes into sight across its way, such as a fence or a yard wall.
+- A plugin's window over a HUD element moved in HUD Layout, such as the party list, takes clicks and can be dragged by its title bar.
+- On Windows, plugin messages between the clients you run on one computer keep arriving after the first minute.
+
 ## [0.2.1] - 2026-11-22
 
 ### Added
@@ -458,7 +514,8 @@ work.
 - Far terrain pipelines are made once, and the ray scene gathers nearby statics once a frame.
 - Startup makes its pipelines side by side on several threads, warms up the ray-tracing builders in the background, and keeps a Vulkan pipeline cache in the settings folder, so a first launch on Windows reaches the world about twice as fast and later launches sooner still. The front door says when shaders are being prepared.
 
-[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/jacobjohnston/pyreal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.3.0
 [0.2.1]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.2.1
 [0.2.0]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.2.0
 [0.1.4]: https://github.com/jacobjohnston/pyreal/releases/tag/v0.1.4

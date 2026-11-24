@@ -2,7 +2,7 @@
 # by `cargo xtask base-pack build` into <target>/base-pack/base-pack.dat, which must
 # hash to `sha256`. `cargo xtask base-pack update [<rev>]` moves the pin.
 repository = "../dereth-enhanced-environment"
-commit = "838e3c8045e4feebb1989cd0910b5a840392789b"
-version = "0.5.3"
-sha256 = "88789e457a617a9359451d53390d24a2c25d868764d33af142834f10057219e6"
-bytes = 401595392
+commit = "ef5acc26c5fff96cc2a5433253167305ad2c90e1"
+version = "0.5.4.0"
+sha256 = "b634fa046936b1867f1944154a210a19df6b68bc36ab4c78a1cad222e621067d"
+bytes = 404487168

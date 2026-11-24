@@ -65,6 +65,9 @@ pub enum LampKind {
     /// A room's own authored light of a colour no lamp burns (a dungeon's green, blue or
     /// magenta), lit at retail's colour and intensity ([`fixture`]).
     Mood,
+    /// A swamp vent's faint firelight: a fire's colour and flicker at its intensity
+    /// ([`VENT_LIGHT`]), outdoors too.
+    Vent,
 }
 
 /// One light of an object, in the object's own space.
@@ -358,6 +361,22 @@ pub(crate) fn script_emitters(
 /// ([`crate::puffs::FUME`], its picture and its software picture).
 const NOT_FIRE: &[u32] = &[0x0100_1645, 0x0100_1318, 0x0100_1317];
 
+/// A brown swamp vent's puffs and wisps ([`crate::puffs::WISP`]): fire-coloured, drawn as no
+/// flame, and lit as a fire [`VENT_LIGHT`] as bright.
+const VENT: &[u32] = &[0x0100_1626, 0x0100_1686];
+/// How bright a vent's light is beside a fire's: a faint glow round it.
+pub const VENT_LIGHT: f32 = 0.1;
+
+/// Whether an emitter is a swamp vent's fire-coloured puffs ([`VENT`]).
+pub(crate) fn is_vent(e: &ParticleEmitterInfo) -> bool {
+    let gid = if e.hw_gfxobj_id.0 != 0 {
+        e.hw_gfxobj_id
+    } else {
+        e.gfxobj_id
+    };
+    VENT.contains(&gid.0)
+}
+
 /// Whether an emitter keeps on: a set count or time of particles is a puff or a jet that dies
 /// away, not a standing fire.
 pub(crate) fn burns_on(e: &ParticleEmitterInfo) -> bool {
@@ -494,15 +513,16 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
     };
     let parts = parts(&setup);
     let emitters = script_emitters(store, &setup, &parts);
-    // Each fire's place and colour, and whether it is a broad glow, which lights steadily.
-    let flames: Vec<(Vec3, Vec3, bool)> = emitters
+    // Each fire's place and colour, whether it is a broad glow, which lights steadily, and
+    // whether it is a vent's.
+    let flames: Vec<(Vec3, Vec3, bool, bool)> = emitters
         .iter()
         .filter(|(e, _)| burns_on(e))
         .filter_map(|(e, at)| {
             let c = flame_colour(store, e)?;
             // The flame's light sits a little above where its particles are born.
             let rise = (e.a.z * e.max_a.max(e.min_a) * 0.15).clamp(0.0, 0.4);
-            Some((*at + Vec3::Z * rise, c, broad_glow(store, e)))
+            Some((*at + Vec3::Z * rise, c, broad_glow(store, e), is_vent(e)))
         })
         .collect();
     let mut out = Vec::new();
@@ -522,7 +542,7 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         }
         let near_flame = flames
             .iter()
-            .any(|(p, _, glow)| !glow && (*p - at).length() < 1.5);
+            .any(|(p, _, glow, _)| !glow && (*p - at).length() < 1.5);
         out.push(LampSource {
             client_offset: (at != dats).then_some(dats),
             kind: LampKind::Authored,
@@ -539,13 +559,17 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<LampSource> {
         });
     }
     if out.is_empty() {
-        for (p, c, glow) in flames {
+        for (p, c, glow, vent) in flames {
             out.push(LampSource {
                 client_offset: None,
-                kind: LampKind::Flame,
+                kind: if vent {
+                    LampKind::Vent
+                } else {
+                    LampKind::Flame
+                },
                 offset: p,
                 colour: c,
-                intensity: 1.0,
+                intensity: if vent { VENT_LIGHT } else { 1.0 },
                 falloff: 8.0,
                 flicker: if glow {
                     Flicker::Steady
@@ -901,7 +925,7 @@ pub fn probe_lamps(mut near: Vec<Lamp>, eye: Vec3) -> Vec<Lamp> {
 
 /// A lamp's bytes: position and range; colour times candela; the client's colour times
 /// intensity; flicker and flags (indoors, shadowed, the dats', a found flame, magic, acid, a
-/// strike, a portal); its shadow
+/// strike, a portal, held, moving, a vent's); its shadow
 /// slot and a seed; its object.
 #[must_use]
 pub fn lamp_bytes(l: &Lamp, slot: u32, seed: u32) -> [u8; 64] {
@@ -924,7 +948,7 @@ pub fn lamp_bytes_in(l: &Lamp, slot: u32, seed: u32, rooms: (u32, u32)) -> [u8; 
             | (u32::from(l.cell != 0) << 8)
             | (u32::from(l.shadows) << 9)
             | (u32::from(l.kind != LampKind::Pack) << 10)
-            | (u32::from(l.kind == LampKind::Flame) << 11)
+            | (u32::from(matches!(l.kind, LampKind::Flame | LampKind::Vent)) << 11)
             | (u32::from(magic(l.kind, l.retail.truncate())) << 12)
             | (u32::from(
                 l.kind == LampKind::Glow
@@ -934,7 +958,8 @@ pub fn lamp_bytes_in(l: &Lamp, slot: u32, seed: u32, rooms: (u32, u32)) -> [u8; 
             | (u32::from(l.flash) << 14)
             | (u32::from(l.kind == LampKind::Portal) << 15)
             | (u32::from(l.held) << 16)
-            | (u32::from(l.moves()) << 17),
+            | (u32::from(l.moves()) << 17)
+            | (u32::from(l.kind == LampKind::Vent) << 18),
         l.retail.x.to_bits(),
         l.retail.y.to_bits(),
         l.retail.z.to_bits(),

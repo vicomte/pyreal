@@ -591,6 +591,55 @@ fn a_vents_green_gas_is_gas_and_other_laid_over_puffs_are_not() {
     assert_eq!(kind(0x3200_04A2, 0x0100_109E), None, "a waterfall's spray");
 }
 
+/// A swamp vent's rising pictures (0x02000584 pink, 0x02000585 green, 0x02000586 brown) are its
+/// wisps, and no other emitter in the dats is; its puffs at the mouth stay pictures. No vent draws
+/// a flame, and the brown one's lamps glow at a tenth of a fire's.
+#[test]
+fn a_swamp_vents_rising_pictures_are_wisps_and_glow_faintly() {
+    use pyreal_engine::puffs::{placed_kind, WISP};
+    use pyreal_engine::{flames, lamps};
+    let store = Arc::new(pyreal_dat::testing::open_store_or_fail());
+    let assets = DatAnimAssets::new(Arc::clone(&store));
+    let mut wisps = Vec::new();
+    for id in store.ids_of(DbType::ParticleEmitter) {
+        let Some(e) = assets.emitter_info(id) else {
+            continue;
+        };
+        let gfx = if e.hw_gfxobj_id.0 != 0 {
+            e.hw_gfxobj_id
+        } else {
+            e.gfxobj_id
+        };
+        if placed_kind(&store, gfx, &e) == Some(WISP) {
+            wisps.push(id.0);
+        }
+    }
+    assert_eq!(wisps, [0x3200_02D0, 0x3200_02D1, 0x3200_02D2]);
+    for (e, gfx) in [
+        (0x3200_02A0, 0x0100_162B),
+        (0x3200_02A2, 0x0100_1626),
+        (0x3200_02A3, 0x0100_1627),
+    ] {
+        let info = assets.emitter_info(DataId(e)).expect("the emitter");
+        assert_eq!(placed_kind(&store, DataId(gfx), &info), None, "{e:#010X}");
+    }
+    for vent in [0x0200_0584, 0x0200_0585, 0x0200_0586] {
+        let vent = DataId(vent);
+        assert!(
+            flames::examine(&store, vent).is_empty(),
+            "{vent:?}: a flame"
+        );
+        let lit = lamps::examine(&store, vent);
+        if vent.0 == 0x0200_0586 {
+            assert_eq!(lit.len(), 2, "the brown vent's two fire-coloured emitters");
+            assert!(lit.iter().all(|l| l.kind == lamps::LampKind::Vent
+                && (l.intensity - lamps::VENT_LIGHT).abs() < 1e-6));
+        } else {
+            assert!(lit.is_empty(), "{vent:?}: a lamp");
+        }
+    }
+}
+
 /// A floor grate 0x02000469's brown haze (emitter 0x3200021C, picture 0x01001318) is a fume, not
 /// fire: it is drawn as a volume and makes no flame and no lamp. The same picture's dust
 /// 0x3200021D and the vents' gas and steam are not fume.

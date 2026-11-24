@@ -141,6 +141,12 @@ pub enum Look {
     /// A lighthouse beacon's part ([`crate::beacons`]): retail's pictures drawn as white light,
     /// its heart or its shaft.
     Beacon(u8),
+    /// A crystal shard's sparkle ([`crate::sparks`]) as light in the crystal's colour (12 bits): a
+    /// mote, or the haze about it.
+    Spark {
+        tint: u16,
+        mote: bool,
+    },
 }
 
 /// Whether a look is laid over what is behind it whatever its picture: mist and dust.
@@ -288,6 +294,9 @@ pub struct Particles {
     /// Particles of emitters the engine does not step (the client's own objects'), gathered for
     /// the next frame by [`Self::gather`]; drawn with the hosts' and emptied by the frame.
     pub external: Vec<Drawn>,
+    /// The jets of the client's fountains gathered for the next frame ([`Self::gather`]), drawn
+    /// with the hosts' ([`crate::fountains::frame_jets`]) and emptied by the frame.
+    pub body_jets: Vec<crate::fountains::BodyJets>,
     /// Bodies gathered since the last frame, which numbers each one's particles.
     pub gathered: u32,
     /// The liquid balls in the instance list: the first and how many ([`Look::Blob`]).
@@ -322,6 +331,10 @@ pub struct Particles {
     pub roles: crate::roles::Roles,
     /// The clock's seconds at the last step.
     pub clock: f64,
+    /// Each palette's light colour, by palette id, which a crystal's sparkles take
+    /// ([`crate::sparks`]); `None` for a palette of black or one that will not read.
+    // ORDER-OK: looked up by palette, never iterated.
+    pub tints: HashMap<u32, Option<Vec3>>,
     /// The blood dripping from blood golems.
     pub blood: Blood,
 }
@@ -372,6 +385,7 @@ impl Default for Particles {
             portal_colours: HashMap::new(),
             detail: 1.0,
             external: Vec::new(),
+            body_jets: Vec::new(),
             gathered: 0,
             blobs: (0, 0),
             puffs: (0, 0),
@@ -385,6 +399,7 @@ impl Default for Particles {
             fire_bodies: true,
             fires: Vec::new(),
             glow_lamps: Vec::new(),
+            tints: HashMap::new(),
             roles: crate::roles::Roles::new(),
             clock: 0.0,
             blood: Blood::default(),
@@ -533,7 +548,7 @@ fn shape(
     let t = (p.lifetime / p.lifespan.max(1e-3)).clamp(0.0, 1.0) as f32;
     match look {
         Look::Picture => (affine(&p.frame, p.scale), 0.0, Vec3::ZERO),
-        Look::Glow(_) | Look::Flake(_) | Look::Fire | Look::Beacon(_) => {
+        Look::Glow(_) | Look::Flake(_) | Look::Fire | Look::Beacon(_) | Look::Spark { .. } => {
             (affine(&p.frame, p.scale), t, Vec3::ZERO)
         }
         Look::Smoke => {
@@ -879,11 +894,34 @@ impl Particles {
         out
     }
 
+    /// The palette whose colour `driver`'s sparkles take, when it is a crystal shard and the
+    /// colour is not yet read ([`prepare_tint`]).
+    #[must_use]
+    pub fn missing_tint(&self, driver: &MotionDriver) -> Option<DataId> {
+        if !crate::sparks::crystal(driver) {
+            return None;
+        }
+        crate::sparks::palette(driver).filter(|p| !self.tints.contains_key(&p.0))
+    }
+
+    /// The colour of `driver`'s light when it is a crystal shard whose palette's colour is read
+    /// and its sparkles are drawn as light ([`crate::sparks`]).
+    #[must_use]
+    pub fn crystal_tint(&self, driver: &MotionDriver) -> Option<Vec3> {
+        if !self.smoke || !crate::sparks::crystal(driver) {
+            return None;
+        }
+        let p = crate::sparks::palette(driver)?;
+        self.tints.get(&p.0).copied().flatten()
+    }
+
     /// Adds the live particles of `driver`'s emitters, which the client steps, to the next
     /// frame's: each moved by `offset` into render space and seen through cell slot `cell`; a
     /// `shadow`'s eyes glow. Each emitter is drawn as its role says ([`crate::roles`]): its fire
     /// with the body's fire, its lightning as strikes in the body's volume. A `held` thing's light
-    /// carries a held thing's lamp ([`crate::glow::HELD_INTENSITY`]).
+    /// carries a held thing's lamp ([`crate::glow::HELD_INTENSITY`]). A fountain's jets (its setup's
+    /// basin water, `pools`) are drawn as water, as a placed fountain's are.
+    #[allow(clippy::too_many_arguments)]
     pub fn gather(
         &mut self,
         driver: &MotionDriver,
@@ -892,6 +930,7 @@ impl Particles {
         eye: Vec3,
         shadow: bool,
         held: bool,
+        pools: &crate::fountains::Pools,
     ) {
         use crate::roles::Role;
         // A portal is drawn as a vortex, its swirl's particles left out; else as retail's swirl.
@@ -913,7 +952,24 @@ impl Particles {
                 return;
             }
         }
-        let roles: Vec<Option<Role>> = driver.particles.iter().map(|e| self.role(e)).collect();
+        let jets = self
+            .fountains
+            .then(|| crate::fountains::body_jets(driver, pools, cell, offset))
+            .flatten();
+        let jetted = jets.is_some();
+        self.body_jets.extend(jets);
+        // A fountain's jets drawn as water have no other role: no cards, no fire, no lamp.
+        let roles: Vec<Option<Role>> = driver
+            .particles
+            .iter()
+            .map(|e| {
+                if jetted && crate::fountains::drawn_for(driver, &e.info) {
+                    None
+                } else {
+                    self.role(e)
+                }
+            })
+            .collect();
         // A molten body's fire is its glowing cracks: its flames are left out.
         if self.fire_bodies && !crate::body_fire::molten_core(driver) {
             let burning = driver
@@ -938,6 +994,8 @@ impl Particles {
                 .iter()
                 .any(|r| matches!(r, Some(Role::Volume(crate::puffs::SNOW))));
         let body = std::ptr::from_ref(driver) as usize;
+        // A crystal shard's sparkles are light in its own colour.
+        let tint = self.crystal_tint(driver).map(crate::sparks::pack);
         // The creature's lamps, its light's and its acid's: where each is, weighed by how much
         // shows, and its colour.
         let mut lamps = [(Vec3::ZERO, Vec3::ZERO, 0.0f32); 2];
@@ -999,6 +1057,10 @@ impl Particles {
                 Role::Glow(g) if !eyes => Look::Glow(g),
                 _ => look_of(sprite, &e.info, self.smoke),
             };
+            let look = match (tint, crate::sparks::mote(id)) {
+                (Some(tint), Some(mote)) => Look::Spark { tint, mote },
+                _ => look,
+            };
             // A creature's smoke or dust ([`crate::puffs::smoke_of`]) is thinned and swelled.
             let smoke = matches!(look, Look::Puff(k) if (crate::puffs::SMOKE..crate::puffs::HAZE).contains(&k));
             let stride = crate::puffs::stride(&e.info);
@@ -1006,6 +1068,7 @@ impl Particles {
                 Look::Glow(_) if !snowy => {
                     sprite.glow.filter(|g| !g.glint()).map(|g| (0, g.colour))
                 }
+                Look::Spark { tint, .. } => Some((0, crate::sparks::unpack(tint))),
                 Look::Puff(crate::puffs::ACID) => Some((1, sprite.colour)),
                 _ => None,
             };
@@ -1046,6 +1109,11 @@ impl Particles {
                 // A scaled body's liquid grows with it, so its balls still meet.
                 if let Look::Blob(_) = look {
                     transform.matrix3 *= driver.scale;
+                }
+                // A crystal's mote is a small point of light, twinkling.
+                if let Look::Spark { mote: true, .. } = look {
+                    transform.matrix3 *= crate::sparks::MOTE_SIZE;
+                    alpha *= crate::sparks::twinkle(seed_of(p), self.clock);
                 }
                 if let Look::Puff(_) = look {
                     let b = driver.particle_parent_frame().origin;
@@ -1129,7 +1197,7 @@ impl Particles {
             if weight <= 0.0 {
                 continue;
             }
-            let source = if k == 0 {
+            let mut source = if k == 0 {
                 crate::glow::carried_source(colour, held)
             } else {
                 crate::lamps::LampSource {
@@ -1139,6 +1207,10 @@ impl Particles {
                     ..crate::glow::carried_source(colour, false)
                 }
             };
+            // A dark crystal's light is as faint as its colour ([`crate::sparks::colour_of`]).
+            if let (0, Some(t)) = (k, tint) {
+                source.intensity *= crate::sparks::unpack(t).max_element();
+            }
             let at = Affine3A::from_translation(at / weight + offset);
             let mut lamp = crate::lamps::place(&source, &at, cell, u32::MAX);
             if held && k == 0 {
@@ -1270,6 +1342,42 @@ impl Particles {
                 } else {
                     look
                 };
+                // A swamp vent's wisps stand as one column over its mouth, whatever its puffs.
+                if look == Look::Puff(crate::puffs::WISP) {
+                    let foot = whirl(&h.driver, e).0;
+                    let strength = crate::puffs::vent_strength(&e.info);
+                    let top = e.info.start_scale.max(e.info.final_scale);
+                    for (at, scale, u) in crate::puffs::wisp_column(foot, self.wind) {
+                        self.live += 1;
+                        let distance = at.distance(eye);
+                        let r = scale * 2.0;
+                        if distance / scale > sprite.reach * self.detail
+                            || planes.iter().any(|q| q.truncate().dot(at) + q.w < -r)
+                        {
+                            continue;
+                        }
+                        let mut transform = Affine3A::from_scale_rotation_translation(
+                            Vec3::splat(scale),
+                            glam::Quat::IDENTITY,
+                            at,
+                        );
+                        anchor(&mut transform, foot);
+                        transform.matrix3.x_axis.y = top;
+                        self.drawn.push(Drawn {
+                            sprite: id,
+                            transform,
+                            alpha: strength,
+                            cell: h.cell,
+                            distance,
+                            light: false,
+                            look,
+                            age: u,
+                            seed: 0,
+                            group: 0x8000_0000 | u32::try_from(host).unwrap_or(0),
+                        });
+                    }
+                    continue;
+                }
                 let jet_puff = crate::puffs::is_jet(&e.info);
                 for p in e.live() {
                     self.live += 1;
@@ -1407,10 +1515,10 @@ impl Particles {
                         .total_cmp(&a.transform.matrix3.x_axis.length()),
                 )
         });
-        // Steam's, haze's, gas's and fume's seed is its picture's material (its colour); its ball is
+        // Steam's, haze's, gas's, fume's and wisps' seed is its picture's material (its colour); its ball is
         // as wide as its picture.
         for d in &mut puffs {
-            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW || k == crate::puffs::HAZE || k == crate::puffs::GAS || k == crate::puffs::FUME)
+            if matches!(d.look, Look::Puff(k) if k == crate::puffs::STEAM || k == crate::puffs::FROST || k == crate::puffs::SNOW || k == crate::puffs::HAZE || k == crate::puffs::GAS || k == crate::puffs::FUME || k == crate::puffs::WISP)
             {
                 if let Some(Some(s)) = self.sprites.get(&d.sprite) {
                     d.seed = s.draws.first().map_or(0, |m| m.material & 0x7_FFFF);
@@ -1424,8 +1532,11 @@ impl Particles {
                     // Gas is born small and dense, retail's lumps, and fume faint at its grate:
                     // each swells by its size alone. A placed static's steam swelled as it was
                     // gathered.
-                    if !matches!(d.look, Look::Puff(crate::puffs::GAS | crate::puffs::FUME))
-                        && (d.group & 0x8000_0000 == 0 || d.look != Look::Puff(crate::puffs::STEAM))
+                    if !matches!(
+                        d.look,
+                        Look::Puff(crate::puffs::GAS | crate::puffs::FUME | crate::puffs::WISP)
+                    ) && (d.group & 0x8000_0000 == 0
+                        || d.look != Look::Puff(crate::puffs::STEAM))
                     {
                         d.alpha *= crate::puffs::swell(d.age);
                     }
@@ -1784,6 +1895,7 @@ impl Particles {
                 | (seed & 0x1_FFFF) << 13
                 | match p.look {
                     Look::Glow(kind) | Look::Flake(kind) => 1 << 30 | u32::from(kind) << 31,
+                    Look::Spark { .. } => 1 << 30,
                     _ => 0,
                 };
             // A beacon's part rides in its seed's low two bits, under bit 31 alone.
@@ -1807,6 +1919,10 @@ impl Particles {
             let alpha = match (p.look, self.sprites.get(&p.sprite)) {
                 (Look::Mote, _) => p.seed,
                 (Look::Glow(_), Some(Some(Sprite { glow: Some(g), .. }))) => g.word(p.alpha),
+                (Look::Spark { tint, mote }, s) => {
+                    let own = s.and_then(|s| s.as_ref()).and_then(|s| s.glow);
+                    crate::sparks::light(tint, mote, own).word(p.alpha)
+                }
                 (Look::Flake(0), _) => crate::rime::FLAKE_LIGHT.word(p.alpha),
                 (Look::Flake(_), _) => crate::rime::GLINT_LIGHT.word(p.alpha),
                 (Look::Fire, Some(Some(s))) => fire_word(s.fire.unwrap_or(Vec3::ONE)),
@@ -1824,6 +1940,21 @@ impl Particles {
 #[must_use]
 pub fn additive(d: &Draw) -> bool {
     d.pipeline == PipelineKind::Additive
+}
+
+/// Reads the light colour of a shard drawn in palette `palette`, once, for its sparkles.
+pub fn prepare_tint(engine: &mut crate::Engine, store: &RetailDatStore, palette: DataId) {
+    let source = crate::asset::texture::TextureSource::new(store);
+    let colour = source
+        .palette_colours(palette)
+        .and_then(|c| pyreal_codecs::palette::ExpandedPalette::from_dat(&c))
+        .and_then(|p| {
+            source
+                .bgra_in(DataId(crate::sparks::PICTURE), Some(&p))
+                .ok()
+        })
+        .and_then(|(_, _, px)| crate::sparks::colour_of(&px));
+    engine.particles.tints.insert(palette.0, colour);
 }
 
 /// Makes the picture `gfx` ready to draw, once: its mesh, its turn and its reach.

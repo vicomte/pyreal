@@ -27,7 +27,7 @@ use pyreal_dat::{divine_type, DbType, RetailDatStore};
 use pyreal_primitives::DataId;
 
 use crate::lamps::{
-    broad_glow, burns_on, decode, flame_colour, parts, script_emitters, Flicker, Lamp,
+    broad_glow, burns_on, decode, flame_colour, is_vent, parts, script_emitters, Flicker, Lamp,
 };
 
 /// What burns, which sets a flame's shape and size.
@@ -368,7 +368,7 @@ pub fn examine(store: &RetailDatStore, id: DataId) -> Vec<FlameSource> {
     let parts = parts(&setup);
     let fiery: Vec<_> = script_emitters(store, &setup, &parts)
         .into_iter()
-        .filter(|(e, _)| flame_colour(store, e).is_some() && !broad_glow(store, e))
+        .filter(|(e, _)| flame_colour(store, e).is_some() && !broad_glow(store, e) && !is_vent(e))
         .filter(|(e, _)| kind_of(e, false).is_some())
         .collect();
     // A ring of candles counts its bursts too.

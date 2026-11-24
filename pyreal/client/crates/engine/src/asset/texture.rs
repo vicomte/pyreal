@@ -265,7 +265,19 @@ impl<'a> TextureSource<'a> {
     /// # Errors
     /// As [`Self::decode`].
     pub fn bgra(&self, id: DataId) -> Result<(u32, u32, Vec<u8>), TextureError> {
-        let mut data = self.decode_level0(id, false, None)?;
+        self.bgra_in(id, None)
+    }
+
+    /// As [`Self::bgra`], a palette-indexed picture drawn in `palette` in place of its own.
+    ///
+    /// # Errors
+    /// As [`Self::decode`].
+    pub fn bgra_in(
+        &self,
+        id: DataId,
+        palette: Option<&ExpandedPalette>,
+    ) -> Result<(u32, u32, Vec<u8>), TextureError> {
+        let mut data = self.decode_level0(id, false, palette)?;
         if data.format != TextureFormat::Bgra8 {
             data = pyreal_codecs::texture::decode_block_chain(&data)
                 .map_err(|e| TextureError::Decode(id, e))?;

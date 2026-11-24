@@ -208,7 +208,7 @@ fn lamp_light(world: vec3<f32>, n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3
             let part = select(0.5, 0.35, (l.flags & 2048u) != 0u) * select(1.0, 0.0, (l.flags & 255u) == 2u);
             if (d < part) {
                 let g = 1.0 - d / part;
-                out.glow = max(out.glow, outdoor_colour(l) * flame * g * g * (3.0 - 2.0 * g));
+                out.glow = max(out.glow, outdoor_colour(l) * flame * g * g * (3.0 - 2.0 * g) * outdoor_share(l));
             }
         } else if (has(F_PHYSICAL)) {
             // Its colour in retail's colour space, its brightest channel one.

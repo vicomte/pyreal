@@ -41,16 +41,18 @@ fn main() {
         )
     };
     let id = DataId((block << 16) | 0xFFFE);
-    let Some(info) = read::<LandblockInfo>(&store, DbType::Lbi, id) else {
+    let info = read::<LandblockInfo>(&store, DbType::Lbi, id);
+    if info.is_none() {
         println!("{id:?}: no landblock info");
-        return;
-    };
+    }
+    let (buildings, objects) = info
+        .as_ref()
+        .map_or((&[][..], &[][..]), |i| (&i.buildings[..], &i.objects[..]));
     let near = |o: pyreal_primitives::Vec3| ((o.x - x).powi(2) + (o.y - y).powi(2)).sqrt() <= r;
-    for b in info.buildings.iter().filter(|b| near(b.frame.origin)) {
+    for b in buildings.iter().filter(|b| near(b.frame.origin)) {
         println!("building {:#010X} at {:?}", b.id.0, b.frame.origin);
     }
-    for o in info
-        .objects
+    for o in objects
         .iter()
         .filter(|o| near(o.frame.origin) && only.is_none_or(|s| s == o.id.0))
     {

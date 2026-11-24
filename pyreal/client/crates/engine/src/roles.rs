@@ -127,6 +127,10 @@ impl Particles {
             lamps.clear();
             return lamps;
         }
+        // A crystal's light is its motes', in its own colour ([`crate::sparks`]).
+        if self.crystal_tint(driver).is_some() {
+            lamps.clear();
+        }
         match self.carries(driver) {
             (true, _) => lamps.clear(),
             (false, true) => lamps.retain(|l| l.kind != LampKind::Glow),

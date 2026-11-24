@@ -46,6 +46,9 @@ pub const GAS: u8 = 9;
 /// A grate's fume ([`fume_of`]): a column of its picture's colour rising and thinning, self-lit as
 /// retail draws it and warmest at its foot, laid over what is behind it.
 pub const FUME: u8 = 10;
+/// A swamp vent's wisps ([`wisp_of`]): thin threads of its picture's colour rising from the vent,
+/// curling and breaking up as they go, glowing faintly as retail adds its pictures.
+pub const WISP: u8 = 11;
 /// A ball's reach over its transform's scale (`puffs.wgsl`'s `PUFF_SIZE`).
 pub const PUFF_SIZE: f32 = 0.85;
 /// How much wider a snow ball is than its particle: the few small puffs of a frost elemental's
@@ -96,6 +99,7 @@ pub fn kind_of(sprite: &Sprite, e: &pyreal_animation::data::ParticleEmitterInfo)
     .or_else(|| haze_of(sprite.tone, sprite.additive(), sprite.half, e))
     .or_else(|| gas_of(sprite.tone, sprite.additive(), e))
     .or_else(|| fume_of(sprite.tone, sprite.additive(), sprite.colour, e))
+    .or_else(|| wisp_of(sprite.tone, sprite.additive(), e))
 }
 
 /// The least a haze's picture grows to across, metres.
@@ -212,8 +216,59 @@ pub const FUME_REACH: f32 = 1.1;
 pub const FUME_LEAST: f32 = 0.4;
 pub const FUME_LIFT: f32 = 0.12;
 
+/// A swamp vent's wisps: an endless stream of faint added pictures, coloured, rising a metre a
+/// second or so for a few seconds and swelling from a speck to metres across (the swamp vents
+/// 0x02000584 to 0x02000586, emitters 0x320002D0 to 0x320002D2).
+#[must_use]
+pub fn wisp_of(
+    tone: Tone,
+    additive: bool,
+    e: &pyreal_animation::data::ParticleEmitterInfo,
+) -> Option<u8> {
+    let s = Stream::of(e);
+    (additive
+        && !tone.grey
+        && !tone.flat
+        && s.endless
+        && !s.light
+        && s.rise >= 0.5
+        && s.final_scale >= s.start_scale * 10.0
+        && s.final_scale >= 3.0
+        && e.start_trans >= 0.5
+        && (3.0..=6.0).contains(&s.lifespan)
+        && e.max_particles >= 8)
+        .then_some(WISP)
+}
+
+/// How tall a vent's column of wisps stands over its mouth, metres, and how many balls hold it.
+pub const WISP_HEIGHT: f32 = 3.6;
+pub const WISP_BALLS: usize = 6;
+/// A wisp ball's scale at the vent's mouth and at the column's top: thin at the mouth, spread
+/// above.
+const WISP_FOOT: f32 = 0.45;
+const WISP_TOP: f32 = 2.2;
+/// How far the wind leans the column's top, metres a unit of breeze.
+const WISP_LEAN: f32 = 0.6;
+
+/// The balls of a vent's column of wisps standing on `foot`, leant by `wind`: each one's centre,
+/// scale and height up the column (0 at the mouth, 1 at the top). Retail's few puffs come one
+/// in three seconds; the column stands whole, and its threads rise through it in the shader.
+#[must_use]
+pub fn wisp_column(foot: Vec3, wind: Vec3) -> [(Vec3, f32, f32); WISP_BALLS] {
+    std::array::from_fn(|k| {
+        #[allow(clippy::cast_precision_loss)] // a few
+        let u = (k as f32 + 0.5) / WISP_BALLS as f32;
+        let lean = Vec3::new(wind.x, wind.y, 0.0) * WISP_LEAN * u * u;
+        (
+            foot + Vec3::Z * (u * WISP_HEIGHT) + lean,
+            WISP_FOOT + (WISP_TOP - WISP_FOOT) * u,
+            u,
+        )
+    })
+}
+
 /// The volume a placed object's emitter of picture `gfx` makes, if any, as [`kind_of`] reads its
-/// sprite: steam, frost, snow, haze, gas or fume.
+/// sprite: steam, frost, snow, haze, gas, fume or wisps.
 #[must_use]
 pub fn placed_kind(
     store: &RetailDatStore,
@@ -230,6 +285,7 @@ pub fn placed_kind(
         .or_else(|| haze_of(tone, additive, picture_half(store, gfx), e))
         .or_else(|| gas_of(tone, additive, e))
         .or_else(|| fume_of(tone, additive, picture(store, gfx).1, e))
+        .or_else(|| wisp_of(tone, additive, e))
 }
 
 /// The steam picture's half width (0x01000FC3's), metres a unit of scale, which the shader's
